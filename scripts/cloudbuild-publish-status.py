@@ -34,7 +34,10 @@ STEP_OUTPUTS = {'timing', 'pullTiming', 'status', 'exitCode'}
 OPTION_DEFAULTS = {'logging': 'LOGGING_UNSPECIFIED', 'sourceProvenanceHash': [],
                    'automapSubstitutions': False, 'dynamicSubstitutions': False,
                    'substitutionOption': 'MUST_MATCH',
-                   'machineType': 'UNSPECIFIED'}
+                   'machineType': 'UNSPECIFIED',
+                   # Observed native defaults omitted from the sealed request.
+                   # Nonempty pools and other release channels remain rejected.
+                   'pool': {}, 'workerRelease': 'legacy'}
 
 
 class EvidenceError(RuntimeError):
@@ -177,7 +180,8 @@ def validate_native(m, build, github, project_number=None):
     need(isinstance(options, dict) and set(options) <= set(OPTION_DEFAULTS), 'UNEXPECTED_NATIVE_OPTIONS')
     normalized_options = {key: options.get(key, default) for key, default in OPTION_DEFAULTS.items()}
     expected_options = {**OPTION_DEFAULTS, **config['options']}
-    need(normalized_options == expected_options, 'NATIVE_OPTIONS_MISMATCH')
+    need(all(type(value) is type(expected_options[key]) for key, value in normalized_options.items())
+         and normalized_options == expected_options, 'NATIVE_OPTIONS_MISMATCH')
     steps = build.get('steps', [])
     need(isinstance(steps, list) and len(steps) == 1, 'NATIVE_STEP_COUNT_MISMATCH')
     actual = normalize_step(steps[0])

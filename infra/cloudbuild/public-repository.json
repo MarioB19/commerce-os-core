@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "repository": "MarioB19/commerce-os-core",
+  "repository_id": 1414365450,
+  "original_repository": "MarioB19/commerce-os",
+  "original_repository_id": 1359063164,
+  "original_remains_private": true,
+  "state": "PUBLIC_SOURCE_ONLY_NOT_ADMITTED_FOR_BUILD_OR_DEPLOY",
+  "actions_enabled": false,
+  "expected_cloud_build_app_id": 10529,
+  "public_cloud_build_installation_id": null,
+  "public_verifier_service_account": null,
+  "public_source_bucket": null,
+  "legacy_private_verifier_reuse_allowed": false,
+  "source_build_or_deploy_authorized_by_this_file": false
+}

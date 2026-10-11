@@ -150,6 +150,10 @@ artefactos e instalación con identidad explícita. No mapear UUID a un run Acti
 ficticio ni modificar los instaladores para saltar sus guardas. Este bootstrap
 no cambia esos archivos ni publica software productivo.
 
-Validación local: 16 pruebas del publicador aprobadas el 10-oct; respuestas nativas
-sintéticas, sin llamadas cloud ni estados reales publicados. La compatibilidad con
-un build auténtico sigue pendiente y debe quedar evidenciada antes de uso operativo.
+Validación local: 19 pruebas del publicador aprobadas el 10-oct, incluidas las
+opciones `pool: {}` y `workerRelease: legacy` observadas en la respuesta de un
+build auténtico. Son defaults que Google agregó a la solicitud sellada: se acepta
+sólo esa equivalencia, conservando el rechazo de pools no vacíos, otros canales y
+opciones desconocidas. Un build `WORKING` continúa pendiente. El resultado final,
+su SHA256 nativo y las 21 etapas requieren conciliación independiente antes de
+publicar un estado exitoso. Estas pruebas sintéticas no acreditan ese resultado.

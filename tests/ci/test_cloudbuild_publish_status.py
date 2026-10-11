@@ -80,6 +80,27 @@ class NativeEvidenceTests(unittest.TestCase):
             with self.assertRaisesRegex(m.EvidenceError, 'GITHUB_COMMIT_TREE_MISMATCH'):
                 self.native()
 
+    def test_observed_default_pool_and_worker_release_are_equivalent(self):
+        self.build['options'].update(pool={}, workerRelease='legacy')
+        self.assertEqual(self.native(), 'success')
+
+    def test_other_pool_release_or_unknown_options_fail_closed(self):
+        for options in ({'pool': {'name': 'other'}}, {'pool': None},
+                        {'pool': {'workerConfig': {}}},
+                        {'workerRelease': 'rapid'}, {'workerRelease': 'stable'},
+                        {'workerRelease': None}, {'automapSubstitutions': 0},
+                        {'dynamicSubstitutions': 0}, {'unknownSetting': True}):
+            self.build = fixture()[1]
+            self.build['options'].update(options)
+            with self.subTest(options=options), self.assertRaises(m.EvidenceError):
+                self.native()
+
+    def test_default_native_options_do_not_promote_running_build(self):
+        self.build['options'].update(pool={}, workerRelease='legacy')
+        self.build['status'] = 'WORKING'
+        self.build['steps'][0]['status'] = 'WORKING'
+        self.assertEqual(self.native(), 'pending')
+
     def test_input_and_resolved_object_generations_cannot_drift(self):
         for key in ('source', 'sourceProvenance'):
             self.build = fixture()[1]

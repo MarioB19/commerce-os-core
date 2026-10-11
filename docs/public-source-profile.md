@@ -1,6 +1,6 @@
 # Perfil público sintético
 
-Este snapshot local deriva del código revisado, pero sus datos y textos son **fixtures de software**. No importa el historial Git, los resultados históricos de CI, recibos operativos, PDFs vendidos, material editorial, capturas, audios ni fotografías comerciales del repositorio privado. El repositorio original conserva sus referencias y permanece privado. El destino propuesto es un repositorio separado llamado `commerce-os-core`; aún no se ha creado.
+Este snapshot local deriva del código revisado, pero sus datos y textos son **fixtures de software**. No importa el historial Git, los resultados históricos de CI, recibos operativos, PDFs vendidos, material editorial, capturas, audios ni fotografías comerciales del repositorio privado. El repositorio original conserva sus referencias y permanece privado. La fuente pública tiene repositorio separado `MarioB19/commerce-os-core`, ID1414365450, creado el11-oct-2026. Actions está deshabilitado. Este árbol no acredita un FULL nativo ni instalación productiva.
 
 ## Contenido que permanece público
 
@@ -18,12 +18,12 @@ Las cuentas personales del operador proceden de configuración privada explícit
 
 El marcador `PUBLIC_FIXTURE_PROFILE.json` y la etiqueta de imagen `org.commerce-os.content-profile=synthetic-public-v1` hacen que `install-mcl-portal.py` rechace este portal. La publicación `copy-runtime` debe conservar la imagen, SHA, manifiesto y entorno del portal ya instalado. No se atribuye el fixture público al portal productivo ni se modifica su origen.
 
-## Próximos pasos antes de un repositorio público
+## Gates pendientes antes de CI público y producción
 
 1. Revisar el manifiesto de archivos y exclusiones local, la clasificación de los hallazgos y los resultados de pruebas. Inicializar únicamente una historia nueva del conjunto aprobado; no copiar refs, objetos, releases, logs, artifacts o metadatos del repositorio privado. El export local usa 0600/0700 por custodia: reconstruir los modos Git 100644/100755 indicados por el manifiesto al preparar el repositorio, sin quitar bits ejecutables de scripts.
-2. Si se autoriza la creación de `commerce-os-core`, deshabilitar Actions **antes del primer push**. Los tres workflows se conservan porque forman parte del contrato FULL; conservarlos no autoriza su ejecución ni el gasto.
+2. Mantener Actions deshabilitado, como se verificó antes del primer push. Los tres workflows se conservan porque forman parte del contrato FULL; conservarlos no autoriza su ejecución ni el gasto.
 3. Separar la identidad del verificador público y su almacenamiento de fuentes. La cuenta usada para el bootstrap privado puede leer archivos privados del bucket de staging y no debe entregarse a código público no confiable. Debe demostrarse que un PR no puede leer esas fuentes, secretos o artefactos privados.
-4. Registrar el nuevo ID real de repositorio y revisar App installation/conexión, origen, OIDC, workflow y branch protection. No reemplazar los guards por un nombre nuevo ni inventar IDs. Los recibos y enlaces históricos siguen perteneciendo al repositorio privado original.
+4. La identidad observada está fijada en `infra/cloudbuild/public-repository.json`: ID1414365450 y App Google Cloud Build10529. Revisar installation/conexión, origen, OIDC, workflow y branch protection antes de habilitar CI. La instalación de la App y la identidad de verificación pública siguen pendientes; no se heredan del original. Los guards canónicos del repositorio privado permanecen cerrados para esta fuente y requieren una transición revisada; cambiar un nombre o usar este JSON no autoriza publicación. Los recibos y enlaces históricos siguen perteneciendo al repositorio privado original.
 5. Ejecutar FULL completo sobre el **SHA exacto** final de la nueva fuente e imagen revisada. No se omiten etapas. El PASS de otro SHA o las pruebas locales parciales no aprueban este commit ni cierran F0.
 6. Habilitar CI automática y publicación sólo cuando custodia, IAM, identidad, presupuesto, protección de rama, exclusión mutua del publicador y readback estén validados. Este borrador no hace esas mutaciones.
 

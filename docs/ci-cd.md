@@ -119,6 +119,19 @@ La comparación se hace contra el último despliegue productivo exitoso, no cont
 
 No hacen falta Docker en el Mac, subir archivos a Cloud Shell ni iniciar manualmente el instalador para cada cambio. La primera compilación llena la caché; las siguientes reutilizan capas. Los tiempos se deben tomar de las ejecuciones reales, no se promete una duración fija.
 
+### Aislamiento del ensayo de calendario en integración
+
+`pnpm test:integration` sin argumentos ejecuta dos grupos secuenciales: todos los
+archivos salvo `numbers-mcp-stdio.test.ts`, y después ese archivo. Cada grupo
+recibe una base nueva con sus migraciones; todos los archivos se ejecutan una
+vez. Así, los workers globales del ensayo de quince días no vuelven a procesar
+pools y outbox que dejaron otras pruebas. El ensayo conserva su API HTTPS/MCP,
+cuotas reales, calendario, assertions y límite de 45 minutos. Un fallo de
+cualquier grupo conserva su base y hace fallar el comando, aunque el otro pase.
+Las invocaciones con argumentos conservan su selección en una sola base nueva.
+Esta separación requiere validación FULL del SHA candidato; una muestra local
+parcial no acredita el calendario completo ni un ahorro de tiempo en la nube.
+
 ## Contrato V5 vigente (2026-09-13)
 
 Push sólo en main; las ramas reciben checks por PR, sin duplicar push+PR. PR borrador y narrativa: ligero. PR listo: impacto portal/web/full. Dependencias, base, auth, workflows, rutas desconocidas y diff incompleto siempre amplían. Los renombres cuentan ambos lados. `Commerce CI gate` es el check terminal estable: fallo, cancelación, missing o scope desconocido nunca pasan.
