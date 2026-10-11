@@ -1,0 +1,9 @@
+# Native check name custody — 2026-10-11
+
+The attestation receipt label remains `Commerce V7 Cloud Build attestation`. It is an internal receipt field, independent of the legal Cloud Build trigger names `commerce-v7-attestation-pr` and `commerce-v7-attestation-main`.
+
+Cloud Build controls the GitHub Check Run name. Before approving the attestor, the trusted read adapter must acquire the unique native check for App 10529, exact Build UUID/details URL and source SHA, with native queued or in-progress state. Its observed name is sealed as `github_check_name` in the protected attestation contract and durable gate intent. Success requires that exact observed name and native identity, plus completed/success. No check creation, status substitution, SHA remapping or guessed provider name is permitted.
+
+Triggers use the dedicated public repository, fixed inline image/template, exact attestor service account, required native approval and no repository-controlled build filename. PR and main filters target main; no file exclusions. Branch protection is changed only by the authorized operator after genuine check acquisition, preserving strict/admin/PR rules and App identity. This source change does not prove the integration or admit compute spend.
+
+Native Trigger readback observed on 2026-10-11 omits `includeBuildLogs=INCLUDE_BUILD_LOGS_UNSPECIFIED` and `build.options.automapSubstitutions=false`. The administrative profile reader normalizes only those two defaults, with strict boolean typing; nondefault logging or automapping is rejected. Runtime Build validation already applies its independent typed option defaults. Existing trusted controller/attestor images retain their original tooling manifest; this administrative helper update does not imply an image rebuild or a new FULL result.

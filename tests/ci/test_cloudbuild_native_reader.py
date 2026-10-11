@@ -76,7 +76,7 @@ class NativeReaderTests(unittest.TestCase):
 
     def test_invalid_source_identity_fails_before_any_token_or_network(self):
         for field, value in [('region', '../metadata'), ('build_id', 'other?url=metadata'),
-                             ('repository', 'MarioB19/commerce-os-core')]:
+                             ('repository', 'MarioB19/commerce-os')]:
             manifest = copy.deepcopy(self.manifest)
             manifest[field] = value
             with self.subTest(field=field), self.assertRaises(m.EvidenceError):

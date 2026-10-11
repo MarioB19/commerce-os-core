@@ -20,7 +20,7 @@ import urllib.request
 
 from ci_release import digest, require, extract_release
 from ci_provider_evidence import (PROJECT, PROVIDER, REPOSITORY, CLOUD_RUN, parse,
-    validate_context, cloud_installation_id, sha, release_identity, LOCAL_RUN, publication_enabled)
+    validate_context, cloud_installation_id, sha, release_identity, LOCAL_RUN, installation_enabled, publication_enabled)
 
 ROOT = Path(__file__).resolve().parent.parent
 CUSTODY_ROOT = Path.home()/'.local/share/commerce-os-release-custody'
@@ -104,7 +104,7 @@ def validate_admission(value):
     require(config['timeout'] == '1800s' and config['queueTtl'] == '600s'
             and config['options'] == {'logging':'CLOUD_LOGGING_ONLY','sourceProvenanceHash':['SHA256'],'automapSubstitutions':False},
             'PACKAGE_BUILD_BOUNDS_CHANGED')
-    require(config['serviceAccount'] == 'projects/$PROJECT_ID/serviceAccounts/commerce-v7-package@$PROJECT_ID.iam.gserviceaccount.com'
+    require(config['serviceAccount'] == 'projects/$PROJECT_ID/serviceAccounts/commerce-v7-package-core@$PROJECT_ID.iam.gserviceaccount.com'
             and type(config['steps']) is list and len(config['steps']) == 1, 'PACKAGE_SERVICE_ACCOUNT_REQUIRED')
     step = config['steps'][0]
     require(step.get('id') == 'Commerce-V7-package' and step.get('name') == 'gcr.io/cloud-builders/docker'
@@ -123,14 +123,20 @@ def validate_admission(value):
     return context
 
 
-def package_native(admission, build, project_number):
+def package_native_identity(admission, build, project_number):
+    """Authenticate a native package before terminal evidence is available.
+
+    Binding/charging a failed or running Build is separate from accepting its
+    artifact. Only package_native below can accept a completed package.
+    """
     context = validate_admission(admission); package = admission['package_manifest']; config = package['build_config']
     cb = bootstrap()
     require(type(build) is dict and build.get('projectId') == PROJECT and build.get('id') == context['package_build_id']
             and build.get('name') in {'projects/'+str(project)+'/locations/'+context['region']+'/builds/'+context['package_build_id']
-                    for project in (PROJECT, project_number)} and build.get('status') == 'SUCCESS'
+                    for project in (PROJECT, project_number)}
+            and build.get('status') in {'QUEUED','WORKING','SUCCESS','FAILURE','INTERNAL_ERROR','TIMEOUT','CANCELLED','EXPIRED'}
             and not build.get('buildTriggerId'), 'PACKAGE_NATIVE_BUILD_MISMATCH')
-    require(not any(build.get(key) for key in ('secrets','availableSecrets','images','dependencies','gitConfig')),
+    require(not any(build.get(key) for key in ('secrets','availableSecrets','images','dependencies','gitConfig','approval','logsBucket')),
             'PACKAGE_UNEXPECTED_NATIVE_INPUT')
     require(build.get('source') == {'storageSource':package['storage_source']}, 'PACKAGE_NATIVE_SOURCE_MISMATCH')
     substitutions = {**config['substitutions'], 'PROJECT_ID':PROJECT, 'BUILD_ID':context['package_build_id']}
@@ -142,10 +148,17 @@ def package_native(admission, build, project_number):
             and {key:options.get(key,default) for key,default in cb.OPTION_DEFAULTS.items()}
                 == {**cb.OPTION_DEFAULTS, **config['options']}, 'PACKAGE_NATIVE_OPTIONS_MISMATCH')
     steps = build.get('steps')
-    require(type(steps) is list and len(steps) == 1 and steps[0].get('status') == 'SUCCESS'
-            and steps[0].get('exitCode',0) == 0, 'PACKAGE_NATIVE_STEP_FAILED')
+    require(type(steps) is list and len(steps) == 1, 'PACKAGE_NATIVE_STEP_FAILED')
     expected = cb.normalize_step(config['steps'][0]); actual = cb.normalize_step(steps[0])
     require(actual in (expected, cb.expanded(expected,substitutions)), 'PACKAGE_NATIVE_STEP_CHANGED')
+    return build['status']
+
+
+def package_native(admission, build, project_number):
+    require(package_native_identity(admission, build, project_number) == 'SUCCESS', 'PACKAGE_NATIVE_BUILD_MISMATCH')
+    context = validate_admission(admission); package = admission['package_manifest']; config = package['build_config']
+    require(build['steps'][0].get('status') == 'SUCCESS' and build['steps'][0].get('exitCode',0) == 0,
+            'PACKAGE_NATIVE_STEP_FAILED')
     provenance = build.get('sourceProvenance', {})
     require(provenance.get('resolvedStorageSource') == package['storage_source'], 'PACKAGE_NATIVE_GENERATION_MISMATCH')
     hashes = provenance.get('fileHashes', {}); source = package['storage_source']
@@ -190,7 +203,8 @@ def package_receipt(entries, context):
     for entry in entries:
         payload = entry.get('jsonPayload')
         if payload is None and type(entry.get('textPayload')) is str:
-            try: payload = json.loads(entry['textPayload'])
+            text = re.sub(r'^Step #0(?: - "Commerce-V7-package")?: ', '', entry['textPayload'])
+            try: payload = json.loads(text)
             except ValueError: continue
         if type(payload) is not dict or payload.get('kind') != PACKAGE_GATE: continue
         labels = entry.get('resource',{}).get('labels',{})
@@ -277,7 +291,7 @@ def validate_local_package(archive, package, root=ROOT):
 def deployment_admission(path, root, attempt, *, runner=command):
     require(type(attempt) is str and re.fullmatch(r'[1-9][0-9]{0,5}',attempt), 'INSTALLATION_ATTEMPT_REQUIRED')
     admission = parse(protected_bytes(path))
-    publication_enabled(validate_admission(admission))
+    installation_enabled(validate_admission(admission))
     admitted = evaluate(admission, Path(root)/'release/commerce-os.tar',runner=runner)
     context = admitted['context']
     local = context['package_origin'] == 'canonical-local'
@@ -359,6 +373,7 @@ def validate_installed(admitted, observation, core, portal):
 def deployment_payload(admitted, observation, core, portal):
     report = validate_installed(admitted,observation,core,portal)
     context = admitted['context']
+    publication_enabled(context, installed_report=report)
     return {'schema_version':2,'provider':PROVIDER,'package_origin':context['package_origin'],
         'source_sha':context['source_sha'],'source_tree':context['source_tree'],
         'verification_build_id':context['verification_build_id'],

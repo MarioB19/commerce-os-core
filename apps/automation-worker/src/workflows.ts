@@ -191,7 +191,7 @@ export async function advanceWorkflow(client:QueryExecutor,original:DomainRecord
   await event(client,conversation,'workflow.node_executed',{node_id:node.id,node_type:node.type,step:state.steps,workflow_version_id:def.versionId,status:state.status},nodeKey);
   if(next)state.node_id=next;else if(state.status==='RUNNING')state.status='FINISHED';
  }
- if(state.status==='FINISHED'&&conversation.body.simulation_id){const simulation=await getRecord(client,conversation.workspace_id,'simulation',conversation.body.simulation_id);if(simulation)await save(client,simulation,{...simulation.body,status:'COMPLETED',completed_at:new Date().toISOString()});}
+ if(state.status==='FINISHED'&&conversation.environment==='SIMULATION'&&conversation.body.simulation_id){const simulation=await getRecord(client,conversation.workspace_id,'simulation',conversation.body.simulation_id);if(simulation?.environment===conversation.environment)await save(client,simulation,{...simulation.body,status:'COMPLETED',completed_at:new Date().toISOString()});}
  return save(client,conversation,{...conversation.body,flow_state:state,workflow_runtime_version:def.versionId});
 }
 /** Recover schedules from durable accepted effects, including after a worker restart. */
@@ -255,12 +255,16 @@ async function dispatchFollowup(client:QueryExecutor,conversation:DomainRecord,t
 }
 export async function processTimers(limit=25){
  await processConfirmedSchedules(limit*4);
- const due=(await query(`SELECT t.id FROM timers t LEFT JOIN records c ON c.id::text=t.conversation_id LEFT JOIN records s ON s.id::text=c.body->>'simulation_id' WHERE t.status='PENDING' AND (t.due_at<=now() OR (t.environment='SIMULATION' AND t.due_at<=COALESCE((s.body->>'virtual_now')::timestamptz,now()))) ORDER BY t.due_at LIMIT $1`,[limit])).rows;
+ const due=(await query(`SELECT t.id FROM timers t
+  LEFT JOIN records c ON c.workspace_id=t.workspace_id AND c.environment=t.environment AND c.kind='conversation' AND c.id::text=t.conversation_id
+  LEFT JOIN records s ON s.workspace_id=c.workspace_id AND s.environment=c.environment AND s.kind='simulation' AND s.id::text=c.body->>'simulation_id'
+  WHERE t.status='PENDING' AND (t.due_at<=now() OR (t.environment='SIMULATION' AND t.due_at<=COALESCE((s.body->>'virtual_now')::timestamptz,now())))
+  ORDER BY t.due_at LIMIT $1`,[limit])).rows;
  for(const row of due)await withTransaction(async client=>{
   const candidate=(await client.query(`SELECT * FROM timers WHERE id=$1 AND status='PENDING'`,[row.id])).rows[0];if(!candidate)return;
   await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[candidate.conversation_id]);
   const timer=(await client.query(`SELECT * FROM timers WHERE id=$1 AND status='PENDING' FOR UPDATE`,[row.id])).rows[0];if(!timer)return;
-  const conversation=await getRecord(client,timer.workspace_id,'conversation',timer.conversation_id);if(!conversation)return;
+  const conversation=await getRecord(client,timer.workspace_id,'conversation',timer.conversation_id);if(!conversation||conversation.environment!==timer.environment)return;
   if(new Date(timer.due_at)>await nowFor(client,conversation))return;
   if(timer.kind==='followup'&&timer.payload.plan_key){await dispatchFollowup(client,conversation,timer);return;}
   if(timer.payload.purpose==='collection'){const reason=await collectionEligibility(client,conversation);if(reason){await client.query(`UPDATE timers SET status='CANCELLED' WHERE id=$1`,[timer.id]);await event(client,conversation,'workflow.collection_wait_cancelled',{reason,node_id:timer.payload.node_id},timer.id);return;}}

@@ -10,7 +10,7 @@ import json
 import re
 import uuid
 
-REPOSITORY = 'MarioB19/commerce-os'
+REPOSITORY = 'MarioB19/commerce-os-core'
 PROJECT = 'project-c6f43813-9ac9-47ab-9fe'
 GATE = 'Commerce V7 Cloud Build gate'
 STAGES = ['diff', 'python-ci', 'install', 'node-contracts', 'portal-capsule',
@@ -68,7 +68,7 @@ def validate_manifest(m):
     image = m.get('verifier_image', '')
     need(isinstance(image, str) and re.fullmatch(
         r'[a-z0-9-]+-docker\.pkg\.dev/'+re.escape(PROJECT)+
-        r'/commerce-ci/verify@sha256:[a-f0-9]{64}', image), 'PINNED_VERIFIER_REQUIRED')
+        r'/commerce-ci-public/verify@sha256:[a-f0-9]{64}', image), 'PINNED_VERIFIER_REQUIRED')
     source(m.get('storage_source', {}))
     config = m.get('build_config')
     need(isinstance(config, dict) and canonical_hash(config) == m['build_config_sha256'],
@@ -158,7 +158,7 @@ def validate_native(m, build, github, project_number=None):
     for key in ('timeout', 'queueTtl', 'serviceAccount'):
         need(build.get(key) in (config[key], expanded(config[key], substitutions)),
              'NATIVE_CONFIG_MISMATCH')
-    expected_sa = 'projects/'+PROJECT+'/serviceAccounts/commerce-v7-verify@'+PROJECT+'.iam.gserviceaccount.com'
+    expected_sa = 'projects/'+PROJECT+'/serviceAccounts/commerce-v7-verify-core@'+PROJECT+'.iam.gserviceaccount.com'
     need(expanded(config['serviceAccount'], substitutions) == expected_sa, 'VERIFY_SERVICE_ACCOUNT_REQUIRED')
     options = build.get('options', {})
     need(isinstance(options, dict) and set(options) <= set(OPTION_DEFAULTS), 'UNEXPECTED_NATIVE_OPTIONS')

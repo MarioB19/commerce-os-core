@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "scope": "local Linux AMD64 package image, not a native package run or installation",
+  "image_id": "sha256:bee55ec4ad8d24d5d2441b4bce86dc10889bca8727e8cace56a1aec040e8879c",
+  "scan": {
+    "HIGH": 0,
+    "CRITICAL": 0,
+    "MEDIUM": 12,
+    "LOW": 4,
+    "UNKNOWN": 1
+  },
+  "smoke": "PASS",
+  "previous_smoke_harness_syntax_error_preserved": true,
+  "cloud_effects": false,
+  "refs": {
+    "build-inputs.json": {
+      "bytes": 1853,
+      "sha256": "55c5bc7737b1c0e234215c69edffdd51892ee39bed0f7f72b9d4cfa391cd138d"
+    },
+    "build-result.json": {
+      "bytes": 2242,
+      "sha256": "0b5f5402281e74bd35927fbb657059498c3eddc97c8f5d2ed8094df2e52e57f8"
+    },
+    "trivy/scan-execution.json": {
+      "bytes": 2444,
+      "sha256": "7f6d941012c0a813d6d4f829d2daacad48ee346c263e9aba467b60010f988a52"
+    },
+    "trivy/image-vulnerabilities.json": {
+      "bytes": 793697,
+      "sha256": "316e1c6fd08a97494ec2db2b41a7e23f6431253cfbd98ea48a0a86e20b3ae023"
+    },
+    "smoke-result.json": {
+      "bytes": 367,
+      "sha256": "1cde1e59073829fc3d2aa19b4f04f532b688ff81e404d3bb8d158d3c12b4127a"
+    },
+    "smoke-v2-result.json": {
+      "bytes": 367,
+      "sha256": "f28823a1daa6a9166d917f85f4d57f2c0a594e0a43daae98824e59d3acc12dd5"
+    }
+  },
+  "built_at": "2026-10-11T16:42:48.443932+00:00",
+  "source_inputs": {
+    "infra/cloudbuild/Dockerfile.package": "43eb7080371d7cd232f5fca5f56af383a41267f87f91cd00543f7ba5d89c3be3",
+    "infra/cloudbuild/patch-buildx.py": "5895f0a5fb45522aad20bdf9f6952c65a86447fe0d7a4a2228721b714e0f57ee",
+    "scripts/cloudbuild-native-package-driver.py": "b21e08892633f88b47f46f05653dc2b2e65f499518c607c5b378878309c34045",
+    "scripts/cloudbuild_native_package.py": "07321a6bb08e99dd4e38eed23038ac6dbf8f33e02762f481b166a8e3a5884b60",
+    "scripts/cloudbuild_release_evidence.py": "9bea9b9c92dcd546dccd2896829556fca3e037a10aa7de053ef4c92b0f9af657",
+    "scripts/cloudbuild_native_reader.py": "7bce70901c9eafcf55f7430f31535065d128cf3b64c809d2e905416a11fc6c47",
+    "scripts/cloudbuild_full_evidence.py": "96edf9ea5bdb64d7188d0da2dd19299f999da186e1410d3cbd534187023fc8b7",
+    "scripts/cloudbuild-publish-status.py": "f3473fc955e3beb535dfad619dda9c056eb7ab97360249ffc9bcbd84a7170b69",
+    "scripts/ci_release.py": "2c4514f8c31f5641c65ab3337c8e3e3c0f5620581a65d59c654316b15650e6e7",
+    "scripts/ci_provider_evidence.py": "87fc29673f89f03f265d39e8d5b88d37cc394bf45cb874e64eb628564ee7683a",
+    "scripts/cloudbuild_bounded_logs.py": "a4c8888234269ba8a57e9707fdc25caf4ebcc257bb35d7d1a7e7d9fac18f9904"
+  },
+  "tests": {
+    "package_unit": 21,
+    "bounded_log_process": 6,
+    "builder_store": "PASS on native Linux builder; cached unchanged in final rebuild",
+    "smoke": "Linux AMD64 Buildx and package entrypoint/helper; no network, read-only"
+  },
+  "limitations": [
+    "Not a native four-image package Build",
+    "Not FULL or production installation evidence",
+    "Synthetic publisher fixture is separate and excluded",
+    "No vulnerability waivers or suppressed unfixed findings"
+  ]
+}

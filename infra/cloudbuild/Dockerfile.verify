@@ -1,19 +1,118 @@
+# syntax=docker/dockerfile:1.7.1@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 # Build once from a reviewed checkout; triggers must use its immutable digest.
 # The candidate PR must not build or replace this trusted runner image.
 FROM docker:29.9.0-cli@sha256:1a4c7cb63513f349bdad01fcc6e0f3f2f67d37b9da86f14dc0d4a0942eecda00 AS docker_cli
-FROM node:24.20.0-bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 git ca-certificates curl openssl procps tar gzip libpcre2-8-0 \
-    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libpcre2-8-0)" ge '10.42-1+deb12u2' \
-    && rm -rf /var/lib/apt/lists/* \
-    && npm install --global pnpm@10.34.5 \
-    && npx --yes playwright@1.63.0 install-deps chromium
+FROM node:24.20.0-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS node_runtime
+
+# Compose's published binary still embeds Go 1.26.8 and x/net 0.58.0.
+# Build the same released source with the security updates, preserving module
+# metadata for the final scanner. No compiler or source tree enters the runner.
+FROM golang:1.26.9-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS compose_builder
+ENV CGO_ENABLED=0 GOTOOLCHAIN=local GOSUMDB=sum.golang.org
+ADD --checksum=sha256:51ad60cc28d38a0850678053f0a259dfee931d150dd1d50ee9e6d758125b1d47 https://codeload.github.com/docker/compose/tar.gz/refs/tags/v5.6.0 /tmp/compose.tar.gz
+WORKDIR /src
+RUN tar -xzf /tmp/compose.tar.gz --strip-components=1 \
+    && go get golang.org/x/net@v0.60.0 \
+    && go build -mod=readonly -trimpath \
+       -ldflags='-w -X github.com/docker/compose/v5/internal.Version=v5.6.0-commerce.1' \
+       -o /out/docker-compose ./cmd \
+    && go version -m /out/docker-compose
+
+# Noble is supported by Playwright 1.63 and carries the vendor's libxml2 and
+# GLib fixes that remain deferred in Debian bookworm/trixie. Keep every FULL
+# check and browser dependency; the completed image still needs a fresh scan.
+FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+ENV DEBIAN_FRONTEND=noninteractive PYTHONDONTWRITEBYTECODE=1
+COPY --from=node_runtime /usr/local/bin/node /usr/local/bin/node
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends \
+       python3 python3-cryptography git ca-certificates curl openssl procps tar gzip libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install the published package-manager archives without lifecycle scripts.
+# The pinned pnpm 10.34.5 contract remains intact. Replace its external bundled
+# dependencies (and npm's) with official, integrity-checked compatible releases;
+# retain their real package names/versions so scanners can inspect all of them.
+ADD --checksum=sha256:d1a92f40e6c407b84c3a00c3cf978a10b24fd42f153c527e2016cef7bb34a483 https://registry.npmjs.org/npm/-/npm-11.20.0.tgz /tmp/ci-tools/npm.tgz
+ADD --checksum=sha256:ccb5c479cab1b00621325bfe7d4c9a8a8031e7a525d7249e275ecbec81b08db2 https://registry.npmjs.org/pnpm/-/pnpm-10.34.5.tgz /tmp/ci-tools/pnpm.tgz
+ADD --checksum=sha256:67bb5a1b4d4a8ff497d845a0b891ffe6b7233aea2202641315cec88d0fff15eb https://registry.npmjs.org/brace-expansion/-/brace-expansion-5.0.11.tgz /tmp/ci-tools/brace-expansion-5.tgz
+ADD --checksum=sha256:16278f391d351903b6555c9cd9733d6b725b236b9d53be0cb93be5c6ed7c85ef https://registry.npmjs.org/brace-expansion/-/brace-expansion-2.1.6.tgz /tmp/ci-tools/brace-expansion-2.tgz
+ADD --checksum=sha256:3a82df44a08262edd8379d063131911c6b304f09e6a2db9c22133cd5d949dba6 https://registry.npmjs.org/brace-expansion/-/brace-expansion-1.1.20.tgz /tmp/ci-tools/brace-expansion-1.tgz
+ADD --checksum=sha256:35902dd620cf0058c49ea614120f18a889d984269a90381b7622e79c2cfe4261 https://registry.npmjs.org/concat-map/-/concat-map-0.0.1.tgz /tmp/ci-tools/concat-map.tgz
+ADD --checksum=sha256:d75e1e6a11587954da5e2f0e2b5c4b397a16d28cc2f7bdf64e9027fc2fe593ee https://registry.npmjs.org/http-cache-semantics/-/http-cache-semantics-4.3.0.tgz /tmp/ci-tools/http-cache-semantics.tgz
+ADD --checksum=sha256:35e23227dfeca9179f03f899a9e3a21faf542a8079821bce95d5620642d75873 https://registry.npmjs.org/ip-address/-/ip-address-10.5.0.tgz /tmp/ci-tools/ip-address.tgz
+ADD --checksum=sha256:b792c2d1c7fc770910522ca1ffc29eee02ee38de4fa3a01e7832eb705879c6c6 https://registry.npmjs.org/tar/-/tar-7.5.22.tgz /tmp/ci-tools/tar.tgz
+ADD --checksum=sha256:e18191aac9c0ff43dac7fe9b10b7041a22d07addb7b66a6e8ac14a52a5b69b74 https://registry.npmjs.org/undici/-/undici-6.28.1.tgz /tmp/ci-tools/undici.tgz
+RUN <<'SHELL'
+set -eu
+mkdir -p /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/pnpm
+tar -xzf /tmp/ci-tools/npm.tgz --strip-components=1 -C /usr/local/lib/node_modules/npm
+tar -xzf /tmp/ci-tools/pnpm.tgz --strip-components=1 -C /usr/local/lib/node_modules/pnpm
+replace_dependency() {
+    destination="$1"
+    archive="$2"
+    test -f "$destination/package.json"
+    rm -rf "$destination"
+    mkdir "$destination"
+    tar -xzf "/tmp/ci-tools/$archive.tgz" --strip-components=1 -C "$destination"
+}
+replace_dependency /usr/local/lib/node_modules/npm/node_modules/brace-expansion brace-expansion-5
+replace_dependency /usr/local/lib/node_modules/npm/node_modules/http-cache-semantics http-cache-semantics
+replace_dependency /usr/local/lib/node_modules/npm/node_modules/undici undici
+replace_dependency /usr/local/lib/node_modules/pnpm/dist/node_modules/brace-expansion brace-expansion-2
+replace_dependency /usr/local/lib/node_modules/pnpm/dist/node_modules/http-cache-semantics http-cache-semantics
+replace_dependency /usr/local/lib/node_modules/pnpm/dist/node_modules/ip-address ip-address
+replace_dependency /usr/local/lib/node_modules/pnpm/dist/node_modules/tar tar
+mkdir /usr/local/lib/node_modules/pnpm/dist/node_modules/brace-expansion-v1
+tar -xzf /tmp/ci-tools/brace-expansion-1.tgz --strip-components=1 -C /usr/local/lib/node_modules/pnpm/dist/node_modules/brace-expansion-v1
+mkdir /usr/local/lib/node_modules/pnpm/dist/node_modules/concat-map
+tar -xzf /tmp/ci-tools/concat-map.tgz --strip-components=1 -C /usr/local/lib/node_modules/pnpm/dist/node_modules/concat-map
+ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
+ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+ln -s ../lib/node_modules/pnpm/bin/pnpm.cjs /usr/local/bin/pnpm
+ln -s ../lib/node_modules/pnpm/bin/pnpx.cjs /usr/local/bin/pnpx
+rm -rf /tmp/ci-tools
+SHELL
+# The published pnpm bundle also contains copies of ip-address and two older
+# brace-expansion majors. Replace every complete bundled module with a require
+# of the matching updated external release; changing only package.json or the
+# external dependency directories would leave those vulnerable copies active.
+RUN python3 - <<'PY'
+from pathlib import Path
+import hashlib, re
+path = Path('/usr/local/lib/node_modules/pnpm/dist/pnpm.cjs')
+raw = path.read_bytes()
+assert hashlib.sha256(raw).hexdigest() == 'ca969fbb32c08be8395c744c64e131c2ba2c93067e1b483171dbc6ed439e1143'
+source = raw.decode()
+counts = {}
+pattern = re.compile(r'^// (\.\./node_modules/\.pnpm/(ip-address@10\.2\.0|brace-expansion@2\.1\.0|brace-expansion@1\.1\.14)/node_modules/([^\n]+))\nvar (\w+) = __commonJS\(\{\n.*?^\}\);$', re.M | re.S)
+def replace(match):
+    origin, package, module, variable = match.groups()
+    counts[package] = counts.get(package, 0) + 1
+    if package == 'brace-expansion@1.1.14':
+        module = module.replace('brace-expansion/', 'brace-expansion-v1/', 1)
+    target = './node_modules/' + module
+    assert (path.parent / target).is_file()
+    return '// Updated external dependency: ' + target + '\nvar ' + variable + ' = () => require(' + repr(target) + ');'
+source = pattern.sub(replace, source)
+assert counts == {'ip-address@10.2.0': 9, 'brace-expansion@2.1.0': 1, 'brace-expansion@1.1.14': 1}, counts
+assert not any(package in source for package in counts)
+path.write_text(source)
+PY
+RUN test "$(node --version)" = v24.20.0 \
+    && test "$(npm --version)" = 11.20.0 \
+    && test "$(pnpm --version)" = 10.34.5 \
+    && npx --yes playwright@1.63.0 install-deps chromium \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libglib2.0-0t64)" ge '2.80.0-6ubuntu3.9' \
+    && rm -rf /var/lib/apt/lists/* /root/.npm
 COPY --from=docker_cli /usr/local/bin/docker /usr/local/bin/docker
-COPY --from=docker_cli /usr/local/libexec/docker/cli-plugins/ /usr/local/libexec/docker/cli-plugins/
+# FULL invokes Compose for its isolated PostgreSQL. Image packaging/buildx runs
+# in the separate canonical package phase, outside this verifier container.
+COPY --from=compose_builder /out/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
 COPY scripts/cloudbuild-verify.py /opt/commerce-ci/cloudbuild-verify.py
+COPY scripts/cloudbuild_bounded_logs.py /opt/commerce-ci/cloudbuild_bounded_logs.py
 # Custody fixtures create temporary directories below this unmounted home.
 RUN chmod 0700 /root \
     && node --version && pnpm --version && python3 --version && docker --version && docker compose version
-ENV PYTHONDONTWRITEBYTECODE=1
 WORKDIR /workspace
 ENTRYPOINT ["python3", "/opt/commerce-ci/cloudbuild-verify.py"]

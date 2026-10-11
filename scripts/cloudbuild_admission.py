@@ -22,8 +22,12 @@ Commands (unknown fields are rejected):
   projected_gross_microusd, credit_verified=True, inventory_complete=True).
 * submit_intent: attempt_id, source(bucket, object, generation, archive_sha256),
   nonce (UUID), request_sha256. Persist source generation before the only POST.
+* approve_intent: attempt_id, gate(build_id, trigger_id, repository_id,
+  source_sha, source_tree, config_sha256), nonce, request_sha256. Attestation
+  only: reserve before approving an already-existing native PENDING Build.
 * bind: attempt_id, build_id (native UUID), source, config_sha256,
   native_evidence_sha256. The source must equal the persisted intent exactly.
+* bind_gate: the same binding using gate instead of source; never CreateBuild.
 * unknown: attempt_id, reason, evidence_sha256; keeps reservation and global lock.
 * running: attempt_id, build_id.
 * terminal: attempt_id, observation(build_id, status, started_at, finished_at,
@@ -245,10 +249,9 @@ def validate_ledger(doc):
             need(reserved <= submitted <= updated, 'DURABLE_CHRONOLOGY_INVALID')
             validate_approval(attempt['approval'], attempt['plan'], submitted)
             validate_admission(attempt['admission'], submitted, attempt['approval'])
-            exact(attempt['intent'], 'source nonce request_sha256', 'SUBMIT_INTENT_FIELDS_INVALID')
             intent = attempt['intent']
-            validate_source(intent['source']); native_uuid(intent['nonce']); digest(intent['request_sha256'])
-            locator = source_locator(intent['source'])
+            validate_intent(intent, attempt['plan'])
+            locator = intent_locator(intent)
             need(intent['nonce'] not in nonces and locator not in sources, 'SUBMIT_SOURCE_OR_NONCE_REUSED')
             nonces.add(intent['nonce']); sources.add(locator)
         if 'uncertainty' in attempt:
@@ -370,6 +373,33 @@ def validate_source(source):
     digest(source['archive_sha256'])
 
 
+def validate_gate(gate, plan):
+    exact(gate, 'build_id trigger_id repository_id source_sha source_tree config_sha256 github_check_name', 'GATE_FIELDS_INVALID')
+    native_uuid(gate['build_id']); native_uuid(gate['trigger_id']); digest(gate['config_sha256'])
+    need(type(gate['github_check_name']) is str and 0 < len(gate['github_check_name'].encode('utf-8')) <= 256
+         and all(c.isprintable() for c in gate['github_check_name']), 'GATE_CHECK_NAME_INVALID')
+    need(plan['stage'] == 'attestation', 'ATTESTATION_STAGE_REQUIRED')
+    need(type(gate['repository_id']) is int and all(gate[key] == plan['identity'][key]
+         for key in ('repository_id', 'source_sha', 'source_tree'))
+         and gate['config_sha256'] == plan['config_sha256'], 'GATE_PLAN_BINDING_MISMATCH')
+
+
+def validate_intent(intent, plan):
+    need(type(intent) is dict, 'SUBMIT_INTENT_FIELDS_INVALID')
+    if 'gate' in intent:
+        exact(intent, 'gate nonce request_sha256', 'SUBMIT_INTENT_FIELDS_INVALID')
+        validate_gate(intent['gate'], plan)
+    else:
+        exact(intent, 'source nonce request_sha256', 'SUBMIT_INTENT_FIELDS_INVALID')
+        need(plan['stage'] != 'attestation', 'ATTESTATION_APPROVAL_INTENT_REQUIRED')
+        validate_source(intent['source'])
+    native_uuid(intent['nonce']); digest(intent['request_sha256'])
+
+
+def intent_locator(intent):
+    return ('gate', intent['gate']['build_id']) if 'gate' in intent else ('source', *source_locator(intent['source']))
+
+
 def validate_observation(value, now):
     exact(value, 'build_id status started_at finished_at execution_not_started evidence_sha256', 'OBSERVATION_FIELDS_INVALID')
     native_uuid(value['build_id']); digest(value['evidence_sha256'])
@@ -395,7 +425,9 @@ def transition(document, command, *, now):
         'discover': 'op attempt_id plan', 'approve_source': 'op attempt_id approval',
         'reserve': 'op attempt_id admission',
         'submit_intent': 'op attempt_id source nonce request_sha256',
+        'approve_intent': 'op attempt_id gate nonce request_sha256',
         'bind': 'op attempt_id build_id source config_sha256 native_evidence_sha256',
+        'bind_gate': 'op attempt_id build_id gate config_sha256 native_evidence_sha256',
         'unknown': 'op attempt_id reason evidence_sha256', 'running': 'op attempt_id build_id',
         'terminal': 'op attempt_id observation',
         'reconcile': 'op attempt_id evidence_sha256 native_verified',
@@ -461,9 +493,10 @@ def transition(document, command, *, now):
             doc['active_attempt'] = attempt_id
             need(all(row['total_seconds'] <= MONTHLY_LIMIT_SECONDS for row in budget_usage(doc, now=moment).values()),
                  'MONTHLY_POOL_EXCEEDED')
-        elif op == 'submit_intent':
-            validate_source(command['source']); native_uuid(command['nonce']); digest(command['request_sha256'])
-            intent = {k: deepcopy(command[k]) for k in ('source', 'nonce', 'request_sha256')}
+        elif op in {'submit_intent', 'approve_intent'}:
+            target = 'gate' if op == 'approve_intent' else 'source'
+            intent = {k: deepcopy(command[k]) for k in (target, 'nonce', 'request_sha256')}
+            validate_intent(intent, attempt['plan'])
             if 'intent' in attempt:
                 need(attempt['intent'] == intent, 'SUBMIT_INTENT_CHANGED')
                 return replay()
@@ -476,13 +509,19 @@ def transition(document, command, *, now):
             for other in doc['attempts'].values():
                 if 'intent' in other:
                     need(other['intent']['nonce'] != intent['nonce']
-                         and source_locator(other['intent']['source']) != source_locator(intent['source']),
+                         and intent_locator(other['intent']) != intent_locator(intent),
                          'SUBMIT_SOURCE_OR_NONCE_REUSED')
             attempt.update(state='SUBMIT_INTENT', intent=intent, submitted_at=stamp(moment))
-            effect = 'CREATE_ONCE'
-        elif op == 'bind':
-            native_uuid(command['build_id']); validate_source(command['source']); digest(command['native_evidence_sha256'])
-            need('intent' in attempt and command['source'] == attempt['intent']['source'], 'NATIVE_SOURCE_MISMATCH')
+            effect = 'APPROVE_ONCE' if op == 'approve_intent' else 'CREATE_ONCE'
+        elif op in {'bind', 'bind_gate'}:
+            target = 'gate' if op == 'bind_gate' else 'source'
+            native_uuid(command['build_id']); digest(command['native_evidence_sha256'])
+            if target == 'gate':
+                validate_gate(command['gate'], attempt['plan'])
+                need(command['build_id'] == command['gate']['build_id'], 'NATIVE_GATE_UUID_MISMATCH')
+            else:
+                validate_source(command['source'])
+            need('intent' in attempt and command[target] == attempt['intent'].get(target), 'NATIVE_SOURCE_MISMATCH')
             need(command['config_sha256'] == attempt['plan']['config_sha256'], 'NATIVE_CONFIG_MISMATCH')
             if attempt.get('build_id'):
                 need(attempt['build_id'] == command['build_id'], 'NATIVE_UUID_CHANGED')
