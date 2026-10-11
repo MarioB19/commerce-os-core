@@ -58,6 +58,18 @@ class GateTests(unittest.TestCase):
     def approve(self):return self.controller.approve(GATE_ATTEMPT,ATTEMPT,self.full.manifest,self.contract)
     def attest(self):return m.attest(self.bundle,self.store,self.api,self.reader,Mock())
 
+    def test_observed_native_ref_name_and_omitted_false_option(self):
+        contract=copy.deepcopy(self.contract);build=copy.deepcopy(self.build)
+        contract['substitutions'].update(REF_NAME='codex/reviewed',BRANCH_NAME='codex/reviewed',_HEAD_BRANCH='codex/reviewed')
+        build['substitutions']=copy.deepcopy(contract['substitutions'])
+        del build['options']['automapSubstitutions']
+        self.assertEqual(m.validate_native_gate(contract,build,NUMBER,require_pending=True),'PENDING')
+        for key,value in [('BRANCH_NAME','other'),('_HEAD_BRANCH','other'),('REF_NAME','')]:
+            changed=copy.deepcopy(contract);changed['substitutions'][key]=value
+            with self.subTest(key=key),self.assertRaisesRegex(RuntimeError,'REF_BRANCH_MISMATCH'):m.validate_contract(changed)
+        changed=copy.deepcopy(contract);del changed['substitutions']['BRANCH_NAME']
+        with self.assertRaisesRegex(RuntimeError,'REF_BRANCH_MISMATCH'):m.validate_contract(changed)
+
     def test_gate_approval_uses_reserved_native_uuid_and_never_create(self):
         self.assertEqual(self.approve()['state'],'NATIVE_APPROVAL_CONFIRMED')
         self.assertEqual(self.approve()['state'],'RECONCILIATION_REQUIRED')

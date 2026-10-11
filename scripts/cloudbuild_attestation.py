@@ -42,9 +42,16 @@ def validate_contract(contract):
     subs = contract['substitutions']
     need(type(subs) is dict and subs.get('COMMIT_SHA') == contract['source_sha']
          and all(type(key) is str and type(value) is str and len(value) <= 4096 for key,value in subs.items())
-         and set(subs) <= {'COMMIT_SHA','REVISION_ID','SHORT_SHA','REPO_NAME','REPO_FULL_NAME','BRANCH_NAME',
+         and set(subs) <= {'COMMIT_SHA','REVISION_ID','SHORT_SHA','REPO_NAME','REPO_FULL_NAME','BRANCH_NAME','REF_NAME',
                           'TRIGGER_NAME','TRIGGER_BUILD_CONFIG_PATH','_HEAD_BRANCH','_BASE_BRANCH','_HEAD_REPO_URL','_PR_NUMBER'},
          'ATTESTATION_NATIVE_SUBSTITUTIONS_INVALID')
+    # The authenticated GitHub trigger includes REF_NAME on both PR and main.
+    # It is a branch alias here; no tag or alternate ref is admitted.
+    if 'REF_NAME' in subs:
+        need(subs.get('BRANCH_NAME') == subs['REF_NAME'] and bool(subs['REF_NAME']),
+             'ATTESTATION_REF_BRANCH_MISMATCH')
+        if '_HEAD_BRANCH' in subs:
+            need(subs['_HEAD_BRANCH'] == subs['REF_NAME'], 'ATTESTATION_REF_BRANCH_MISMATCH')
     if 'REVISION_ID' in subs: need(subs['REVISION_ID'] == contract['source_sha'], 'ATTESTATION_REVISION_MISMATCH')
     if 'SHORT_SHA' in subs: need(subs['SHORT_SHA'] == contract['source_sha'][:7], 'ATTESTATION_REVISION_MISMATCH')
     if 'REPO_FULL_NAME' in subs: need(subs['REPO_FULL_NAME'] == 'MarioB19/commerce-os-core', 'ATTESTATION_REPOSITORY_MISMATCH')
