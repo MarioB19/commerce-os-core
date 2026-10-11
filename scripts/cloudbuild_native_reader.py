@@ -6,6 +6,7 @@ approves builds, publishes a check, or imports code from a candidate checkout.
 The bootstrap contract still rejects public-repository and trigger profiles.
 """
 import json
+import time
 import urllib.error
 import urllib.request
 
@@ -13,6 +14,8 @@ from cloudbuild_full_evidence import (PROJECT, REPOSITORY, EvidenceError, need,
     validate_manifest, log_filter, evaluate_reader)
 
 MAX_RESPONSE = 4 * 1024 * 1024
+MAX_LOG_PAGES = 8
+MAX_LOG_SECONDS = 90
 PROJECT_URL = 'https://cloudresourcemanager.googleapis.com/v1/projects/' + PROJECT
 BUILD_ROOT = 'https://cloudbuild.googleapis.com/v1/projects/' + PROJECT + '/locations/'
 LOG_URL = 'https://logging.googleapis.com/v2/entries:list'
@@ -45,7 +48,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class GoogleFullReader:
-    """One request per read; missing, truncated or uncertain data never passes.
+    """Bounded native reads; missing, truncated or uncertain data never passes.
 
     commit_reader(repository, sha) must read the authenticated source of truth,
     not a candidate receipt. It uses separate credentials, if required. Google
@@ -58,7 +61,8 @@ class GoogleFullReader:
         self.opener = opener or urllib.request.build_opener(
             urllib.request.ProxyHandler({}), NoRedirect())
 
-    def _read(self, operation, m=None):
+    def _read(self, operation, m=None, *, page_token='',
+              remaining_bytes=MAX_RESPONSE, deadline=None, with_size=False):
         if operation == 'project':
             method, url, payload = 'GET', PROJECT_URL, None
         else:
@@ -73,8 +77,15 @@ class GoogleFullReader:
                 payload = {'resourceNames': ['projects/' + PROJECT],
                            'filter': log_filter(m), 'orderBy': 'timestamp asc',
                            'pageSize': 100}
+                need(type(page_token) is str and len(page_token) <= 4096,
+                     'LOG_PAGE_TOKEN_INVALID')
+                if page_token:
+                    payload['pageToken'] = page_token
             else:
                 raise EvidenceError('NATIVE_READ_OPERATION_INVALID')
+        need(type(remaining_bytes) is int and 0 < remaining_bytes <= MAX_RESPONSE,
+             'NATIVE_RESPONSE_SIZE_INVALID')
+        need(deadline is None or time.monotonic() < deadline, 'LOG_QUERY_DEADLINE')
         try:
             token = self.token_provider()
         except Exception:
@@ -87,17 +98,22 @@ class GoogleFullReader:
             body = json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()
             headers['Content-Type'] = 'application/json'
         request = urllib.request.Request(url, data=body, method=method, headers=headers)
+        remaining = 20 if deadline is None else min(20, deadline - time.monotonic())
+        need(remaining > 0, 'LOG_QUERY_DEADLINE')
         try:
-            with self.opener.open(request, timeout=20) as response:
+            with self.opener.open(request, timeout=remaining) as response:
                 need(response.status == 200, 'NATIVE_READ_UNCONFIRMED')
-                raw = response.read(MAX_RESPONSE + 1)
+                raw = response.read(remaining_bytes + 1)
         except urllib.error.HTTPError as error:
             # Never relay server text, request headers, URLs or token values.
             error.close()
             raise EvidenceError('NATIVE_READ_HTTP_ERROR') from None
         except (OSError, ValueError):
             raise EvidenceError('NATIVE_READ_UNCERTAIN') from None
-        return decode(raw)
+        need(deadline is None or time.monotonic() < deadline, 'LOG_QUERY_DEADLINE')
+        need(len(raw) <= remaining_bytes, 'NATIVE_RESPONSE_SIZE_INVALID')
+        value = decode(raw)
+        return (value, len(raw)) if with_size else value
 
     def project(self):
         return self._read('project')
@@ -110,13 +126,24 @@ class GoogleFullReader:
         return self._read('build', m)
 
     def logs(self, m):
-        response = self._read('logs', m)
-        need(set(response) <= {'entries', 'nextPageToken'}
-             and type(response.get('nextPageToken', '')) is str
-             and response.get('nextPageToken', '') == '', 'LOG_QUERY_INCOMPLETE')
-        entries = response.get('entries', [])
-        need(type(entries) is list and len(entries) < 100, 'LOG_QUERY_INCOMPLETE')
-        return entries
+        validate_manifest(m)
+        entries = []; seen = set(); token = ''; remaining = MAX_RESPONSE
+        deadline = time.monotonic() + MAX_LOG_SECONDS
+        for _ in range(MAX_LOG_PAGES):
+            response, size = self._read('logs', m, page_token=token,
+                remaining_bytes=remaining, deadline=deadline, with_size=True)
+            remaining -= size
+            need(set(response) <= {'entries', 'nextPageToken'}
+                 and type(response.get('entries', [])) is list, 'LOG_QUERY_INCOMPLETE')
+            entries.extend(response.get('entries', []))
+            need(len(entries) < 100, 'LOG_QUERY_INCOMPLETE')
+            token = response.get('nextPageToken', '')
+            need(type(token) is str and len(token) <= 4096, 'LOG_PAGE_TOKEN_INVALID')
+            if not token:
+                return entries
+            need(token not in seen, 'LOG_PAGE_TOKEN_REPEATED')
+            seen.add(token)
+        raise EvidenceError('LOG_QUERY_INCOMPLETE')
 
     def evaluate(self, m):
         return evaluate_reader(m, self)

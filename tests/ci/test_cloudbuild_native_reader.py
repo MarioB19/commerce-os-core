@@ -86,8 +86,7 @@ class NativeReaderTests(unittest.TestCase):
         self.assertFalse(self.source_calls)
 
     def test_incomplete_logs_cannot_pass_even_with_one_good_receipt(self):
-        for response in [{'entries': self.logs, 'nextPageToken': 'more'},
-                         {'entries': self.logs, 'nextPageToken': 0},
+        for response in [{'entries': self.logs, 'nextPageToken': 0},
                          {'entries': self.logs, 'nextPageToken': None},
                          {'entries': self.logs, 'partial': True},
                          {'entries': self.logs * 100}, {'entries': {}}, {}]:
