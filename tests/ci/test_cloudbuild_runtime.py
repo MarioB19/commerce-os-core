@@ -337,16 +337,24 @@ class BoundaryTests(unittest.TestCase):
         self.assertIsInstance(value.meter_store, m.ExistingStore)
 
     def test_repeated_inventory_observations_use_fresh_native_readers(self):
-        from test_cloudbuild_project_inventory import Remote
+        from test_cloudbuild_project_inventory import Remote, FakeTime
         real = m.ProjectInventory; remote = Remote(); readers = []
-        def reader(token, number):
-            value = real(lambda: 'fixture', number, opener=remote); readers.append(value); return value
-        factory = m.RuntimeFactory(config())
+        def reader(token, number, *, pacer):
+            value = real(lambda: 'fixture', number, opener=remote, pacer=pacer, clock=pacer.clock); readers.append(value); return value
+        factory = m.RuntimeFactory(config()); timer = FakeTime()
+        factory.inventory_pacer = m.InventoryRequestPacer(clock=timer.clock, sleep=timer.sleep)
         with patch.object(m, 'ProjectInventory', side_effect=reader):
             first = factory.inventory_snapshot(); second = factory.inventory_snapshot()
         self.assertEqual(len(readers), 2); self.assertIsNot(readers[0], readers[1])
         self.assertEqual(first['inventory_sha256'], second['inventory_sha256'])
         self.assertEqual(len(remote.calls), 6)
+        self.assertIs(readers[0].pacer, readers[1].pacer)
+        self.assertGreaterEqual(timer.value, 106.25)
+
+    def test_all_cloudbuild_readers_use_same_factory_pacer(self):
+        factory=m.RuntimeFactory(config())
+        for reader in (factory.source_reader,factory.api,factory.full_reader):
+            self.assertIs(reader.opener.pacer,factory.inventory_pacer)
 
     def test_config_rejects_dynamic_fields_and_lost_usage(self):
         for change in ({'factory': 'evil.module'}, {'repository_id': 1359063164}, {'role': 'publisher'}, {'mode': 'unsafe'}):

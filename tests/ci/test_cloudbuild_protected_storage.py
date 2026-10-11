@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 import urllib.parse
+import urllib.error
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
 import cloudbuild_protected_storage as m
@@ -67,6 +68,21 @@ class Journal:
 class CustodyTests(unittest.TestCase):
     def setUp(self):
         self.remote = Remote(); self.api = m.ProtectedStorage(lambda: 'synthetic-token', 'synthetic-ci', 'control', opener=self.remote)
+
+    def test_source_absence_requires_exact404_and_no_second_get(self):
+        api=m.ProtectedStorage(lambda:'fixture', 'synthetic-ci', 'full', opener=self.remote)
+        for status in (404,403,429):
+            self.remote.open=Mock(side_effect=urllib.error.HTTPError('https://fixture',status,'hidden',{},io.BytesIO(b'hidden')))
+            if status==404:self.assertEqual(api.require_source_absent(ATTEMPT)['state'],'ABSENT')
+            else:
+                with self.assertRaisesRegex(RuntimeError,'CUSTODY_HTTP_ERROR'):api.require_source_absent(ATTEMPT)
+            self.remote.open.assert_called_once()
+            request=self.remote.open.call_args.args[0]
+            self.assertEqual(request.method,'GET');self.assertTrue(request.full_url.endswith('full%2F'+ATTEMPT+'.tgz'))
+        self.remote.open=Mock(return_value=Response(b'{}'))
+        with self.assertRaisesRegex(RuntimeError,'OBJECT_EXISTS'):api.require_source_absent(ATTEMPT)
+        self.remote.open=Mock(side_effect=TimeoutError('hidden'))
+        with self.assertRaisesRegex(RuntimeError,'OUTCOME_UNKNOWN'):api.require_source_absent(ATTEMPT)
 
     def test_json_reads_exact_generation_and_hash(self):
         self.assertEqual(self.api.read_json(self.remote.descriptor()), {'protected': True})

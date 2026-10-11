@@ -89,7 +89,7 @@ class ProtectedStorage:
         object_path(name); need(name.startswith(self.prefix), 'CUSTODY_PREFIX_CHANGED')
         return ORIGIN + '/storage/v1/b/' + self.bucket + '/o/' + urllib.parse.quote(name, safe='')
 
-    def _request(self, method, url, *, body=None, size=None):
+    def _request(self, method, url, *, body=None, size=None, absence=False):
         need(method in {'GET', 'POST'} and url.startswith(ORIGIN + '/'), 'CUSTODY_ENDPOINT_REJECTED')
         try: token = self.token_provider()
         except Exception: raise EvidenceError('CUSTODY_TOKEN_UNAVAILABLE') from None
@@ -104,7 +104,9 @@ class ProtectedStorage:
                 response.close(); raise EvidenceError('CUSTODY_RESPONSE_UNCONFIRMED')
             return response
         except urllib.error.HTTPError as error:
-            error.close(); raise EvidenceError('CUSTODY_HTTP_ERROR') from None
+            status = error.code; error.close()
+            if absence and method == 'GET' and status == 404: return None
+            raise EvidenceError('CUSTODY_HTTP_ERROR') from None
         except (OSError, ValueError): raise EvidenceError('CUSTODY_OUTCOME_UNKNOWN') from None
 
     def _metadata(self, name, observed=None):
@@ -150,6 +152,15 @@ class ProtectedStorage:
     def read_json(self, descriptor):
         validate_descriptor(descriptor)
         return decode(self._confirm(descriptor, collect=True))
+
+    def require_source_absent(self, attempt_id):
+        """One exact authenticated metadata GET; only HTTP404 proves absence."""
+        ledger.native_uuid(attempt_id)
+        need(self.prefix == 'full/', 'SOURCE_ABSENCE_PREFIX_CHANGED')
+        response = self._request('GET', self._path(self.prefix+attempt_id+'.tgz'), absence=True)
+        if response is not None:
+            response.close(); raise EvidenceError('SOURCE_CONTINUATION_OBJECT_EXISTS')
+        return {'state':'ABSENT', 'object':self.prefix+attempt_id+'.tgz'}
 
     def reconcile_source(self, expected):
         """GET-only reconciliation after an uncertain upload; never POST again."""

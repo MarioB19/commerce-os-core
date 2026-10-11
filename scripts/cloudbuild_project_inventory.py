@@ -22,18 +22,68 @@ MAX_REGIONS = 80
 MAX_BUILDS = 1000
 MAX_TOTAL_BYTES = 32 * 1024 * 1024
 MAX_SECONDS = 90
+REQUEST_INTERVAL_SECONDS = 1.25  # <=48 inventory requests/minute, leaving quota headroom.
 STATUSES = ledger.TERMINAL_STATUSES | {'PENDING', 'QUEUED', 'WORKING'}
+
+
+class InventoryRequestPacer:
+    """One worker's issuance clock, shared by every fresh inventory reader.
+
+    This is not a project-wide rate-limit claim: the protected operator also
+    serializes other Cloud Build actors and observes a 60-second quiet window.
+    No response or inventory is cached, and a failed request consumes its slot.
+    """
+    def __init__(self, *, clock=time.monotonic, sleep=time.sleep):
+        self.clock = clock; self.sleep = sleep; self.lock = threading.Lock()
+        self.last_issued = None
+
+    def open(self, opener, request, *, deadline):
+        with self.lock:
+            current = self.clock()
+            need(current < deadline, 'INVENTORY_TIME_BOUND')
+            if self.last_issued is not None:
+                remaining = self.last_issued + REQUEST_INTERVAL_SECONDS - current
+                need(current + max(remaining, 0) < deadline, 'INVENTORY_TIME_BOUND')
+                while remaining > 0:
+                    self.sleep(remaining)
+                    current = self.clock()
+                    need(current < deadline, 'INVENTORY_TIME_BOUND')
+                    remaining = self.last_issued + REQUEST_INTERVAL_SECONDS - current
+            self.last_issued = self.clock()
+            need(self.last_issued < deadline, 'INVENTORY_TIME_BOUND')
+            # Hold the issue lock through response headers: concurrent region
+            # threads cannot reorder sends or compress the intended interval.
+            return opener.open(request, timeout=min(20, deadline - self.last_issued))
+
+
+class PacedCloudBuildReads:
+    """Share the issuance clock across native readers, excluding mutations.
+
+    Create/approve retain their immediate post-CAS fence; their bounded number
+    uses the remaining 12 requests/minute. Logging, Storage and metadata quotas
+    are independent and never get mistaken for Cloud Build requests here.
+    """
+    def __init__(self, opener, pacer): self.opener = opener; self.pacer = pacer
+    def open(self, request, timeout):
+        parsed = urllib.parse.urlparse(request.full_url)
+        method = request.get_method()
+        read = method == 'GET' or (method == 'POST' and parsed.path.endswith(
+            (':accessReadToken', ':accessReadWriteToken')))
+        if parsed.scheme == 'https' and parsed.netloc == 'cloudbuild.googleapis.com' and read:
+            return self.pacer.open(self.opener, request, deadline=self.pacer.clock()+timeout)
+        return self.opener.open(request, timeout=timeout)
 
 
 class ProjectInventory:
     def __init__(self, token_provider, project_number, *, opener=None, clock=time.monotonic,
-                 utc_now=lambda: datetime.now(timezone.utc)):
+                 utc_now=lambda: datetime.now(timezone.utc), pacer=None):
         need(type(project_number) is str and re.fullmatch(r'[1-9][0-9]{0,19}', project_number),
              'INVENTORY_PROJECT_NUMBER_REQUIRED')
         self.token_provider = token_provider; self.project_number = project_number
         self.opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
         self.clock = clock; self.utc_now = utc_now; self.lock = threading.Lock()
         self.deadline = 0; self.total_bytes = 0; self.requests = 0
+        self.pacer = pacer or InventoryRequestPacer(clock=clock)
 
     def _read(self, version, region=None, token=''):
         need(version in {'v1', 'v2'} and ((version == 'v2' and region is None) or
@@ -53,7 +103,7 @@ class ProjectInventory:
             'Authorization': 'Bearer ' + credential, 'Accept-Encoding': 'identity'})
         chunks = []; size = 0
         try:
-            with self.opener.open(request, timeout=20) as response:
+            with self.pacer.open(self.opener, request, deadline=self.deadline) as response:
                 need(response.status == 200 and response.headers.get('Content-Encoding', 'identity') == 'identity',
                      'INVENTORY_RESPONSE_UNCONFIRMED')
                 while True:

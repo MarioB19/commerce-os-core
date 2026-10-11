@@ -21,6 +21,7 @@ import cloudbuild_admission as ledger
 import cloudbuild_attestation as gate
 from cloudbuild_connected_source import ConnectedSourceReader, REPOSITORY_ID, SANITIZED_CONFIG, git, MAX_TREE
 from cloudbuild_controller import GoogleBuildAPI
+from cloudbuild_project_inventory import InventoryRequestPacer, PacedCloudBuildReads
 from cloudbuild_effect_journal import DurableEffectJournal, validate_journal
 from cloudbuild_full_evidence import PROJECT, need
 from cloudbuild_gcs_store import GCSAdmissionStore, SingleRequestTransport
@@ -229,6 +230,9 @@ class PublisherWorker:
         self.github_reader = GitHubControlReader(self.source_reader)
         self.full = GoogleFullReader(self.identity.token, self.source_reader.commit)
         self.package = GooglePackageReader(self.identity.token, self.full); self.api = GoogleBuildAPI(self.identity.token)
+        self.read_pacer = InventoryRequestPacer()
+        for reader in (self.source_reader, self.full, self.package, self.api):
+            reader.opener = PacedCloudBuildReads(reader.opener, self.read_pacer)
         self.custody = ProtectedStorage(self.identity.token, **config['custody'])
         transport = SingleRequestTransport(self.identity.token)
         transport.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())

@@ -22,7 +22,7 @@ from cloudbuild_full_evidence import PROJECT, REPOSITORY, need
 from cloudbuild_gcs_store import GCSAdmissionStore, SingleRequestTransport, generation
 from cloudbuild_github_reader import GitHubControlReader, validate_event
 from cloudbuild_native_reader import GoogleFullReader, NoRedirect, decode
-from cloudbuild_project_inventory import ProjectInventory
+from cloudbuild_project_inventory import ProjectInventory, InventoryRequestPacer, PacedCloudBuildReads
 from cloudbuild_protected_storage import ProtectedStorage, object_path, validate_descriptor
 
 CONFIG = Path('/opt/trusted/runtime-config.json')
@@ -155,7 +155,7 @@ def validate_task(task, clock):
                  'RUNTIME_TASK_FIELDS_INVALID')
     need(type(task['schema_version']) is int and task['schema_version'] == 1 and task['operation'] in OPERATIONS,
          'RUNTIME_OPERATION_REJECTED')
-    phases = {'SOURCE': {'ACQUIRE', 'RECONCILE'}, 'DISPATCH_FULL': {'ADMIT', 'DISPATCH'},
+    phases = {'SOURCE': {'ACQUIRE', 'RECONCILE', 'RESUME'}, 'DISPATCH_FULL': {'ADMIT', 'DISPATCH'},
               'RECONCILE_FULL': {'RECONCILE'}, 'ATTEST': {'ADMIT', 'APPROVE', 'RECONCILE', 'RUN'},
               'PACKAGE': {'ADMIT', 'REPLICA', 'REPLICA_RECONCILE', 'DISPATCH', 'RECONCILE'},
               'PUBLISH': {'ADMIT', 'REPLICA', 'REPLICA_RECONCILE', 'PREPARE', 'DISPATCH', 'RECONCILE'}}
@@ -203,7 +203,10 @@ class RuntimeFactory:
         self.github = GitHubControlReader(self.source_reader)
         self.api = GoogleBuildAPI(self.identity)
         self.full_reader = GoogleFullReader(self.identity, self.source_reader.commit)
-        # ProjectInventory is intentionally single-use; every observation gets a fresh reader.
+        # Readers stay single-use; the issuance clock survives repeated observations.
+        self.inventory_pacer = InventoryRequestPacer()
+        for reader in (self.source_reader, self.api, self.full_reader):
+            reader.opener = PacedCloudBuildReads(reader.opener, self.inventory_pacer)
 
     @classmethod
     def from_installed_config(cls):
@@ -254,7 +257,7 @@ class RuntimeFactory:
         return generation, doc
 
     def inventory_snapshot(self):
-        return ProjectInventory(self.identity, PROJECT_NUMBER).snapshot()
+        return ProjectInventory(self.identity, PROJECT_NUMBER, pacer=self.inventory_pacer).snapshot()
 
     def _eligibility(self, work, attempt, _proposal):
         observed = self.clock(); task = self._current(work); self._ledger()
@@ -292,7 +295,8 @@ class RuntimeFactory:
     def _source(self, work):
         self.diagnostic_phase = 'SOURCE_VALIDATE'
         task = self._current(work); payload = task['payload']
-        ledger.exact(payload, 'source_approval journal', 'RUNTIME_SOURCE_PAYLOAD_INVALID')
+        ledger.exact(payload, 'source_approval journal' + (' recovery' if task['phase'] == 'RESUME' else ''),
+                     'RUNTIME_SOURCE_PAYLOAD_INVALID')
         target = payload['journal']; location(target)
         need(target['bucket'] == self.config['custody']['bucket'] and target['object'] ==
              self.config['custody']['prefix'] + '/source-journals/' + task['attempt_id'] + '.json', 'RUNTIME_JOURNAL_PATH_CHANGED')
@@ -309,11 +313,12 @@ class RuntimeFactory:
                    'source_sha': task['plan']['identity']['source_sha']}
         journal = DurableEffectJournal(self._store(target), self.ledger_store, binding, clock=self.clock)
         raw_commit = journal.commit_intent
+        post_fence = {}
         def fenced_commit(action, payload):
             result = raw_commit(action, payload)
             if result.get('effect') == 'CREATE_ONCE':
                 self.diagnostic_phase = 'SOURCE_POST_INTENT_FENCE'
-                self._fence(work)
+                post_fence['eligibility'] = self._fence(work)
             return result
         journal.commit_intent = fenced_commit
         action = 'source-acquire:' + task['attempt_id']
@@ -328,9 +333,41 @@ class RuntimeFactory:
                 'intent_sha256': upload['intent_sha256'], 'native_id': descriptor['generation'], 'descriptor': descriptor})
             return {'state': 'SOURCE_UPLOADED_AND_VERIFIED', 'descriptor': descriptor}
         self.diagnostic_phase = 'SOURCE_ACQUIRE_INTENT'
-        intent = journal.commit_intent(action, approval)
-        need(intent['effect'] == 'CREATE_ONCE', 'RUNTIME_SOURCE_ACQUISITION_ALREADY_CONSUMED')
+        resume_action = None
+        if task['phase'] == 'RESUME':
+            from cloudbuild_source_continuation import validate_current, ATTEMPT
+            need(task['attempt_id'] == ATTEMPT, 'RUNTIME_SOURCE_RESUME_ATTEMPT_CHANGED')
+            recovery_ref = payload['recovery']; validate_descriptor(recovery_ref)
+            need(recovery_ref['bucket'] == self.config['custody']['bucket'] and recovery_ref['object'] ==
+                self.config['custody']['prefix']+'/tasks/'+ATTEMPT+'/source-resume-recovery.json',
+                'RUNTIME_SOURCE_RESUME_CUSTODY_CHANGED')
+            recovery = self.custody.read_json(recovery_ref)
+            need((recovery['meter_after']['bucket'], recovery['meter_after']['object']) ==
+                (self.config['meter']['bucket'], self.config['meter']['object']), 'RUNTIME_SOURCE_RESUME_METER_CHANGED')
+            parent_generation, parent = self._ledger(); journal_generation, journal_document = journal._load()
+            meter_generation, meter_document = self.meter_store.load()
+            resume_payload = validate_current(recovery, ledger_generation=parent_generation, ledger_document=parent,
+                journal_generation=journal_generation, journal_document=journal_document,
+                meter_generation=meter_generation, meter_document=meter_document, source_approval=approval, now=self.clock())
+            self._current(work)
+            resume_action = 'source-resume:'+ATTEMPT
+            resume_intent = journal.commit_intent(resume_action, resume_payload)
+            need(resume_intent['effect'] == 'CREATE_ONCE', 'RUNTIME_SOURCE_RESUME_ALREADY_CONSUMED')
+            # The post-CAS fence can take a full inventory. Recheck the protected
+            # continuation window after it, before any Git acquisition.
+            self.sources.require_source_absent(task['attempt_id'])
+            intent = {'intent_sha256':journal_document['actions'][action]['intent_sha256']}
+        else:
+            intent = journal.commit_intent(action, approval)
+            need(intent['effect'] == 'CREATE_ONCE', 'RUNTIME_SOURCE_ACQUISITION_ALREADY_CONSUMED')
         self._current(work)
+        if resume_action is not None:
+            # No I/O follows this final time fence before prepare_archive.
+            need(self.clock() < ledger.timestamp(recovery['expires_at']), 'RUNTIME_SOURCE_RESUME_EXPIRED')
+            need(0 <= (self.clock()-ledger.timestamp(post_fence['eligibility']['observed_at'])).total_seconds() <= 120,
+                'RUNTIME_ELIGIBILITY_EXPIRED')
+            ledger.validate_approval(task['approval'], task['plan'], self.clock())
+            ledger.validate_admission(task['admission'], self.clock(), task['approval'])
         self.diagnostic_phase = 'SOURCE_ACQUIRE'
         with tempfile.TemporaryDirectory(prefix='commerce-v7-source-') as folder:
             os.chmod(folder, 0o700)
@@ -348,6 +385,10 @@ class RuntimeFactory:
                         'sha256': result['archive_sha256'], 'size': total, 'md5': base64.b64encode(digest.digest()).decode()}
             self.diagnostic_phase = 'SOURCE_ACQUISITION_RECORD'
             journal.record_result(action, {'status': 'RECONCILED', 'intent_sha256': intent['intent_sha256'], 'expected': expected})
+            if resume_action is not None:
+                journal.record_result(resume_action, {'status':'RECONCILED',
+                    'intent_sha256':resume_intent['intent_sha256'], 'acquisition_intent_sha256':intent['intent_sha256'],
+                    'expected':expected})
             self._current(work)
             self.diagnostic_phase = 'SOURCE_UPLOAD'
             return self.sources.upload_source_once(path, expected, journal, attempt_id=task['attempt_id'])

@@ -15,6 +15,7 @@ from cloudbuild_gcs_store import GCSAdmissionStore
 from cloudbuild_native_package import GooglePackageReader
 from cloudbuild_release_controller import ReleaseController, SHAPE_UUID
 from cloudbuild_source_replica import SourceReplica
+from cloudbuild_project_inventory import PacedCloudBuildReads
 
 
 def binding(task):
@@ -27,6 +28,7 @@ class ReleaseRuntime:
         self.factory = factory; self.work = work
         self.task = factory._current(work); self.payload = self.task['payload']
         self.reader = GooglePackageReader(factory.identity, factory.full_reader)
+        self.reader.opener = PacedCloudBuildReads(self.reader.opener, factory.inventory_pacer)
         self.controller = ReleaseController(factory.ledger_store, factory.api, self.reader, factory.github,
             lambda attempt, proposal: factory._eligibility(work, attempt, proposal), clock=factory.clock)
 

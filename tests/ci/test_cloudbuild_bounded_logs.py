@@ -4,7 +4,10 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
+import types
 import unittest
+from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]/'scripts'))
 import cloudbuild_bounded_logs as m
 
@@ -45,8 +48,16 @@ class BoundedLogsTests(unittest.TestCase):
             pid = Path(directory)/'child'
             child = 'import os,time;open('+repr(str(pid))+',"w").write(str(os.getpid()));time.sleep(30)'
             code = 'import subprocess,sys;subprocess.Popen([sys.executable,"-c",'+repr(child)+'])'
-            with self.assertRaises((subprocess.TimeoutExpired, RuntimeError)) as result:
-                m.execute([sys.executable,'-c',code], directory, dict(os.environ), .3, stdout=io.BytesIO(),stderr=io.BytesIO())
+            setup_deadline = time.monotonic() + 5
+            def ready_deadline():
+                # Expire the command only after the real descendant owns the
+                # pipe. Interpreter startup under emulation is not the gate
+                # this test exercises; the adjacent test checks real wall time.
+                self.assertLess(time.monotonic(), setup_deadline, 'descendant did not start')
+                return 1 if pid.exists() else 0
+            with mock.patch.object(m, 'time', types.SimpleNamespace(monotonic=ready_deadline)):
+                with self.assertRaises((subprocess.TimeoutExpired, RuntimeError)) as result:
+                    m.execute([sys.executable,'-c',code], directory, dict(os.environ), .3, stdout=io.BytesIO(),stderr=io.BytesIO())
             # Reaping orphan children is OS-owned; the process group has been
             # signalled even though its immediate parent had already exited.
             self.assertTrue(pid.exists())
