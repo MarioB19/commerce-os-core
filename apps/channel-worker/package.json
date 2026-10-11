@@ -1,0 +1,1 @@
+{"name": "@commerce/channel-worker", "version": "0.1.0", "private": true, "type": "module", "scripts": {"dev": "tsx src/index.ts", "start": "node dist/index.js"}, "dependencies": {"@commerce/db": "workspace:*", "@commerce/contracts": "workspace:*", "@commerce/jobs": "workspace:*", "@commerce/messaging": "workspace:*", "fastify": "5.12.3", "@commerce/fulfillment": "workspace:*"}}

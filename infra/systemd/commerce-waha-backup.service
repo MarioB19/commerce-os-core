@@ -1,0 +1,9 @@
+[Unit]
+Description=Commerce OS consistent WAHA cold backup (never stops gateways)
+After=docker.service
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/commerce-os/current/scripts/waha-backup-schedule.py
+User=root
+UMask=0077
+NoNewPrivileges=true

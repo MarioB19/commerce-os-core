@@ -1,0 +1,17 @@
+# Confirmaciones del laboratorio de catálogo
+
+Los snapshots de catálogo y las pruebas de número usan un adaptador cerrado para confirmar entregas sintéticas. Sólo acepta cuentas SIMULATION con proveedor simulator y una marca de laboratorio. En cada envío verifica la cuenta persistida, el efecto SENDING, su contacto, conversación y simulación: todos deben pertenecer al mismo workspace, entorno y cuenta. La simulación debe estar RUNNING o COMPLETED y corresponder al laboratorio de catálogo o NUMBER_FLOW_TEST_V1; COMPLETED admite los mensajes pendientes de un flujo que llegó a su nodo final antes de despacharlos.
+
+El adaptador no usa red. Sólo después de ACCEPTED inserta un sobre DELIVERED con `source=catalog_simulator`, `external_network=false`, `external_effects=false` y referencias del efecto/simulación. El ID determinista del proveedor y el índice único de sobres evitan ACK duplicados. Los consumidores normales procesan el sobre, actualizan el efecto y proyectan la entrega del material antes de liberar el cobro. No se escribe DELIVERED directamente en outbox.
+
+La correlación utiliza únicamente provider_message_id. No envía un hint del efecto que pudiera hacer que un ACK temprano confirmase un estado SENDING antes de persistir el resultado del envío. UNKNOWN y rechazo no producen ACK; una incertidumbre no se reintenta ni se convierte en éxito por este adaptador. Los simuladores de preparación/grupos conservan sus contratos.
+
+Cuando una selección multiproducto crea otra conversación, simulation_advance asocia el nuevo recorrido a su simulación y conserva el modo paso a paso antes de confirmar la transacción. La asociación exige la misma cuenta simulator, contacto, workspace y entorno; rechaza otra simulación ya vinculada. El dispatcher no depende de una acción posterior de la interfaz para reconocer el alcance del laboratorio.
+
+La evidencia del catálogo publicado del 27-sep corresponde al software anterior y sigue siendo parcial: aceptó 16 efectos una vez y esperó confirmación antes del paso7. La corrección local no cambia ese resultado histórico ni acredita entrega física, calidad del vendedor externo, recepción de alertas, capacidad o autorización de campaña. Es necesaria la publicación del SHA probado y un nuevo ensayo para acreditar el nuevo comportamiento instalado.
+
+## Verificación local
+
+`catalog-simulator.test.ts`: 20 pruebas aprobadas con PostgreSQL aislado, incluido el rol commerce_channel. Cubren aislamiento REAL/workspace/cuenta/contacto/simulación, marcas de laboratorio, grant sin ACK, deduplicación, ACK temprano antes de SENT, UNKNOWN sin reintento ni resolución por ACK tardío, rechazo y rollback de avance fuera de SIMULATION. La prueba de materiales despacha un grant de acceso, su mensaje y nueve PDF cifrados, atraviesa los consumidores normales y libera un nodo de cobro con recipe_step7 sólo tras confirmar los diez materiales. Termina esperando comprobante; no ejecuta una venta MCL completa ni demuestra recepción física.
+
+`number-flow-test.test.ts`: ocho pruebas aprobadas, incluida la regresión API que selecciona un producto en un laboratorio multiproducto y comprueba el vínculo de simulación antes de cualquier acción posterior de UI. Sus fixtures históricas de comprobante/cierre incluyen estados preparados directamente; ese resultado se distingue de la nueva prueba de ACK. Las pruebas de la receta MCL se reportan por separado.

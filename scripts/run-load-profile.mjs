@@ -1,0 +1,11 @@
+import pg from 'pg';
+import {spawn} from 'node:child_process';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {join} from 'node:path';
+import {applyLocalEnv,configDir} from './local-env.mjs';
+applyLocalEnv();
+const database='commerce_load_'+Date.now(),url=new URL(process.env.DATABASE_URL),admin=new pg.Client({connectionString:url.toString()});
+const storage=mkdtempSync(join(configDir,'load-'));await admin.connect();await admin.query(`CREATE DATABASE "${database}" TEMPLATE template0`);url.pathname='/'+database;
+const env={...process.env,DATABASE_URL:url.toString(),PRIVATE_STORAGE_DIR:storage,ASSET_STORAGE_DIR:storage,DB_POOL_MAX:'18',LOG_LEVEL:'silent'};
+const run=(file)=>new Promise(resolve=>{const child=spawn(process.execPath,['--import','tsx',file],{env,stdio:'inherit'});child.on('exit',code=>resolve(code??1));});
+let code;try{code=await run('packages/db/src/migrate.ts');if(code===0)code=await run('scripts/load-profile.ts');if(code===0){await admin.query(`DROP DATABASE "${database}"`);rmSync(storage,{recursive:true});}else console.log('Failed load profile retained: '+database+'; private fixtures '+storage);}finally{await admin.end();}process.exit(Number(code));

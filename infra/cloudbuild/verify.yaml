@@ -1,0 +1,48 @@
+# Install as trusted trigger configuration, not as PR-controlled inline config.
+# This runs FULL only: it never packages, deploys, or publishes a GitHub check.
+# A dedicated SA needs logs + read of this one verifier repository. Docker/host
+# network are NOT a boundary against metadata or the build SA's permissions.
+serviceAccount: projects/$PROJECT_ID/serviceAccounts/commerce-v7-verify@$PROJECT_ID.iam.gserviceaccount.com
+timeout: 5700s
+queueTtl: 600s
+options:
+  logging: CLOUD_LOGGING_ONLY
+  sourceProvenanceHash: [SHA256]
+  automapSubstitutions: false
+  # Omit machineType: default pool's documented default is e2-standard-2.
+  # Bootstrap must verify the actual machine, quota, taxes and total budget.
+substitutions:
+  _VERIFY_IMAGE: REQUIRED_IMMUTABLE_VERIFIER_IMAGE
+steps:
+  - id: Commerce-V7-FULL-verification
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    timeout: 5700s
+    env:
+      - EXPECTED_SHA=$COMMIT_SHA
+      - BUILD_IDENTITY=$BUILD_ID
+      - VERIFY_IMAGE=${_VERIFY_IMAGE}
+      - VERIFY_PROJECT=$PROJECT_ID
+    args:
+      - -euc
+      - |
+        [[ "$$EXPECTED_SHA" =~ ^[a-f0-9]{40}$$ ]] || { echo SOURCE_SHA_REQUIRED; exit 1; }
+        [[ "$$BUILD_IDENTITY" =~ ^[a-f0-9-]{36}$$ ]] || { echo CLOUD_BUILD_ID_REQUIRED; exit 1; }
+        [[ "$$VERIFY_IMAGE" =~ ^[a-z0-9-]+-docker.pkg.dev/"$$VERIFY_PROJECT"/commerce-ci/verify@sha256:[a-f0-9]{64}$$ ]] || { echo PINNED_VERIFIER_IMAGE_REQUIRED; exit 1; }
+        # Docker tests bind files from inside the verifier into sibling fixtures.
+        # Mount workspace at its daemon-side path too, so those binds resolve to
+        # the same bytes. /workspace is a Cloud Build volume, not assumed a host
+        # bind. No credential/home volume is passed to the verifier.
+        workspace_source="$$(docker inspect "$$HOSTNAME" --format '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}')"
+        [[ "$$workspace_source" =~ ^/[a-zA-Z0-9_./-]+$$ ]] || { echo WORKSPACE_DAEMON_PATH_REQUIRED; exit 1; }
+        docker pull "$$VERIFY_IMAGE"
+        exec docker run --rm --init --network=host \
+          --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
+          --mount "type=bind,source=$$workspace_source,target=$$workspace_source" \
+          --workdir "$$workspace_source" \
+          "$$VERIFY_IMAGE" \
+          --source "$$workspace_source" \
+          --expected-sha "$$EXPECTED_SHA" \
+          --build-id "$$BUILD_IDENTITY" \
+          --verifier-image "$$VERIFY_IMAGE" \
+          --timeout-seconds 5400

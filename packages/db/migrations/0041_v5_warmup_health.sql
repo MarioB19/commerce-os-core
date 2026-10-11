@@ -1,0 +1,11 @@
+CREATE TABLE warmup_simulation_runs(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),workspace_id text NOT NULL,environment text NOT NULL DEFAULT 'SIMULATION' CHECK(environment='SIMULATION'),execution_workspace text NOT NULL UNIQUE,seed integer NOT NULL,virtual_now timestamptz NOT NULL,status text NOT NULL DEFAULT 'RUNNING' CHECK(status IN('RUNNING','COMPLETED','ATTENTION','PAUSED')),version integer NOT NULL DEFAULT 1,input jsonb NOT NULL,result jsonb NOT NULL DEFAULT '{}',created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now());
+ALTER TABLE warmup_conversations ADD COLUMN simulation_run_id uuid REFERENCES warmup_simulation_runs(id);
+ALTER TABLE warmup_turns ADD COLUMN received_envelope_id uuid REFERENCES inbound_envelopes(id);
+ALTER TABLE warmup_turns ADD COLUMN received_at timestamptz;
+CREATE TABLE warmup_simulated_events(id uuid PRIMARY KEY DEFAULT gen_random_uuid(),run_id uuid NOT NULL REFERENCES warmup_simulation_runs(id),effect_id uuid NOT NULL REFERENCES outbox(id),account_id uuid NOT NULL REFERENCES records(id),event_key text NOT NULL,event jsonb NOT NULL,due_at timestamptz NOT NULL,enqueued_at timestamptz,UNIQUE(run_id,event_key));
+GRANT SELECT ON warmup_simulation_runs,warmup_simulated_events TO commerce_api,commerce_automation,commerce_channel,commerce_maintenance;
+GRANT INSERT,UPDATE ON warmup_simulation_runs TO commerce_api,commerce_automation;
+GRANT INSERT,UPDATE ON warmup_simulated_events TO commerce_channel;
+GRANT INSERT ON inbound_envelopes TO commerce_channel;
+GRANT INSERT ON warmup_observations TO commerce_api;
+GRANT UPDATE(received_envelope_id,received_at) ON warmup_turns TO commerce_automation;

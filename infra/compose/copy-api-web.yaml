@@ -1,0 +1,35 @@
+# Adopted existing resources. This overlay never creates/replaces PostgreSQL,
+# networks, volumes or consumers during an API/web publication.
+services:
+  postgres:
+    image: ${COMMERCE_POSTGRES_IMAGE:?Pinned adopted PostgreSQL image required}
+    pull_policy: never
+  api:
+    pull_policy: never
+    # Preserve the forwarding boundary of the authenticated SMTP transition.
+    sysctls:
+      net.ipv4.ip_forward: '0'
+      net.ipv6.conf.all.forwarding: '0'
+    networks:
+      core: {gw_priority: 0}
+      proxy: {aliases: [commerce-api], gw_priority: 0}
+      edge: {gw_priority: 1}
+  web:
+    pull_policy: never
+  ingress:
+    pull_policy: never
+  automation-worker:
+    pull_policy: never
+  channel-worker:
+    pull_policy: never
+networks:
+  core:
+    external: true
+    name: commerce-os_core
+  edge:
+    external: true
+    name: ${COMMERCE_API_EDGE_NETWORK:?Authenticated SMTP transition edge required}
+volumes:
+  pg:
+    external: true
+    name: commerce-os_pg

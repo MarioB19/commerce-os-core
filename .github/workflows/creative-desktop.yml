@@ -1,0 +1,13 @@
+name: Retired Commerce platform producer
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  retired:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Platform production permanently retired
+        run: |
+          echo "PLATFORM_PRODUCTION_RETIRED — use the independent Codex factory and ingest finished assets."
+          exit 1

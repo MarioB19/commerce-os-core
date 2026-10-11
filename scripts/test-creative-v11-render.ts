@@ -1,0 +1,29 @@
+/** Synthetic local renderer verification. Never a launch master, paid provider or editorial approval. */
+import {mkdir,readFile,writeFile,realpath} from 'node:fs/promises';
+import {createHash,randomUUID} from 'node:crypto';
+import {resolve} from 'node:path';
+import {creativeV11Fixture} from '../tests/fixtures/creative-v11.js';
+import {compileRecipe,inspectRecipe,sha256Value,alignmentSha256} from '../packages/creative-engine/src/recipe.js';
+import {sceneDirectionHash,packshotDirectionHash} from '../packages/creative-engine/src/presentation.js';
+import {receivePlaybook,intakeHash,valueAtPointer} from '../packages/creative-engine/src/playbook-intake.js';
+import {renderRecipe} from '../packages/creative-engine/src/render.js';
+import {runMediaProcess} from '../packages/creative-engine/src/process.js';
+import {sha256File} from '../packages/creative-engine/src/assets.js';
+const root=resolve(process.argv[2]??'.runtime/creative-v11-verification');await mkdir(root,{recursive:true});const work=await realpath(root),assets=resolve(work,'assets');await mkdir(assets,{recursive:true});
+const ffmpeg=process.env.FFMPEG_PATH??'/opt/homebrew/bin/ffmpeg',ffprobe=process.env.FFPROBE_PATH??'/opt/homebrew/bin/ffprobe',browser=process.env.CREATIVE_TEST_BROWSER??resolve(process.env.HOME!,'Library/Caches/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-mac-arm64/chrome-headless-shell');
+const media:Record<string,string>={};
+async function generate(id:string,ext:string,args:string[]){const file=resolve(assets,`${id}.${ext}`);await runMediaProcess(ffmpeg,['-hide_banner','-nostdin','-y','-threads','2','-filter_threads','2',...args,file]);media[id]=file;}
+for(let i=0;i<3;i++)await generate(`video-${i}`,'mp4',['-f','lavfi','-i','testsrc2=size=540x960:rate=30:duration=10','-vf',`hue=h=${i*65}`,'-c:v','libx264','-threads','2','-preset','ultrafast','-crf','24','-pix_fmt','yuv420p']);
+await generate('packshot-one','png',['-f','lavfi','-i','color=c=purple:s=500x420:d=0.1','-frames:v','1']);
+await generate('voice-one','wav',['-f','lavfi','-i','aevalsrc=0.35*sin(2*PI*(220+120*sin(2*PI*t*0.17))*t):s=48000:d=30','-c:a','pcm_s16le']);
+await generate('body-voice','wav',['-i',media['voice-one'],'-ss','3','-t','27','-c:a','pcm_s16le']);
+await generate('music-one','wav',['-f','lavfi','-i','sine=frequency=880:sample_rate=48000:duration=30','-c:a','pcm_s16le']);
+const r=creativeV11Fixture();for(const [i,w] of r.captions.words.entries())w.chunkId=i<5?'five-word-card':'three-word-card';r.voice.alignment_sha256=alignmentSha256(r.captions.words);for(const a of r.assets)a.sha256=await sha256File(media[a.asset_id]);r.voice.asset=r.assets.find(a=>a.asset_id==='voice-one')!;for(const s of r.scenes){s.visual_review!.asset_sha256=r.assets.find(a=>a.asset_id===s.asset_id)!.sha256;s.visual_review!.direction_sha256=sceneDirectionHash(s);}r.presentation!.packshot.review.asset_sha256=r.assets.find(a=>a.asset_id==='packshot-one')!.sha256;r.presentation!.packshot.review.direction_sha256=packshotDirectionHash(r.presentation!.packshot);
+const sourceId=randomUUID(),content=JSON.stringify(r),sourceSha=createHash('sha256').update(content).digest('hex');
+const pointers=['/content/product_name','/content/audience','/content/angle','/content/hook','/content/body','/content/cta',...['primary_text','headline','description','whatsapp_message'].map(k=>`/content/ad_copy/${k}`),...r.presentation!.overlays.map((_,i)=>`/presentation/overlays/${i}/text`)];
+const receipt=receivePlaybook({author_reference:'Synthetic renderer test fixture; no launch approval',sources:[{source_id:sourceId,sha256:sourceSha,content}],fields:pointers.map((pointer,i)=>({key:`field-${i}`,layer:'display',source_id:sourceId,source_sha256:sourceSha,pointer,value:valueAtPointer(r,pointer).value,targets:[{variant_id:'A04-h1',recipe_pointer:pointer}]}))},'fixture-reviewer');
+const hash=inspectRecipe(r).fingerprints!.recipe,plan=compileRecipe(r,{platform:`${process.platform}-${process.arch}`,assets:r.assets.map(a=>({...a,state:'READY',permission:'ALLOWED',source_reference:'Synthetic locally generated verification input'})),playbookIntake:{receipt,variant_id:'A04-h1',receipt_sha256:intakeHash(receipt)},inputApproval:{status:'APPROVED',recipe_sha256:hash,actor_id:'fixture-reviewer',authority:'DELEGATED_PILOT',source_reference:'Synthetic unit verification only, not commercial pilot',approved_at:new Date(Date.now()-1000).toISOString()},authorization:{authorization_id:'synthetic-render-verification',recipe_sha256:hash,recipe_version:1,authority:'DELEGATED_PILOT',source_reference:'Local synthetic test within authorized implementation',expires_at:new Date(Date.now()+3600000).toISOString()}});
+await writeFile(resolve(work,'recipe.json'),JSON.stringify(r,null,2));await writeFile(resolve(work,'plan.json'),JSON.stringify(plan,null,2));let previous=0;
+const options={assetRoot:assets,assetPathsById:media,workRoot:work,ffmpegPath:ffmpeg,ffprobePath:ffprobe,browserExecutable:browser,onProgress:(e:any)=>{if(e.step!=='render'||Date.now()-previous>15000){previous=Date.now();console.log(JSON.stringify(e));}}};
+const result=await renderRecipe(plan,options);const repeated=await renderRecipe(plan,options);if(!repeated.reused||repeated.files.find(f=>f.kind==='master')?.sha256!==result.files.find(f=>f.kind==='master')?.sha256)throw Error('RENDER_REUSE_INVALID');
+const evidence={scope:'SYNTHETIC_LOCAL_RENDER_ONLY',launch_master:false,paid_provider_operations:0,result,repeated:{reused:repeated.reused,master_sha256:repeated.files.find(f=>f.kind==='master')?.sha256},recipe_sha256:sha256Value(r),manifest:JSON.parse(await readFile(result.files.find(f=>f.kind==='manifest')!.path,'utf8'))};await writeFile(resolve(work,'evidence.json'),JSON.stringify(evidence,null,2));console.log(JSON.stringify({status:'VERIFIED',evidence:resolve(work,'evidence.json'),qa:result.qa.status,master_sha256:result.files.find(f=>f.kind==='master')?.sha256,reused:repeated.reused}));

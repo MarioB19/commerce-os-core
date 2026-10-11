@@ -1,0 +1,196 @@
+{
+  "version": 1,
+  "extracted_at": "2026-09-08",
+  "engine_version": "1.1.0",
+  "sources": [
+    {
+      "source": "Vibe Marketing/Scripts/ads-factory/src/contracts.ts",
+      "source_sha256": "6130b8fa6f35cf21d12c9f5dc768d6fe07639350939f00404c6d6e8f93917e70",
+      "destination": "src/legacy/contracts.ts",
+      "adaptation": "Unmodified extraction; filesystem/CLI and product outputs are excluded."
+    },
+    {
+      "source": "Vibe Marketing/Scripts/ads-factory/src/preflight.ts",
+      "source_sha256": "a609494d0e74c47d9c627c96e33805e41cb664292a1d28b3ddf61721b88986fd",
+      "destination": "src/legacy/preflight.ts",
+      "adaptation": "Unmodified extraction; filesystem/CLI and product outputs are excluded."
+    },
+    {
+      "source": "Vibe Marketing/Scripts/ads-factory/src/attraction-led-standard.ts",
+      "source_sha256": "487ade365e918fc9ca146415e066b91c2e645b4163f6db8ad045b22f16439a9b",
+      "destination": "src/legacy/attraction-led-standard.ts",
+      "adaptation": "Unmodified extraction; filesystem/CLI and product outputs are excluded."
+    },
+    {
+      "source": "Vibe Marketing/Scripts/ads-factory/src/packshot-animation.ts",
+      "source_sha256": "2c827f71c3e5f7b74eb55bb5cd86f0a4dde146640446f4f4580a3a945acc49d8",
+      "destination": "src/legacy/packshot-animation.ts",
+      "adaptation": "Unmodified extraction; filesystem/CLI and product outputs are excluded."
+    },
+    {
+      "source": "Vibe Marketing/Scripts/ads-factory/src/remotion/components/Captions.tsx",
+      "source_sha256": "39761626cb03451282a9418f1bcf7cc7aefcb3f083676338879bd7c5407c4bf9",
+      "adaptation": "Behavior reference for the portable closed recipe pipeline; no product-specific scene/copy or path resolver copied."
+    },
+    {
+      "source": "Vibe Marketing/Scripts/ads-factory/src/remotion/components/Scene.tsx",
+      "source_sha256": "4f1956512acea445ce033d8aba5efc97aa2339a3ab5b5d5195dc31334a4fad7e",
+      "adaptation": "Behavior reference for the portable closed recipe pipeline; no product-specific scene/copy or path resolver copied."
+    },
+    {
+      "source": "Vibe Marketing/Scripts/ads-factory/src/quality-lifecycle.ts",
+      "source_sha256": "541c8a0e556d837e9ffecbed0f98b6cb13d4fbdf675e69465b0645f3dbb83d89",
+      "adaptation": "Behavior reference for the portable closed recipe pipeline; no product-specific scene/copy or path resolver copied."
+    },
+    {
+      "source": "Vibe Marketing/Scripts/ads-factory/src/render-production-remotion.ts",
+      "source_sha256": "150bed0b5d23b32f6f732ede1cd045eaa7eb36fdc26d9e75c043fbe88aebb988",
+      "adaptation": "Behavior reference for the portable closed recipe pipeline; no product-specific scene/copy or path resolver copied."
+    },
+    {
+      "source": "Vibe Marketing/Scripts/ads-factory/src/caption-sync.ts",
+      "source_sha256": "0f4809902d49b33ed6f3335a1e3c84a111f2eaaf8818bc742b7ad0046e1a57a6",
+      "adaptation": "Portable reference/output waveform correlation at four anchors; explicit packaged FFmpeg; no word timing estimation."
+    }
+  ],
+  "legacy_extraction_engine_version": "1.0.0",
+  "adapted_at": "2026-09-12",
+  "adaptation": "Closed recipe1.1: approved display copy, reviewed scene intents, attraction60/UI5/packshot2, music ducking, per-frame DOM bounds, LUFS and current technical gates. Legacy1.0 retained.",
+  "current_upstream_sources": [
+    {
+      "source": "Vibe Marketing/Scripts/ads-factory/README.md",
+      "sha256": "745bb7084acd8262b14da5bd9bfd246bf1c9d726c1a390b6987ad82c7131e7e3"
+    },
+    {
+      "source": "Vibe Marketing/Scripts/ads-factory/CHANGELOG.md",
+      "sha256": "3b97911890aa98c42398e9c03f98630fb03b19bd635d65e116a9c5603c6b22cf"
+    },
+    {
+      "source": "Vibe Marketing/Scripts/ads-factory/docs/FACTORY-RUNBOOK.md",
+      "sha256": "13ac125af5e901d6daf7815f66a3275bcd0d7d119d588f3933e9144c7922722c"
+    },
+    {
+      "source": "Vibe Marketing/Scripts/ads-factory/src/attraction-led-standard.ts",
+      "sha256": "487ade365e918fc9ca146415e066b91c2e645b4163f6db8ad045b22f16439a9b"
+    },
+    {
+      "source": "Vibe Marketing/Scripts/ads-factory/src/packshot-animation.ts",
+      "sha256": "2c827f71c3e5f7b74eb55bb5cd86f0a4dde146640446f4f4580a3a945acc49d8"
+    },
+    {
+      "source": "Vibe Marketing/Scripts/ads-factory/src/display-copy.ts",
+      "sha256": "b88f690b6f1af261ec9ce339fb5bba2360182c5490f0e242672aa8d37277427c"
+    },
+    {
+      "source": "Vibe Marketing/Scripts/ads-factory/src/safe-zone-contract.ts",
+      "sha256": "8e298ab0580d3ed4c3c7341da418b2175dd348c867b8b40b3ef4bdf0792df9f3"
+    },
+    {
+      "source": "Vibe Marketing/Scripts/ads-factory/src/quality-lifecycle.ts",
+      "sha256": "541c8a0e556d837e9ffecbed0f98b6cb13d4fbdf675e69465b0645f3dbb83d89"
+    },
+    {
+      "source": "Vibe Marketing/Scripts/ads-factory/data/policies/meta-direct-response-v1.json",
+      "sha256": "3438b232e033addf01b9a72db230d4ba369f351c3ee9e6b63ff2333240abe895"
+    },
+    {
+      "source": "Vibe Marketing/Scripts/ads-factory/data/policies/global-quality-gates-v3.json",
+      "sha256": "ba9932a8eafe88c2ad90a184fb110da3b565d4039271834274b81febde57d502"
+    }
+  ],
+  "local_source_sha256": "e2d6d5e3f881bc2e4ddbd78eb74927c7e1760995c0b19676390e096c06bc5503",
+  "local_sources": [
+    {
+      "path": "packages/creative-contracts/src/index.ts",
+      "sha256": "d3f0fb86a1afa1fc16d420e1b4243493f5ee8230fbbcd7ac6d8d0569b5c7597c"
+    },
+    {
+      "path": "packages/creative-engine/src/assets.ts",
+      "sha256": "0d744554ddf8c3680dc0d2547de2f8ec3a70564a9488817aa8e17b29a5367640"
+    },
+    {
+      "path": "packages/creative-engine/src/audio-sync.ts",
+      "sha256": "d4144415f5e9831afe6588a6561d133672c402ee4764ce7777e1b95d7e2cb9b8"
+    },
+    {
+      "path": "packages/creative-engine/src/batch-manifest.ts",
+      "sha256": "d162e107968a00694960c5f1a7b84fba2c3ee1e1c9c998e31036fbca639f8f8a"
+    },
+    {
+      "path": "packages/creative-engine/src/bundle-provenance.ts",
+      "sha256": "e38b7340c25cc0bbf91dc451fcf59003b50d92e6da40d711e8e9c1ea770e5e76"
+    },
+    {
+      "path": "packages/creative-engine/src/caption-cards.ts",
+      "sha256": "6784b2568e5a8b2ad5c6b5892b3af0f66e9b8323d5299d93458d6e54f3e517ba"
+    },
+    {
+      "path": "packages/creative-engine/src/font.ts",
+      "sha256": "2cae311d6645ac56167cafed7493101a6b5d1334bff0bb2a43f9e612ba1367ba"
+    },
+    {
+      "path": "packages/creative-engine/src/index.ts",
+      "sha256": "798a92a4989a59e03a7c88f73dcbe76da95572220c7178ef0ccdf89e6fe3a190"
+    },
+    {
+      "path": "packages/creative-engine/src/legacy/attraction-led-standard.ts",
+      "sha256": "487ade365e918fc9ca146415e066b91c2e645b4163f6db8ad045b22f16439a9b"
+    },
+    {
+      "path": "packages/creative-engine/src/legacy/contracts.ts",
+      "sha256": "6130b8fa6f35cf21d12c9f5dc768d6fe07639350939f00404c6d6e8f93917e70"
+    },
+    {
+      "path": "packages/creative-engine/src/legacy/packshot-animation.ts",
+      "sha256": "2c827f71c3e5f7b74eb55bb5cd86f0a4dde146640446f4f4580a3a945acc49d8"
+    },
+    {
+      "path": "packages/creative-engine/src/legacy/preflight.ts",
+      "sha256": "a609494d0e74c47d9c627c96e33805e41cb664292a1d28b3ddf61721b88986fd"
+    },
+    {
+      "path": "packages/creative-engine/src/legacy6x3.ts",
+      "sha256": "a0c15a1c6b146246fe23a727d2a9fc4c5d8dbf710d7a2c690fd86526a99e7099"
+    },
+    {
+      "path": "packages/creative-engine/src/media-server.ts",
+      "sha256": "1bdfeffef56dc253295b47ab87ff25c371dd46ab84b28c5ef4c9f89db95161f6"
+    },
+    {
+      "path": "packages/creative-engine/src/playbook-intake.ts",
+      "sha256": "216027f5abf9b2f1e6804d2ff7dcf8fdde07115d2949e6919f733b2b13a87524"
+    },
+    {
+      "path": "packages/creative-engine/src/presentation.ts",
+      "sha256": "161429c3a931717f50189b779dc6f5000237767b969d4411f7982921ceb07fc1"
+    },
+    {
+      "path": "packages/creative-engine/src/process.ts",
+      "sha256": "fde172ff1be098bd1a6c204735c1a08f19c7678009507784dbc2ed867ebbc4d9"
+    },
+    {
+      "path": "packages/creative-engine/src/qa.ts",
+      "sha256": "7272c1fab3757133dea163dda8682057fac1e15eff1611f91c06f2e3b1949675"
+    },
+    {
+      "path": "packages/creative-engine/src/recipe.ts",
+      "sha256": "8a51ca965bed8f0fc77566f8b9aac9d9fdb2e4b6fcb374928452fbfaaffb1596"
+    },
+    {
+      "path": "packages/creative-engine/src/remotion/Composition.tsx",
+      "sha256": "69ec035f8f5e3e5849035d03d878015245147204afb493c915c0324e7284daa0"
+    },
+    {
+      "path": "packages/creative-engine/src/remotion/index.tsx",
+      "sha256": "b0c43070f6957f413a102e9f6fd60bea970d0deb9357abea97c2fd7937265d18"
+    },
+    {
+      "path": "packages/creative-engine/src/render.ts",
+      "sha256": "0c71e5e711aeaf36df007c543570aaa3fc216f0ed1875b8ce5d7fd96500b715f"
+    },
+    {
+      "path": "packages/creative-engine/src/voice-alignment.ts",
+      "sha256": "68aab8d82e6a3c973c74c38798bb18e9317ca46ff6849ea7edfc8891d273d05b"
+    }
+  ]
+}

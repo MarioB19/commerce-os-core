@@ -1,0 +1,35 @@
+{
+  "name": "mi-ciclo-listo-portal",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "node --experimental-sqlite ./node_modules/next/dist/bin/next dev",
+    "build": "node --experimental-sqlite ./node_modules/next/dist/bin/next build",
+    "start": "node --experimental-sqlite ./node_modules/next/dist/bin/next start",
+    "lint": "eslint .",
+    "data:build": "python3 scripts/build-nine-grades.py",
+    "code:hash": "node scripts/hash-code.mjs",
+    "validate": "node scripts/validate.mjs",
+    "validate:bundle": "node scripts/validate-bundle.mjs",
+    "smoke:http": "node scripts/smoke-http.mjs",
+    "verify": "npm run validate && npm run test && npm run lint && npm run build && npm run validate:bundle && node scripts/test-standalone.mjs",
+    "pdf:build": "python3 scripts/build-unified-pdfs.py",
+    "test": "node scripts/test-access-attempts.mjs"
+  },
+  "dependencies": {
+    "next": "^16.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "eslint": "^9.0.0",
+    "eslint-config-next": "^16.0.0",
+    "typescript": "^5.9.0"
+  }
+}

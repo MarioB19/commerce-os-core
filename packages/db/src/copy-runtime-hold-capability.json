@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "real_channel_api_mutations_blocked": true,
+  "real_integration_updates_blocked": true,
+  "real_channel_claims_blocked": true,
+  "real_channel_lifecycle_remote_rechecked": true,
+  "real_channel_health_reads_blocked": true,
+  "real_qr_reads_blocked": true,
+  "operational_lock": "operations:<workspace>:REAL"
+}

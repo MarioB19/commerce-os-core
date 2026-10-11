@@ -1,0 +1,1 @@
+{"name":"@commerce/api","version":"0.1.0","private":true,"type":"module","scripts":{"dev":"tsx watch src/index.ts","start":"node dist/index.js"},"dependencies":{"@commerce/db":"workspace:*","@commerce/contracts":"workspace:*","@commerce/domain":"workspace:*"}}

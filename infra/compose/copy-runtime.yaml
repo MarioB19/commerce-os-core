@@ -1,0 +1,22 @@
+# Copy-specific consumer egress. The Root operator provisions this exact external
+# network separately; this overlay never creates/replaces PostgreSQL or gateways.
+services:
+  ingress:
+    sysctls:
+      net.ipv4.ip_forward: '0'
+      net.ipv6.conf.all.forwarding: '0'
+  channel-worker:
+    sysctls:
+      net.ipv4.ip_forward: '0'
+      net.ipv6.conf.all.forwarding: '0'
+  automation-worker:
+    sysctls:
+      net.ipv4.ip_forward: '0'
+      net.ipv6.conf.all.forwarding: '0'
+    networks:
+      core: {gw_priority: 0}
+      consumer-edge: {gw_priority: 1}
+networks:
+  consumer-edge:
+    external: true
+    name: ${COMMERCE_CONSUMER_EDGE_NETWORK:?Reviewed copy consumer egress required}

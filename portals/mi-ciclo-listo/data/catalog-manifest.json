@@ -1,0 +1,146 @@
+{
+  "version": "synthetic-public-v1",
+  "totalActivities": 480,
+  "preschoolActivities": 360,
+  "primaryActivities": 120,
+  "pedagogicalReview": "NOT_APPLICABLE_SYNTHETIC",
+  "reviewer": null,
+  "grades": [
+    {
+      "id": "preescolar-1",
+      "label": "1.º de preescolar",
+      "level": "preescolar",
+      "grade": 1,
+      "activityCount": 120,
+      "sampleId": "synthetic-preescolar-1-001",
+      "pdfSlug": "paquete-completo",
+      "fields": {
+        "Lenguajes": 30,
+        "Saberes y Pensamiento Científico": 30,
+        "Ética, Naturaleza y Sociedades": 30,
+        "De lo Humano y lo Comunitario": 30
+      }
+    },
+    {
+      "id": "preescolar-2",
+      "label": "2.º de preescolar",
+      "level": "preescolar",
+      "grade": 2,
+      "activityCount": 120,
+      "sampleId": "synthetic-preescolar-2-001",
+      "pdfSlug": "paquete-completo",
+      "fields": {
+        "Lenguajes": 30,
+        "Saberes y Pensamiento Científico": 30,
+        "Ética, Naturaleza y Sociedades": 30,
+        "De lo Humano y lo Comunitario": 30
+      }
+    },
+    {
+      "id": "preescolar-3",
+      "label": "3.º de preescolar",
+      "level": "preescolar",
+      "grade": 3,
+      "activityCount": 120,
+      "sampleId": "synthetic-preescolar-3-001",
+      "pdfSlug": "paquete-completo",
+      "fields": {
+        "Lenguajes": 30,
+        "Saberes y Pensamiento Científico": 30,
+        "Ética, Naturaleza y Sociedades": 30,
+        "De lo Humano y lo Comunitario": 30
+      }
+    },
+    {
+      "id": "primaria-1",
+      "label": "1.º de primaria",
+      "level": "primaria",
+      "grade": 1,
+      "activityCount": 20,
+      "sampleId": "synthetic-primaria-1-001",
+      "pdfSlug": "paquete-completo",
+      "fields": {
+        "Lenguajes": 5,
+        "Saberes y Pensamiento Científico": 5,
+        "Ética, Naturaleza y Sociedades": 5,
+        "De lo Humano y lo Comunitario": 5
+      }
+    },
+    {
+      "id": "primaria-2",
+      "label": "2.º de primaria",
+      "level": "primaria",
+      "grade": 2,
+      "activityCount": 20,
+      "sampleId": "synthetic-primaria-2-001",
+      "pdfSlug": "paquete-completo",
+      "fields": {
+        "Lenguajes": 5,
+        "Saberes y Pensamiento Científico": 5,
+        "Ética, Naturaleza y Sociedades": 5,
+        "De lo Humano y lo Comunitario": 5
+      }
+    },
+    {
+      "id": "primaria-3",
+      "label": "3.º de primaria",
+      "level": "primaria",
+      "grade": 3,
+      "activityCount": 20,
+      "sampleId": "synthetic-primaria-3-001",
+      "pdfSlug": "paquete-completo",
+      "fields": {
+        "Lenguajes": 5,
+        "Saberes y Pensamiento Científico": 5,
+        "Ética, Naturaleza y Sociedades": 5,
+        "De lo Humano y lo Comunitario": 5
+      }
+    },
+    {
+      "id": "primaria-4",
+      "label": "4.º de primaria",
+      "level": "primaria",
+      "grade": 4,
+      "activityCount": 20,
+      "sampleId": "synthetic-primaria-4-001",
+      "pdfSlug": "paquete-completo",
+      "fields": {
+        "Lenguajes": 5,
+        "Saberes y Pensamiento Científico": 5,
+        "Ética, Naturaleza y Sociedades": 5,
+        "De lo Humano y lo Comunitario": 5
+      }
+    },
+    {
+      "id": "primaria-5",
+      "label": "5.º de primaria",
+      "level": "primaria",
+      "grade": 5,
+      "activityCount": 20,
+      "sampleId": "synthetic-primaria-5-001",
+      "pdfSlug": "paquete-completo",
+      "fields": {
+        "Lenguajes": 5,
+        "Saberes y Pensamiento Científico": 5,
+        "Ética, Naturaleza y Sociedades": 5,
+        "De lo Humano y lo Comunitario": 5
+      }
+    },
+    {
+      "id": "primaria-6",
+      "label": "6.º de primaria",
+      "level": "primaria",
+      "grade": 6,
+      "activityCount": 20,
+      "sampleId": "synthetic-primaria-6-001",
+      "pdfSlug": "paquete-completo",
+      "fields": {
+        "Lenguajes": 5,
+        "Saberes y Pensamiento Científico": 5,
+        "Ética, Naturaleza y Sociedades": 5,
+        "De lo Humano y lo Comunitario": 5
+      }
+    }
+  ],
+  "catalogSha256": "afea833d5604f544669a216e33277e9b75634369ffc145218bf4f8621070a5e0"
+}

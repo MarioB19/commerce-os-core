@@ -1,0 +1,4 @@
+import {test,expect} from '@playwright/test';
+import {closureFixture} from './support/closure-fixture.js';
+// Retired platform configuration: opening an old link must not produce or verify providers.
+test('old render settings redirects to integrations without license or team controls',async({page})=>{const requests=await closureFixture(page);await page.route('**/v1/creative/settings**',route=>route.fulfill({json:{data:{providers:[],budgets:[],permissions:['studio:admin'],storage:{},blockers:[],production_available:false}}}));await page.goto('/settings/creative');await expect(page.getByRole('heading',{name:'Integraciones',exact:true})).toBeVisible();await expect(page.getByRole('heading',{name:/Remotion|Conectar equipo/})).toHaveCount(0);await expect(page.getByLabel('Modo de licencia')).toHaveCount(0);expect(requests.filter(r=>r.method!=='GET')).toEqual([]);});

@@ -1,0 +1,326 @@
+{
+  "version": "SYNTHETIC_PUBLIC_TEST_V1",
+  "messages": [
+    {
+      "id": "WA00_ENTRADA",
+      "state": "needs_level_or_grade",
+      "text": "Escenario sintético de mensaje 1: validar la transición sin enviar mensajes reales.",
+      "sha256": "6f661e056f78059f12247398ed0d9857220eac7daeb050aaeb58626d53fdfaa9",
+      "externalUseApproved": false,
+      "waitsForResponse": true
+    },
+    {
+      "id": "WA01_ACLARAR_PRIMERO",
+      "state": "grade_without_level",
+      "text": "Escenario sintético de mensaje 2: validar la transición sin enviar mensajes reales.",
+      "sha256": "291c9e660b31c2b504eedabedda8d15b12929bc344aac2ae83dae4a481ca1d5c",
+      "externalUseApproved": false,
+      "waitsForResponse": true
+    },
+    {
+      "id": "WA02_NIVEL_CONOCIDO",
+      "state": "known_level_missing_grade",
+      "text": "Escenario sintético de mensaje 3: validar la transición sin enviar mensajes reales.",
+      "sha256": "6f18a49f618d664e0d5bb0f0c230efeab8f459c97e50160af0f6af56268a25b7",
+      "externalUseApproved": false,
+      "waitsForResponse": true
+    },
+    {
+      "id": "WA03_MULTIGRADO",
+      "state": "multigrade_or_director",
+      "text": "Escenario sintético de mensaje 4: validar la transición sin enviar mensajes reales.",
+      "sha256": "edbb6e1372a05539362812003665c1886259a1e1bf723eee0b0ac0bc7fa57aec",
+      "externalUseApproved": false,
+      "waitsForResponse": true
+    },
+    {
+      "id": "WA04_SIN_GRUPO",
+      "state": "undecided_group",
+      "text": "Escenario sintético de mensaje 5: validar la transición sin enviar mensajes reales.",
+      "sha256": "544d2531035bf6d5e46d03dddb9a07b2599a33c2d2bcdf39e3e22732b3afb1b8",
+      "externalUseApproved": false,
+      "waitsForResponse": true
+    },
+    {
+      "id": "WA05_PITCH_CAPTION",
+      "state": "after_profile_response",
+      "text": "Escenario sintético de mensaje 6: validar la transición sin enviar mensajes reales.",
+      "sha256": "2475b69f187314717f2da1d4a075957cc3f287641477b010dd1ee4ae11016b85",
+      "externalUseApproved": false,
+      "audioId": "AUDIO_1_PITCH",
+      "followedBy": "WA06_MOCKUP",
+      "waitsForResponse": true
+    },
+    {
+      "id": "WA06_MOCKUP",
+      "state": "pitch_channel_delivery_confirmed",
+      "text": "Escenario sintético de mensaje 7: validar la transición sin enviar mensajes reales.",
+      "sha256": "f1091f31ca2e9fea958bcc5126484ce2be9b9b103d405f1d4ac540a8f295021c",
+      "externalUseApproved": false,
+      "mediaRole": "wa_offer_mockup",
+      "delaySeconds": 2.5,
+      "waitsForResponse": true
+    },
+    {
+      "id": "WA07_OFERTA",
+      "state": "after_pitch_response",
+      "text": "Oferta sintética de prueba. Los importes y permisos proceden del contrato estructurado.",
+      "sha256": "fdca66e6c7731efa9dc25eb90ca085df453104adea91302ac0f063c991cb1a51",
+      "externalUseApproved": false,
+      "followedByAudio": "AUDIO_2_ACUERDO"
+    },
+    {
+      "id": "WA08_ACUERDO",
+      "state": "agreement_prompt",
+      "text": "Acuerdo sintético de prueba. Para aceptar responde SÍ, LO QUIERO.",
+      "sha256": "3b6bedf53b57ef99e84adb9990eadb62c4419e0391c1ab8ff0f18995668523df",
+      "externalUseApproved": false,
+      "waitsForResponse": true
+    },
+    {
+      "id": "WA09_ACLARAR_ACUERDO",
+      "state": "ambiguous_commitment",
+      "text": "Escenario sintético de mensaje 10: validar la transición sin enviar mensajes reales.",
+      "sha256": "796e6dffc54ae04565be11bb0a8147e33f6d6b01c1e257a0ce45c421a4999648",
+      "externalUseApproved": false,
+      "waitsForResponse": true
+    },
+    {
+      "id": "WA10_CORE",
+      "state": "valid_commitment",
+      "text": "Escenario sintético de mensaje 11: validar la transición sin enviar mensajes reales.",
+      "sha256": "b0d1709892d91cb283a33be35692b8ff6e03376a8c14981dbdd78518b6399cd4",
+      "externalUseApproved": false,
+      "secureVariables": [
+        "PORTAL_URL",
+        "CODIGO_CORE"
+      ],
+      "singleMessage": true,
+      "attachments": []
+    },
+    {
+      "id": "WA11_COBRO",
+      "state": "core_delivered_plus_1800_seconds",
+      "text": "Escenario sintético de mensaje 12: validar la transición sin enviar mensajes reales. {{DATOS_BANCARIOS}}",
+      "sha256": "20214b68ee26b8997387bb6a5fbcc9a8294d770a2f11de778a9cee7ee2e2fbc2",
+      "externalUseApproved": false,
+      "precededByAudio": "AUDIO_3_COBRO",
+      "singleMessage": true,
+      "secureVariables": [
+        "CLABE_ARCUS",
+        "TARJETA_SPIN",
+        "TITULAR"
+      ]
+    },
+    {
+      "id": "WA12_RECIBO_PENDIENTE",
+      "state": "receipt_received",
+      "text": "Escenario sintético de mensaje 13: validar la transición sin enviar mensajes reales.",
+      "sha256": "e78105dccb7c1f63b927f3a146c01262c32caff2d23118d5cd845e8b48026e55",
+      "externalUseApproved": false,
+      "cancelFollowups": true
+    },
+    {
+      "id": "WA13_IMAGEN_ILEGIBLE",
+      "state": "human_requests_clearer_amount",
+      "text": "Escenario sintético de mensaje 14: validar la transición sin enviar mensajes reales.",
+      "sha256": "79caf4392d5504eed2869733c38c80e23c9b04aeb5976a17696cade503d87642",
+      "externalUseApproved": false,
+      "waitsForResponse": true
+    },
+    {
+      "id": "WA14_DESTINO_DIFERENTE",
+      "state": "human_confirmed_destination_mismatch",
+      "text": "Escenario sintético de mensaje 15: validar la transición sin enviar mensajes reales.",
+      "sha256": "46d9b5935bf82b7aae0cf81094216f2516298abe28a9b1dfa1b4dcfd6d7f1510",
+      "externalUseApproved": false,
+      "requiresHumanDecision": true
+    },
+    {
+      "id": "WA15_IMPORTE_EXCEPCION",
+      "state": "positive_nonstandard_receipt_under_human_review",
+      "text": "Escenario sintético de mensaje 16: validar la transición sin enviar mensajes reales.",
+      "sha256": "34f5aff2852bc79ab452358213436304c6db8eeb10b24128dfe709b50c49d278",
+      "externalUseApproved": false,
+      "requiresHumanDecision": true
+    },
+    {
+      "id": "WA16_CALENDARIO",
+      "state": "positive_receipt_approved_calendar_not_yet_delivered",
+      "text": "Escenario sintético de mensaje 17: validar la transición sin enviar mensajes reales.",
+      "sha256": "d67e9fd21c4f69dec0ed9ee7d53a2fbc3dd34db211076fb91d71878a1a309994",
+      "externalUseApproved": false,
+      "mediaRole": "calendar_pdf",
+      "noCode": true
+    },
+    {
+      "id": "WA17_KIT",
+      "state": "approved_total_gte_10700_kit_not_yet_delivered",
+      "text": "Escenario sintético de mensaje 18: validar la transición sin enviar mensajes reales.",
+      "sha256": "d2ce8c91b94ce260ef6533956298fd8dc3071c43c398836e6f02c43caa66e230",
+      "externalUseApproved": false,
+      "secureVariables": [
+        "PORTAL_URL",
+        "CODIGO_KIT"
+      ]
+    },
+    {
+      "id": "WA18_MADRINA_PENDIENTE",
+      "state": "approved_total_gt_10700_sponsorship_created",
+      "text": "Escenario sintético de mensaje 19: validar la transición sin enviar mensajes reales.",
+      "sha256": "1987d7a4463c29ade1945efe5c4db3a6b7e3935cec4fa855bed12317788d49e0",
+      "externalUseApproved": false,
+      "noBeneficiaryIdentity": true
+    },
+    {
+      "id": "WA19_CONSENTIMIENTO_BENEFICIARIA",
+      "state": "authorized_own_test_beneficiary_only",
+      "text": "Escenario sintético de mensaje 20: validar la transición sin enviar mensajes reales.",
+      "sha256": "30255ff705f313bba78d732afd1404c4702b8b0e6dd2c8c695f7c24f4ff72233",
+      "externalUseApproved": false,
+      "waitsForResponse": true,
+      "requiresPriorRecipientAuthorization": true
+    },
+    {
+      "id": "WA20_ALIAS_CONSENTIDO",
+      "state": "beneficiary_has_opted_in",
+      "text": "Escenario sintético de mensaje 21: validar la transición sin enviar mensajes reales.",
+      "sha256": "2c43c9b0706f50c55641bc014199b87dfcae5c180e8136fbc0156444ce116b0b",
+      "externalUseApproved": false,
+      "waitsForResponse": true,
+      "consentSeparateFromDelivery": true
+    },
+    {
+      "id": "WA21_CORE_PATROCINADO",
+      "state": "assigned_consented_beneficiary",
+      "text": "Escenario sintético de mensaje 22: validar la transición sin enviar mensajes reales.",
+      "sha256": "e959dc97bf86dd740b8e9d7be4a18b57322365777267ef439eb715b7fbf45bba",
+      "externalUseApproved": false,
+      "secureVariables": [
+        "PORTAL_URL",
+        "CODIGO_CORE"
+      ],
+      "beneficiaryHasNoDebt": true,
+      "waitsForResponse": true
+    },
+    {
+      "id": "WA22_AVISO_MADRINA",
+      "state": "beneficiary_opening_confirmed",
+      "text": "Escenario sintético de mensaje 23: validar la transición sin enviar mensajes reales.",
+      "sha256": "d8854a27ded0bcda69f12019d89cb546dc7d6c162c06c199ee13a4f0042e5a32",
+      "externalUseApproved": false,
+      "requiresObservedOpening": true
+    },
+    {
+      "id": "WA23_AVISO_MADRINA_ALIAS",
+      "state": "beneficiary_opening_confirmed_with_alias_sharing_consent",
+      "text": "Escenario sintético de mensaje 24: validar la transición sin enviar mensajes reales.",
+      "sha256": "d37d8a24e1ef60479b8856ff858c8d8fe72bc4035af64006af9937316b69f8f6",
+      "externalUseApproved": false,
+      "requiresObservedOpening": true,
+      "requiresAliasConsent": true
+    },
+    {
+      "id": "WA24_SEGUIMIENTO_1",
+      "state": "eligible_plus_2h_after_collection",
+      "text": "Escenario sintético de mensaje 25: validar la transición sin enviar mensajes reales. {{DATOS_BANCARIOS}}",
+      "sha256": "8d4b56685ef7115e92f7f96991420d415e18282b5249fe97fd16e391e522618e",
+      "externalUseApproved": false,
+      "precededByAudio": "AUDIO_4_RMKT_2H",
+      "maximumTouch": 1
+    },
+    {
+      "id": "WA25_SEGUIMIENTO_2",
+      "state": "eligible_plus_23h_after_collection",
+      "text": "Escenario sintético de mensaje 26: validar la transición sin enviar mensajes reales. {{DATOS_BANCARIOS}}",
+      "sha256": "e098b7014654853da9ff4a62b743620cef8cad3fe79b45a9cad52a9b1b32952c",
+      "externalUseApproved": false,
+      "precededByAudio": "AUDIO_5_RMKT_23H",
+      "maximumTouch": 2,
+      "closesFollowupCycle": true
+    },
+    {
+      "id": "WA26_SOPORTE_ACCESO",
+      "state": "access_failure",
+      "text": "Escenario sintético de mensaje 27: validar la transición sin enviar mensajes reales.",
+      "sha256": "5b0398fb13d48015732c80630156bd6eed69ece0c226ebe4ea6691c9af63b00a",
+      "externalUseApproved": false,
+      "pauseCollection": true
+    },
+    {
+      "id": "WA27_SOPORTE_AUDIO",
+      "state": "audio_failure",
+      "text": "Escenario sintético de mensaje 28: validar la transición sin enviar mensajes reales.",
+      "sha256": "8b47e85b2d8b1c40755552cd8af14a57da516b15bf5181307b42a14b95a37f7e",
+      "externalUseApproved": false,
+      "waitsForResponse": true
+    },
+    {
+      "id": "WA28_CAMBIO_GRADO",
+      "state": "grade_correction",
+      "text": "Escenario sintético de mensaje 29: validar la transición sin enviar mensajes reales.",
+      "sha256": "d7c3ca0853561d01ce36bfcc5956e820a982cff65b2edf61939855b55cdb6629",
+      "externalUseApproved": false,
+      "persistsProfile": true
+    },
+    {
+      "id": "WA29_HUMANO",
+      "state": "human_requested",
+      "text": "Escenario sintético de mensaje 30: validar la transición sin enviar mensajes reales.",
+      "sha256": "a78e6133709f0b1e246f81777f41253aac0d3e704886d9d0152e292146592bd3",
+      "externalUseApproved": false,
+      "handoff": true,
+      "suppressesAutomatedSeller": true
+    },
+    {
+      "id": "WA30_OPT_OUT",
+      "state": "negative_or_optout",
+      "text": "Escenario sintético de mensaje 31: validar la transición sin enviar mensajes reales.",
+      "sha256": "5be527b2c3ccc11b976e29084bfede19f46a36502c337ceba8a5aab14ccc2d27",
+      "externalUseApproved": false,
+      "cancelFollowups": true
+    },
+    {
+      "id": "WA31_FECHA",
+      "state": "requested_payment_date",
+      "text": "Escenario sintético de mensaje 32: validar la transición sin enviar mensajes reales.",
+      "sha256": "f1eddb545fdfd3aebcce2ec81e17d36c80e46127461a88d7e4f53b73565ea35e",
+      "externalUseApproved": false,
+      "cancelFollowups": true,
+      "noAutomaticThirdTouch": true
+    },
+    {
+      "id": "WA32_REEMBOLSO",
+      "state": "refund_requested",
+      "text": "Escenario sintético de mensaje 33: validar la transición sin enviar mensajes reales.",
+      "sha256": "725ffcfc32a683c1f20617319f308f7171a5de8a9cad9979e68ed34cdc826917",
+      "externalUseApproved": false,
+      "handoff": true,
+      "noInventedRefundPromise": true
+    },
+    {
+      "id": "WA33_QUIEN_ERES",
+      "state": "identity_question",
+      "text": "Escenario sintético de mensaje 34: validar la transición sin enviar mensajes reales.",
+      "sha256": "0cd5a216c49b4b9ac18ce86de91cb6090e915475e8c135f84f084fc4fb75dc69",
+      "externalUseApproved": false
+    }
+  ],
+  "rules": {
+    "classification": "Regla sintética: sólo el contrato estructurado determina la transición y los permisos.",
+    "waits": [
+      "Espera sintética 1: requiere respuesta explícita.",
+      "Espera sintética 2: requiere respuesta explícita.",
+      "Espera sintética 3: requiere respuesta explícita."
+    ],
+    "commitment": "Regla sintética: sólo el contrato estructurado determina la transición y los permisos.",
+    "silence": "Regla sintética: sólo el contrato estructurado determina la transición y los permisos.",
+    "collection": "Regla sintética: sólo el contrato estructurado determina la transición y los permisos.",
+    "followup": "Regla sintética: sólo el contrato estructurado determina la transición y los permisos.",
+    "receipt": "Regla sintética: sólo el contrato estructurado determina la transición y los permisos.",
+    "tier": "Regla sintética: sólo el contrato estructurado determina la transición y los permisos.",
+    "sponsorship": "Regla sintética: sólo el contrato estructurado determina la transición y los permisos.",
+    "seller": "Regla sintética: sólo el contrato estructurado determina la transición y los permisos.",
+    "test": "Regla sintética: sólo el contrato estructurado determina la transición y los permisos."
+  }
+}

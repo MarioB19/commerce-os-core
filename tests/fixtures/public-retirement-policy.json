@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "content_profile": "synthetic-public-v1",
+  "backup_observed": false,
+  "retired_pages": [
+    "studio.tsx",
+    "studio-recipe.tsx",
+    "studio-voice.tsx",
+    "creative-settings.tsx"
+  ],
+  "retired_workflows": [
+    "creative-desktop.yml",
+    "creative-worker-operation.yml"
+  ]
+}

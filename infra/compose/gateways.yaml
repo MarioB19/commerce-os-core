@@ -1,0 +1,155 @@
+# Prepared only. No gateway runs without an explicitly selected profile.
+# Layer after production.yaml. Each slot has a private network, key and session volume.
+x-gateway: &gateway
+  restart: 'no'
+  init: true
+  cap_drop: [ALL]
+  security_opt: ['no-new-privileges:true']
+  pids_limit: 100
+  mem_limit: 256m
+  cpus: 0.3
+  stop_grace_period: 30s
+  logging: {driver: json-file, options: {max-size: 5m, max-file: '2'}}
+services:
+  waha-01:
+    <<: *gateway
+    image: devlikeapro/waha:gows-2026.8.2@${WAHA_GOWS_DIGEST:?verified GOWS sha256 digest required}
+    profiles: [waha-gows, waha-01]
+    env_file: ${COMMERCE_GATEWAY_CONFIG_DIR:?private gateway configuration directory}/waha-01.env
+    environment: {WHATSAPP_DEFAULT_ENGINE: GOWS, WAHA_WORKER_ID: waha-01, WAHA_PRINT_QR: 'false', WAHA_DASHBOARD_ENABLED: 'false', WHATSAPP_SWAGGER_ENABLED: 'false'}
+    volumes: ['waha-01-sessions:/app/.sessions']
+    networks: [gateway-01]
+  waha-02:
+    <<: *gateway
+    image: devlikeapro/waha:gows-2026.8.2@${WAHA_GOWS_DIGEST:?verified GOWS sha256 digest required}
+    profiles: [waha-gows, waha-02]
+    env_file: ${COMMERCE_GATEWAY_CONFIG_DIR:?private gateway configuration directory}/waha-02.env
+    environment: {WHATSAPP_DEFAULT_ENGINE: GOWS, WAHA_WORKER_ID: waha-02, WAHA_PRINT_QR: 'false', WAHA_DASHBOARD_ENABLED: 'false', WHATSAPP_SWAGGER_ENABLED: 'false'}
+    volumes: ['waha-02-sessions:/app/.sessions']
+    networks: [gateway-02]
+  waha-03:
+    <<: *gateway
+    image: devlikeapro/waha:gows-2026.8.2@${WAHA_GOWS_DIGEST:?verified GOWS sha256 digest required}
+    profiles: [waha-gows, waha-03]
+    env_file: ${COMMERCE_GATEWAY_CONFIG_DIR:?private gateway configuration directory}/waha-03.env
+    environment: {WHATSAPP_DEFAULT_ENGINE: GOWS, WAHA_WORKER_ID: waha-03, WAHA_PRINT_QR: 'false', WAHA_DASHBOARD_ENABLED: 'false', WHATSAPP_SWAGGER_ENABLED: 'false'}
+    volumes: ['waha-03-sessions:/app/.sessions']
+    networks: [gateway-03]
+  waha-04:
+    <<: *gateway
+    image: devlikeapro/waha:gows-2026.8.2@${WAHA_GOWS_DIGEST:?verified GOWS sha256 digest required}
+    profiles: [waha-gows, waha-04]
+    env_file: ${COMMERCE_GATEWAY_CONFIG_DIR:?private gateway configuration directory}/waha-04.env
+    environment: {WHATSAPP_DEFAULT_ENGINE: GOWS, WAHA_WORKER_ID: waha-04, WAHA_PRINT_QR: 'false', WAHA_DASHBOARD_ENABLED: 'false', WHATSAPP_SWAGGER_ENABLED: 'false'}
+    volumes: ['waha-04-sessions:/app/.sessions']
+    networks: [gateway-04]
+  waha-05:
+    <<: *gateway
+    image: devlikeapro/waha:gows-2026.8.2@${WAHA_GOWS_DIGEST:?verified GOWS sha256 digest required}
+    profiles: [waha-gows, waha-05]
+    env_file: ${COMMERCE_GATEWAY_CONFIG_DIR:?private gateway configuration directory}/waha-05.env
+    environment: {WHATSAPP_DEFAULT_ENGINE: GOWS, WAHA_WORKER_ID: waha-05, WAHA_PRINT_QR: 'false', WAHA_DASHBOARD_ENABLED: 'false', WHATSAPP_SWAGGER_ENABLED: 'false'}
+    volumes: ['waha-05-sessions:/app/.sessions']
+    networks: [gateway-05]
+  waha-06:
+    <<: *gateway
+    image: devlikeapro/waha:gows-2026.8.2@${WAHA_GOWS_DIGEST:?verified GOWS sha256 digest required}
+    profiles: [waha-gows, waha-06]
+    env_file: ${COMMERCE_GATEWAY_CONFIG_DIR:?private gateway configuration directory}/waha-06.env
+    environment: {WHATSAPP_DEFAULT_ENGINE: GOWS, WAHA_WORKER_ID: waha-06, WAHA_PRINT_QR: 'false', WAHA_DASHBOARD_ENABLED: 'false', WHATSAPP_SWAGGER_ENABLED: 'false'}
+    volumes: ['waha-06-sessions:/app/.sessions']
+    networks: [gateway-06]
+  waha-07:
+    <<: *gateway
+    image: devlikeapro/waha:gows-2026.8.2@${WAHA_GOWS_DIGEST:?verified GOWS sha256 digest required}
+    profiles: [waha-gows, waha-07]
+    env_file: ${COMMERCE_GATEWAY_CONFIG_DIR:?private gateway configuration directory}/waha-07.env
+    environment: {WHATSAPP_DEFAULT_ENGINE: GOWS, WAHA_WORKER_ID: waha-07, WAHA_PRINT_QR: 'false', WAHA_DASHBOARD_ENABLED: 'false', WHATSAPP_SWAGGER_ENABLED: 'false'}
+    volumes: ['waha-07-sessions:/app/.sessions']
+    networks: [gateway-07]
+  waha-08:
+    <<: *gateway
+    image: devlikeapro/waha:gows-2026.8.2@${WAHA_GOWS_DIGEST:?verified GOWS sha256 digest required}
+    profiles: [waha-gows, waha-08]
+    env_file: ${COMMERCE_GATEWAY_CONFIG_DIR:?private gateway configuration directory}/waha-08.env
+    environment: {WHATSAPP_DEFAULT_ENGINE: GOWS, WAHA_WORKER_ID: waha-08, WAHA_PRINT_QR: 'false', WAHA_DASHBOARD_ENABLED: 'false', WHATSAPP_SWAGGER_ENABLED: 'false'}
+    volumes: ['waha-08-sessions:/app/.sessions']
+    networks: [gateway-08]
+  waha-09:
+    <<: *gateway
+    image: devlikeapro/waha:gows-2026.8.2@${WAHA_GOWS_DIGEST:?verified GOWS sha256 digest required}
+    profiles: [waha-gows, waha-09]
+    env_file: ${COMMERCE_GATEWAY_CONFIG_DIR:?private gateway configuration directory}/waha-09.env
+    environment: {WHATSAPP_DEFAULT_ENGINE: GOWS, WAHA_WORKER_ID: waha-09, WAHA_PRINT_QR: 'false', WAHA_DASHBOARD_ENABLED: 'false', WHATSAPP_SWAGGER_ENABLED: 'false'}
+    volumes: ['waha-09-sessions:/app/.sessions']
+    networks: [gateway-09]
+  waha-10:
+    <<: *gateway
+    image: devlikeapro/waha:gows-2026.8.2@${WAHA_GOWS_DIGEST:?verified GOWS sha256 digest required}
+    profiles: [waha-gows, waha-10]
+    env_file: ${COMMERCE_GATEWAY_CONFIG_DIR:?private gateway configuration directory}/waha-10.env
+    environment: {WHATSAPP_DEFAULT_ENGINE: GOWS, WAHA_WORKER_ID: waha-10, WAHA_PRINT_QR: 'false', WAHA_DASHBOARD_ENABLED: 'false', WHATSAPP_SWAGGER_ENABLED: 'false'}
+    volumes: ['waha-10-sessions:/app/.sessions']
+    networks: [gateway-10]
+  waha-noweb-comparator:
+    <<: *gateway
+    image: devlikeapro/waha:noweb-2026.8.2@${WAHA_NOWEB_DIGEST:?verified NOWEB sha256 digest required}
+    profiles: [waha-noweb-comparator]
+    env_file: ${COMMERCE_GATEWAY_CONFIG_DIR}/waha-noweb-comparator.env
+    environment: {WHATSAPP_DEFAULT_ENGINE: NOWEB, WAHA_WORKER_ID: waha-noweb-comparator, WAHA_PRINT_QR: 'false', WAHA_DASHBOARD_ENABLED: 'false', WHATSAPP_SWAGGER_ENABLED: 'false'}
+    mem_limit: 512m
+    volumes: ['waha-noweb-comparator-sessions:/app/.sessions']
+    networks: [gateway-noweb-comparator]
+  channel-worker:
+    env_file: ${COMMERCE_GATEWAY_CONFIG_DIR}/channel-gateways.env
+    networks:
+      core: {}
+      gateway-01: {}
+      gateway-02: {}
+      gateway-03: {}
+      gateway-04: {}
+      gateway-05: {}
+      gateway-06: {}
+      gateway-07: {}
+      gateway-08: {}
+      gateway-09: {}
+      gateway-10: {}
+      gateway-noweb-comparator: {}
+  ingress:
+    env_file: ${COMMERCE_GATEWAY_CONFIG_DIR}/ingress-gateways.env
+    networks:
+      gateway-01: {}
+      gateway-02: {}
+      gateway-03: {}
+      gateway-04: {}
+      gateway-05: {}
+      gateway-06: {}
+      gateway-07: {}
+      gateway-08: {}
+      gateway-09: {}
+      gateway-10: {}
+      gateway-noweb-comparator: {}
+networks:
+  gateway-01: {}
+  gateway-02: {}
+  gateway-03: {}
+  gateway-04: {}
+  gateway-05: {}
+  gateway-06: {}
+  gateway-07: {}
+  gateway-08: {}
+  gateway-09: {}
+  gateway-10: {}
+  gateway-noweb-comparator: {}
+volumes:
+  waha-01-sessions: {}
+  waha-02-sessions: {}
+  waha-03-sessions: {}
+  waha-04-sessions: {}
+  waha-05-sessions: {}
+  waha-06-sessions: {}
+  waha-07-sessions: {}
+  waha-08-sessions: {}
+  waha-09-sessions: {}
+  waha-10-sessions: {}
+  waha-noweb-comparator-sessions: {}

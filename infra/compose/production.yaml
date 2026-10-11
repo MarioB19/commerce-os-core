@@ -1,0 +1,99 @@
+name: commerce-os
+x-runtime: &runtime
+  image: ${COMMERCE_IMAGE:?set immutable image digest}
+  restart: unless-stopped
+  init: true
+  read_only: true
+  tmpfs: ['/tmp:size=64m,noexec,nosuid']
+  cap_drop: [ALL]
+  security_opt: ['no-new-privileges:true']
+  pids_limit: 100
+  stop_grace_period: 40s
+  networks: [core]
+  logging:
+    driver: json-file
+    options: {max-size: 10m, max-file: '3'}
+services:
+  postgres:
+    image: postgres:17.11-bookworm
+    restart: unless-stopped
+    env_file: ${COMMERCE_SECRETS_DIR:?private config directory}/postgres.env
+    networks: [core]
+    volumes: ['pg:/var/lib/postgresql/data']
+    mem_limit: 2g
+    cpus: 1.6
+    shm_size: 512m
+    command: ['postgres','-c','max_connections=80','-c','shared_buffers=512MB']
+    healthcheck:
+      test: ['CMD-SHELL','pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
+  api:
+    <<: *runtime
+    command: ['node','dist/apps/api/index.js']
+    env_file: ${COMMERCE_SECRETS_DIR}/api.env
+    environment: {PORT: '3001', DB_POOL_MAX: '5', COMMERCE_RELEASE_SHA: '${COMMERCE_RELEASE_SHA:-}', COMMERCE_RELEASE_ID: '${COMMERCE_RELEASE_ID:-}'}
+    mem_limit: 512m
+    cpus: 0.6
+    networks:
+      core: {}
+      proxy: {aliases: [commerce-api]}
+    volumes: ['${COMMERCE_PRIVATE_ASSETS_DIR:?private asset mount}:/data/private']
+    depends_on: {postgres: {condition: service_healthy}}
+    healthcheck: {test: ['CMD','node','-e',"require('node:http').get('http://127.0.0.1:3001/readyz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"], interval: 15s, timeout: 3s, retries: 3}
+  ingress:
+    <<: *runtime
+    command: ['node','dist/apps/ingress/index.js']
+    env_file: ${COMMERCE_SECRETS_DIR}/ingress.env
+    environment: {PORT: '3002', DB_POOL_MAX: '3'}
+    mem_limit: 384m
+    cpus: 0.4
+    networks:
+      core: {}
+      proxy: {aliases: [commerce-ingress]}
+    depends_on: {postgres: {condition: service_healthy}}
+    healthcheck: {test: ['CMD','node','-e',"require('node:http').get('http://127.0.0.1:3002/readyz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"], interval: 10s, timeout: 3s, retries: 6}
+  automation-worker:
+    <<: *runtime
+    command: ['node','dist/apps/automation-worker/index.js']
+    env_file: ${COMMERCE_SECRETS_DIR}/automation.env
+    environment: {PORT: '3003', DB_POOL_MAX: '5', JOB_SCHEMA: pgboss_automation}
+    mem_limit: 768m
+    cpus: 0.8
+    volumes: ['${COMMERCE_PRIVATE_ASSETS_DIR}:/data/private:ro']
+    depends_on: {postgres: {condition: service_healthy}}
+    healthcheck: {test: ['CMD','node','-e',"require('node:http').get('http://127.0.0.1:3003/readyz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"], interval: 10s, timeout: 3s, retries: 6}
+  channel-worker:
+    <<: *runtime
+    command: ['node','dist/apps/channel-worker/index.js']
+    env_file: ${COMMERCE_SECRETS_DIR}/channel.env
+    environment: {PORT: '3004', DB_POOL_MAX: '5', JOB_SCHEMA: pgboss_channel}
+    mem_limit: 512m
+    cpus: 0.7
+    volumes: ['${COMMERCE_PRIVATE_ASSETS_DIR}:/data/private']
+    depends_on: {postgres: {condition: service_healthy}}
+    healthcheck: {test: ['CMD','node','-e',"require('node:http').get('http://127.0.0.1:3004/readyz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"], interval: 10s, timeout: 3s, retries: 6}
+  web:
+    image: ${COMMERCE_WEB_IMAGE:?set immutable web digest}
+    user: '1000:1000'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    tmpfs: ['/tmp:size=16m,noexec,nosuid,uid=1000,gid=1000','/data:size=8m,nosuid,uid=1000,gid=1000','/config:size=8m,nosuid,uid=1000,gid=1000']
+    pids_limit: 50
+    healthcheck: {test: ['CMD','wget','-q','--spider','http://127.0.0.1:8080/'], interval: 10s, timeout: 3s, retries: 6}
+    restart: unless-stopped
+    mem_limit: 64m
+    cpus: 0.15
+    networks:
+      proxy: {aliases: [commerce-web]}
+    logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
+networks:
+  core: {}
+  proxy:
+    external: true
+    name: ${COMMERCE_PROXY_NETWORK:?existing Caddy network after inspection}
+volumes:
+  pg:

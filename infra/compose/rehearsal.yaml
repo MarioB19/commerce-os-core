@@ -1,0 +1,26 @@
+# Local-only override: keep production resource, permission and mount boundaries.
+name: commerce-review
+services:
+  postgres:
+    labels: {commerce.fixture: production-rehearsal}
+  api:
+    labels: {commerce.fixture: production-rehearsal}
+  ingress:
+    labels: {commerce.fixture: production-rehearsal}
+  automation-worker:
+    labels: {commerce.fixture: production-rehearsal}
+  channel-worker:
+    labels: {commerce.fixture: production-rehearsal}
+  web:
+    labels: {commerce.fixture: production-rehearsal}
+  edge:
+    image: ${COMMERCE_WEB_IMAGE}
+    labels: {commerce.fixture: production-rehearsal}
+    ports: ['127.0.0.1:18443:443']
+    networks: [proxy]
+    volumes:
+      - '${COMMERCE_SECRETS_DIR}/rehearsal.Caddyfile:/etc/caddy/Caddyfile:ro'
+      - 'review_tls:/data'
+    depends_on: {api: {condition: service_healthy},web: {condition: service_healthy}}
+volumes:
+  review_tls:

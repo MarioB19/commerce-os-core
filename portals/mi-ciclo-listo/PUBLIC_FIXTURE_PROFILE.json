@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "profile": "synthetic-public-v1",
+  "production_portal_installation": "FORBIDDEN",
+  "activities": 480,
+  "pdfs": 10,
+  "files": {
+    "data/activities.json": "afea833d5604f544669a216e33277e9b75634369ffc145218bf4f8621070a5e0",
+    "data/primary-activities.json": "dfbc8a1cc6c7812e3d5f285b85031169a6f94262a7dd9ac188f4b492c9500993",
+    "editorial/preschool-original.json": "607b9771aae13c2b440d35e80c95a0ccc98e8ebbf49177f6ef5a9e13fe0e2b83",
+    "data/catalog-manifest.json": "289a58484988a540a47e1d1338cc727bdc84405790bcd4e0f146a7fe2880d812",
+    "data/pdf-manifest.json": "dc6ba6e87eb877763b95f328a35a26eb79ae10c1f759f591f194c668f850f2a7",
+    "data/commerce-os-product-manifest.json": "c96d1b99e0d14e5e61d4a8571368d1f2e4ac7cb40e4371ad2bebf6e659513b01",
+    "private/pdfs/mi-ciclo-listo-paquete-completo.pdf": "fbeb34b36a56f789d0a55deb76747fe100b85b62fd799f95a1151cd28af964d5",
+    "private/pdfs/bono-01-primera-semana-lista.pdf": "45cecc6978437e6a579ba16acb638dc8b07a6c06ec01bc3ee4ea89ac7f880bf2",
+    "private/pdfs/bono-02-instrumentos-evaluacion-observacion.pdf": "7acfd9cda6dc7e2af2b3448bba028cce277e78784a6753382902b09df6f2c0df",
+    "private/pdfs/bono-03-kit-cte-control-grupo.pdf": "bb67e48dd4da995c812ec2aee821b4094678119a3575d1927a643d895e116a1f",
+    "private/pdfs/bono-04-banco-dinamicas.pdf": "b2d0f4c10f3cf5ec50155ed437fbc5d127a5578b555d0128d7ce7cacbb6e0ded",
+    "private/pdfs/bono-05-proyectos-temporada.pdf": "2c9d10ba329b0dee9a1ec1e660327b57e16a47e0bcd52ef18924278fe5a9963a",
+    "private/pdfs/bono-06-adecuaciones-diversidad-aula.pdf": "1b10a1fd4e1731fa2b83117653923e8fe546341b97e7473999ab0f8f42e949b5",
+    "private/pdfs/bono-07-cartas-comunicados-familias.pdf": "674c424fa0aab0d75faf4b71adc48517a94d2c50f435e7c5f951350b46d971a4",
+    "private/pdfs/bono-08-material-recortable-aula.pdf": "d65945a61040cd9964adc3312ca7bc390dc916a4113ad3ec93acb15c4fdc51c0",
+    "private/pdfs/calendario-del-ciclo.pdf": "6016d641647b39b1876a8cf6005a59fde05f8b9146f13c11bc33046023285f7a"
+  }
+}

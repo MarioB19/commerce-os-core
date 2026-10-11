@@ -1,0 +1,9 @@
+{
+ "$schema":"https://schema.tauri.app/config/2",
+ "productName":"Commerce Worker",
+ "version":"0.1.1",
+ "identifier":"online.inovaris.commerce-worker",
+ "build":{"frontendDist":"../ui"},
+ "app":{"withGlobalTauri":true,"windows":[{"title":"Commerce Worker · Experimental","width":540,"height":730,"minWidth":360,"minHeight":560,"resizable":true}],"security":{"csp":"default-src 'self'; script-src 'self'; style-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; object-src 'none'; frame-src 'none'"}},
+ "bundle":{"active":true,"targets":["dmg","nsis"],"externalBin":["binaries/commerce-node"],"resources":{"resources/runtime/":"runtime/"},"icon":["icons/icon.png","icons/icon.icns","icons/icon.ico"],"macOS":{"minimumSystemVersion":"14.0"},"windows":{"nsis":{"installMode":"currentUser","displayLanguageSelector":true,"languages":["Spanish","English"]},"webviewInstallMode":{"type":"downloadBootstrapper","silent":true}}}
+}

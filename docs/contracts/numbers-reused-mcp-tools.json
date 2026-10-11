@@ -1,0 +1,663 @@
+{
+  "server": "commerce-os",
+  "tools": [
+    {
+      "name": "channel_session_get",
+      "title": "Consultar continuidad de sesión",
+      "description": "Estado observado/deseado, principal declarado, backups, ownership y alertas por cuenta. Sólo lectura.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "account_id"
+        ]
+      },
+      "http": {
+        "route": "/v1/channel-accounts/{id}/session?environment=REAL",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "channel_session_configure",
+      "title": "Configurar continuidad y principal",
+      "description": "Configura responsable, inventario y recuperación explícita con revisión. No concede permisos de envío.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "body": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "expected_version": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "account_id",
+          "body",
+          "expected_version",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/channel-accounts/{id}/session",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "PATCH"
+      }
+    },
+    {
+      "name": "channel_primary_usage",
+      "title": "Registrar uso humano del principal",
+      "description": "Registra una confirmación del operador con fecha y fuente. Nunca inferir uso de mensajes, ACK o heartbeat WAHA.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "used_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 3
+          },
+          "expected_version": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "account_id",
+          "used_at",
+          "reason",
+          "expected_version",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/channel-accounts/{id}/primary-usage",
+        "body": {
+          "source": "operator_confirmation",
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "channel_session_recovery",
+      "title": "Gestionar recuperación de cuenta",
+      "description": "Preparar revinculación, solicitar cuarentena, conciliar resultado incierto o acusar alerta. No resetea volúmenes ni repite mutaciones remotas.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "body": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "expected_version": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "account_id",
+          "body",
+          "expected_version",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/channel-accounts/{id}/session/recovery",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "channel_command",
+      "title": "Solicitar control de sesión",
+      "description": "Comando durable por cuenta: enviar expected_version vigente (obligatorio para nuevas altas), consultar resultado antes de otro intento. Conectar o reiniciar requiere autorización específica; software publicado no concede operación.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "expected_version": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "connect",
+              "disconnect",
+              "restart",
+              "logout",
+              "freeze",
+              "resume",
+              "check_health",
+              "transfer_ownership"
+            ]
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "isolation_evidence": {
+            "type": "string",
+            "minLength": 5
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 3
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "account_id",
+          "type",
+          "reason",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/channel-accounts/{id}/commands",
+        "body": {
+          "type": "connect",
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "command_get",
+      "title": "Consultar resultado durable de comando",
+      "description": "Estado y resultado persistidos de un comando. Un resultado incierto exige conciliación, nunca repetición automática.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "command_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "command_id"
+        ]
+      },
+      "http": {
+        "route": "/v1/commands/{id}?environment=REAL",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "channel_inventory",
+      "title": "Números y productos actuales",
+      "description": "Alias enmascarados, identidad, sesión, salud y relaciones. Compartir número no lo hace inutilizable.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        }
+      },
+      "http": {
+        "route": "/v1/channel-inventory?environment=REAL&product_id=%7Bid%7D",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "channel_health",
+      "title": "Salud explicable por capacidad",
+      "description": "Fuentes, vigencia, muestras/ventanas y causas separadas por propósito; no concede envíos.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "account_id"
+        ]
+      },
+      "http": {
+        "route": "/v1/channel-accounts/{id}/health?environment=REAL",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "assignments_list",
+      "title": "Consultar asignaciones independientes",
+      "description": "Consulta relaciones número por producto sin elegir la primera.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "account_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "DRAFT",
+              "RETIRED"
+            ]
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        }
+      },
+      "http": {
+        "route": "/v1/assignments?environment=REAL&product_id=%7Bid%7D&account_id=%7Bid%7D",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "assignments_apply",
+      "title": "Aplicar mapeo elegido",
+      "description": "Batch idempotente con resultados parciales. Agregar B conserva A. No habilita sus envíos.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "assignments": {
+            "minItems": 1,
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            }
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "assignments",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/assignments/batch",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "assignment_transition",
+      "title": "Consultar o retirar una relación",
+      "description": "Revisión, preflight, historial y retiro/restore por vínculo. No hereda autorización entre productos.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "assignment_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "preflight",
+              "history",
+              "retire",
+              "restore",
+              "activate"
+            ]
+          },
+          "body": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "expected_version": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "assignment_id",
+          "action",
+          "expected_version",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/assignments/{id}/preflight?environment=REAL",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "assignment_authorize",
+      "title": "Autorizar alcance comercial concreto",
+      "description": "Requiere autorización explícita de usuario para destinatarios, límites y vigencia. A no autoriza B. No invocar sólo por publicación de configuración.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "assignment_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "body": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "assignment_id",
+          "body",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/assignments/{id}/authorize",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "product_configuration",
+      "title": "Preparación del producto",
+      "description": "Lee oferta, flujo, vendedor, faltantes y números; configuración separada de activación.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "product_id"
+        ]
+      },
+      "http": {
+        "route": "/v1/products/{id}/configuration?environment=REAL",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "integration_save",
+      "title": "Guardar perfil cifrado",
+      "description": "Configura perfil por API con permisos dedicados. No prueba proveedor ni habilita envíos.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "profile_key": {
+            "type": "string",
+            "minLength": 3
+          },
+          "body": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "profile_key",
+          "body",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/settings/integrations/waha%3A%7Bgateway%7D",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "PUT"
+      }
+    },
+    {
+      "name": "integration_profiles",
+      "title": "Configuración y pruebas por perfil",
+      "description": "Consulta configuración, inferencia mínima, calidad y habilitación por separado, sin secretos ni consumo.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        }
+      },
+      "http": {
+        "route": "/v1/integration-profiles?environment=REAL",
+        "method": "GET"
+      }
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+# Evaluación fija de Inteligencia V4/V5
+
+Decisión previa, 2026-09-13. Se crea un corpus sintético de doce casos en código con versión/hash y oráculo separados. Incluye texto completo, incompleto, contradictorio, duplicado y fuentes caídas. No usa ofertas ni oportunidades comerciales y no guarda datos en tablas de investigación del mercado. Un mismo adaptador de salida compacta permite medir ambos prompts: el baseline deriva del texto V4 en HEAD inicial, no reproduce todo el antiguo pipeline.
+
+La ejecución real es optativa y explícita: credencial de servicio/owner, scope intelligence:analyze, perfil autorizado intelligence:openai, revisión exacta y tope total de USD0.10 o menor. La estimación conservadora de ambos requests debe caber en ese tope y en el presupuesto vigente antes de empezar. Cada brazo usa una operación durable del broker, máximo 3000 tokens, modelo fijado, sin reintentar inferencias inciertas. Reconciliar sólo lee operaciones existentes. SIMULATION no llama proveedores. Reservas UNKNOWN y resultados parciales sobreviven; no se declara mejora, calidad comercial ni revisión humana sin medirlas.

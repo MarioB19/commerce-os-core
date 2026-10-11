@@ -1,0 +1,15 @@
+:8080 {
+  root * /srv
+  encode zstd gzip
+  @static path /assets/*
+  header @static Cache-Control "public, max-age=31536000, immutable"
+  @ordinary {
+    not path /assets/* /account/* /forgot-password /reset-password /login
+  }
+  header @ordinary Cache-Control "no-cache"
+  @identity path /account/* /forgot-password /reset-password /login
+  header @identity Cache-Control "no-store"
+  header @identity Referrer-Policy "no-referrer"
+  try_files {path} /index.html
+  file_server
+}

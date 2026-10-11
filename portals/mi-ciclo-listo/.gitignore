@@ -1,0 +1,16 @@
+node_modules/
+.next/
+.vercel/
+.env
+.env.local
+.env.*.local
+npm-debug.log*
+.vercel
+.env*
+
+!.env.example
+__pycache__/
+*.pyc
+*.tsbuildinfo
+evidence/pdf-qa/*.png
+editorial-production/rendered-html/

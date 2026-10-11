@@ -1,0 +1,15 @@
+# V5: asignaciones independientes y chat compartido
+
+Fecha: 2026-09-13. Decisión previa a implementación.
+
+Una asignación persistente une workspace, entorno, número y producto. Cada cambio crea un binding inmutable, conserva el ID de relación y una revisión; nunca modifica el paquete de otro producto. La migración conserva bindings y conversaciones históricos y materializa las relaciones demostrables. Los permisos nuevos viven en la relación, no en el `active_authorization_id` global. Migrar/restaurar no concede permisos.
+
+El chat físico pertenece a número+contacto; `conversation` conserva su función de recorrido comercial con versiones fijadas. El ingreso resuelve evidencia antes de flujo/vendedor: respuesta a mensaje conocido en ese chat, referencia publicitaria registrada, selección exacta aprobada (palabra/enlace), selección explícita del operador y únicamente una ruta inequívoca. Señales explícitas contradictorias quedan `PRODUCT_SELECTION_REQUIRED`; texto con UUID arbitrario no es evidencia. Con varios recorridos, afirmaciones de pago/aceptación o un adjunto requieren contexto de pedido, no el monto ni el último producto. Los eventos tardíos se conservan sin ejecutar respuestas nuevas ni reescribir snapshots.
+
+Las propuestas y el despacho se serializan por chat físico, con un turno activo y bloqueo por SENDING/UNKNOWN. Un cambio de contexto no cancela entregas ni reenvía resultados inciertos; pausa recordatorios del contexto anterior. El opt-out conserva ámbito global del contacto. Los efectos comerciales llevan asignación/revisión, producto, recorrido/pedido y versiones; warm-up se clasifica antes de ventas y conserva su contrato independiente.
+
+Retirar flujo/vendedor requiere lectura de dependencias y revisión vigente. Referencias de configuración activas bloquean retiro hasta desasignación/reemplazo explícito; los recorridos existentes pasan a handoff mediante comando durable al worker, se cancelan sólo intenciones sin intento y timers. El gate bloquea inmediatamente por recurso archivado sin esperar el comando. SENDING/UNKNOWN y entregas históricas se conservan. Un lock transaccional de catálogo serializa publicación/asignación/retiro; los gates vuelven a validar al ejecutar. Restaurar una relación la devuelve a DRAFT: montar de nuevo exige `activate` explícito, y autorizar envíos exige una operación independiente. No revive efectos ni permisos.
+
+API y web usan el mismo dominio. Mutaciones con Idempotency-Key y expected_version; batch por relación, resultados parciales y sin borrar omitidos. Scopes de servicio mínimos diferenciados para lectura/configuración/autorización. Ninguna operación de configuración habilita mensajes, proveedores ni gasto.
+
+El informe de costos es una proyección de registros existentes. No convierte moneda ni atribuye una oferta competidora de Inteligencia a un producto propio. Las estimaciones históricas del vendedor sin moneda explícita permanecen desconocidas en moneda; los costos calculados desde usage reconocido no se presentan como factura. Las órdenes de `simulation_run` quedan TEST desde su creación y conservan contribuciones de ensayo separadas del ingreso.

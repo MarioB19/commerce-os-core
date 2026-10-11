@@ -1,0 +1,23 @@
+# Mi Ciclo Listo ampliado: esperas confirmadas y seguimiento durable
+
+Decisión previa a implementación · 12-sep-2026 · local, sin habilitación de envíos.
+
+La receta publicada de Preescolar se conserva. La nueva `miCicloListoWorkflow` instancia el flujo WA de Vibe Marketing del 28-ago, su remarketing del 30-ago y el plan rector del 12-sep. Mantiene tres compuertas de respuesta, Core antes del pago, datos bancarios protegidos, cinco audios y dos códigos. La ampliación pregunta nivel y grado; una respuesta ambigua solicita precisión y los roles multigrado/dirección/sin grupo quedan explícitos sin inventar grado. La oferta no incluye cantidades no comprobadas; el ensamblador podrá suministrar texto editorial aprobado.
+
+El mockup se prepara con un retraso causal de 2.5 segundos desde el envío confirmado del pitch, revalidado por channel-worker antes del HTTP. Usa el reloj del despachador (500 ms) sin sumar otro ciclo del worker de automatización. El límite superior observado se mide en teléfono; la disponibilidad del canal no permite garantizar un máximo bajo fallos. El cobro se agenda a los 1800 segundos (30 minutos) del último envío Core confirmado por el canal. Una intención READY, un grant, un resultado UNKNOWN o un job no inicia ese reloj. Un ACK/SENT acredita aceptación del transporte, no apertura ni reproducción física. El timestamp inicial se conserva en outbox y el temporizador tiene llave única, por lo que reinicios y ACK posteriores no lo adelantan ni duplican.
+
+Los seguimientos audio 4 y audio 5 se programan desde el envío confirmado de las instrucciones de cobro, a +7200 y +82800 segundos. Son una rama acotada a dos toques, independiente del nodo que espera comprobante. Cada toque reúne audio y texto/instrucciones bajo la misma llave de toque. Se comprueban compromiso, Core confirmado, ausencia de comprobante, conversación sin intervención ni negativa y ventana estricta de 24 horas desde el último inbound tanto al crear el efecto como al despacharlo. No se traslada al contacto a otro número. Una respuesta durante seguimiento cancela ese ciclo para que el vendedor atienda la duda; negativa, opt-out, fecha de pago, comprobante o control humano cancelan los efectos pendientes correspondientes. Fuera de ventana se omite el toque: no se genera una plantilla alternativa sin aprobación.
+
+Se reutilizan tablas timers/outbox y controles existentes; no se cambia el esquema ni las versiones históricas. Los nuevos campos config de nodos se validan; el runtime preserva los comportamientos anteriores si están ausentes. Los timers anclados y seguimientos se revalidan tras adquirir el lock de conversación. Los resultados inciertos siguen sin reintento automático.
+
+Pruebas requeridas: PostgreSQL y worker de canal simulado con archivos sintéticos; reloj virtual para 2.5 s, 30 min y 2 h/23 h; reinicio/repetición; entrada de nueve grados y ambigüedad; recibo/negativa/opt-out/humano antes y después de proponer; ventana caducada y despacho tardío; cinco audios, imagen, Core y beneficios idempotentes. Estas pruebas no sustituyen el teléfono ni autorizan proveedor real.
+
+## Resultado de implementación y verificación
+
+Nueva receta y runtime **VERIFICADO_LOCAL**: 35 unitarias y 60 integraciones PostgreSQL en seis archivos, incluidas 22 pruebas nuevas del flujo ampliado; tipos y lint dirigidos aprobados. Evidencia y comando reproducible: [mi-ciclo-listo-runtime-local.json](evidence/mi-ciclo-listo-runtime-local.json).
+
+La rama de seguimiento conserva el reloj desde banco, cancela ante una respuesta para que vendedor/humano atienda y omite mensajes fuera de ventana. El motivo de negativa cancela toda la secuencia pendiente. Las instrucciones bancarias se interpolan únicamente desde el perfil protegido. Los dos seguimientos tienen activos propios referenciados desde `receipt.config.followups.touches`. El despachador vuelve a comprobar estado de ensayo/patrocinio mediante `launchEffectBlockReason`; la beneficiaria patrocinada no entra al flujo comercial.
+
+El reloj virtual del laboratorio gobierna también outbox not_before/expiry, rate limits, claims y recuperación, evitando que 23 horas de ensayo se cuenten como mensajes en un minuto real. REAL conserva el reloj de PostgreSQL. Los timestamps de aceptación originales permanecen al observar DELIVERED/READ. Los efectos de cobro/seguimiento cancelados antes de un intento pueden saltarse como predecesor para permitir beneficios válidos posteriores; nunca se salta UNKNOWN ni un envío ya intentado.
+
+No hay despliegue, envío a WhatsApp real, comprobación de activos definitivos ni recepción en teléfono en esta evidencia. Las aperturas Core/Kit, PDFs reales, audios finales y Madrina permanecen en sus matrices de evidencia física del lanzamiento.

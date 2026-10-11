@@ -1,0 +1,89 @@
+{
+  "version": "SYNTHETIC_PUBLIC_TEST_V1",
+  "compilation": "KNOWLEDGE_WITHOUT_MONETARY_LITERALS",
+  "productName": "Catálogo sintético de prueba",
+  "canonicalCommercialSource": "SYNTHETIC_PUBLIC_TEST_ONLY",
+  "systemPrompt": "Asistente de pruebas. Usa sólo el contrato estructurado y las fuentes sintéticas; deriva a control humano si falta evidencia. No autorices acciones externas.",
+  "rules": {
+    "pricing": "Regla sintética: conservar límites de autorización y solicitar intervención humana ante datos ausentes.",
+    "agreement": "Regla sintética: conservar límites de autorización y solicitar intervención humana ante datos ausentes.",
+    "flow": "Regla sintética: conservar límites de autorización y solicitar intervención humana ante datos ausentes.",
+    "receipt": "Regla sintética: conservar límites de autorización y solicitar intervención humana ante datos ausentes.",
+    "sponsorship": "Regla sintética: conservar límites de autorización y solicitar intervención humana ante datos ausentes.",
+    "privacy": "Regla sintética: conservar límites de autorización y solicitar intervención humana ante datos ausentes.",
+    "claims": "Regla sintética: conservar límites de autorización y solicitar intervención humana ante datos ausentes."
+  },
+  "faq": [
+    {
+      "question": "Consulta sintética sobre recurso 1",
+      "answer": "El recurso sintético 1 sirve exclusivamente para verificar contratos. Solicita revisión humana ante un dato faltante.",
+      "requiresClaims": [
+        "C01",
+        "C02"
+      ]
+    },
+    {
+      "question": "Consulta sintética sobre recurso 2",
+      "answer": "El recurso sintético 2 sirve exclusivamente para verificar contratos. Solicita revisión humana ante un dato faltante."
+    },
+    {
+      "question": "Consulta sintética sobre recurso 3",
+      "answer": "El recurso sintético 3 sirve exclusivamente para verificar contratos. Solicita revisión humana ante un dato faltante."
+    },
+    {
+      "question": "Consulta sintética sobre recurso 4",
+      "answer": "El recurso sintético 4 sirve exclusivamente para verificar contratos. Solicita revisión humana ante un dato faltante."
+    },
+    {
+      "question": "Consulta sintética sobre recurso 5",
+      "answer": "El recurso sintético 5 sirve exclusivamente para verificar contratos. Solicita revisión humana ante un dato faltante."
+    },
+    {
+      "question": "Consulta sintética sobre recurso 6",
+      "answer": "El recurso sintético 6 sirve exclusivamente para verificar contratos. Solicita revisión humana ante un dato faltante."
+    },
+    {
+      "question": "Consulta sintética sobre recurso 7",
+      "answer": "El recurso sintético 7 sirve exclusivamente para verificar contratos. Solicita revisión humana ante un dato faltante."
+    },
+    {
+      "question": "Consulta sintética sobre recurso 8",
+      "answer": "El recurso sintético 8 sirve exclusivamente para verificar contratos. Solicita revisión humana ante un dato faltante."
+    },
+    {
+      "question": "Consulta sintética sobre recurso 9",
+      "answer": "El recurso sintético 9 sirve exclusivamente para verificar contratos. Solicita revisión humana ante un dato faltante."
+    },
+    {
+      "question": "Consulta sintética sobre recurso 10",
+      "answer": "El recurso sintético 10 sirve exclusivamente para verificar contratos. Solicita revisión humana ante un dato faltante."
+    },
+    {
+      "question": "Consulta sintética sobre recurso 11",
+      "answer": "El recurso sintético 11 sirve exclusivamente para verificar contratos. Solicita revisión humana ante un dato faltante."
+    },
+    {
+      "question": "Consulta sintética sobre recurso 12",
+      "answer": "El recurso sintético 12 sirve exclusivamente para verificar contratos. Solicita revisión humana ante un dato faltante."
+    },
+    {
+      "question": "Consulta sintética sobre recurso 13",
+      "answer": "El recurso sintético 13 sirve exclusivamente para verificar contratos. Solicita revisión humana ante un dato faltante."
+    },
+    {
+      "question": "Consulta sintética sobre recurso 14",
+      "answer": "El recurso sintético 14 sirve exclusivamente para verificar contratos. Solicita revisión humana ante un dato faltante."
+    },
+    {
+      "question": "Consulta sintética sobre recurso 15",
+      "answer": "El recurso sintético 15 sirve exclusivamente para verificar contratos. Solicita revisión humana ante un dato faltante."
+    }
+  ],
+  "sources": [
+    {
+      "id": "mcl-editorial-knowledge-r2",
+      "title": "Fuente sintética 1",
+      "content": "Contenido inventado para pruebas. Ninguna persona, producto comercial ni operación real está representada."
+    }
+  ]
+}

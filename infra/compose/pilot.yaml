@@ -1,0 +1,48 @@
+# One optional GOWS slot. Layer over production.yaml; no NOWEB interpolation.
+# No port is published and existing sessions are never auto-started after restart.
+services:
+  waha-01:
+    image: devlikeapro/waha:gows-2026.8.2@sha256:4db10103027a0cb97a294241cb7902a5a1e4ec869581faa7de420d5a0b8b1dd0
+    platform: linux/amd64
+    profiles: [waha-pilot]
+    restart: 'no'
+    init: true
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    pids_limit: 100
+    mem_limit: 768m
+    cpus: 0.3
+    stop_grace_period: 30s
+    env_file: ${COMMERCE_GATEWAY_CONFIG_DIR:?private pilot configuration}/waha-01.env
+    environment:
+      WHATSAPP_DEFAULT_ENGINE: GOWS
+      WAHA_WORKER_ID: waha-01
+      WAHA_BASE_URL: http://waha-01:3000
+      WAHA_PRINT_QR: 'false'
+      WAHA_DASHBOARD_ENABLED: 'false'
+      WHATSAPP_SWAGGER_ENABLED: 'false'
+      WHATSAPP_RESTART_ALL_SESSIONS: 'false'
+      WAHA_WORKER_RESTART_SESSIONS: 'false'
+      WHATSAPP_START_SESSION: ''
+      WAHA_APPS_ENABLED: 'false'
+      WAHA_LOG_FORMAT: JSON
+      WAHA_LOG_LEVEL: warn
+      WAHA_HTTP_LOG_LEVEL: warn
+      WHATSAPP_FILES_LIFETIME: '3600'
+      WHATSAPP_FILES_FOLDER: /app/.media
+    volumes: ['waha-01-sessions:/app/.sessions', 'waha-01-media:/app/.media']
+    networks: [gateway-01]
+    logging: {driver: json-file, options: {max-size: 5m, max-file: '2'}}
+  channel-worker:
+    env_file: ${COMMERCE_GATEWAY_CONFIG_DIR}/channel-pilot.env
+    networks:
+      gateway-01: {}
+  ingress:
+    env_file: ${COMMERCE_GATEWAY_CONFIG_DIR}/ingress-pilot.env
+    networks:
+      gateway-01: {}
+networks:
+  gateway-01: {}
+volumes:
+  waha-01-sessions: {}
+  waha-01-media: {}

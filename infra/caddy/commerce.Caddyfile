@@ -1,0 +1,35 @@
+# Add as a separate site to existing Caddy only after review; preserve the POC site.
+commerce-os.inovaris.online {
+  encode zstd gzip
+  header {
+    X-Content-Type-Options nosniff
+    Referrer-Policy no-referrer
+    Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.r2.cloudflarestorage.com; media-src 'self' blob: https://*.r2.cloudflarestorage.com; connect-src 'self' https://*.r2.cloudflarestorage.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    Strict-Transport-Security "max-age=31536000"
+    -Server
+  }
+  handle /webhooks/cloud/* {
+    reverse_proxy commerce-ingress:3002
+  }
+  handle /v1/* {
+    reverse_proxy commerce-api:3001
+  }
+  handle /api/auth/* {
+    reverse_proxy commerce-api:3001
+  }
+  @health path /livez /readyz
+  handle @health {
+    reverse_proxy commerce-api:3001
+  }
+  handle /creative-device/v1/* {
+    reverse_proxy commerce-api:3001
+  }
+  handle /api/version {
+    reverse_proxy commerce-api:3001
+  }
+  handle {
+    reverse_proxy commerce-web:8080
+  }
+  @commerce_asset_content path /v1/assets/*/content
+  header @commerce_asset_content >Content-Security-Policy "default-src 'none'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'"
+}

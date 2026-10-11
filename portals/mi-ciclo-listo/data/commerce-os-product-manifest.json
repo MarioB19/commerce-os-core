@@ -1,0 +1,265 @@
+{
+  "schemaVersion": 2,
+  "productVersion": "synthetic-public-v1",
+  "displayName": "Synthetic portal verification fixture",
+  "state": "SYNTHETIC_TEST_ONLY",
+  "editorialApproval": "NOT_APPLICABLE_SYNTHETIC",
+  "pedagogicalApproval": "NOT_APPLICABLE_SYNTHETIC",
+  "phoneVerification": "NOT_PERFORMED",
+  "deployment": "FORBIDDEN_SYNTHETIC_PORTAL",
+  "counts": {
+    "activities": 480,
+    "preschoolActivities": 360,
+    "primaryActivities": 120,
+    "grades": 9,
+    "coreDownloads": 9,
+    "privatePdfs": 10,
+    "primaryGradeWorkbooks": 0,
+    "primaryBonusSupplements": 0,
+    "unifiedBonuses": 8
+  },
+  "pricingMxnCents": {
+    "referencePrice": 1,
+    "positivePaymentUnlocksAll": true,
+    "minimumUnlockAmount": 1
+  },
+  "method": "Deterministic synthetic software fixture",
+  "grades": [
+    {
+      "id": "preescolar-1",
+      "label": "1.º de preescolar",
+      "level": "preescolar",
+      "grade": 1,
+      "activityCount": 120,
+      "sampleId": "synthetic-preescolar-1-001",
+      "pdfSlug": "paquete-completo",
+      "fields": {
+        "Lenguajes": 30,
+        "Saberes y Pensamiento Científico": 30,
+        "Ética, Naturaleza y Sociedades": 30,
+        "De lo Humano y lo Comunitario": 30
+      }
+    },
+    {
+      "id": "preescolar-2",
+      "label": "2.º de preescolar",
+      "level": "preescolar",
+      "grade": 2,
+      "activityCount": 120,
+      "sampleId": "synthetic-preescolar-2-001",
+      "pdfSlug": "paquete-completo",
+      "fields": {
+        "Lenguajes": 30,
+        "Saberes y Pensamiento Científico": 30,
+        "Ética, Naturaleza y Sociedades": 30,
+        "De lo Humano y lo Comunitario": 30
+      }
+    },
+    {
+      "id": "preescolar-3",
+      "label": "3.º de preescolar",
+      "level": "preescolar",
+      "grade": 3,
+      "activityCount": 120,
+      "sampleId": "synthetic-preescolar-3-001",
+      "pdfSlug": "paquete-completo",
+      "fields": {
+        "Lenguajes": 30,
+        "Saberes y Pensamiento Científico": 30,
+        "Ética, Naturaleza y Sociedades": 30,
+        "De lo Humano y lo Comunitario": 30
+      }
+    },
+    {
+      "id": "primaria-1",
+      "label": "1.º de primaria",
+      "level": "primaria",
+      "grade": 1,
+      "activityCount": 20,
+      "sampleId": "synthetic-primaria-1-001",
+      "pdfSlug": "paquete-completo",
+      "fields": {
+        "Lenguajes": 5,
+        "Saberes y Pensamiento Científico": 5,
+        "Ética, Naturaleza y Sociedades": 5,
+        "De lo Humano y lo Comunitario": 5
+      }
+    },
+    {
+      "id": "primaria-2",
+      "label": "2.º de primaria",
+      "level": "primaria",
+      "grade": 2,
+      "activityCount": 20,
+      "sampleId": "synthetic-primaria-2-001",
+      "pdfSlug": "paquete-completo",
+      "fields": {
+        "Lenguajes": 5,
+        "Saberes y Pensamiento Científico": 5,
+        "Ética, Naturaleza y Sociedades": 5,
+        "De lo Humano y lo Comunitario": 5
+      }
+    },
+    {
+      "id": "primaria-3",
+      "label": "3.º de primaria",
+      "level": "primaria",
+      "grade": 3,
+      "activityCount": 20,
+      "sampleId": "synthetic-primaria-3-001",
+      "pdfSlug": "paquete-completo",
+      "fields": {
+        "Lenguajes": 5,
+        "Saberes y Pensamiento Científico": 5,
+        "Ética, Naturaleza y Sociedades": 5,
+        "De lo Humano y lo Comunitario": 5
+      }
+    },
+    {
+      "id": "primaria-4",
+      "label": "4.º de primaria",
+      "level": "primaria",
+      "grade": 4,
+      "activityCount": 20,
+      "sampleId": "synthetic-primaria-4-001",
+      "pdfSlug": "paquete-completo",
+      "fields": {
+        "Lenguajes": 5,
+        "Saberes y Pensamiento Científico": 5,
+        "Ética, Naturaleza y Sociedades": 5,
+        "De lo Humano y lo Comunitario": 5
+      }
+    },
+    {
+      "id": "primaria-5",
+      "label": "5.º de primaria",
+      "level": "primaria",
+      "grade": 5,
+      "activityCount": 20,
+      "sampleId": "synthetic-primaria-5-001",
+      "pdfSlug": "paquete-completo",
+      "fields": {
+        "Lenguajes": 5,
+        "Saberes y Pensamiento Científico": 5,
+        "Ética, Naturaleza y Sociedades": 5,
+        "De lo Humano y lo Comunitario": 5
+      }
+    },
+    {
+      "id": "primaria-6",
+      "label": "6.º de primaria",
+      "level": "primaria",
+      "grade": 6,
+      "activityCount": 20,
+      "sampleId": "synthetic-primaria-6-001",
+      "pdfSlug": "paquete-completo",
+      "fields": {
+        "Lenguajes": 5,
+        "Saberes y Pensamiento Científico": 5,
+        "Ética, Naturaleza y Sociedades": 5,
+        "De lo Humano y lo Comunitario": 5
+      }
+    }
+  ],
+  "catalog": {
+    "sourcePath": "data/activities.json",
+    "sha256": "afea833d5604f544669a216e33277e9b75634369ffc145218bf4f8621070a5e0"
+  },
+  "corePdfs": [
+    {
+      "slug": "paquete-completo",
+      "scope": "core",
+      "sourcePath": "private/pdfs/mi-ciclo-listo-paquete-completo.pdf",
+      "file": "mi-ciclo-listo-paquete-completo.pdf",
+      "bytes": 657,
+      "pages": 1,
+      "sha256": "fbeb34b36a56f789d0a55deb76747fe100b85b62fd799f95a1151cd28af964d5"
+    },
+    {
+      "slug": "bono-1",
+      "scope": "core",
+      "sourcePath": "private/pdfs/bono-01-primera-semana-lista.pdf",
+      "file": "bono-01-primera-semana-lista.pdf",
+      "bytes": 657,
+      "pages": 1,
+      "sha256": "45cecc6978437e6a579ba16acb638dc8b07a6c06ec01bc3ee4ea89ac7f880bf2"
+    },
+    {
+      "slug": "bono-2",
+      "scope": "core",
+      "sourcePath": "private/pdfs/bono-02-instrumentos-evaluacion-observacion.pdf",
+      "file": "bono-02-instrumentos-evaluacion-observacion.pdf",
+      "bytes": 657,
+      "pages": 1,
+      "sha256": "7acfd9cda6dc7e2af2b3448bba028cce277e78784a6753382902b09df6f2c0df"
+    },
+    {
+      "slug": "bono-3",
+      "scope": "core",
+      "sourcePath": "private/pdfs/bono-03-kit-cte-control-grupo.pdf",
+      "file": "bono-03-kit-cte-control-grupo.pdf",
+      "bytes": 657,
+      "pages": 1,
+      "sha256": "bb67e48dd4da995c812ec2aee821b4094678119a3575d1927a643d895e116a1f"
+    },
+    {
+      "slug": "bono-4",
+      "scope": "core",
+      "sourcePath": "private/pdfs/bono-04-banco-dinamicas.pdf",
+      "file": "bono-04-banco-dinamicas.pdf",
+      "bytes": 657,
+      "pages": 1,
+      "sha256": "b2d0f4c10f3cf5ec50155ed437fbc5d127a5578b555d0128d7ce7cacbb6e0ded"
+    },
+    {
+      "slug": "bono-5",
+      "scope": "core",
+      "sourcePath": "private/pdfs/bono-05-proyectos-temporada.pdf",
+      "file": "bono-05-proyectos-temporada.pdf",
+      "bytes": 657,
+      "pages": 1,
+      "sha256": "2c9d10ba329b0dee9a1ec1e660327b57e16a47e0bcd52ef18924278fe5a9963a"
+    },
+    {
+      "slug": "bono-6",
+      "scope": "core",
+      "sourcePath": "private/pdfs/bono-06-adecuaciones-diversidad-aula.pdf",
+      "file": "bono-06-adecuaciones-diversidad-aula.pdf",
+      "bytes": 657,
+      "pages": 1,
+      "sha256": "1b10a1fd4e1731fa2b83117653923e8fe546341b97e7473999ab0f8f42e949b5"
+    },
+    {
+      "slug": "bono-7",
+      "scope": "core",
+      "sourcePath": "private/pdfs/bono-07-cartas-comunicados-familias.pdf",
+      "file": "bono-07-cartas-comunicados-familias.pdf",
+      "bytes": 657,
+      "pages": 1,
+      "sha256": "674c424fa0aab0d75faf4b71adc48517a94d2c50f435e7c5f951350b46d971a4"
+    },
+    {
+      "slug": "bono-8",
+      "scope": "core",
+      "sourcePath": "private/pdfs/bono-08-material-recortable-aula.pdf",
+      "file": "bono-08-material-recortable-aula.pdf",
+      "bytes": 657,
+      "pages": 1,
+      "sha256": "d65945a61040cd9964adc3312ca7bc390dc916a4113ad3ec93acb15c4fdc51c0"
+    }
+  ],
+  "calendarPdf": {
+    "sourcePath": "private/pdfs/calendario-del-ciclo.pdf",
+    "file": "calendario-del-ciclo.pdf",
+    "bytes": 657,
+    "pages": 1,
+    "sha256": "6016d641647b39b1876a8cf6005a59fde05f8b9146f13c11bc33046023285f7a",
+    "delivery": "SYNTHETIC_TEST_ONLY",
+    "exposedInPortal": false
+  },
+  "restrictions": [
+    "No real content",
+    "No real customers",
+    "Not permitted for portal deployment"
+  ]
+}

@@ -1,0 +1,80 @@
+{
+  "name": "commerce-os",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.34.5",
+  "engines": {
+    "node": ">=24 <25",
+    "pnpm": ">=10 <11"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "typecheck": "tsc --noEmit && pnpm --filter @commerce/web typecheck",
+    "lint": "eslint .",
+    "build": "node scripts/build.mjs",
+    "test": "vitest run --config vitest.config.ts",
+    "test:integration": "node scripts/test-isolated.mjs",
+    "test:e2e": "node scripts/test-e2e.mjs",
+    "db:migrate": "node scripts/run-local.mjs tsx packages/db/src/migrate.ts",
+    "bootstrap": "node scripts/run-local.mjs tsx scripts/bootstrap.ts",
+    "local:setup": "node scripts/local-setup.mjs",
+    "verify": "pnpm typecheck && pnpm lint && pnpm build && pnpm test && pnpm test:integration && pnpm test:e2e",
+    "backup": "node scripts/backup.mjs",
+    "restore": "node scripts/restore.mjs",
+    "serve:build": "node scripts/serve-build.mjs",
+    "test:load": "node scripts/run-load-profile.mjs",
+    "test:recovery": "node scripts/verify-recovery.mjs",
+    "production:prepare": "node scripts/prepare-production.mjs",
+    "account:setup": "node scripts/setup-account-review.mjs",
+    "account:review": "node scripts/account-review.mjs"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "@eslint/js": "10.0.1",
+    "@modelcontextprotocol/sdk": "1.31.0",
+    "@playwright/test": "1.63.0",
+    "@types/node": "24.13.3",
+    "@types/nodemailer": "8.0.1",
+    "@types/pg": "8.23.1",
+    "@types/smtp-server": "3.5.13",
+    "@vitest/coverage-v8": "4.1.11",
+    "esbuild": "0.28.2",
+    "eslint": "10.10.0",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "eslint-plugin-react-refresh": "0.5.6",
+    "globals": "17.12.0",
+    "smtp-server": "3.19.8",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.69.0",
+    "vitest": "4.1.11"
+  },
+  "pnpm": {
+    "overrides": {
+      "proxy-addr@^2.0.0": "2.0.8",
+      "brace-expansion@^5.0.0": "5.0.11",
+      "source-map-js@^1.0.0": "1.2.2",
+      "nodemailer@>=10.0.0 <10.0.6": "$nodemailer"
+    },
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "@tailwindcss/oxide"
+    ]
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1127.0",
+    "@aws-sdk/s3-request-presigner": "3.1127.0",
+    "@fastify/cors": "11.3.0",
+    "@fastify/rate-limit": "11.2.0",
+    "@fastify/swagger": "9.8.1",
+    "better-auth": "1.7.2",
+    "drizzle-orm": "0.45.2",
+    "fastify": "5.12.3",
+    "kysely": "0.29.5",
+    "nodemailer": "10.0.6",
+    "pg": "8.23.0",
+    "pg-boss": "12.30.0",
+    "zod": "4.5.4",
+    "tsx": "4.23.13"
+  }
+}

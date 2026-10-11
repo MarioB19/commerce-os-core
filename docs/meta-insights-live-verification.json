@@ -1,0 +1,44 @@
+{
+  "verified_at": "2026-09-07T02:29:16.934Z",
+  "range": {
+    "from": "2026-09-05",
+    "to": "2026-09-05"
+  },
+  "source": "META_API",
+  "mode": "OFFICIAL_GET_ONLY",
+  "configured_credentials": 2,
+  "discovered_accounts": 2,
+  "discovery_issues": [],
+  "results": [
+    {
+      "account_index": 1,
+      "status": "SYNCED",
+      "issues": [],
+      "totals": []
+    },
+    {
+      "account_index": 2,
+      "status": "SYNCED",
+      "issues": [],
+      "totals": [
+        {
+          "level": "ad",
+          "currency": "MXN",
+          "timezone": "America/Mexico_City",
+          "rows": 1,
+          "spend_minor": "0"
+        },
+        {
+          "level": "campaign",
+          "currency": "MXN",
+          "timezone": "America/Mexico_City",
+          "rows": 1,
+          "spend_minor": "0"
+        }
+      ]
+    }
+  ],
+  "external_mutations": 0,
+  "customer_rows_read": 0,
+  "production_changes": 0
+}

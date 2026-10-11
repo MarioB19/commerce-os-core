@@ -1,0 +1,430 @@
+name: Commerce OS CI/CD
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        description: Verify, release current main, fixed V5 credential issuer, or encrypted B02 offsite backup
+        options: [verify, release, credential, backup, copy-preflight]
+        default: verify
+        required: true
+      action:
+        type: choice
+        description: Fixed credential operation; used only in credential mode
+        options: [inspect, issue, readback, revoke]
+        default: inspect
+        required: false
+      expected_sha:
+        description: Exact main SHA; required by credential or copy-preflight mode
+        type: string
+        required: false
+      input_json:
+        description: Reviewed V5 input JSON; owner hash only, no password or secrets
+        type: string
+        required: false
+      return_public_key:
+        description: Local RSA public PEM; private key stays local
+        type: string
+        required: false
+permissions:
+  contents: read
+jobs:
+  changes:
+    if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || !contains(fromJSON('["credential","backup","copy-preflight"]'), inputs.mode))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      deployments: read
+      actions: read
+    outputs:
+      deploy: ${{ steps.scope.outputs.deploy }}
+      scope: ${{ steps.scope.outputs.scope }}
+      baseline: ${{ steps.scope.outputs.baseline }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          COMMERCE_DEPLOY_SCOPE: ${{ vars.COMMERCE_DEPLOY_SCOPE }}
+          DISPATCH_MODE: ${{ inputs.mode || 'verify' }}
+          COMMERCE_DEPLOY_PAUSED: ${{ vars.COMMERCE_DEPLOY_PAUSED }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci-changes.py
+  verify:
+    needs: changes
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    # Includes the registered MCP calendar through day 15 plus full recovery/E2E.
+    timeout-minutes: 90
+    concurrency:
+      group: commerce-verify-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Narrative and impact contracts
+        run: |
+          git diff --check
+          python3 -m unittest discover -s tests/ci -p 'test_*.py'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: needs.changes.outputs.scope != 'light'
+        with:
+          node-version-file: .node-version
+      - run: npm install --global pnpm@10.34.5
+        if: contains(fromJSON('["web","full"]'), needs.changes.outputs.scope)
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: contains(fromJSON('["web","full"]'), needs.changes.outputs.scope)
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        if: contains(fromJSON('["web","full"]'), needs.changes.outputs.scope)
+      - run: node --test scripts/tests/*.test.mjs
+        if: needs.changes.outputs.scope == 'full'
+      - name: Real portal capsule and WAL recovery contracts
+        run: node --disable-warning=ExperimentalWarning --test tests/ci/test_b02_portal_capsule.mjs
+        if: needs.changes.outputs.scope == 'full'
+      - run: pnpm local:setup
+        if: contains(fromJSON('["web","full"]'), needs.changes.outputs.scope)
+      - name: Linux portal capsule UID and readonly WAL recovery
+        run: node --disable-warning=ExperimentalWarning --test tests/ci/test_b02_portal_capsule_linux.mjs
+        if: needs.changes.outputs.scope == 'full'
+      - run: pnpm db:migrate && pnpm bootstrap
+        if: contains(fromJSON('["web","full"]'), needs.changes.outputs.scope)
+      - run: npm ci && npm run verify
+        if: contains(fromJSON('["portal","full"]'), needs.changes.outputs.scope)
+        working-directory: portals/mi-ciclo-listo
+      - run: pnpm typecheck && pnpm lint && pnpm build && pnpm test
+        if: contains(fromJSON('["web","full"]'), needs.changes.outputs.scope)
+      - run: pnpm test:integration && pnpm test:recovery
+        if: needs.changes.outputs.scope == 'full'
+      - run: pnpm exec playwright install --with-deps chromium
+        if: contains(fromJSON('["web","full"]'), needs.changes.outputs.scope)
+      - run: node scripts/setup-campaign-review.mjs "$RUNNER_TEMP/campaign-review"
+        if: contains(fromJSON('["web","full"]'), needs.changes.outputs.scope)
+      - run: pnpm test:e2e
+        if: contains(fromJSON('["web","full"]'), needs.changes.outputs.scope)
+        env:
+          COMMERCE_CONFIG_DIR: ${{ runner.temp }}/campaign-review
+      - run: pnpm audit --audit-level high
+        if: needs.changes.outputs.scope == 'full'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        # Successful verification is recorded in mandatory step logs and the gate.
+        # Reserve the limited Actions artifact quota for failed-browser diagnostics.
+        if: failure() && github.ref != 'refs/heads/main' && needs.changes.outputs.scope != 'light'
+        with:
+          name: verification-${{ github.sha }}
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: ignore
+          retention-days: 7
+  ci-gate:
+    name: Commerce CI gate
+    if: always() && github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || !contains(fromJSON('["credential","backup","copy-preflight"]'), inputs.mode))
+    needs: [changes, verify]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: python3 scripts/ci-gate.py
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          VERIFY_RESULT: ${{ needs.verify.result }}
+          VERIFY_SCOPE: ${{ needs.changes.outputs.scope }}
+  package:
+    needs: changes
+    if: needs.changes.outputs.deploy == 'true' && vars.COMMERCE_DEPLOY_PAUSED != 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.private_package.outputs.release_id }}
+      manifest_sha256: ${{ steps.private_package.outputs.manifest_sha256 }}
+    timeout-minutes: 25
+    concurrency:
+      group: commerce-package-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Reject dirty or sensitive release inputs
+        run: python3 scripts/package-ci.py --source-preflight
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: infra/Dockerfile
+          target: runtime
+          platforms: linux/amd64
+          load: true
+          tags: commerce-os:release
+          provenance: false
+          build-args: |
+            SOURCE_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=commerce-runtime
+          cache-to: type=gha,mode=max,scope=commerce-runtime
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: infra/Dockerfile
+          target: web
+          platforms: linux/amd64
+          load: true
+          tags: commerce-os-web:release
+          provenance: false
+          build-args: |
+            SOURCE_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=commerce-runtime
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: infra/Dockerfile
+          target: maintenance
+          platforms: linux/amd64
+          load: true
+          tags: commerce-os-maintenance:release
+          provenance: false
+          build-args: |
+            SOURCE_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=commerce-maintenance
+          cache-to: type=gha,mode=max,scope=commerce-maintenance
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: portals/mi-ciclo-listo
+          file: portals/mi-ciclo-listo/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: mi-ciclo-listo-portal:release
+          provenance: false
+          build-args: |
+            SOURCE_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=mcl-portal
+          cache-to: type=gha,mode=max,scope=mcl-portal
+      - name: Seal and validate release
+        run: python3 scripts/package-ci.py
+      - name: Store and read back sealed private package
+        id: private_package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci_private_artifact.py package
+  deploy:
+    needs: [ci-gate, package, changes]
+    if: github.ref == 'refs/heads/main' && needs.changes.outputs.deploy == 'true' && vars.COMMERCE_DEPLOY_PAUSED != 'true'
+    runs-on: ubuntu-24.04
+    # Covers the sealed installer watchdog plus its rollback grace and report readback.
+    timeout-minutes: 110
+    environment:
+      name: production
+      url: https://commerce-os.inovaris.online
+    concurrency:
+      group: commerce-os-production
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Reject a superseded commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: test "$(gh api repos/MarioB19/commerce-os/commits/main --jq .sha)" = "$GITHUB_SHA"
+      - name: Download and verify the exact private package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRIVATE_RELEASE_ID: ${{ needs.package.outputs.release_id }}
+          PRIVATE_MANIFEST_SHA256: ${{ needs.package.outputs.manifest_sha256 }}
+        run: python3 scripts/ci_private_artifact.py download
+      - name: Validate the closed deployment selection
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_INSTANCE: ${{ vars.GCP_INSTANCE }}
+          GCP_ZONE: ${{ vars.GCP_ZONE }}
+          COMMERCE_DEPLOY_SCOPE: ${{ vars.COMMERCE_DEPLOY_SCOPE }}
+        run: |
+          python3 - <<'PY'
+          import os,sys
+          sys.path.insert(0,'scripts')
+          from deployment_scope import deployment_scope
+          deployment_scope(os.environ)
+          PY
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          request_reason: commerce-os-deploy-${{ github.run_id }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - name: Stage private portal runtime configuration
+        if: vars.COMMERCE_DEPLOY_SCOPE != 'api-web' && vars.COMMERCE_DEPLOY_SCOPE != 'copy-runtime'
+        env:
+          MCL_PORTAL_ENV: ${{ secrets.MCL_PORTAL_ENV }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import sys
+          sys.path.insert(0,'scripts')
+          from mcl_portal_release import portal_env
+          raw=os.environ['MCL_PORTAL_ENV']
+          portal_env(raw,os.environ['GITHUB_SHA'])
+          path=Path(os.environ['RUNNER_TEMP'])/'mcl-portal.env'
+          path.write_text(raw)
+          path.chmod(0o600)
+          PY
+      - name: Transfer and install verified release
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_INSTANCE: ${{ vars.GCP_INSTANCE }}
+          GCP_ZONE: ${{ vars.GCP_ZONE }}
+          COMMERCE_DEPLOY_SCOPE: ${{ vars.COMMERCE_DEPLOY_SCOPE }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/deploy-ci-client.py
+      - name: Preserve private deployment report
+        if: always() && hashFiles('release/deployment.json') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci_private_artifact.py deployment
+
+  credential:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'credential' && github.ref == 'refs/heads/main' && github.repository == 'MarioB19/commerce-os'
+    environment: production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: commerce-os-production
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Validate fixed operation before cloud authentication
+        env:
+          V5_MODE: ${{ inputs.mode }}
+          V5_EXPECTED_SHA: ${{ inputs.expected_sha }}
+          V5_ACTION: ${{ inputs.action }}
+          V5_INPUT_JSON: ${{ inputs.input_json }}
+          V5_RETURN_PUBLIC_KEY: ${{ inputs.return_public_key }}
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_INSTANCE: ${{ vars.GCP_INSTANCE }}
+          GCP_ZONE: ${{ vars.GCP_ZONE }}
+        run: python3 -c 'import sys,os;sys.path.insert(0,"scripts");from v5_token_transport_config import validate_transport;validate_transport(os.environ)'
+      - name: Check existing private receipt escrow before cloud authentication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V5_MODE: ${{ inputs.mode }}
+          V5_EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: python3 scripts/v5_token_escrow.py preflight
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          request_reason: commerce-v5-credential-${{ github.run_id }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+      - name: Run only the deployed issuer and retrieve encrypted receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V5_MODE: ${{ inputs.mode }}
+          V5_EXPECTED_SHA: ${{ inputs.expected_sha }}
+          V5_ACTION: ${{ inputs.action }}
+          V5_INPUT_JSON: ${{ inputs.input_json }}
+          V5_RETURN_PUBLIC_KEY: ${{ inputs.return_public_key }}
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_INSTANCE: ${{ vars.GCP_INSTANCE }}
+          GCP_ZONE: ${{ vars.GCP_ZONE }}
+        run: python3 scripts/v5-token-ci.py
+      - name: Escrow ciphertext in existing private draft and verify download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V5_MODE: ${{ inputs.mode }}
+          V5_EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: python3 scripts/v5_token_escrow.py store
+
+  backup:
+    if: github.repository == 'MarioB19/commerce-os' && github.ref == 'refs/heads/main' && vars.B02_BACKUP_ENABLED == 'true' && ((github.event_name == 'workflow_dispatch' && inputs.mode == 'backup') || (github.event_name == 'schedule' && vars.B02_SCHEDULE_ENABLED == 'true'))
+    environment: production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    concurrency:
+      group: commerce-os-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      B02_MODE: ${{ inputs.mode || 'backup' }}
+      B02_BACKUP_ENABLED: ${{ vars.B02_BACKUP_ENABLED }}
+      B02_SCHEDULE_ENABLED: ${{ vars.B02_SCHEDULE_ENABLED }}
+      B02_TRANSPORT_JSON: ${{ vars.B02_TRANSPORT_JSON }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Validate reviewed backup inputs before cloud authentication
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_INSTANCE: ${{ vars.GCP_INSTANCE }}
+          GCP_ZONE: ${{ vars.GCP_ZONE }}
+        run: python3 scripts/b02-backup-ci.py --preflight
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          request_reason: commerce-b02-${{ github.run_id }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - name: Create bounded canonical B02 and verify encrypted offsite custody
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_INSTANCE: ${{ vars.GCP_INSTANCE }}
+          GCP_ZONE: ${{ vars.GCP_ZONE }}
+        run: python3 scripts/b02-backup-ci.py
+
+  copy-preflight:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'copy-preflight' && github.ref == 'refs/heads/main' && github.repository == 'MarioB19/commerce-os'
+    environment: production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    concurrency:
+      group: commerce-os-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      COPY_PREFLIGHT_MODE: ${{ inputs.mode }}
+      COPY_PREFLIGHT_EXPECTED_SHA: ${{ inputs.expected_sha }}
+      COPY_PREFLIGHT_ACTION: ${{ inputs.action }}
+      COPY_PREFLIGHT_INPUT_JSON: ${{ inputs.input_json }}
+      COPY_PREFLIGHT_RETURN_PUBLIC_KEY: ${{ inputs.return_public_key }}
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_INSTANCE: ${{ vars.GCP_INSTANCE }}
+      GCP_ZONE: ${{ vars.GCP_ZONE }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_DEPLOY_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Reject drift and non-diagnostic inputs before cloud authentication
+        run: python3 scripts/copy-native-preflight-ci.py --preflight
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          request_reason: commerce-copy-preflight-${{ github.run_id }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
+      - name: Observe fixed native metadata without installing or starting anything
+        run: python3 scripts/copy-native-preflight-ci.py

@@ -1,0 +1,19 @@
+# Contraste con la referencia brasileña y Dashboard WA
+
+Revisión del 08-sep-2026 sobre la implementación de cierre y el incremento de dashboard. Se reutilizan las notas registradas del proyecto; esto no es una nueva investigación de proveedores, precios ni políticas.
+
+Fuentes del vault: `01 — WhatsApp/🏗️ Arquitectura de desarrollo — VPS, QR y operación — 2026-09-05.md`, sección 6; `01 — WhatsApp/🔎 Referencia — Venta por WhatsApp, múltiples números y QR — 2026-09-07.md`, lectura para Commerce OS y patrón transferible; `01 — WhatsApp/📊 Plan — Campañas, cruce de ventas y comprobantes — 2026-09-06.md`. Referencia de interfaz y parser: `Projects/Vibe Marketing/dashboard-wa/app/dashboard-client.tsx` (`BalanceHero`) y `lib/campaign-product.ts`.
+
+| Patrón registrado | Aplicación y evidencia de código | Límite operativo |
+|---|---|---|
+| Instancia por número, webhook, bandeja y asignación humana | Inventario canónico, adaptadores intercambiables, ownership, ingress idempotente, Inbox y takeover; se conserva la misma outbox para la operación gobernada. | El único número productivo observado está FAILED y necesita vinculación/identidad humana. |
+| Captación con contexto, producto y origen | Jerarquía Meta de sólo lectura y origen por IDs, separado del producto vendido. Dashboard agrupa etiquetas de campañas con origen visible, sin convertirlas en atribución de ventas. | Nombres o destinos coincidentes no prueban quién generó una venta. |
+| Calificación y respuesta coordinada | Grado/interés canónicos, flujo y vendedor con contexto fijado, control de espera, baja y takeover. | Pruebas deterministas aprobadas; calidad del proveedor IA real pendiente. |
+| Cobro y seguimiento por eventos | El comprobante aprobado reconoce ingreso y gobierna beneficios según oferta; correcciones, Prueba/Falso e idempotencia preservados. | Se adapta el checkout descrito en la referencia al comprobante, sin conciliación bancaria adicional. |
+| Operación de varios números y observabilidad | Pools propios, identidad cifrada, trabajos persistentes, planes/ACK y concentración visibles, límites en ambos extremos, pausas, UNKNOWN y breaker. | No prueba menor tasa de bloqueo ni autoriza clientes/terceros en el pool. Los pilotos y tiempos reales siguen pendientes. |
+| Dashboard WA: balance, filtros y tabla por producto/anuncio | Balance destacado, gasto/ingreso/ventas, gráfica, búsqueda y orden local, filtros de producto/campaña/anuncio/cuenta y desglose de fuentes. | No copia IVA fijo ni aprobación implícita de filas históricas sin comprobante. |
+| Parser de campañas WA | Extrae el segmento producto en la convención WA. Conserva el alias documentado Costura → Costura que Vende sólo si el destino existe y no hay otra extensión competidora; no generaliza similitud de prefijos. Asociación de catálogo versionada prevalece; candidato exacto requiere confirmación. | Una etiqueta extraída sirve para agrupar; no crea productos, modifica anuncios ni atribuye ingresos por similitud. |
+
+La comparación detectó y corrigió una brecha de UI: el editor sólo podía aprobar dos turnos, insuficientes para alcanzar mínimos de fases posteriores dentro del máximo de conversaciones. Ahora permite 2–20 turnos con contenido propio y aprobación explícita; muestra los límites de cada fase. La pantalla de números expone plan frente a ACK y concentración histórica planificada. [Recorrido y pruebas](warmup-ui.md).
+
+La nota brasileña no aportaba una técnica de antibaneo demostrada ni justifica incorporar Evolution, Chatwoot, Z-API o similares por su mera mención. Se mantienen los adaptadores actuales y prácticas legítimas. Treinta días efectivos, fase 3 desde el día 8, observación, apertura de materiales y capacidad productiva requieren evidencia propia; la publicación de software no los convierte en resultados obtenidos.

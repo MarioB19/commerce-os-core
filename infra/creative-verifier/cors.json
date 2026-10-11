@@ -1,0 +1,11 @@
+{
+  "rules": [{
+    "allowed": {
+      "origins": ["https://commerce-os.inovaris.online"],
+      "methods": ["GET", "HEAD", "PUT"],
+      "headers": ["content-type", "content-length", "range"]
+    },
+    "exposeHeaders": ["ETag", "Content-Length", "Content-Range", "Accept-Ranges"],
+    "maxAgeSeconds": 600
+  }]
+}

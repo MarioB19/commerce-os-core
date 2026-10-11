@@ -1,0 +1,2807 @@
+{
+  "server": "commerce-os",
+  "tools": [
+    {
+      "name": "number_episodes_list",
+      "title": "Historial de preparación",
+      "description": "Episodios y evidencia previa sin reinicios silenciosos ni crédito inventado.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "account_id"
+        ]
+      },
+      "http": {
+        "route": "/v1/numbers/{id}/episodes?environment=REAL",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "number_capacity_administration_list",
+      "title": "Operaciones del administrador acotado",
+      "description": "Cola por workspace; requiere scope específico de agente administrativo.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        }
+      },
+      "http": {
+        "route": "/v1/number-capacity/administration?environment=REAL",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "number_capacity_administration_command",
+      "title": "Claim o readback de capacidad",
+      "description": "Sólo administrador autenticado. Nunca inventar mediciones, aislamiento o resultados; UNKNOWN requiere readback de la misma operación.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "operation_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "expected_version": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "claim",
+                  "complete",
+                  "reconcile"
+                ]
+              },
+              "overlay_sha": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "PREPARED",
+                  "VERIFIED",
+                  "FAILED",
+                  "UNKNOWN"
+                ]
+              },
+              "slots": {
+                "maxItems": 20,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "slot": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 20
+                    },
+                    "running": {
+                      "type": "boolean"
+                    },
+                    "session_count": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "connected_sessions": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "image_digest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "network_present": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "volumes_preserved": {
+                      "type": "boolean",
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "slot",
+                    "running",
+                    "session_count",
+                    "image_digest",
+                    "network_present",
+                    "volumes_preserved"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 300
+              }
+            },
+            "required": [
+              "expected_version",
+              "action",
+              "reason"
+            ],
+            "additionalProperties": false
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "operation_id",
+          "body",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-capacity/administration/{id}",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "number_capacity_measurement",
+      "title": "Registrar medición del host",
+      "description": "Sólo evidencia recién medida por administrador acotado. No completar con estimaciones del modelo.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "host_ref": {
+                "type": "string",
+                "const": "primary"
+              },
+              "observed_at": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "source": {
+                "type": "string",
+                "const": "bounded_capacity_administrator"
+              },
+              "metrics": {
+                "type": "object",
+                "properties": {
+                  "cpu_cores": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "maximum": 1024
+                  },
+                  "cpu_busy_ratio": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  },
+                  "memory_total_bytes": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "memory_available_bytes": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "disk_available_bytes": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "gateway_count": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 20
+                  },
+                  "physical_sessions_verified": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 20
+                  },
+                  "overlay_sha": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      {
+                        "type": "string",
+                        "const": "absent"
+                      }
+                    ]
+                  },
+                  "measured_gateway_memory_bytes": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "required_margin_ram": {
+                    "default": 0.25,
+                    "type": "number",
+                    "minimum": 0.25,
+                    "maximum": 1
+                  },
+                  "required_margin_cpu": {
+                    "default": 0.3,
+                    "type": "number",
+                    "minimum": 0.3,
+                    "maximum": 1
+                  }
+                },
+                "required": [
+                  "cpu_cores",
+                  "cpu_busy_ratio",
+                  "memory_total_bytes",
+                  "memory_available_bytes",
+                  "disk_available_bytes",
+                  "gateway_count",
+                  "physical_sessions_verified",
+                  "overlay_sha",
+                  "measured_gateway_memory_bytes"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "host_ref",
+              "observed_at",
+              "source",
+              "metrics"
+            ],
+            "additionalProperties": false
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "body",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-capacity/measurements",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "number_capacity_inventory",
+      "title": "Registrar inventario observado",
+      "description": "Readback físico del administrador; no crea sesiones ni gateways.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "observed_at": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "slots": {
+                "maxItems": 20,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "slot": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 20
+                    },
+                    "running": {
+                      "type": "boolean"
+                    },
+                    "session_count": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "connected_sessions": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "image_digest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    "network_present": {
+                      "type": "boolean",
+                      "const": true
+                    },
+                    "volumes_preserved": {
+                      "type": "boolean",
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "slot",
+                    "running",
+                    "session_count",
+                    "image_digest",
+                    "network_present",
+                    "volumes_preserved"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "observed_at",
+              "slots"
+            ],
+            "additionalProperties": false
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "body",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-capacity/inventory",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "numbers_list",
+      "title": "Mis números",
+      "description": "Estado y siguiente acción calculados por el servidor, con paginación y productos. Sólo lectura.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 30
+          },
+          "offset": {
+            "default": 0,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "limit": {
+            "default": 20,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        }
+      },
+      "http": {
+        "route": "/v1/numbers?environment=REAL",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "number_get",
+      "title": "Detalle de número",
+      "description": "Lee el mismo estado que la web; salud vencida nunca acredita disponibilidad.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "account_id"
+        ]
+      },
+      "http": {
+        "route": "/v1/numbers/{id}?environment=REAL",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "number_create",
+      "title": "Preparar nuevo número",
+      "description": "Reserva plaza y devuelve operation_id. No conecta, autoriza ni envía. Usa alias y responsable/dispositivo propios.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "alias": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 100
+              },
+              "responsible": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 100
+              },
+              "device_ref": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 100
+              }
+            },
+            "required": [
+              "alias",
+              "responsible",
+              "device_ref"
+            ],
+            "additionalProperties": false
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "body",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/numbers",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "number_edit",
+      "title": "Editar número",
+      "description": "Alias y responsable/dispositivo con revisión, sin cambiar permisos.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "alias": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 100
+              },
+              "responsible": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 100
+              },
+              "device_ref": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 100
+              },
+              "expected_version": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "alias",
+              "responsible",
+              "device_ref",
+              "expected_version"
+            ],
+            "additionalProperties": false
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "account_id",
+          "body",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/numbers/{id}",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "PATCH"
+      }
+    },
+    {
+      "name": "number_retire",
+      "title": "Retirar número conservando historial",
+      "description": "Usa los guards de la web: primero desconexión o desvinculación confirmada, sin efectos pendientes o UNKNOWN. No desconecta, borra sesiones ni libera capacidad implícitamente.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "expected_version": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "confirmation": {
+            "type": "string",
+            "const": "DELETE_CHANNEL_ACCOUNT"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 2000
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "account_id",
+          "expected_version",
+          "confirmation",
+          "reason",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/channel-accounts/{id}",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "DELETE"
+      }
+    },
+    {
+      "name": "numbers_batch",
+      "title": "Lote de hasta veinte números",
+      "description": "Resultados independientes y claves estables por elemento. Repetir misma clave recupera resultado; UNKNOWN requiere lectura.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "items": {
+            "minItems": 1,
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 60
+                },
+                "action": {
+                  "type": "string",
+                  "enum": [
+                    "create",
+                    "edit",
+                    "observe-identity",
+                    "preparation"
+                  ]
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                },
+                "body": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {}
+                }
+              },
+              "required": [
+                "key",
+                "action",
+                "body"
+              ]
+            }
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/numbers/batch",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "number_operation_command",
+      "title": "Reanudar consulta durable",
+      "description": "Sólo trabajos de lectura de identidad o grupos, conservando el cursor. Una operación mutante UNKNOWN requiere readback administrativo, nunca reintento.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "operation_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "const": "resume_read"
+              },
+              "expected_version": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 300
+              }
+            },
+            "required": [
+              "action",
+              "expected_version",
+              "reason"
+            ],
+            "additionalProperties": false
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "operation_id",
+          "body",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-operations/{id}/commands",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "number_operation_get",
+      "title": "Consultar operación durable",
+      "description": "202 significa solicitado. Leer hasta SUCCEEDED, FAILED, UNKNOWN o intervención humana; nunca reintentar UNKNOWN.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "operation_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "operation_id"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-operations/{id}?environment=REAL",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "number_identity_observe",
+      "title": "Releer identidad conectada",
+      "description": "Job de lectura de proveedor; no confirma propiedad ni modifica perfil. Consulta operation_id.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "expected_version": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "account_id",
+          "expected_version",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/numbers/{id}/observe-identity",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "number_identity_confirm",
+      "title": "Confirmar propiedad del número detectado",
+      "description": "Sólo tras confirmación humana de propiedad. Usa identidad observada protegida, nunca un teléfono escrito por el modelo.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "expected_version": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "ownership_confirmed": {
+            "type": "boolean",
+            "const": true
+          },
+          "name": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 100
+          },
+          "about": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 200
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "account_id",
+          "expected_version",
+          "ownership_confirmed",
+          "name",
+          "about",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/numbers/{id}/confirm-identity",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "number_link_access",
+      "title": "Acceso humano a vinculación QR",
+      "description": "Devuelve acceso autenticado por 90 segundos, nunca bytes del QR. La persona escanea. Conectar/reiniciar requiere canal y permiso explícitos.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "account_id",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/numbers/{id}/link-access",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "number_preparation_get",
+      "title": "Progreso automático",
+      "description": "Episodio, catorce días automáticos acreditados, evaluación desde el día quince y motivos pendientes. Declaraciones sólo aparecen como historial v1; SIMULATION no acredita días reales.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "account_id"
+        ]
+      },
+      "http": {
+        "route": "/v1/numbers/{id}/preparation?environment=REAL",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "number_preparation_command",
+      "title": "Gestionar preparación y migración",
+      "description": "Iniciar o revisar/migrar un episodio a v2 conservando sólo planes automáticos compatibles. Declarar/corregir permanece exclusivamente para episodios históricos v1.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "expected_version": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "start",
+                  "declare",
+                  "correct",
+                  "migration_preview",
+                  "migrate"
+                ]
+              },
+              "timezone": {
+                "type": "string"
+              },
+              "task": {
+                "type": "string",
+                "enum": [
+                  "authentic_profile",
+                  "responsible_device",
+                  "consented_contacts",
+                  "human_conversations"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "COMPLETED",
+                  "PENDING",
+                  "UNVERIFIABLE"
+                ]
+              },
+              "note": {
+                "default": "",
+                "type": "string",
+                "maxLength": 500
+              },
+              "supersedes_id": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "review": {
+                "type": "string",
+                "minLength": 64,
+                "maxLength": 64
+              }
+            },
+            "required": [
+              "expected_version",
+              "action"
+            ],
+            "additionalProperties": false
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "account_id",
+          "body",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/numbers/{id}/preparation",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "number_policy_get",
+      "title": "Política automática de quince días",
+      "description": "Catorce días automáticos autorizados y evaluación desde el día quince. No exige checklist diario y no concede venta o mantenimiento.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        }
+      },
+      "http": {
+        "route": "/v1/number-policy?environment=REAL",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "number_groups_list",
+      "title": "Consultar grupos propios existentes",
+      "description": "Membresía observada y versionada, todos los miembros incluidos; no crea grupos ni invita.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 30
+          },
+          "offset": {
+            "default": 0,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "limit": {
+            "default": 20,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        }
+      },
+      "http": {
+        "route": "/v1/number-groups?environment=REAL",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "number_groups_refresh",
+      "title": "Actualizar observación de grupos",
+      "description": "Job acotado de lectura de las sesiones elegidas, sin crear grupos ni enviar.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "account_ids": {
+            "minItems": 1,
+            "maxItems": 20,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "account_ids",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-groups/refresh",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "number_programs_list",
+      "title": "Consultar calentamientos",
+      "description": "Instancias y borradores persistidos, filtros y paginación.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 30
+          },
+          "offset": {
+            "default": 0,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "limit": {
+            "default": 20,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        }
+      },
+      "http": {
+        "route": "/v1/number-programs?environment=REAL",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "number_program_get",
+      "title": "Leer instancia y planes",
+      "description": "Recupera la versión vigente de una instancia, incluso desde otra sesión.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "program_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "program_id"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-programs/{id}?environment=REAL",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "number_program_create",
+      "title": "Guardar borrador de calentamiento",
+      "description": "Crea únicamente un programa nuevo standard-15d/v2 con grupo/números, contenido aprobado, horario, cuotas y vencimiento. Preparación y mantenimiento son alcances separados; las políticas históricas sólo se leen o migran.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 100
+              },
+              "topology": {
+                "default": "group",
+                "type": "string",
+                "enum": [
+                  "direct",
+                  "group"
+                ]
+              },
+              "purpose": {
+                "default": "preparation",
+                "type": "string",
+                "enum": [
+                  "preparation",
+                  "maintenance"
+                ]
+              },
+              "group_id": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "account_ids": {
+                "minItems": 2,
+                "maxItems": 20,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                }
+              },
+              "content_ids": {
+                "default": [],
+                "maxItems": 100,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                }
+              },
+              "profile": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 100
+                  },
+                  "policy_version": {
+                    "default": "standard-15d/v2",
+                    "type": "string",
+                    "const": "standard-15d/v2"
+                  },
+                  "mode": {
+                    "default": "standard",
+                    "type": "string",
+                    "const": "standard"
+                  },
+                  "timezone": {
+                    "type": "string"
+                  },
+                  "start_hour": {
+                    "default": 9,
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 22
+                  },
+                  "end_hour": {
+                    "default": 18,
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 23
+                  },
+                  "profile_wait_hours": {
+                    "default": 24,
+                    "type": "integer",
+                    "minimum": 12,
+                    "maximum": 24
+                  },
+                  "weekend_factor": {
+                    "default": 0.5,
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  },
+                  "rate_per_minute": {
+                    "default": 2,
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10
+                  },
+                  "jitter_seconds": {
+                    "default": 60,
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 120
+                  },
+                  "ack_maturity_minutes": {
+                    "default": 30,
+                    "type": "integer",
+                    "minimum": 5,
+                    "maximum": 1440
+                  },
+                  "min_ack_samples": {
+                    "default": 20,
+                    "type": "integer",
+                    "minimum": 20,
+                    "maximum": 10000
+                  },
+                  "inbound_light_days": {
+                    "default": 10,
+                    "type": "integer",
+                    "minimum": 7,
+                    "maximum": 10
+                  }
+                },
+                "required": [
+                  "name",
+                  "timezone"
+                ],
+                "additionalProperties": false
+              },
+              "expires_at": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+              },
+              "max_messages": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 50000
+              }
+            },
+            "required": [
+              "name",
+              "account_ids",
+              "profile",
+              "expires_at"
+            ],
+            "additionalProperties": false
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "body",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-programs",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "number_program_edit",
+      "title": "Editar borrador",
+      "description": "Edición con expected_version. Invalida revisión; primero pausar y revocar si tiene autorización vigente.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "program_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 100
+              },
+              "topology": {
+                "default": "group",
+                "type": "string",
+                "enum": [
+                  "direct",
+                  "group"
+                ]
+              },
+              "purpose": {
+                "default": "preparation",
+                "type": "string",
+                "enum": [
+                  "preparation",
+                  "maintenance"
+                ]
+              },
+              "group_id": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "account_ids": {
+                "minItems": 2,
+                "maxItems": 20,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                }
+              },
+              "content_ids": {
+                "default": [],
+                "maxItems": 100,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                }
+              },
+              "profile": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 100
+                  },
+                  "policy_version": {
+                    "default": "standard-15d/v2",
+                    "type": "string",
+                    "enum": [
+                      "standard-15d/v1",
+                      "standard-15d/v2",
+                      "legacy-30d/v1",
+                      "inbound-light/v1"
+                    ]
+                  },
+                  "mode": {
+                    "default": "standard",
+                    "type": "string",
+                    "enum": [
+                      "standard",
+                      "inbound-light"
+                    ]
+                  },
+                  "timezone": {
+                    "type": "string"
+                  },
+                  "start_hour": {
+                    "default": 9,
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 22
+                  },
+                  "end_hour": {
+                    "default": 18,
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 23
+                  },
+                  "profile_wait_hours": {
+                    "default": 24,
+                    "type": "integer",
+                    "minimum": 12,
+                    "maximum": 24
+                  },
+                  "weekend_factor": {
+                    "default": 0.5,
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  },
+                  "rate_per_minute": {
+                    "default": 2,
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10
+                  },
+                  "jitter_seconds": {
+                    "default": 60,
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 120
+                  },
+                  "ack_maturity_minutes": {
+                    "default": 30,
+                    "type": "integer",
+                    "minimum": 5,
+                    "maximum": 1440
+                  },
+                  "min_ack_samples": {
+                    "default": 20,
+                    "type": "integer",
+                    "minimum": 20,
+                    "maximum": 10000
+                  },
+                  "inbound_light_days": {
+                    "default": 10,
+                    "type": "integer",
+                    "minimum": 7,
+                    "maximum": 10
+                  }
+                },
+                "required": [
+                  "name",
+                  "timezone"
+                ],
+                "additionalProperties": false
+              },
+              "expires_at": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+              },
+              "max_messages": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 50000
+              },
+              "expected_version": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "name",
+              "account_ids",
+              "profile",
+              "expires_at",
+              "expected_version"
+            ],
+            "additionalProperties": false
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "program_id",
+          "body",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-programs/{id}",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "PATCH"
+      }
+    },
+    {
+      "name": "number_program_preview",
+      "title": "Preflight y cobertura",
+      "description": "Lectura sin efectos: catorce días automáticos, turnos, cuotas, vigencia e impacto en todos los productos.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "program_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "program_id"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-programs/{id}/preview?environment=REAL",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "number_program_command",
+      "title": "Revisar, autorizar y gestionar instancia",
+      "description": "review, authorize y activate son acciones distintas. REAL exige permiso específico del usuario; confirmación y revisión exacta. Pausa/reanuda sin repetir UNKNOWN; archivo conserva historia.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "program_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "expected_version": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "review",
+                  "authorize",
+                  "activate",
+                  "pause",
+                  "resume",
+                  "cancel",
+                  "archive",
+                  "restore",
+                  "revoke"
+                ]
+              },
+              "review": {
+                "type": "string",
+                "minLength": 64,
+                "maxLength": 64
+              },
+              "confirmation": {
+                "type": "string",
+                "enum": [
+                  "AUTHORIZE_REVIEWED_PROGRAM",
+                  "ACTIVATE_REVIEWED_PROGRAM"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 500
+              }
+            },
+            "required": [
+              "expected_version",
+              "action",
+              "reason"
+            ],
+            "additionalProperties": false
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "program_id",
+          "body",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-programs/{id}/commands",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "number_program_evidence",
+      "title": "Evidencia de instancia",
+      "description": "Eventos y trazabilidad paginados con entorno y fuentes.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "program_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "q": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 30
+          },
+          "offset": {
+            "default": 0,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "limit": {
+            "default": 20,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "program_id"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-programs/{id}/evidence?environment=REAL",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "number_library_list",
+      "title": "Biblioteca editable",
+      "description": "Borradores y referencias de versiones aprobadas, sin aprobación implícita.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 30
+          },
+          "offset": {
+            "default": 0,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "limit": {
+            "default": 20,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        }
+      },
+      "http": {
+        "route": "/v1/number-library?environment=REAL",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "number_library_seed",
+      "title": "Preparar biblioteca inicial",
+      "description": "Crea conversaciones legítimas de prueba como borradores editables. Ningún contenido queda aprobado.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-library/seed",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "number_library_create",
+      "title": "Crear conversación de prueba",
+      "description": "Guarda borrador propio; no publica, aprueba ni envía.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 100
+              },
+              "turns": {
+                "minItems": 2,
+                "maxItems": 20,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "default": "text",
+                      "type": "string",
+                      "enum": [
+                        "text",
+                        "image",
+                        "audio",
+                        "document"
+                      ]
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 2000
+                    },
+                    "asset_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "ownership_confirmed": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "label",
+              "turns",
+              "ownership_confirmed"
+            ],
+            "additionalProperties": false
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "body",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-library",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "number_library_edit",
+      "title": "Editar conversación de prueba",
+      "description": "Nueva revisión del borrador. Conserva contenido aprobado histórico.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "content_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "body": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 100
+              },
+              "turns": {
+                "minItems": 2,
+                "maxItems": 20,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "default": "text",
+                      "type": "string",
+                      "enum": [
+                        "text",
+                        "image",
+                        "audio",
+                        "document"
+                      ]
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 2000
+                    },
+                    "asset_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "ownership_confirmed": {
+                "type": "boolean",
+                "const": true
+              },
+              "expected_version": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "label",
+              "turns",
+              "ownership_confirmed",
+              "expected_version"
+            ],
+            "additionalProperties": false
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "content_id",
+          "body",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-library/{id}",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "PATCH"
+      }
+    },
+    {
+      "name": "number_library_approve",
+      "title": "Aprobar contenido concreto",
+      "description": "Requiere revisión del texto propio exacto y aprobación explícita. No activa programas.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "content_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "expected_version": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "confirmation": {
+            "type": "string",
+            "const": "APPROVE_OWN_TEST_CONTENT"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "content_id",
+          "expected_version",
+          "confirmation",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-library/{id}/approve",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "number_capacity_get",
+      "title": "Capacidad e inventario de workers",
+      "description": "Instalada, reservada, en uso y evidencia física/sintética por separado. Máximos de recursos no equivalen a consumo.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "state": {
+            "type": "string",
+            "maxLength": 30
+          },
+          "offset": {
+            "default": 0,
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "limit": {
+            "default": 20,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        }
+      },
+      "http": {
+        "route": "/v1/number-capacity?environment=REAL",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "number_capacity_command",
+      "title": "Preparar y ampliar capacidad",
+      "description": "Preview, preparación, expansión revisada o drenaje. No inicia sesiones. REAL requiere infraestructura medida y administrador acotado.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "preview",
+                  "prepare",
+                  "expand",
+                  "drain"
+                ]
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20
+              },
+              "slot_id": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "expected_version": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "review": {
+                "type": "string",
+                "minLength": 64,
+                "maxLength": 64
+              },
+              "confirmation": {
+                "type": "string",
+                "const": "APPLY_REVIEWED_CAPACITY"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 500
+              }
+            },
+            "required": [
+              "action",
+              "reason"
+            ],
+            "additionalProperties": false
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "default": "REAL",
+            "type": "string",
+            "enum": [
+              "REAL",
+              "SIMULATION"
+            ]
+          }
+        },
+        "required": [
+          "body",
+          "idempotency_key"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-capacity",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "number_simulation_get",
+      "title": "Leer laboratorio de números",
+      "description": "Reloj y escenario aislados. No acredita actividad física.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "environment": {
+            "type": "string",
+            "const": "SIMULATION"
+          }
+        },
+        "required": [
+          "environment"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-simulation?environment=REAL",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "number_simulation_clock",
+      "title": "Controlar reloj de laboratorio",
+      "description": "Sólo workspace aislado SIMULATION. Avance máximo de 30 minutos con programas activos; no crea entregas ni días aprobados.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "create",
+                  "advance"
+                ]
+              },
+              "at": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 86400
+              },
+              "expected_version": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "action"
+            ]
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "type": "string",
+            "const": "SIMULATION"
+          }
+        },
+        "required": [
+          "body",
+          "idempotency_key",
+          "environment"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-simulation",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "number_simulation_group",
+      "title": "Configurar grupo del adaptador sin red",
+      "description": "Fixture explícita SIMULATION; no crea grupo físico ni invitaciones. El motor normal produce la evidencia.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 100
+              },
+              "account_ids": {
+                "minItems": 2,
+                "maxItems": 20,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                }
+              },
+              "fault": {
+                "default": "none",
+                "type": "string",
+                "enum": [
+                  "none",
+                  "delay",
+                  "duplicate",
+                  "out_of_order",
+                  "accepted_timeout",
+                  "rejected",
+                  "peer_disconnected",
+                  "slow_gateway"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "account_ids"
+            ]
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "type": "string",
+            "const": "SIMULATION"
+          }
+        },
+        "required": [
+          "body",
+          "idempotency_key",
+          "environment"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-simulation/groups",
+        "body": {
+          "environment": "REAL"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "number_flow_test_start",
+      "title": "Probar flujo de un número",
+      "description": "Copia todas las asignaciones REAL vigentes a un adaptador SIMULATION aislado, incluidos productos, ofertas, reglas, flujos, vendedor y materiales. Nunca envía por el número real.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "contact_name": {
+            "default": "Contacto de prueba",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "type": "string",
+            "const": "SIMULATION"
+          }
+        },
+        "required": [
+          "account_id",
+          "idempotency_key",
+          "environment"
+        ]
+      },
+      "http": {
+        "route": "/v1/channel-accounts/{id}/flow-tests",
+        "body": {
+          "environment": "SIMULATION"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "number_flow_test_latest",
+      "title": "Recuperar última prueba del número",
+      "description": "Lee la prueba SIMULATION más reciente creada desde el número, sin exigir que la persona copie un ID ni consultar el transporte real.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "environment": {
+            "type": "string",
+            "const": "SIMULATION"
+          }
+        },
+        "required": [
+          "account_id",
+          "environment"
+        ]
+      },
+      "http": {
+        "route": "/v1/channel-accounts/{id}/flow-tests/latest?environment=SIMULATION",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "number_flow_test_get",
+      "title": "Leer prueba de flujo",
+      "description": "Devuelve rutas, conversación, efectos simulados, timers, pedidos, comprobantes y comandos del laboratorio. Cero lectura o envío por transporte real.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "test_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "environment": {
+            "type": "string",
+            "const": "SIMULATION"
+          }
+        },
+        "required": [
+          "test_id",
+          "environment"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-flow-tests/{id}?environment=SIMULATION",
+        "method": "GET"
+      }
+    },
+    {
+      "name": "number_flow_test_action",
+      "title": "Actuar en prueba de flujo",
+      "description": "Escribe como cliente, prueba una selección, aceptación o pregunta, adjunta un comprobante sintético, aprueba explícitamente su revisión manual y controla el reloj virtual. Se bloquea mientras otra acción siga pendiente.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "test_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "body": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "message"
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  }
+                },
+                "required": [
+                  "type",
+                  "text"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "question"
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  }
+                },
+                "required": [
+                  "type",
+                  "text"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "select_product"
+                  },
+                  "selection_key": {
+                    "type": "string",
+                    "pattern": "^ruta-[1-9][0-9]?$"
+                  }
+                },
+                "required": [
+                  "type",
+                  "selection_key"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "accept"
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "receipt"
+                  },
+                  "amount_minor": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "currency": {
+                    "default": "MXN",
+                    "type": "string",
+                    "pattern": "^[A-Z]{3}$"
+                  }
+                },
+                "required": [
+                  "type",
+                  "amount_minor"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "approve_receipt"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "advance"
+                  },
+                  "seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 604800
+                  }
+                },
+                "required": [
+                  "type",
+                  "seconds"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "next_reminder"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "type": "string",
+            "const": "SIMULATION"
+          }
+        },
+        "required": [
+          "test_id",
+          "body",
+          "idempotency_key",
+          "environment"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-flow-tests/{id}/actions",
+        "body": {
+          "environment": "SIMULATION"
+        },
+        "method": "POST"
+      }
+    },
+    {
+      "name": "number_flow_test_reset",
+      "title": "Reiniciar prueba de flujo",
+      "description": "Conserva el ensayo anterior como RESET y crea un snapshot nuevo de las asignaciones vigentes del mismo número. No modifica REAL.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "test_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "contact_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 160
+          },
+          "environment": {
+            "type": "string",
+            "const": "SIMULATION"
+          }
+        },
+        "required": [
+          "test_id",
+          "idempotency_key",
+          "environment"
+        ]
+      },
+      "http": {
+        "route": "/v1/number-flow-tests/{id}/reset",
+        "body": {
+          "environment": "SIMULATION"
+        },
+        "method": "POST"
+      }
+    }
+  ]
+}

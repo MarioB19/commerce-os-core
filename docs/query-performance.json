@@ -1,0 +1,294 @@
+{
+  "database": "commerce_load_1788654947061",
+  "observed_at": "2026-09-06T00:47:57.968Z",
+  "method": "EXPLAIN ANALYZE BUFFERS on same synthetic retained dataset; warm caches and concurrent local activity, not production throughput guarantee",
+  "counts": {
+    "records": 5613,
+    "effects": 1840,
+    "events": 6296
+  },
+  "before": {
+    "effectProjection": {
+      "planning_ms": 21.469,
+      "execution_ms": 5661.025,
+      "nodes": [
+        {
+          "type": "Limit",
+          "index": null,
+          "actual_rows": 0,
+          "loops": 1,
+          "rows_removed": 0,
+          "shared_hit_blocks": 747624
+        },
+        {
+          "type": "Sort",
+          "index": null,
+          "actual_rows": 0,
+          "loops": 1,
+          "rows_removed": 0,
+          "shared_hit_blocks": 747624
+        },
+        {
+          "type": "Seq Scan",
+          "index": null,
+          "actual_rows": 0,
+          "loops": 1,
+          "rows_removed": 1840,
+          "shared_hit_blocks": 747621
+        },
+        {
+          "type": "Seq Scan",
+          "index": null,
+          "actual_rows": 3680,
+          "loops": 1,
+          "rows_removed": 1933,
+          "shared_hit_blocks": 406
+        },
+        {
+          "type": "Seq Scan",
+          "index": null,
+          "actual_rows": 0,
+          "loops": 1840,
+          "rows_removed": 5613,
+          "shared_hit_blocks": 747040
+        }
+      ]
+    },
+    "identity": {
+      "planning_ms": 1.608,
+      "execution_ms": 0.087,
+      "nodes": [
+        {
+          "type": "Limit",
+          "index": null,
+          "actual_rows": 1,
+          "loops": 1,
+          "rows_removed": 0,
+          "shared_hit_blocks": 5
+        },
+        {
+          "type": "Seq Scan",
+          "index": null,
+          "actual_rows": 1,
+          "loops": 1,
+          "rows_removed": 68,
+          "shared_hit_blocks": 5
+        }
+      ]
+    },
+    "idLookup": {
+      "planning_ms": 0.065,
+      "execution_ms": 15.772,
+      "nodes": [
+        {
+          "type": "Bitmap Heap Scan",
+          "index": null,
+          "actual_rows": 1,
+          "loops": 1,
+          "rows_removed": 499,
+          "shared_hit_blocks": 182
+        },
+        {
+          "type": "Bitmap Index Scan",
+          "index": "records_workspace_id_kind_id_key",
+          "actual_rows": 500,
+          "loops": 1,
+          "rows_removed": 0,
+          "shared_hit_blocks": 9
+        }
+      ]
+    },
+    "eventConsumer": {
+      "planning_ms": 13.698,
+      "execution_ms": 124.016,
+      "nodes": [
+        {
+          "type": "Limit",
+          "index": null,
+          "actual_rows": 0,
+          "loops": 1,
+          "rows_removed": 0,
+          "shared_hit_blocks": 322
+        },
+        {
+          "type": "Sort",
+          "index": null,
+          "actual_rows": 0,
+          "loops": 1,
+          "rows_removed": 0,
+          "shared_hit_blocks": 322
+        },
+        {
+          "type": "Nested Loop",
+          "index": null,
+          "actual_rows": 0,
+          "loops": 1,
+          "rows_removed": 0,
+          "shared_hit_blocks": 322
+        },
+        {
+          "type": "Seq Scan",
+          "index": null,
+          "actual_rows": 0,
+          "loops": 1,
+          "rows_removed": 6296,
+          "shared_hit_blocks": 322
+        },
+        {
+          "type": "Seq Scan",
+          "index": null,
+          "actual_rows": 0,
+          "loops": 0,
+          "rows_removed": 0,
+          "shared_hit_blocks": 0
+        }
+      ]
+    }
+  },
+  "after": {
+    "effectProjection": {
+      "planning_ms": 4.035,
+      "execution_ms": 2.865,
+      "nodes": [
+        {
+          "type": "Limit",
+          "index": null,
+          "actual_rows": 0,
+          "loops": 1,
+          "rows_removed": 0,
+          "shared_hit_blocks": 1289
+        },
+        {
+          "type": "Index Scan",
+          "index": "outbox_execution_results",
+          "actual_rows": 0,
+          "loops": 1,
+          "rows_removed": 1840,
+          "shared_hit_blocks": 1289
+        },
+        {
+          "type": "Seq Scan",
+          "index": null,
+          "actual_rows": 3680,
+          "loops": 1,
+          "rows_removed": 1933,
+          "shared_hit_blocks": 406
+        },
+        {
+          "type": "Index Scan",
+          "index": "records_id_text_lookup",
+          "actual_rows": 0,
+          "loops": 1840,
+          "rows_removed": 0,
+          "shared_hit_blocks": 0
+        }
+      ]
+    },
+    "identity": {
+      "planning_ms": 0.139,
+      "execution_ms": 0.65,
+      "nodes": [
+        {
+          "type": "Limit",
+          "index": null,
+          "actual_rows": 1,
+          "loops": 1,
+          "rows_removed": 0,
+          "shared_hit_blocks": 3
+        },
+        {
+          "type": "Bitmap Heap Scan",
+          "index": null,
+          "actual_rows": 1,
+          "loops": 1,
+          "rows_removed": 0,
+          "shared_hit_blocks": 3
+        },
+        {
+          "type": "BitmapOr",
+          "index": null,
+          "actual_rows": 0,
+          "loops": 1,
+          "rows_removed": 0,
+          "shared_hit_blocks": 2
+        },
+        {
+          "type": "Bitmap Index Scan",
+          "index": "records_contact_identity_lookup",
+          "actual_rows": 1,
+          "loops": 1,
+          "rows_removed": 0,
+          "shared_hit_blocks": 0
+        },
+        {
+          "type": "Bitmap Index Scan",
+          "index": "records_contact_alias_lookup",
+          "actual_rows": 0,
+          "loops": 1,
+          "rows_removed": 0,
+          "shared_hit_blocks": 2
+        }
+      ]
+    },
+    "idLookup": {
+      "planning_ms": 0.05,
+      "execution_ms": 0.997,
+      "nodes": [
+        {
+          "type": "Index Scan",
+          "index": "records_id_text_lookup",
+          "actual_rows": 1,
+          "loops": 1,
+          "rows_removed": 0,
+          "shared_hit_blocks": 1
+        }
+      ]
+    },
+    "eventConsumer": {
+      "planning_ms": 0.15,
+      "execution_ms": 1.165,
+      "nodes": [
+        {
+          "type": "Limit",
+          "index": null,
+          "actual_rows": 0,
+          "loops": 1,
+          "rows_removed": 0,
+          "shared_hit_blocks": 1
+        },
+        {
+          "type": "Sort",
+          "index": null,
+          "actual_rows": 0,
+          "loops": 1,
+          "rows_removed": 0,
+          "shared_hit_blocks": 1
+        },
+        {
+          "type": "Nested Loop",
+          "index": null,
+          "actual_rows": 0,
+          "loops": 1,
+          "rows_removed": 0,
+          "shared_hit_blocks": 1
+        },
+        {
+          "type": "Index Scan",
+          "index": "domain_events_consumer_type_time",
+          "actual_rows": 0,
+          "loops": 1,
+          "rows_removed": 0,
+          "shared_hit_blocks": 1
+        },
+        {
+          "type": "Seq Scan",
+          "index": null,
+          "actual_rows": 0,
+          "loops": 0,
+          "rows_removed": 0,
+          "shared_hit_blocks": 0
+        }
+      ]
+    }
+  }
+}

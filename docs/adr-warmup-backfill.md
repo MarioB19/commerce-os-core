@@ -1,0 +1,9 @@
+# ADR — Backfill probado de números con operación previa
+
+Fecha: 2026-09-08. Implementación local autorizada dentro del cierre; ninguna ejecución productiva autorizada.
+
+El backfill es separado de auto-enroll y nunca reinicia o salta una curva iniciada. Owner revisa primero un dry-run; aplicar exige revisiones de cuenta/estado y hash del conjunto de pruebas calculado por el servidor. Sólo funciona sobre un miembro sin enrolamiento, warmup_started_at, días efectivos ni planes; desconocidos reciben causas concretas y permanecen intactos.
+
+La prueba debe existir antes de crear ese miembro: dentro de 90 días, actividad comercial entregada en al menos tantos días locales como exige su curva (standard 30; inbound-light según perfil), muestra madura mínima y ratio >=98%. Cada entrega requiere intento aceptado y ACK de proveedor enlazado a envelope procesado del mismo workspace/entorno/cuenta. No cuentan SENT, reconciliación humana, warm-up ni una attestación. Historial inmutable de cuenta fija la misma identidad antes de la primera actividad y no puede registrar sustitución posterior. Los siete días anteriores al alta del miembro requieren salud de sesión/transporte documentada, misma identidad y sin huecos de una hora; además se exigen otros siete días continuos hasta la aplicación y salud actual vigente. Un regreso tras un hueco posterior al alta no permite graduar con el primer heartbeat. La ausencia por retención es evidencia insuficiente, nunca cero fallos o antigüedad inferida.
+
+Aplicar conserva los días efectivos, escribe GRADUATED con reason BACKFILL y warmup_started_at NULL, fija enrolled_at a la primera actividad demostrada y registra hash/resumen/referencias auditables. enrolled_at conserva el guard de identidad incluso con pool apagado. No toca cuenta, política, pausas, autorizaciones, outbox ni permisos comerciales. Una revisión/hash obsoletos o evidencia actual degradada impiden aplicar.

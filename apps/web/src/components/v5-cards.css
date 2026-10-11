@@ -1,0 +1,180 @@
+/* These surfaces contain legacy field/table styles as well as V5 cards. */
+.v5-product-workspace a[data-variant="default"] {
+  color: var(--color-primary-foreground, #fff);
+}
+
+:root[data-theme="dark"] :is(.v5-product-workspace, .v5-integrations) .field > span,
+:root[data-theme="dark"] .v5-product-workspace .eyebrow {
+  color: var(--v5-muted);
+}
+
+:root[data-theme="dark"] .v5-product-workspace .record-meta code {
+  color: var(--v5-text);
+  background: var(--v5-bg);
+}
+
+:root[data-theme="dark"] .v5-product-workspace :is(td strong, .break-all) {
+  color: var(--v5-text);
+}
+
+.offer-flow-editor {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+
+.offer-flow-toolbar,
+.offer-flow-section > header,
+.remarketing-slot > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.offer-flow-fieldset {
+  display: grid;
+  gap: 14px;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+
+.offer-flow-section,
+.remarketing-slot,
+.offer-flow-materials article,
+.offer-chat-preview,
+.offer-flow-cycles,
+.offer-flow-cycles > article {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface, var(--panel));
+}
+
+.offer-flow-section > header {
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.offer-flow-section > header > span {
+  display: grid;
+  place-items: center;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: var(--accent-soft, #eef2ff);
+  color: var(--primary, #3730a3);
+  font-weight: 700;
+}
+
+.offer-flow-section h3,
+.offer-flow-section p,
+.remarketing-slot p {
+  margin: 0;
+}
+
+.offer-flow-section-body {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+}
+
+.offer-flow-asset,
+.offer-flow-materials,
+.remarketing-slots,
+.remarketing-slot,
+.remarketing-slot fieldset {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.offer-flow-asset .asset-preview,
+.remarketing-slot .asset-preview {
+  padding: 10px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+}
+
+.offer-flow-materials article,
+.remarketing-slot {
+  padding: 14px;
+}
+
+.offer-flow-materials article > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.remarketing-slot fieldset {
+  border: 0;
+  border-top: 1px solid var(--border);
+  padding: 14px 0 0;
+}
+
+.remarketing-warning-ack {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  line-height: 1.5;
+}
+
+.remarketing-warning-ack input {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  margin-top: 2px;
+}
+
+.offer-flow-issues {
+  color: var(--danger, #991b1b);
+}
+
+.offer-chat-preview {
+  padding: 16px;
+}
+
+.offer-flow-cycles,
+.offer-flow-cycles > article,
+.offer-flow-cycle-preview {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.offer-flow-cycles > article {
+  padding: 14px;
+}
+
+.chat-preview-thread {
+  display: grid;
+  gap: 8px;
+  max-width: 680px;
+  margin: 12px 0;
+}
+
+.chat-preview-bubble {
+  justify-self: end;
+  max-width: min(88%, 560px);
+  padding: 10px 12px;
+  border-radius: 12px 12px 3px 12px;
+  background: var(--accent-soft, #eef2ff);
+  white-space: pre-wrap;
+}
+
+.chat-preview-bubble p {
+  margin: 4px 0 0;
+}
+
+@media (max-width: 720px) {
+  .offer-flow-toolbar,
+  .offer-flow-section > header,
+  .remarketing-slot > header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

@@ -1,0 +1,24 @@
+name: commerce-os-local
+services:
+  postgres:
+    image: postgres:17.11-bookworm
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?use local setup}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?use local setup}
+      POSTGRES_DB: ${POSTGRES_DB:-commerce}
+    ports: ['127.0.0.1:5440:5432']
+    volumes: ['commerce_pg:/var/lib/postgresql/data']
+    healthcheck:
+      test: ['CMD-SHELL','pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    mem_limit: 1g
+    cpus: 1.5
+    shm_size: 256m
+    command: ['postgres','-c','max_connections=80','-c','shared_buffers=128MB']
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+volumes:
+  commerce_pg:

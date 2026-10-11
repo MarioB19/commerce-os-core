@@ -1,0 +1,5 @@
+import {randomBytes,randomUUID} from 'node:crypto';
+import {expect} from 'vitest';
+import {createApp} from '../../apps/api/src/app.js';
+import {provisionUser} from '../../apps/api/src/auth.js';
+export async function retirementFixture(){const app=await createApp(),workspace='v5-retired-'+randomUUID(),origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0]!,email=randomUUID()+'@example.invalid',password=randomBytes(24).toString('base64url');const user=await provisionUser({name:'Synthetic retirement owner',email,password,workspace_id:workspace,role:'owner'});const login=await app.inject({method:'POST',url:'/api/auth/sign-in/email',payload:{email,password},headers:{origin}});expect(login.statusCode,login.body).toBe(200);const cookie=login.cookies.map(c=>`${c.name}=${c.value}`).join('; ');return {app,workspace,user,cookie,origin,call:(method:any,url:string,payload?:any)=>app.inject({method,url:url+(url.includes('?')?'&':'?')+'environment=SIMULATION',payload,headers:{cookie,origin,'idempotency-key':randomUUID()}})};}

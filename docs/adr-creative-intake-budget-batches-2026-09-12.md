@@ -1,0 +1,13 @@
+# Recibos editoriales, lotes 6×3 y presupuesto agregado
+
+Decisión 12-sep-2026. Las fuentes de Vibe `playbook-intake.ts` y `global-spend-ledger.ts` guían la adaptación; no se ejecutan sus entrypoints ni se trasladan directorios privados. Una versión de playbook conserva bytes de las fuentes, SHA-256, JSON pointer, valor, capa, autor y variantes/paths de receta afectados. El recibo es inmutable y su conformidad técnica no es aprobación editorial ni autorización de gasto.
+
+Los lotes almacenan 18 referencias exactas de recetas (seis ángulos, tres hooks) y bloquean cambios en cuerpo, escenas, oferta y recursos compartidos dentro de cada trío. Su progreso se deriva de jobs/artefactos y revisiones existentes; el lote no envía automáticamente 18 trabajos ni produce por sí mismo. Cambiar una fuente requiere otro recibo; el impacto por valor evita regenerar voz cuando solo cambió copy Meta, aunque la aprobación de procedencia deba revisarse.
+
+El master individual enlaza su recibo mediante `/v1/studio/recipes/:id/intake` antes de preparar el lote completo. El enlace conserva receta, versión, SHA y variante exactos, es inmutable y no concede aprobación editorial ni producción. Así se puede revisar A04-h1 primero; la preparación del lote no se convierte en un requisito circular del piloto. El bloqueo de cuerpo incluye los SHA de audio compartido, música, packshot y escenas. La composición reproduce el hook durante los primeros 90 frames y el audio compartido del cuerpo a continuación; el audio completo se conserva como referencia independiente para QA de sincronía.
+
+El techo global suma gasto y reservas durables de todos los proveedores y entornos del workspace; conserva reservas de coste desconocido. No se crea una segunda contabilidad paralela que pueda divergir del broker. Un límite global explícito puede restringir esa suma y reservar capacidad para entrypoints externos. Sin una configuración global, la compatibilidad histórica informa `MIGRATED_PROVIDER_LIMITS`, usando exclusivamente la suma de límites ya autorizados. La producción 1.1 debe exigir configuración global explícita y vigente; el modo heredado no constituye su aprobación.
+
+Una reserva externa solo representa el alcance declarado y debe llevar evidencia y vigencia; un coste externo desconocido bloquea. Esto no intercepta llamadas directas de CLIs Vibe que no usen Commerce OS: antes de producción hay que reservar su presupuesto o cesar generación concurrente por esos entrypoints. No se declara integración global de dos autoridades independientes por un snapshot.
+
+Todas las mutaciones conservan idempotencia, permisos por proyecto, versión esperada e historial. Ninguna crea aprobación humana, revisa sus propios pagos, activa pauta o llama a un proveedor.

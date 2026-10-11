@@ -1,0 +1,10 @@
+import {mkdirSync,writeFileSync,existsSync} from 'node:fs';
+import {resolve,join} from 'node:path';
+import {randomBytes} from 'node:crypto';
+const [directory,image]=process.argv.slice(2);
+if(!directory||!/^sha256:[a-f0-9]{64}$/.test(image??''))throw Error('Usage: prepare-staging-soak.mjs PRIVATE_DIRECTORY sha256:RUNTIME_DIGEST');
+const root=resolve(directory);if(existsSync(root))throw Error('OUTPUT_EXISTS_REFUSING_OVERWRITE');mkdirSync(root,{recursive:true,mode:0o700});
+const password=randomBytes(32).toString('hex');
+writeFileSync(join(root,'soak.env'),`POSTGRES_USER=commerce_owner\nPOSTGRES_PASSWORD=${password}\nPOSTGRES_DB=commerce_staging_soak\nDATABASE_URL=postgresql://commerce_owner:${password}@postgres:5432/commerce_staging_soak\nPRIVATE_DATA_KEY=${randomBytes(32).toString('hex')}\nSTAGING_SOAK_ISOLATED=true\nDISPATCH_FROZEN=true\nREAL_SENDS_ENABLED=false\nALLOW_REAL_OPERATIONS=false\nDB_POOL_MAX=3\nLOG_LEVEL=silent\n`,{mode:0o600});
+writeFileSync(join(root,'compose.env'),`STAGING_CONFIG_DIR=${root}\nSTAGING_IMAGE=${image}\n`,{mode:0o600});
+console.log(JSON.stringify({prepared:true,started:false,hours_observed:0,external_connections:0,config_directory:root}));
