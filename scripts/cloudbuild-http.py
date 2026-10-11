@@ -23,6 +23,7 @@ if __name__ == '__main__':
     sys.path.insert(0, '/opt/trusted')
 
 from cloudbuild_runtime_meter import RuntimeMeter
+from cloudbuild_diagnostics import evidence_code, phase
 
 PARSER_SECONDS = 3
 MAX_HINT_BYTES = 256 * 1024
@@ -33,6 +34,9 @@ class Deadline(Exception):
 
 
 def safe_error(error):
+    code = evidence_code(error)
+    if code is not None:
+        return code
     return {'Deadline': 'CONTROLLER_REQUEST_DEADLINE',
             'CASConflict': 'CONTROLLER_CAS_CONFLICT',
             'CommitOutcomeUnknown': 'CONTROLLER_CAS_UNCONFIRMED',
@@ -44,6 +48,8 @@ def tick(factory_builder, *, started=None):
     """Dependency injection is internal for tests; the HTTP route supplies none."""
     started = time.monotonic() if started is None else started
     reservation = None
+    factory = None
+    diagnostic_phase = 'FACTORY_INITIALIZE'
     reservation_attempted = False
     previous = signal.getsignal(signal.SIGALRM)
 
@@ -65,6 +71,7 @@ def tick(factory_builder, *, started=None):
         meter = RuntimeMeter(factory.meter_store)
         reservation_attempted = True
         reservation = meter.reserve(str(uuid.uuid4()), 5)
+        diagnostic_phase = 'CONTROL_INSPECT'
         work = factory.inspect_work()
         if work is None:
             result = {'status': 'IDLE', 'external_effects': False, 'request_outcome': 'CONFIRMED'}
@@ -80,9 +87,11 @@ def tick(factory_builder, *, started=None):
             # A failed or uncertain CAS never reaches execute.
             reservation = meter.extend(reservation, seconds)
             deadline(seconds)
+            diagnostic_phase = 'WORK_VALIDATE'
             result = factory.execute(work)
             if type(result) is not dict or result.get('request_outcome') != 'CONFIRMED':
                 raise ValueError('CONTROLLER_WORK_RESULT_INVALID')
+        diagnostic_phase = 'METER_COMPLETE'
         receipt = meter.finish(reservation, result)
         # Never expose arbitrary factory output or provider response to HTTP.
         return {'status': 'TICK_RECORDED', 'request_id': reservation['request_id'],
@@ -92,6 +101,8 @@ def tick(factory_builder, *, started=None):
         # An existing reservation retains both the budget and exclusion. A
         # separate read-only reconciliation must determine the real outcome.
         return {'status': 'STOP_PRESERVE', 'code': safe_error(error),
+                'phase': phase(getattr(factory, 'diagnostic_phase', diagnostic_phase)
+                               if diagnostic_phase == 'WORK_VALIDATE' else diagnostic_phase),
                 'reservation_may_exist': reservation_attempted,
                 'automatic_retry': False, 'build_success_claimed': False}
     finally:

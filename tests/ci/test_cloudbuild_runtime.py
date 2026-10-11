@@ -166,6 +166,16 @@ class FactoryTests(unittest.TestCase):
         usage = m.ledger.budget_usage(f.store.document, now=NOW)['2026-10']
         self.assertEqual(usage, {'confirmed_seconds': 4440, 'reserved_seconds': 5700, 'total_seconds': 10140})
 
+    def test_abort_replayed_admit_never_claims_reserved(self):
+        self.task['phase'] = 'ADMIT'
+        m.ledger.transact(self.fixture.store, {'op':'abort_before_dispatch','attempt_id':ATTEMPT,
+            'evidence_sha256':'a'*64,'native_verified':True}, now=NOW)
+        before = deepcopy(self.fixture.store.document)
+        with self.assertRaisesRegex(RuntimeError, 'RUNTIME_ADMISSION_NOT_RESERVED'):
+            self.factory.execute(self.work())
+        self.assertEqual(self.fixture.store.document, before)
+        self.fixture.api.create_once.assert_not_called()
+
     def test_source_repeated_acquisition_intent_never_reclones(self):
         self.task.update(operation='SOURCE', phase='ACQUIRE')
         self.task['payload'] = {'source_approval': {'repository_id': m.REPOSITORY_ID,

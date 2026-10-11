@@ -185,7 +185,7 @@ class BudgetAndStateTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(m.AdmissionError):
                 step(approved(), 'reserve', admission=value)
 
-    def test_480_minute_limit_includes_imported_bootstrap_and_failures(self):
+    def test_420_minute_limit_includes_imported_bootstrap_and_failures(self):
         end = NOW
         observed = observation('FAILURE', start=NOW-timedelta(minutes=386), seconds=386*60)
         doc = step(m.new_ledger(), 'account_external', observation=observed, native_verified=True).document
@@ -194,19 +194,19 @@ class BudgetAndStateTests(unittest.TestCase):
             step(doc, 'reserve', admission=admission())
         self.assertEqual(m.budget_usage(doc, now=end)['2026-10']['confirmed_seconds'], 386*60)
 
-    def test_exact_480_minutes_is_admitted(self):
-        observed = observation('FAILURE', start=NOW-timedelta(minutes=385), seconds=385*60)
+    def test_exact_420_minutes_is_admitted(self):
+        observed = observation('FAILURE', start=NOW-timedelta(minutes=325), seconds=325*60)
         doc = step(m.new_ledger(), 'account_external', observation=observed, native_verified=True).document
         doc = step(approved(doc), 'reserve', admission=admission()).document
-        self.assertEqual(m.budget_usage(doc, now=NOW)['2026-10']['total_seconds'], 28800)
+        self.assertEqual(m.budget_usage(doc, now=NOW)['2026-10']['total_seconds'], 25200)
 
     def test_historical_74_minutes_are_preserved_under_reduced_future_pool(self):
         obs = observation('FAILURE', start=NOW-timedelta(minutes=74), seconds=74*60)
         doc = step(m.new_ledger(), 'account_external', observation=obs, native_verified=True).document
-        self.assertEqual(doc['monthly_limit_seconds'], 480*60)
+        self.assertEqual(doc['monthly_limit_seconds'], 420*60)
         usage = m.budget_usage(doc, now=NOW)['2026-10']
         self.assertEqual(usage['confirmed_seconds'], 74*60)
-        self.assertEqual(doc['monthly_limit_seconds']-usage['total_seconds'], 406*60)
+        self.assertEqual(doc['monthly_limit_seconds']-usage['total_seconds'], 346*60)
         self.assertEqual(doc['external_builds'][BUILD]['observation'], obs)
         changed = deepcopy(doc); changed['monthly_limit_seconds'] = 600*60
         with self.assertRaisesRegex(m.AdmissionError, 'LEDGER_POLICY_CHANGED'):
@@ -420,6 +420,184 @@ class CASTests(unittest.TestCase):
             m.transition(doc, intent_command(), now=NOW)
 
 
+class AbortBeforeDispatchTests(unittest.TestCase):
+    def command(self, evidence='9'*64):
+        return {'op': 'abort_before_dispatch', 'attempt_id': ATTEMPT,
+                'evidence_sha256': evidence, 'native_verified': True}
+
+    def abort(self, doc=None, now=NOW):
+        return m.transition(reserved() if doc is None else doc, self.command(), now=now)
+
+    def test_preserves_74_minutes_and_95_minute_history_without_native_uuid(self):
+        observed = observation('FAILURE', start=NOW-timedelta(minutes=74), seconds=74*60)
+        old = step(m.new_ledger(), 'account_external', observation=observed, native_verified=True).document
+        old = step(approved(old), 'reserve', admission=admission()).document
+        before = deepcopy(old)
+        result = self.abort(old, NOW+timedelta(minutes=16))
+        self.assertEqual(old, before)
+        self.assertIsNone(result.proposed_effect)
+        row = result.document['attempts'][ATTEMPT]
+        self.assertEqual(row['state'], 'ABORTED_BEFORE_DISPATCH')
+        self.assertEqual(row['abortion'], {'evidence_sha256': '9'*64,
+            'aborted_at': m.stamp(NOW+timedelta(minutes=16)), 'reserved_seconds': 95*60})
+        self.assertEqual({k: row[k] for k in before['attempts'][ATTEMPT]},
+            dict(before['attempts'][ATTEMPT], state='ABORTED_BEFORE_DISPATCH'))
+        self.assertFalse({'intent', 'submitted_at', 'build_id', 'terminal'} & set(row))
+        for key in ('events', 'external_builds', 'monthly_limit_seconds', 'blocked'):
+            self.assertEqual(result.document[key], before[key])
+        self.assertIsNone(result.document['active_attempt'])
+        self.assertEqual(m.budget_usage(result.document, now=NOW+timedelta(minutes=16))['2026-10'],
+            {'confirmed_seconds': 74*60, 'reserved_seconds': 0, 'total_seconds': 74*60})
+
+    def test_rejects_unverified_invalid_hash_and_injected_fields_without_mutation(self):
+        old = reserved()
+        for fields in ({'native_verified': False}, {'native_verified': 1},
+                       {'evidence_sha256': ''}, {'build_id': BUILD},
+                       {'reservation_refunded': True}):
+            store = MemoryStore(old)
+            with self.subTest(fields=fields), self.assertRaises(m.AdmissionError):
+                m.transact(store, dict(self.command(), **fields), now=NOW)
+            self.assertEqual(store.document, old)
+            self.assertEqual(store.cas_count, 0)
+
+    def test_all_nonreserved_states_reject_including_unknown_and_native_terminal(self):
+        end = NOW+timedelta(minutes=1)
+        pending = m.transition(reserved(), intent_command(), now=NOW).document
+        terminal = step(bound(), 'terminal', end, observation=observation(seconds=60)).document
+        cases = [step(m.new_ledger(), 'discover', plan=plan()).document, approved(), pending,
+                 step(pending, 'unknown', reason='TIMEOUT', evidence_sha256='8'*64).document,
+                 bound(), step(bound(), 'running', build_id=BUILD).document, terminal,
+                 step(terminal, 'reconcile', end, evidence_sha256='9'*64, native_verified=True).document]
+        for doc in cases:
+            with self.subTest(state=doc['attempts'][ATTEMPT]['state']):
+                store = MemoryStore(doc)
+                with self.assertRaisesRegex(m.AdmissionError, 'UNDISPATCHED_RESERVATION_REQUIRED'):
+                    m.transact(store, self.command(), now=end)
+                self.assertEqual(store.document, doc)
+                self.assertEqual(store.cas_count, 0)
+
+    def test_same_event_never_reopens_or_dispatches_after_abort(self):
+        doc = self.abort().document
+        rediscovered = step(doc, 'discover', attempt=str(uuid.uuid4()), plan=plan())
+        self.assertFalse(rediscovered.changed)
+        self.assertEqual(rediscovered.attempt_id, ATTEMPT)
+        self.assertFalse(step(doc, 'approve_source', approval=approval()).changed)
+        self.assertFalse(step(doc, 'reserve', admission=admission()).changed)
+        with self.assertRaisesRegex(m.AdmissionError, 'RESERVATION_REQUIRED'):
+            m.transition(doc, intent_command(), now=NOW)
+        self.assertIsNone(doc['active_attempt'])
+
+    def test_identical_abort_is_read_only_and_different_evidence_rejected(self):
+        store = MemoryStore(reserved())
+        first = m.transact(store, self.command(), now=NOW)
+        second = m.transact(store, self.command(), now=NOW+timedelta(seconds=1))
+        self.assertTrue(first.changed)
+        self.assertIsNone(first.effect)
+        self.assertFalse(second.changed)
+        self.assertIsNone(second.effect)
+        self.assertEqual(first.document, second.document)
+        with self.assertRaisesRegex(m.AdmissionError, 'ABORTION_EVIDENCE_CHANGED'):
+            m.transact(store, self.command('8'*64), now=NOW)
+        self.assertEqual(store.cas_count, 1)
+
+    def test_unreviewed_stage_abort_is_not_inferred_from_absent_submit_intent(self):
+        for stage in set(m.STAGE_LIMITS) - {'full'}:
+            value = plan(stage=stage)
+            doc = step(approved(value=value), 'reserve', admission=admission(value=value)).document
+            store = MemoryStore(doc)
+            with self.subTest(stage=stage), self.assertRaisesRegex(m.AdmissionError, 'UNDISPATCHED_FULL_REQUIRED'):
+                m.transact(store, self.command(), now=NOW)
+            self.assertEqual(store.document, doc)
+            self.assertEqual(store.cas_count, 0)
+
+    def test_later_recovery_may_release_old_unexecuted_reservation_after_approval_expiry(self):
+        end = NOW+timedelta(days=35)
+        doc = reserved()
+        self.assertGreater(len(m.budget_usage(doc, now=end)), 1)
+        result = self.abort(doc, end)
+        self.assertEqual(m.budget_usage(result.document, now=end), {})
+        self.assertEqual(result.document['attempts'][ATTEMPT]['abortion']['reserved_seconds'], 5700)
+        self.assertEqual(result.document['attempts'][ATTEMPT]['admission'], doc['attempts'][ATTEMPT]['admission'])
+
+    def test_abort_never_reopens_blocked_ledger_or_changes_another_attempt(self):
+        other = str(uuid.uuid4())
+        doc = approved(reserved(), attempt=other, value=plan(event='next'))
+        doc = step(doc, 'block', reason='OPERATOR_PAUSED', evidence_sha256='8'*64).document
+        result = self.abort(doc).document
+        self.assertEqual(result['blocked'], doc['blocked'])
+        self.assertEqual(result['attempts'][other], doc['attempts'][other])
+        with self.assertRaisesRegex(m.AdmissionError, 'ADMISSION_BLOCKED'):
+            step(result, 'reserve', attempt=other, admission=admission(value=plan(event='next')))
+
+    def test_next_distinct_event_requires_new_approval_and_reserves_full_amount(self):
+        doc = self.abort().document
+        other = str(uuid.uuid4()); value = plan(event='new-explicit-event')
+        doc = approved(doc, attempt=other, value=value)
+        doc = step(doc, 'reserve', attempt=other, admission=admission(value=value)).document
+        self.assertEqual(doc['active_attempt'], other)
+        self.assertEqual(m.budget_usage(doc, now=NOW)['2026-10']['reserved_seconds'], 5700)
+        self.assertEqual(doc['attempts'][ATTEMPT]['abortion']['reserved_seconds'], 5700)
+
+    def test_race_against_submit_has_one_cas_winner_never_abort_and_dispatch(self):
+        store = MemoryStore(reserved()); store.barrier = threading.Barrier(2)
+        def invoke(command):
+            try: return m.transact(store, command, now=NOW)
+            except m.CASConflict as error: return error
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(invoke, [self.command(), intent_command()]))
+        winners = [r for r in results if isinstance(r, m.Transaction)]
+        self.assertEqual(len(winners), 1)
+        self.assertEqual(sum(isinstance(r, m.CASConflict) for r in results), 1)
+        state = store.document['attempts'][ATTEMPT]['state']
+        if state == 'ABORTED_BEFORE_DISPATCH':
+            self.assertIsNone(winners[0].effect)
+            self.assertIsNone(store.document['active_attempt'])
+        else:
+            self.assertEqual(state, 'SUBMIT_INTENT')
+            self.assertEqual(winners[0].effect['type'], 'CREATE_ONCE')
+            self.assertEqual(store.document['active_attempt'], ATTEMPT)
+            with self.assertRaisesRegex(m.AdmissionError, 'UNDISPATCHED_RESERVATION_REQUIRED'):
+                self.abort(store.document)
+
+    def test_ambiguous_committed_abort_only_reads_back_proposal_without_retry(self):
+        before = reserved(); proposal = self.abort(before).document
+        store = MemoryStore(before); store.lose_response = True
+        with self.assertRaisesRegex(m.CommitOutcomeUnknown, 'WRITE_RESPONSE_LOST'):
+            m.transact(store, self.command(), now=NOW)
+        generation, readback = store.load()
+        self.assertEqual(generation, '2')
+        self.assertEqual(readback, proposal)
+        self.assertEqual(store.cas_count, 1)
+
+    def test_uncommitted_or_conflicted_abort_retains_reservation_without_retry(self):
+        for error in (m.CommitOutcomeUnknown, m.CASConflict):
+            class FailedStore(MemoryStore):
+                def compare_and_swap(self, generation, document):
+                    self.cas_count += 1
+                    raise error('NO_CONFIRMATION')
+            store = FailedStore(reserved())
+            with self.subTest(error=error), self.assertRaises(error):
+                m.transact(store, self.command(), now=NOW)
+            self.assertEqual(store.document['active_attempt'], ATTEMPT)
+            self.assertEqual(m.budget_usage(store.document, now=NOW)['2026-10']['reserved_seconds'], 5700)
+            self.assertEqual(store.cas_count, 1)
+
+    def test_corrupt_abortion_or_native_fields_cannot_be_loaded_as_terminal(self):
+        base = self.abort().document
+        changes = [lambda a: a.update(abortion=None),
+            lambda a: a['abortion'].update(reserved_seconds=0),
+            lambda a: a['abortion'].update(reserved_seconds=True),
+            lambda a: a['abortion'].update(evidence_sha256='bad'),
+            lambda a: a['abortion'].update(aborted_at=m.stamp(NOW-timedelta(seconds=1))),
+            lambda a: a['abortion'].update(aborted_at=m.stamp(NOW+timedelta(seconds=1))),
+            lambda a: a.update(build_id=BUILD), lambda a: a.update(intent=intent_command()),
+            lambda a: a.update(terminal=observation()), lambda a: a['abortion'].update(refunded=True)]
+        for change in changes:
+            doc = deepcopy(base); change(doc['attempts'][ATTEMPT])
+            with self.subTest(change=change), self.assertRaises(m.AdmissionError):
+                m.validate_ledger(doc)
+
+
 class DurableValidationTests(unittest.TestCase):
     def assert_closed(self, doc, now=NOW):
         store = MemoryStore(doc)
@@ -442,7 +620,9 @@ class DurableValidationTests(unittest.TestCase):
         unknown = step(pending, 'unknown', reason='TIMEOUT', evidence_sha256='8'*64).document
         terminal = step(bound(), 'terminal', end, observation=observation(seconds=60)).document
         reconciled = step(terminal, 'reconcile', end, evidence_sha256='9'*64, native_verified=True).document
-        docs = [discovered, approved(), reserved(), pending, unknown, bound(),
+        aborted = step(reserved(), 'abort_before_dispatch', end,
+                       evidence_sha256='9'*64, native_verified=True).document
+        docs = [discovered, approved(), reserved(), pending, unknown, bound(), aborted,
                 step(bound(), 'running', build_id=BUILD).document, terminal, reconciled]
         for base in docs:
             for field in base['attempts'][ATTEMPT]:
@@ -549,6 +729,161 @@ class GCSIntegrationTests(unittest.TestCase):
                 self.assertFalse(replay.changed)
                 self.assertIsNone(replay.effect)
                 self.assertEqual(sum(method == 'POST' for method, _ in http.calls), 2)
+
+
+
+
+class ProspectivePoolReductionTests(unittest.TestCase):
+    def command(self, **changes):
+        return {'op': 'reduce_monthly_limit', 'from_seconds': 28800, 'to_seconds': 25200,
+                'evidence_sha256': 'a'*64, 'native_verified': True, **changes}
+
+    def historical(self, doc=None):
+        # Synthetic prior policy. Native documents are never rewritten this way.
+        doc = deepcopy(m.new_ledger() if doc is None else doc)
+        doc['monthly_limit_seconds'] = 28800
+        m.validate_historical_ledger(doc)
+        return doc
+
+    def used(self, minutes=74, when=NOW):
+        obs = observation('FAILURE', start=when-timedelta(minutes=minutes), seconds=minutes*60)
+        doc = step(m.new_ledger(), 'account_external', now=when, observation=obs, native_verified=True).document
+        # The historical limit was480; a421min usage was not an overrun then.
+        doc['blocked'] = None
+        return self.historical(doc)
+
+    def test_preserves_74_minutes_and_aborted_95_history_and_full_bound(self):
+        doc = self.used()
+        # Compose genuine historical abort through its explicitly closed helper.
+        future = step(approved(), 'reserve', admission=admission()).document['attempts'][ATTEMPT]
+        doc['attempts'][ATTEMPT] = future
+        doc['events'][m.event_key(future['plan']['identity'])] = ATTEMPT
+        doc['active_attempt'] = ATTEMPT
+        doc = m.transition_historical_abort(doc, {'op':'abort_before_dispatch', 'attempt_id':ATTEMPT,
+            'evidence_sha256':'9'*64, 'native_verified':True}, now=NOW).document
+        prior = deepcopy(doc)
+        out = m.transition(doc, self.command(), now=NOW)
+        self.assertIsNone(out.proposed_effect); self.assertIsNone(out.attempt_id)
+        self.assertEqual(doc, prior)
+        for key in ('attempts','events','external_builds','active_attempt','blocked'):
+            self.assertEqual(out.document[key], prior[key])
+        self.assertEqual(out.document['monthly_limit_seconds'],25200)
+        self.assertEqual(out.document['revision'],prior['revision']+1)
+        self.assertEqual(m.budget_usage(out.document,now=NOW)['2026-10']['confirmed_seconds'],4440)
+        self.assertEqual(out.document['attempts'][ATTEMPT]['abortion']['reserved_seconds'],5700)
+        self.assertEqual(m.STAGE_LIMITS['full'],5700)
+        self.assertEqual(out.document['limit_reduction'],{
+            'from_seconds':28800,'to_seconds':25200,'evidence_sha256':'a'*64,'reduced_at':m.stamp(NOW)})
+
+    def test_default_runtime_validation_and_all_operational_commands_reject_480(self):
+        doc = self.historical(approved())
+        for method in (lambda:m.validate_ledger(doc), lambda:m.budget_usage(doc,now=NOW),
+                       lambda:step(doc,'reserve',admission=admission()),
+                       lambda:step(doc,'block',reason='REOPEN',evidence_sha256='a'*64)):
+            with self.subTest(method=method), self.assertRaisesRegex(m.AdmissionError,'OPERATING_POOL_REDUCTION_REQUIRED'):
+                method()
+        self.assertEqual(m.budget_usage_historical(doc,now=NOW),{})
+        for cmd in (intent_command(), self.command(), {'op':'discover'}):
+            with self.subTest(cmd=cmd), self.assertRaisesRegex(m.AdmissionError,'HISTORICAL_ABORT_ONLY'):
+                m.transition_historical_abort(doc,cmd,now=NOW)
+
+    def test_exact_420_allowed_and_421_in_any_recorded_month_rejected(self):
+        out=m.transition(self.used(420),self.command(),now=NOW).document
+        self.assertEqual(m.budget_usage(out,now=NOW)['2026-10']['total_seconds'],25200)
+        for when in (NOW,NOW-timedelta(days=32)):
+            with self.subTest(when=when),self.assertRaisesRegex(m.AdmissionError,'REDUCED_MONTHLY_POOL_EXCEEDED'):
+                m.transition(self.used(421,when),self.command(),now=NOW)
+
+    def test_active_reserved_unknown_terminal_and_blocked_reject_without_cas(self):
+        pending=m.transition(reserved(),intent_command(),now=NOW).document
+        unknown=step(pending,'unknown',reason='NETWORK',evidence_sha256='8'*64).document
+        terminal=step(bound(),'terminal',now=NOW+timedelta(seconds=1),observation=observation(seconds=1)).document
+        blocked=step(m.new_ledger(),'block',reason='STOP',evidence_sha256='8'*64).document
+        for doc in (reserved(),pending,unknown,terminal,blocked):
+            store=MemoryStore(self.historical(doc))
+            with self.subTest(state=doc),self.assertRaises(m.AdmissionError):
+                m.transact(store,self.command(),now=NOW+timedelta(seconds=2))
+            self.assertEqual(store.cas_count,0)
+
+    def test_only_fixed_reduction_and_native_evidence_shape(self):
+        for change in ({'from_seconds':25200},{'to_seconds':27000},{'to_seconds':28800},
+                       {'to_seconds':True},{'from_seconds':True},{'native_verified':1},
+                       {'native_verified':False},{'evidence_sha256':'bad'},{'reset':False}):
+            store=MemoryStore(self.used())
+            with self.subTest(change=change),self.assertRaises(m.AdmissionError):
+                m.transact(store,self.command(**change),now=NOW)
+            self.assertEqual(store.cas_count,0)
+        with self.assertRaisesRegex(m.AdmissionError,'HISTORICAL_POOL_REQUIRED'):
+            m.transition(m.new_ledger(),self.command(),now=NOW)
+
+    def test_same_evidence_replay_no_write_changed_evidence_rejected(self):
+        store=MemoryStore(self.used())
+        first=m.transact(store,self.command(),now=NOW)
+        replay=m.transact(store,self.command(),now=NOW+timedelta(seconds=2))
+        self.assertFalse(replay.changed);self.assertIsNone(replay.effect)
+        self.assertEqual(store.cas_count,1);self.assertEqual(first.document,replay.document)
+        with self.assertRaisesRegex(m.AdmissionError,'LIMIT_REDUCTION_EVIDENCE_CHANGED'):
+            m.transact(store,self.command(evidence_sha256='b'*64),now=NOW)
+        self.assertEqual(store.cas_count,1)
+
+    def test_durable_receipt_policy_and_chronology_corruption_rejected(self):
+        base=m.transition(self.used(),self.command(),now=NOW).document
+        changes=(lambda d:d['limit_reduction'].update(from_seconds=27000),
+                 lambda d:d['limit_reduction'].update(to_seconds=True),
+                 lambda d:d['limit_reduction'].update(evidence_sha256='bad'),
+                 lambda d:d['limit_reduction'].update(reduced_at=m.stamp(NOW+timedelta(seconds=1))),
+                 lambda d:d['limit_reduction'].update(refund=True),
+                 lambda d:d.update(monthly_limit_seconds=28800))
+        for change in changes:
+            doc=deepcopy(base);change(doc)
+            with self.subTest(change=change),self.assertRaises(m.AdmissionError):m.validate_ledger(doc)
+
+    def test_legacy_schema_and_invalid_initial_state_do_not_bypass_validation(self):
+        for change in (lambda d:d.update(schema_version=True),lambda d:d.update(extra='x'),
+                       lambda d:d.update(revision=2),lambda d:d.update(monthly_limit_seconds=27000)):
+            doc=self.historical();change(doc)
+            with self.subTest(change=change),self.assertRaises(m.AdmissionError):
+                m.transition(doc,self.command(),now=NOW)
+
+    def test_cas_race_has_single_winner_and_no_dispatch(self):
+        store=MemoryStore(self.used());store.barrier=threading.Barrier(2)
+        def go():
+            try:return m.transact(store,self.command(),now=NOW)
+            except m.CASConflict:return None
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            results=list(pool.map(lambda _:go(),range(2)))
+        self.assertEqual(sum(r is not None for r in results),1)
+        self.assertTrue(all(r is None or r.effect is None for r in results))
+        self.assertEqual(store.document['monthly_limit_seconds'],25200)
+
+    def test_unknown_commit_is_not_retried_and_exact_readback_replay_has_no_effect(self):
+        store=MemoryStore(self.used());store.lose_response=True
+        with self.assertRaises(m.CommitOutcomeUnknown):m.transact(store,self.command(),now=NOW)
+        self.assertEqual(store.cas_count,1)
+        store.lose_response=False
+        outcome=m.transact(store,self.command(),now=NOW)
+        self.assertFalse(outcome.changed);self.assertIsNone(outcome.effect);self.assertEqual(store.cas_count,1)
+        with self.assertRaises(m.AdmissionError):
+            m.transact(store,self.command(evidence_sha256='b'*64),now=NOW)
+
+    def test_reduction_does_not_reset_any_future_month_usage(self):
+        doc=self.used(400)
+        later=NOW+timedelta(days=32)
+        second=observation('FAILURE',build='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',start=later-timedelta(minutes=74),seconds=4440)
+        # Construct historical native usage which is valid in each distinct month.
+        doc['external_builds'][second['build_id']]={'observation':second}
+        doc['updated_at']=m.stamp(later)
+        before=m.budget_usage_historical(doc,now=later)
+        out=m.transition(doc,self.command(),now=later).document
+        self.assertEqual(m.budget_usage(out,now=later),before)
+        self.assertEqual(set(before),{'2026-10','2026-11'})
+
+    def test_new_bootstrap_is_420_but_missing_durable_store_never_resets(self):
+        self.assertEqual(m.new_ledger()['monthly_limit_seconds'],25200)
+        store=MemoryStore()
+        with self.assertRaisesRegex(m.AdmissionError,'LEDGER_MISSING_NO_RESET'):
+            m.transact(store,self.command(),now=NOW)
+        self.assertEqual(store.cas_count,0)
 
 
 if __name__ == '__main__':

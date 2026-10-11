@@ -283,15 +283,21 @@ class RuntimeFactory:
             need((self.clock() - ledger.timestamp(eligibility['observed_at'])).total_seconds() <= 120,
                  'RUNTIME_ADMISSION_EXPIRED')
             ledger.transact(self.ledger_store, {'op': op, 'attempt_id': task['attempt_id'], key: task[key]}, now=self.clock())
-        return {'state': 'RESERVED', 'attempt_id': task['attempt_id']}
+        self._current(work); _, observed = self._ledger()
+        admitted = observed['attempts'].get(task['attempt_id'], {})
+        need(admitted.get('state') == 'RESERVED' and observed['active_attempt'] == task['attempt_id'],
+             'RUNTIME_ADMISSION_NOT_RESERVED')
+        return {'state': admitted['state'], 'attempt_id': task['attempt_id']}
 
     def _source(self, work):
+        self.diagnostic_phase = 'SOURCE_VALIDATE'
         task = self._current(work); payload = task['payload']
         ledger.exact(payload, 'source_approval journal', 'RUNTIME_SOURCE_PAYLOAD_INVALID')
         target = payload['journal']; location(target)
         need(target['bucket'] == self.config['custody']['bucket'] and target['object'] ==
              self.config['custody']['prefix'] + '/source-journals/' + task['attempt_id'] + '.json', 'RUNTIME_JOURNAL_PATH_CHANGED')
         _, document = self._ledger(); attempt = document['attempts'].get(task['attempt_id'], {})
+        self.diagnostic_phase = 'SOURCE_ELIGIBILITY'
         self._eligibility(work, attempt, None)
         approval = payload['source_approval']
         need(type(approval) is dict and all(approval.get(k) == task['plan']['identity'][k]
@@ -305,11 +311,14 @@ class RuntimeFactory:
         raw_commit = journal.commit_intent
         def fenced_commit(action, payload):
             result = raw_commit(action, payload)
-            if result.get('effect') == 'CREATE_ONCE': self._fence(work)
+            if result.get('effect') == 'CREATE_ONCE':
+                self.diagnostic_phase = 'SOURCE_POST_INTENT_FENCE'
+                self._fence(work)
             return result
         journal.commit_intent = fenced_commit
         action = 'source-acquire:' + task['attempt_id']
         if task['phase'] == 'RECONCILE':
+            self.diagnostic_phase = 'SOURCE_RECONCILE'
             _, doc = journal._load(); acquired = doc['actions'].get(action, {}).get('result')
             need(type(acquired) is dict and acquired.get('status') == 'RECONCILED', 'RUNTIME_SOURCE_ACQUISITION_UNRESOLVED')
             expected = acquired['expected']; upload = doc['actions'].get('source-upload:' + task['attempt_id'])
@@ -318,9 +327,11 @@ class RuntimeFactory:
             journal.record_result('source-upload:' + task['attempt_id'], {'status': 'RECONCILED',
                 'intent_sha256': upload['intent_sha256'], 'native_id': descriptor['generation'], 'descriptor': descriptor})
             return {'state': 'SOURCE_UPLOADED_AND_VERIFIED', 'descriptor': descriptor}
+        self.diagnostic_phase = 'SOURCE_ACQUIRE_INTENT'
         intent = journal.commit_intent(action, approval)
         need(intent['effect'] == 'CREATE_ONCE', 'RUNTIME_SOURCE_ACQUISITION_ALREADY_CONSUMED')
         self._current(work)
+        self.diagnostic_phase = 'SOURCE_ACQUIRE'
         with tempfile.TemporaryDirectory(prefix='commerce-v7-source-') as folder:
             os.chmod(folder, 0o700)
             result = prepare_archive(Path(folder), approval, self.source_reader)
@@ -335,8 +346,10 @@ class RuntimeFactory:
             need(total == result['archive_bytes'], 'RUNTIME_SOURCE_TRUNCATED')
             expected = {'bucket': self.sources.bucket, 'object': self.sources.prefix + task['attempt_id'] + '.tgz',
                         'sha256': result['archive_sha256'], 'size': total, 'md5': base64.b64encode(digest.digest()).decode()}
+            self.diagnostic_phase = 'SOURCE_ACQUISITION_RECORD'
             journal.record_result(action, {'status': 'RECONCILED', 'intent_sha256': intent['intent_sha256'], 'expected': expected})
             self._current(work)
+            self.diagnostic_phase = 'SOURCE_UPLOAD'
             return self.sources.upload_source_once(path, expected, journal, attempt_id=task['attempt_id'])
 
     def _fence(self, work):
@@ -346,9 +359,12 @@ class RuntimeFactory:
         return self._eligibility(work, doc['attempts'].get(task['attempt_id'], {}), None)
 
     def execute(self, work):
+        self.diagnostic_phase = 'WORK_VALIDATE'
         task = self._current(work); self._ledger()
         need(self.config['role'] == 'controller', 'RUNTIME_CONTROLLER_REQUIRED')
+        self.diagnostic_phase = 'SOURCE_CONNECT'
         self.source_reader.connect()
+        self.diagnostic_phase = 'WORK_VALIDATE'
         eligibility = lambda attempt, proposal: self._eligibility(work, attempt, proposal)
         api = FencedBuildAPI(self.api, lambda: self._fence(work))
         full = FullController(self.ledger_store, api, self.full_reader, eligibility, clock=self.clock)

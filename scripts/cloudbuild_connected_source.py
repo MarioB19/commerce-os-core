@@ -229,7 +229,11 @@ def git(root, *args, credential=None):
         result = run_git([*command, *args], cwd=root, environment=environment)
     except (OSError, subprocess.TimeoutExpired):
         raise EvidenceError('SOURCE_GIT_UNCERTAIN') from None
-    need(result.returncode == 0, 'SOURCE_GIT_FAILED')
+    failure = {'init': 'SOURCE_GIT_INIT_FAILED', 'fetch': 'SOURCE_GIT_FETCH_FAILED',
+               'checkout': 'SOURCE_GIT_CHECKOUT_FAILED', 'ls-tree': 'SOURCE_GIT_TREE_FAILED',
+               'rev-parse': 'SOURCE_GIT_REVISION_FAILED', 'status': 'SOURCE_GIT_STATUS_FAILED',
+               'fsck': 'SOURCE_GIT_FSCK_FAILED'}.get(args[0] if args else '', 'SOURCE_GIT_FAILED')
+    need(result.returncode == 0, failure)
     need(len(result.stdout) <= MAX_RESPONSE, 'SOURCE_GIT_OUTPUT_TOO_LARGE')
     return result.stdout.decode().strip()
 
