@@ -1,4 +1,5 @@
 import {currentProfileExecutor} from '../../../packages/db/src/profile-query-routing.js';
+import {bindRecordProfile} from '../../../packages/db/src/profile-record-context.js';
 import {readCommercialContinuity} from '../../../packages/db/src/continuous-commercial.js';
 import {assignmentFor,assignmentGate,channelIdentityHash} from '../../../packages/db/src/commercial-assignments.js';
 import {commercialWarmupGuard} from '../../../packages/db/src/warmup.js';
@@ -56,8 +57,9 @@ export async function proposeEffectOutcome(client:QueryExecutor,conversation:Dom
   // An owner authorizes a bounded number/assignment/contact scope. Only newly
   // proposed effects inherit it; existing blocked effects retain their old approval.
   if(conversation.environment==='REAL'&&!authorizationId&&!options.campaignId){
-    const db=currentProfileExecutor(conversation.workspace_id);
-    if(!db)throw new Error('CONTINUITY_PROFILE_CONTEXT_REQUIRED');
+    // V7 F2: the continuity authority is read in the profile of the explicit,
+    // locked conversation record; no profile is chosen for convenience.
+    const db=currentProfileExecutor(conversation.workspace_id)??await bindRecordProfile(client,conversation.workspace_id,'REAL');
     if(!conversation.body.assignment_id||!channel||channel.body.sending_enabled!==true)return{state:'BLOCKED',reason:'CONTINUITY_ASSIGNMENT_UNAVAILABLE'};
     const settings=await readOperationalSettings(db,conversation.workspace_id,'REAL',{lock:'share'});
     if(settings.body.dispatch_frozen||!settings.body.real_sends_enabled||!settings.body.allow_real_operations)return{state:'BLOCKED',reason:'REAL_OPERATION_NOT_ENABLED'};

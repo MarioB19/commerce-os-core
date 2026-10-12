@@ -87,3 +87,27 @@ export async function withPersonalProfileTransaction<T>(
   return result;
  });
 }
+
+/** Request authentication for routes outside the single-transaction SQL
+ * adapter: resolves the token's own profile and effective authority without
+ * choosing an action. Each route still checks its own permission. */
+export async function resolvePersonalProfile(pool:ProfilePool&QueryExecutor,token:string):Promise<PersonalProfile&{allowedEnvironments:ProfileEnvironment[];route:{tokenId:string;workspaceId:string;userId:string}}>{
+ const route=await locate(pool,token);
+ return withProfileTransaction(pool,route.workspaceId,async db=>{
+  // The route's environment is parsed later; the legacy boundary then rejects
+  // any environment outside this token's own allowed list.
+  const allowed=environmentsSchema.safeParse((await db.query('SELECT allowed_environments FROM personal_access_tokens WHERE id=$1 AND workspace_id=$2 AND user_id=$3 AND token_hash=$4',
+   [route.tokenId,route.workspaceId,route.userId,route.hash])).rows[0]?.allowed_environments);
+  need(allowed.success,'PROFILE_PERSONAL_TOKEN_INVALID');
+  const profile=await authority(db,route,allowed.data[0]!,false);
+  return{...profile,allowedEnvironments:allowed.data,route:{tokenId:route.tokenId,workspaceId:route.workspaceId,userId:route.userId}};
+ });
+}
+/** Re-lock an already authenticated PAT inside the caller's profile
+ * transaction (mutations). Same lock order and server clock as the reader. */
+export async function relockPersonalProfile(db:ProfileExecutor,route:{tokenId:string;workspaceId:string;userId:string},environment:ProfileEnvironment):Promise<void>{
+ need(db.workspaceId===route.workspaceId,'PROFILE_TOKEN_ROUTE_INVALID');
+ const hash=(await db.query('SELECT token_hash FROM personal_access_tokens WHERE id=$1 AND workspace_id=$2 AND user_id=$3',[route.tokenId,route.workspaceId,route.userId])).rows[0]?.token_hash;
+ need(typeof hash==='string','PROFILE_PERSONAL_TOKEN_INVALID');
+ await authority(db,{...route,hash},environment,true);
+}

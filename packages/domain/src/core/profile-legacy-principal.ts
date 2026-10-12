@@ -64,3 +64,9 @@ export function profileLegacyPrincipal(authority:ProfileAuthority,action:Profile
  Object.freeze(principal.user);Object.freeze(principal.permissions);Object.freeze(principal.scopes);Object.freeze(principal.allowed_environments);Object.freeze(principal.profile_action);
  return Object.freeze(principal);
 }
+
+/** Legacy route permissions implied by a closed set of V7 scopes. Used only
+ * for restricted credentials on historical routes; unmapped scopes add none. */
+export function legacyAliasesForScopes(scopes:readonly ProfileScope[]):string[]{
+ return[...new Set(scopes.flatMap(scope=>pairs[scope]??[]))].sort();
+}

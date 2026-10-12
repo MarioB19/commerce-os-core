@@ -1,5 +1,6 @@
 import {currentProfileExecutor,joinProfileQueryWork} from './profile-query-routing.js';
 import {currentWorkerProfile} from './profile-worker-scope.js';
+import {requestProfileScope} from './profile-request-scope.js';
 import type pg from 'pg';
 
 // Keep pg's legacy default row type while preserving explicitly typed callers.
@@ -36,6 +37,9 @@ export async function withProfileTransaction<T>(
 ): Promise<T> {
   requireProfileId(workspaceId);
   currentWorkerProfile(workspaceId);
+  // An authenticated request scope fixes the only profile this request may use.
+  const request=requestProfileScope();
+  if(request&&request.workspaceId!==workspaceId)throw new ProfileContextError('PROFILE_REQUEST_SCOPE_MISMATCH');
   const existing=currentProfileExecutor(workspaceId);
   if(existing)return joinProfileQueryWork(existing,()=>work(existing));
   const connection = await pool.connect();
@@ -61,6 +65,8 @@ export async function withProfileTransaction<T>(
     await connection.query('BEGIN');
     begun = true;
     await connection.query("SELECT pg_catalog.set_config('app.workspace_id', $1, true)", [workspaceId]);
+    // The request's parsed environment also scopes environment-bound tables.
+    if (request?.environment) await connection.query("SELECT pg_catalog.set_config('app.environment', $1, true)", [request.environment]);
     await connection.query('SET LOCAL row_security = on');
     usable = true;
     const result = await work(executor);

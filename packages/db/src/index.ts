@@ -8,6 +8,17 @@ import * as schema from './schema.js';
 import type {ProfileQuery} from './profile-context.js';
 export type QueryExecutor={query:ProfileQuery};
 const nativePool=new pg.Pool({connectionString:process.env.DATABASE_URL,max:Number(process.env.DB_POOL_MAX||5),idleTimeoutMillis:10000,connectionTimeoutMillis:5000});
+// V7: production logins (commerce_<service>_login, members of their group)
+// assume the reviewed group role so row policies and SQL guards that check
+// current_user see commerce_api/commerce_channel/..., never the login name.
+// Queued on the new connection before any caller query; other users no-op.
+const assumeRuntimeRole=`DO $$DECLARE target text; BEGIN
+ IF session_user::text ~ '^commerce_(api|ingress|automation|channel|maintenance)_login$' AND current_user=session_user THEN
+  target:=regexp_replace(session_user::text,'_login$','');
+  IF pg_has_role(session_user,target,'MEMBER') THEN EXECUTE format('SET ROLE %I',target); END IF;
+ END IF;
+END$$`;
+nativePool.on('connect',client=>{client.query(assumeRuntimeRole).catch(()=>{process.stderr.write('database_runtime_role_not_assumed\n');});});
 export const pool=profileRoutedPool(nativePool);
 export const createDatabaseWorkerRuntime=(role:'commerce_automation'|'commerce_channel',environment:Environment)=>createProfileWorkerRuntime(nativePool,role,environment);
 // pg removes failed idle clients. Keep services alive so readiness and later queries can recover.

@@ -7,7 +7,8 @@ export function identityDigest(kind:string,value:string){
  return createHmac('sha256',key).update(`commerce.identity.${kind}.v1\0`).update(value).digest('hex');
 }
 export async function identityLock(c:QueryExecutor,user:string){await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['identity:'+user]);}
-export async function activeMember(c:QueryExecutor,user:string){return (await c.query('SELECT role FROM memberships WHERE user_id=$1 AND active=true ORDER BY workspace_id FOR SHARE',[user])).rows[0];}
+/** Identity-level fact (V7): some active membership exists. Never reveals or selects a profile. */
+export async function activeMember(c:QueryExecutor,user:string){return (await c.query('SELECT public.identity_active_membership($1) AS active',[user])).rows[0]?.active===true?{active:true}:undefined;}
 export async function identityAudit(c:QueryExecutor,event:string,outcome:string,correlation:string,user?:string,actor?:string,job?:string){
  await c.query('INSERT INTO identity_audit(event_type,outcome,correlation_id,user_id,actor_id,job_id) VALUES($1,$2,$3,$4,$5,$6)',[event,outcome,correlation,user??null,actor??null,job??null]);
 }

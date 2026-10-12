@@ -1,5 +1,6 @@
 import {AsyncLocalStorage} from 'node:async_hooks';
 import {currentWorkerProfile,withWorkerProfilePhase,rejectWorkerProfile} from './profile-worker-scope.js';
+import {requestProfileScope,requestScopedConnection} from './profile-request-scope.js';
 import type {ProfileExecutor,ProfileQuery} from './profile-context.js';
 
 interface Scope {
@@ -76,6 +77,19 @@ export function profileRoutedPool<T extends {query:unknown;connect:unknown}>(poo
      return withWorkerProfilePhase(db=>db.query(args[0] as string,args[1] as unknown[]|undefined));
     }
    }catch(error){return Promise.reject(error);}
+   let request;
+   try{request=requestProfileScope();}catch(error){return Promise.reject(error);}
+   if(request){
+    // Historical handlers keep their statement-by-statement semantics; each
+    // statement runs on a connection bound to the authenticated profile.
+    const callback=typeof args.at(-1)==='function'?args.pop() as (error:unknown,result?:unknown)=>void:undefined;
+    const run=requestScopedConnection(()=>(pool.connect as ()=>Promise<any>).apply(pool,[]),request).then(async client=>{
+     try{const result=await client.query(...args);client.release();return result;}
+     catch(error){client.release();throw error;}
+    });
+    if(callback){run.then(result=>callback(null,result),error=>callback(error));return undefined;}
+    return run;
+   }
    return (pool.query as (...args:unknown[])=>unknown).apply(pool,args);
   }
   try{
@@ -92,6 +106,14 @@ export function profileRoutedPool<T extends {query:unknown;connect:unknown}>(poo
   }
   try{if(currentWorkerProfile())return rejectWorkerProfile('WORKER_RAW_CONNECTION_FORBIDDEN');}
   catch(error){return Promise.reject(error);}
+  let request;
+  try{request=requestProfileScope();}catch(error){return Promise.reject(error);}
+  if(request){
+   const callback=typeof args[0]==='function'?args[0] as (error:unknown,client?:any,release?:unknown)=>void:undefined;
+   const scoped=requestScopedConnection(()=>(pool.connect as ()=>Promise<any>).apply(pool,[]),request);
+   if(callback){scoped.then(client=>callback(null,client,client.release),error=>callback(error));return undefined;}
+   return scoped;
+  }
   return (pool.connect as (...args:unknown[])=>unknown).apply(pool,args);
  };
  return new Proxy(pool,{

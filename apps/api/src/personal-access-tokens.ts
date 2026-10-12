@@ -30,7 +30,7 @@ export async function personalAccessTokenRoutes(app:FastifyInstance) {
   const p=owner(req),input=z.object({...revision,confirmation:z.literal('REVOKE_OWNER_API_TOKEN')}).strict().parse(parseBody(req));
   const result=await mutate(req,'personal-token.revoke:'+req.params.id,async c=>{
    const old=(await c.query('SELECT * FROM personal_access_tokens WHERE id::text=$1 AND workspace_id=$2 FOR UPDATE',[req.params.id,p.workspace_id])).rows[0];if(!old)throw fail(404,'NOT_FOUND');if(old.version!==input.expected_version)throw fail(409,'VERSION_CONFLICT');
-   await c.query('UPDATE personal_access_tokens SET revoked_at=COALESCE(revoked_at,now()),version=version+1 WHERE id=$1',[old.id]);
+   await c.query('UPDATE personal_access_tokens SET revoked_at=COALESCE(revoked_at,now()) WHERE id=$1',[old.id]);
    await audit(c,req,'personal_access_token.revoked',old.id,{reason:input.reason});return{data:{revoked:true,version:old.version+1}};
   });return{data:result.data};
  });
@@ -39,7 +39,7 @@ export async function personalAccessTokenRoutes(app:FastifyInstance) {
   const result=await mutate(req,'personal-token.rotate:'+req.params.id,async c=>{
    const old=(await c.query('SELECT * FROM personal_access_tokens WHERE id::text=$1 AND workspace_id=$2 AND user_id=$3 FOR UPDATE',[req.params.id,p.workspace_id,p.user.id])).rows[0];if(!old)throw fail(404,'NOT_FOUND');if(old.version!==input.expected_version)throw fail(409,'VERSION_CONFLICT');if(old.revoked_at||Date.parse(old.expires_at)<=Date.now())throw fail(409,'TOKEN_NOT_ACTIVE');
    const data=await insertPersonalToken(c,{...input,workspace_id:p.workspace_id,user_id:p.user.id});
-   await c.query('UPDATE personal_access_tokens SET revoked_at=now(),version=version+1 WHERE id=$1',[old.id]);
+   await c.query('UPDATE personal_access_tokens SET revoked_at=now() WHERE id=$1',[old.id]);
    await audit(c,req,'personal_access_token.rotated',old.id,{replacement_id:data.id,reason:input.reason,allowed_environments:input.allowed_environments,expires_at:input.expires_at,commercial_activation_authorized:false});
    return{data,status:201,private:true};
   });reply.code(result.status??201).header('Cache-Control','no-store');return{data:result.data};

@@ -97,7 +97,7 @@ export async function accountAuthHandler(req:FastifyRequest,reply:FastifyReply){
    }
    const response=await scoped.handler(new Request((process.env.BETTER_AUTH_URL??'http://localhost:3001')+'/api/auth'+path,{method:req.method,headers:fromNodeHeaders(req.headers),...(req.method==='POST'?{body:JSON.stringify(body)}:{})}));
    if(!response.ok)throw new AuthResponseError(response);
-   if(path==='/change-password'||path==='/reset-password'){await invalidateResetLinks(c,user!);await c.query('UPDATE personal_access_tokens SET revoked_at=COALESCE(revoked_at,now()),version=version+1 WHERE user_id=$1 AND revoked_at IS NULL',[user]);}
+   if(path==='/change-password'||path==='/reset-password'){await invalidateResetLinks(c,user!);await c.query('SELECT public.revoke_identity_personal_tokens($1)',[user]);}
    if(req.method==='POST')await identityAudit(c,operation,'SUCCEEDED',req.id,user,path==='/change-password'||path==='/sign-out'?user:undefined);
    return path==='/request-password-reset'?Response.json({status:true,message:recoveryMessage}):response;
   });

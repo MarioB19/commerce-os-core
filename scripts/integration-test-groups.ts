@@ -10,11 +10,14 @@ export function integrationTestGroups(root:string,entries:unknown):string[][]{
   return name;
  }).sort();
  if(new Set(files).size!==files.length)throw new Error('INTEGRATION_TEST_DUPLICATE');
+ // V7 F2: every file receives its own freshly migrated database. Platform
+ // quotas (3 profiles, 20 numbers, 300 conversations/day) are per installation,
+ // so files can no longer accumulate profiles in one shared database.
  const additiveTransitions=new Set(['tests/integration/continuous-authorization.test.ts','tests/integration/market-variants.test.ts','tests/integration/expired-effects.test.ts']);
  const scoped=files.filter(file=>/^tests\/integration\/profile-[^/]+\.test\.ts$/.test(file)||additiveTransitions.has(file));
  const calendar:string[]=files.filter(file=>file==='tests/integration/numbers-mcp-stdio.test.ts');
  const ordinary=files.filter(file=>!scoped.includes(file)&&!calendar.includes(file));
- const groups=[...(ordinary.length?[ordinary]:[]),...scoped.map(file=>[file]),...calendar.map(file=>[file])];
+ const groups=[...ordinary.map(file=>[file]),...scoped.map(file=>[file]),...calendar.map(file=>[file])];
  const actual=groups.flat().sort();
  if(actual.length!==files.length||actual.some((file,i)=>file!==files[i]))throw new Error('INTEGRATION_TEST_PARTITION_INVALID');
  return groups;

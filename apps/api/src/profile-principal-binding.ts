@@ -1,5 +1,5 @@
 import type {FastifyRequest} from 'fastify';
-import type {ProfileRequestContext} from './profile-request.js';
+import type {LegacyProfileRequestContext} from './profile-request.js';
 import type {ProfileExecutor} from '../../../packages/db/src/profile-context.js';
 import {currentProfileExecutor,joinProfileQueryWork} from '../../../packages/db/src/profile-query-routing.js';
 import {profileLegacyPrincipal} from '../../../packages/domain/src/core/profile-legacy-principal.js';
@@ -7,7 +7,7 @@ import {authorizeProfileAction,type ProfileAction,type ProfileAuthority} from '.
 import type {Principal} from '../../../packages/domain/src/core/permissions.js';
 
 type Action=Omit<ProfileAction,'workspaceId'>;
-interface Binding {principal:Principal;executor:ProfileExecutor;authority:ProfileAuthority;active:boolean}
+interface Binding {principal:Principal;executor:ProfileExecutor;authority:ProfileAuthority|null;service:{scopes:readonly string[];state:'ACTIVE'|'SUSPENDED'}|null;active:boolean}
 const bindings=new WeakMap<FastifyRequest,Binding>();
 function deny():never{throw Object.assign(new Error('PROFILE_PRINCIPAL_BOUNDARY_REQUIRED'),{code:'PROFILE_PRINCIPAL_BOUNDARY_REQUIRED',statusCode:403});}
 /** Only a server-created binding in the same live transaction can replace the
@@ -27,7 +27,16 @@ export function profilePrincipalAuthority(req:FastifyRequest,principal:Principal
 export async function authorizeBoundProfileAction(req:FastifyRequest,action:Action):Promise<void>{
  const binding=bindings.get(req);
  if(!binding||!binding.active||currentProfileExecutor()!==binding.executor)return deny();
- await joinProfileQueryWork(binding.executor,async()=>authorizeProfileAction(binding.authority,{...action,workspaceId:binding.executor.workspaceId}));
+ await joinProfileQueryWork(binding.executor,async()=>{
+  if(binding.service){
+   // Profile-bound service tokens keep their historical legacy scope checks in
+   // the handler; this boundary refuses interactive and administrative actions.
+   if(action.interactiveOnly||action.scope==='profiles:switch'||action.scope.startsWith('employees:')||action.scope.startsWith('tokens:'))throw Object.assign(new Error('FORBIDDEN'),{code:'FORBIDDEN',statusCode:403});
+   if((action.mutation||!action.scope.endsWith(':read'))&&binding.service.state!=='ACTIVE')throw Object.assign(new Error('PROFILE_SUSPENDED'),{code:'PROFILE_SUSPENDED',statusCode:403});
+   return;
+  }
+  authorizeProfileAction(binding.authority!,{...action,workspaceId:binding.executor.workspaceId});
+ });
 }
 
 /** Construct once per route with only its reviewed compatibility aliases. The
@@ -35,9 +44,19 @@ export async function authorizeBoundProfileAction(req:FastifyRequest,action:Acti
  */
 export function profilePrincipalBinder(registry:WeakMap<FastifyRequest,Principal>,permissions:readonly string[]){
  const aliases=Object.freeze([...permissions]);
- return(req:FastifyRequest,context:ProfileRequestContext,action:Action):(()=>void)=>{
+ return(req:FastifyRequest,context:LegacyProfileRequestContext,action:Action):(()=>void)=>{
   if(registry.has(req)||bindings.has(req)||currentProfileExecutor(context.db.workspaceId)!==context.db)return deny();
-  const profile=context.profile,authority=profile.authority;
+  const profile=context.profile;
+  if('kind' in profile){
+   if(profile.profile.id!==context.db.workspaceId||profile.environment!==context.environment)return deny();
+   const principal:Principal=Object.freeze({user:Object.freeze({id:profile.actorId,name:profile.name,email:''}),workspace_id:profile.profile.id,role:'viewer',permissions:[],service:true,
+    authentication_method:'service_token',scopes:[...profile.scopes],token_id:profile.tokenId,...(profile.idempotencyActor?{idempotency_actor:profile.idempotencyActor}:{}),
+    allowed_environments:[...profile.allowedEnvironments],resource_ids:profile.resourceIds?[...profile.resourceIds]:null}) as Principal;
+   const binding:Binding={principal,executor:context.db,authority:null,service:{scopes:profile.scopes,state:profile.profile.state},active:true};
+   registry.set(req,principal);bindings.set(req,binding);
+   return()=>{binding.active=false;registry.delete(req);};
+  }
+  const authority=profile.authority;
   if(profile.profile.id!==context.db.workspaceId||authority.profile.id!==context.db.workspaceId)return deny();
   const credential=authority.credential.kind==='session'&&'selection'in profile
    ?{kind:'session' as const}
@@ -48,7 +67,7 @@ export function profilePrincipalBinder(registry:WeakMap<FastifyRequest,Principal
    // and idempotency use only the locked native membership's user ID here.
    user:{id:authority.membership.userId,name:'',email:''},environment:context.environment,credential,legacyPermissions:[...aliases],
   });
-  const binding:Binding={principal,executor:context.db,authority,active:true};
+  const binding:Binding={principal,executor:context.db,authority,service:null,active:true};
   registry.set(req,principal);bindings.set(req,binding);
   return()=>{binding.active=false;registry.delete(req);};
  };

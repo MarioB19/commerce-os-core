@@ -4,12 +4,13 @@ import {describe,expect,it} from 'vitest';
 import {integrationTestGroups,integrationGroupArgs} from '../../scripts/integration-test-groups.js';
 const root=process.cwd();
 describe('integration database partition without omitted tests',()=>{
- it('assigns every current integration file exactly once and isolates every profile transition',()=>{
+ it('assigns every current integration file exactly once to its own database',()=>{
   const files=readdirSync(resolve(root,'tests/integration')).filter(file=>file.endsWith('.test.ts')).map(file=>'tests/integration/'+file).sort();
   const groups=integrationTestGroups(root,files.map(file=>({file:resolve(root,file)})));
   expect(groups.flat().sort()).toEqual(files);expect(new Set(groups.flat()).size).toBe(files.length);
-  for(const file of files.filter(file=>file.startsWith('tests/integration/profile-')))expect(groups.find(group=>group.includes(file))).toEqual([file]);
-  expect(groups[0]?.every(file=>!file.startsWith('tests/integration/profile-'))).toBe(true);
+  // V7 F2: per-installation quotas require a fresh database for every file.
+  for(const file of files)expect(groups.find(group=>group.includes(file))).toEqual([file]);
+  expect(groups.at(-1)).toEqual(['tests/integration/numbers-mcp-stdio.test.ts']);
  });
  it('keeps global MCP calendar workers separate and last after profile transitions',()=>{
   const files=['tests/integration/profile-session.test.ts','tests/integration/numbers-mcp-stdio.test.ts','tests/integration/warmup-runtime.test.ts'];
@@ -27,7 +28,7 @@ describe('integration database partition without omitted tests',()=>{
  it('isolates exact F3/F4 transitions with the calendar without widening selected filters',()=>{
   const files=['tests/integration/a.test.ts','tests/integration/continuous-authorization.test.ts','tests/integration/market-variants.test.ts','tests/integration/market-other.test.ts','tests/integration/profile-one.test.ts','tests/integration/numbers-mcp-stdio.test.ts'];
   const groups=integrationTestGroups(root,files.map(file=>({file})));
-  expect(groups).toEqual([[files[0],files[3]],[files[1]],[files[2]],[files[4]],[files[5]]]);
+  expect(groups).toEqual([[files[0]],[files[3]],[files[1]],[files[2]],[files[4]],[files[5]]]);
   expect(groups.flat().sort()).toEqual([...files].sort());
   for(const name of files.slice(1,3)){
    const selected=groups.find(group=>group.includes(name))!;

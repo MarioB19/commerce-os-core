@@ -15,6 +15,16 @@ LANGUAGE sql STABLE SET search_path=pg_catalog AS $$
 $$;
 REVOKE ALL ON FUNCTION public.v7_worker_global_without_context() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.v7_worker_global_without_context() TO PUBLIC;
+-- Same predicate for SECURITY DEFINER guards, which receive the invoking role.
+CREATE FUNCTION public.v7_worker_global_without_context(actor text) RETURNS boolean
+LANGUAGE sql STABLE SET search_path=pg_catalog AS $$
+ SELECT NULLIF(current_setting('app.workspace_id',true),'') IS NULL
+  AND NULLIF(current_setting('app.environment',true),'') IS NULL
+  AND actor IS NOT NULL AND EXISTS(SELECT 1 FROM pg_roles WHERE rolname=actor)
+  AND pg_has_role(actor,'commerce_worker_global','USAGE')
+$$;
+REVOKE ALL ON FUNCTION public.v7_worker_global_without_context(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.v7_worker_global_without_context(text) TO PUBLIC;
 
 DO $isolation$
 DECLARE t record; p record; r record; scope_column text; ctx text; worker text; was_enabled boolean; historical boolean;
@@ -107,6 +117,16 @@ BEGIN
   '   NEW.environment:=parent_environment;RETURN NEW;'||chr(10)||
   '  END IF;'||chr(10)||
   '  IF current_setting(''app.workspace_id'',true) IS DISTINCT FROM NEW.workspace_id OR (env IN(''REAL'',''SIMULATION'')) IS NOT TRUE THEN RAISE EXCEPTION ''PROFILE_CONTROL_CONTEXT_REQUIRED'';END IF;');
+ -- Privacy minimization guards (033/038) fire on every records/record_versions
+ -- write. A worker without context keeps writing its historical records; the
+ -- resurrection checks below the context line still use the row's own scope.
+ INSERT INTO pg_temp.v7_bind_patches VALUES
+ ('public.privacy_record_transition(jsonb,jsonb,text,text,text)',
+  ' IF COALESCE(prior,next_image)->>''workspace_id'' IS DISTINCT FROM NULLIF(current_setting(''app.workspace_id'',true),'''') OR COALESCE(prior,next_image)->>''environment'' IS DISTINCT FROM current_setting(''app.environment'',true) THEN RAISE EXCEPTION ''PRIVACY_RECORD_CONTEXT_REQUIRED'';END IF;',
+  ' IF NOT public.v7_worker_global_without_context(actor) AND (COALESCE(prior,next_image)->>''workspace_id'' IS DISTINCT FROM NULLIF(current_setting(''app.workspace_id'',true),'''') OR COALESCE(prior,next_image)->>''environment'' IS DISTINCT FROM current_setting(''app.environment'',true)) THEN RAISE EXCEPTION ''PRIVACY_RECORD_CONTEXT_REQUIRED'';END IF;'),
+ ('public.privacy_asset_transition(jsonb,jsonb,text,text,text)',
+  ' IF COALESCE(prior,next_image)->>''workspace_id'' IS DISTINCT FROM NULLIF(current_setting(''app.workspace_id'',true),'''') OR COALESCE(prior,next_image)->>''environment'' IS DISTINCT FROM current_setting(''app.environment'',true) THEN RAISE EXCEPTION ''PRIVACY_ASSET_CONTEXT_REQUIRED'';END IF;',
+  ' IF NOT public.v7_worker_global_without_context(actor) AND (COALESCE(prior,next_image)->>''workspace_id'' IS DISTINCT FROM NULLIF(current_setting(''app.workspace_id'',true),'''') OR COALESCE(prior,next_image)->>''environment'' IS DISTINCT FROM current_setting(''app.environment'',true)) THEN RAISE EXCEPTION ''PRIVACY_ASSET_CONTEXT_REQUIRED'';END IF;');
  FOR definition IN SELECT DISTINCT fn FROM pg_temp.v7_bind_patches ORDER BY 1 LOOP
   SELECT pg_get_functiondef(definition::regprocedure) INTO patched;
   DECLARE patch record; BEGIN

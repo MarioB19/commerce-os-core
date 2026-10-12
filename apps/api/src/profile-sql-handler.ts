@@ -4,13 +4,13 @@ import {z} from 'zod';
 import {environmentSchema} from '../../../packages/contracts/src/index.js';
 import {profileScopeSchema} from '../../../packages/contracts/src/profiles.js';
 import {withProfileQueryRouting,currentProfileExecutor} from '../../../packages/db/src/profile-query-routing.js';
-import {withProfileRequest,type ProfileRequestContext,type ProfileRequestDependencies} from './profile-request.js';
+import {withLegacyProfileRequest,type LegacyProfileRequestContext,type ProfileRequestDependencies} from './profile-request.js';
 
 const actionSchema=z.object({scope:profileScopeSchema,mutation:z.boolean(),interactiveOnly:z.boolean().optional()}).strict();
 type Action=z.infer<typeof actionSchema>;
 interface Dependencies {
  request?:ProfileRequestDependencies;
- bindIdentity(req:FastifyRequest,context:ProfileRequestContext,action:Readonly<Action>):()=>void;
+ bindIdentity(req:FastifyRequest,context:LegacyProfileRequestContext,action:Readonly<Action>):()=>void;
 }
 function deny(code:string):never{throw Object.assign(new Error(code),{code,statusCode:500});}
 /** Parse the V1 environment contract before identity binding. Token authority is
@@ -82,7 +82,7 @@ export function authorizedProfileSqlHandler(actionValue:Action,handler:RouteHand
  const action=Object.freeze(actionSchema.parse(actionValue));
  return async function(req,reply){
   const environment=profileHttpEnvironment(req),response=pendingReply();
-  const staged=await withProfileRequest(req,environment,action,context=>withProfileQueryRouting(context.db,async()=>{
+  const staged=await withLegacyProfileRequest(req,environment,action,context=>withProfileQueryRouting(context.db,async()=>{
    const release=deps.bindIdentity(req,{...context,db:currentProfileExecutor(context.db.workspaceId)!},action);
    try{return response.finish(await handler.call(this,req,response.facade));}
    finally{release();}
