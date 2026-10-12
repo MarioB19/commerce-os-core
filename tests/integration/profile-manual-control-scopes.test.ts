@@ -2,25 +2,27 @@ import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
-import {localInventoryTarget} from '../../scripts/profile-inventory.js';
+import {openMigratedDatabase,isolatedAdminUrl} from '../support/migrated-database.js';
 const suffix=randomBytes(6).toString('hex'),login='control_'+suffix,one='control_one_'+suffix,two='control_two_'+suffix;
 const ids={real:randomUUID(),sim:randomUUID(),foreign:randomUUID(),fresh:randomUUID(),workflow:randomUUID(),wrong:randomUUID()};
-let admin:pg.Pool,runtime:pg.Pool,component:string,original:unknown;
+let admin:pg.Pool,runtime:pg.Pool,component:string,original:unknown,closeDatabase:()=>Promise<void>;
 async function scope<T>(workspace:string,environment:string,work:(c:pg.PoolClient)=>Promise<T>){const c=await runtime.connect();try{await c.query('BEGIN');await c.query('SET LOCAL ROLE commerce_api');await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment',$2,true)",[workspace,environment]);const result=await work(c);expect((await c.query('COMMIT')).command).toBe('COMMIT');return result;}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}}
 const history=async()=>(await admin.query("SELECT to_jsonb(m)-ARRAY['environment','scope_record_id'] raw FROM manual_controls m ORDER BY workspace_id,scope_type,scope_id")).rows;
 async function rejectedHistory(sql:string,values:unknown[]=[]){const c=await admin.connect();try{await c.query('BEGIN');await c.query(sql,values);await expect(c.query(component)).rejects.toThrow('PROFILE_CONTROL_ADOPTION_REQUIRED');}finally{await c.query('ROLLBACK');c.release();}expect(await history()).toEqual(original);}
 const insert="INSERT INTO manual_controls(workspace_id,scope_type,scope_id,paused,reason,actor_id) VALUES($1,$2,$3,true,'Synthetic stop','synthetic_actor')";
 describe('manual controls preserve global safety and isolate record environments',()=>{
  beforeAll(async()=>{
-  const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:3});
-  await admin.query(await readFile(new URL('../../packages/db/profile-transition/001_profile_identity.sql',import.meta.url),'utf8'));
+  // V7 F2: a database migrated through 0082 is the exact state the 0083
+  // component sees; the reviewed component source is byte-identical in 0083.
+  const database=await openMigratedDatabase('0082');admin=database.pool;closeDatabase=database.close;const url=new URL(database.url);
   component=await readFile(new URL('../../packages/db/profile-transition/components/020_manual_control_scopes.sql',import.meta.url),'utf8');
+  await admin.query("INSERT INTO profile_quota_policy(singleton,max_profiles,max_numbers,daily_conversations,calendar_timezone,adoption_sha256) VALUES(true,3,20,300,'UTC',repeat('a',64))");
   await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic One','UTC',0,0,0),($2,'Synthetic Two','UTC',0,0,0)",[one,two]);
   for(const [key,id]of Object.entries(ids))await admin.query("INSERT INTO records(id,workspace_id,environment,kind,body) VALUES($1,$2,$3,$4,'{}')",[id,key==='foreign'?two:one,key==='sim'?'SIMULATION':'REAL',key==='workflow'?'workflow':key==='wrong'?'synthetic':'contact']);
   for(const[w,t,id]of [[one,'workspace',one],[two,'workspace',two],[one,'contact',ids.real],[one,'contact',ids.sim],[two,'contact',ids.foreign]])await admin.query(insert,[w,t,id]);
   original=await history();const password=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${password}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;GRANT commerce_api TO "${login}"`);url.username=login;url.password=password;runtime=new pg.Pool({connectionString:url.toString(),max:2});
  },60000);
- afterAll(async()=>{await runtime?.end();if(admin){try{await admin.query(`DROP ROLE IF EXISTS "${login}"`);}finally{await admin.end();}}});
+ afterAll(async()=>{await runtime?.end();await closeDatabase?.();const parent=new pg.Pool({connectionString:isolatedAdminUrl().toString(),max:1});try{await parent.query(`DROP ROLE IF EXISTS "${login}"`);}finally{await parent.end();}});
  it('requires migration authority',async()=>{await expect(runtime.query(component)).rejects.toThrow('PROFILE_MIGRATION_OWNER_REQUIRED');});
  it('rejects a missing profile atomically',async()=>{await rejectedHistory('DELETE FROM profiles WHERE id=$1',[two]);});
  it('rejects an orphan textual parent without rewriting it',async()=>{await rejectedHistory(insert,[one,'contact','not-a-uuid']);});

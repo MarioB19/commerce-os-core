@@ -18,7 +18,8 @@ const assumeRuntimeRole=`DO $$DECLARE target text; BEGIN
   IF pg_has_role(session_user,target,'MEMBER') THEN EXECUTE format('SET ROLE %I',target); END IF;
  END IF;
 END$$`;
-nativePool.on('connect',client=>{client.query(assumeRuntimeRole).catch(()=>{process.stderr.write('database_runtime_role_not_assumed\n');});});
+const runtimeLogin=(()=>{try{return /^commerce_(api|ingress|automation|channel|maintenance)_login$/.test(decodeURIComponent(new URL(process.env.DATABASE_URL??'').username));}catch{return false;}})();
+if(runtimeLogin)nativePool.on('connect',client=>{client.query(assumeRuntimeRole).catch(()=>{process.stderr.write('database_runtime_role_not_assumed\n');});});
 export const pool=profileRoutedPool(nativePool);
 export const createDatabaseWorkerRuntime=(role:'commerce_automation'|'commerce_channel',environment:Environment)=>createProfileWorkerRuntime(nativePool,role,environment);
 // pg removes failed idle clients. Keep services alive so readiness and later queries can recover.
