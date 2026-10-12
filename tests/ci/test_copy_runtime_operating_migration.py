@@ -40,6 +40,26 @@ class OperatingMigration(unittest.TestCase):
         c.migration_stage_guard(history(65), {'migration_hashes': history(67)}, initial=True)
         c.migration_stage_guard(history(67), {'migration_hashes': history(67)}, stage='CORE_PREPARED')
 
+    def test_same_schema_68_uses_real_candidate_hashes_without_sql_or_new_migration_plan(self):
+        # Current V7 candidate still has exactly the historical 68 migrations.
+        migrations = Path(__file__).resolve().parents[2]/'packages/db/migrations'
+        expected = {p.name: c.sha256(p.read_bytes()) for p in migrations.glob('*.sql')}
+        self.assertEqual(len(expected), 68)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); installed = {'source_sha':'a'*40, 'migration_hashes':expected}
+            (root/'RELEASE.json').write_text(json.dumps(installed))
+            c.installed_migration_identity(root, {'COMMERCE_RELEASE_SHA':'a'*40}, expected)
+            server = types.SimpleNamespace(migrations=lambda _:dict(expected),
+                _write_report=lambda *_:self.fail('no migration plan write'),
+                run_deployment_task=lambda *_:self.fail('no SQL/container dispatch'))
+            metadata = {'source_sha':'b'*40, 'migration_hashes':dict(expected)}
+            review = {'migration_hashes':{n:expected[n] for n in c.OPERATING_MIGRATION_NAMES}}
+            result = c.apply_reviewed_migrations(server, root, root, metadata, review, stage='OPERATING')
+            self.assertEqual(result, {'status':'ALREADY_APPLIED','migration_count':68})
+            metadata['migration_hashes']['0069_unadmitted_f2.sql'] = 'c'*64
+            with self.assertRaisesRegex(ReleaseError,'MIGRATION_SET_INVALID'):
+                c.apply_reviewed_migrations(server, root, root, metadata, review, stage='OPERATING')
+
     def test_installed_release_must_match_db_and_private_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); metadata = {'source_sha': 'a'*40, 'migration_hashes': history(67)}

@@ -108,7 +108,7 @@ async function fixture() {
           topic: "contents",
           title: "Qué incluye",
           content:
-            "Contenido sintético para pruebas de contrato; no representa el material comercial ni autoriza acciones.",
+            "Fixture sintético inicial: referencia 360. No representa material comercial ni autoriza acciones.",
           source: "synthetic-contract-fixture",
         },
       ],
@@ -680,7 +680,7 @@ it("restores historical knowledge for a legacy conversation and pins it on first
             id: "new",
             topic: "contents",
             title: "New",
-            content: "Contenido sintético para pruebas de contrato; no representa el material comercial ni autoriza acciones.",
+            content: "New facts: fixture sintético de una revisión posterior, distinto del conocimiento histórico.",
             source: "Later revision",
           },
         ],

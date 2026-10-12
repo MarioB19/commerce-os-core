@@ -402,11 +402,12 @@ class GatewayReconciliationAdapters(unittest.TestCase):
                 (current/'RELEASE.json').write_text(json.dumps({'source_sha':'a'*40}));private=base/'private';private.mkdir()
                 manifest=self.approval(private,current);reference=ref(str(private/'controller-approvals/gateways.json'))
                 report_dir=private/'deployments'/'200-1';report_dir.mkdir(parents=True)
-                prior={'status':status,'action':'RECONCILE_CANONICAL_GATEWAY_INVENTORY','approval_ref':reference}
+                prior={'status':status,'action':'RECONCILE_CANONICAL_GATEWAY_INVENTORY','approval_ref':reference,'source_sha':manifest['source_sha'],'run_id':manifest['run_id']}
                 path=report_dir/'report.json';path.write_bytes(c.sealed_bytes(prior));original=path.read_bytes()
                 reference_file=base/'ref.json';reference_file.write_bytes(c.sealed_bytes(reference));out=io.StringIO();writes=[]
                 server=types.SimpleNamespace(BASE=base,PRIVATE=private,error_code=str,_write_report=lambda *_:writes.append('WRITE'))
-                with patch.object(c.native,'protected_bytes',side_effect=lambda path:Path(path).read_bytes()),patch.object(c.native,'read_reference',return_value=c.sealed_bytes(manifest)),patch.object(c,'current_source_guard',return_value=None),patch.object(c,'deadline_fuse',return_value=contextlib.nullcontext()),patch.object(c.native,'acquire_locks',return_value=[]),patch.object(c,'snapshot',return_value={'state':{'last_release_receipt_ref':ref(str(report_dir/'adoption-receipt.json'))}}),contextlib.redirect_stdout(out):
+                import runtime_boot_install as boot
+                with patch.object(boot,'gateway_replay',return_value={}),patch.object(boot,'gateway_recover',side_effect=ReleaseError('COPY_RUNTIME_GATEWAY_RETRY_REQUIRES_RECONCILIATION')),patch.object(c.native,'protected_bytes',side_effect=lambda path:Path(path).read_bytes()),patch.object(c.native,'read_reference',return_value=c.sealed_bytes(manifest)),patch.object(c,'current_source_guard',return_value=None),patch.object(c,'deadline_fuse',return_value=contextlib.nullcontext()),patch.object(c.native,'acquire_locks',return_value=[]),patch.object(c,'snapshot',return_value={'state':{'last_release_receipt_ref':ref(str(report_dir/'adoption-receipt.json'))}}),contextlib.redirect_stdout(out):
                     if status=='SUCCEEDED':self.assertTrue(c.reconcile_gateways(server,reference_file)['idempotent_replay'])
                     else:
                         with self.assertRaisesRegex(ReleaseError,'COPY_RUNTIME_GATEWAY_RETRY_REQUIRES_RECONCILIATION'):c.reconcile_gateways(server,reference_file)

@@ -2,7 +2,7 @@
 # This runs FULL only: it never packages, deploys, or publishes a GitHub check.
 # A dedicated SA needs logs + read of this one verifier repository. Docker/host
 # network are NOT a boundary against metadata or the build SA's permissions.
-serviceAccount: projects/$PROJECT_ID/serviceAccounts/commerce-v7-verify@$PROJECT_ID.iam.gserviceaccount.com
+serviceAccount: projects/$PROJECT_ID/serviceAccounts/commerce-v7-verify-core@$PROJECT_ID.iam.gserviceaccount.com
 timeout: 5700s
 queueTtl: 600s
 options:
@@ -28,7 +28,7 @@ steps:
       - |
         [[ "$$EXPECTED_SHA" =~ ^[a-f0-9]{40}$$ ]] || { echo SOURCE_SHA_REQUIRED; exit 1; }
         [[ "$$BUILD_IDENTITY" =~ ^[a-f0-9-]{36}$$ ]] || { echo CLOUD_BUILD_ID_REQUIRED; exit 1; }
-        [[ "$$VERIFY_IMAGE" =~ ^[a-z0-9-]+-docker.pkg.dev/"$$VERIFY_PROJECT"/commerce-ci/verify@sha256:[a-f0-9]{64}$$ ]] || { echo PINNED_VERIFIER_IMAGE_REQUIRED; exit 1; }
+        [[ "$$VERIFY_IMAGE" =~ ^[a-z0-9-]+-docker.pkg.dev/"$$VERIFY_PROJECT"/commerce-ci-public/verify@sha256:[a-f0-9]{64}$$ ]] || { echo PINNED_VERIFIER_IMAGE_REQUIRED; exit 1; }
         # Docker tests bind files from inside the verifier into sibling fixtures.
         # Mount workspace at its daemon-side path too, so those binds resolve to
         # the same bytes. /workspace is a Cloud Build volume, not assumed a host

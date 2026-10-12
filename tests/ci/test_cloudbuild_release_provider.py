@@ -38,7 +38,7 @@ def context(local=True):
         'project':contract.PROJECT,'region':'us-east1','verification_build_id':VERIFY,'source_sha':SHA,'source_tree':TREE,
         'verification_manifest_sha256':'c'*64,'package_origin':'canonical-local' if local else 'cloud-build'}
     value.update({'packager_sha256':'d'*64} if local else {'package_build_id':PACKAGE,'package_config_sha256':'d'*64,
-        'package_driver_sha256':'e'*64,'package_image':'us-east1-docker.pkg.dev/'+contract.PROJECT+'/commerce-ci/package@sha256:'+'f'*64})
+        'package_driver_sha256':'e'*64,'package_image':'us-east1-docker.pkg.dev/'+contract.PROJECT+'/commerce-ci-public/package@sha256:'+'f'*64})
     return value
 
 
@@ -93,8 +93,22 @@ class CloudBuildReleaseProviderTests(unittest.TestCase):
     def test_native_package_route_is_not_enabled_by_a_valid_json_contract(self):
         contract.publication_enabled(context())
         contract.publication_enabled(None)
-        with self.assertRaisesRegex(ReleaseError,'NATIVE_CLOUD_PACKAGE_PUBLICATION_NOT_ENABLED'):
+        contract.installation_enabled(context(False))
+        with self.assertRaisesRegex(ReleaseError,'NATIVE_CLOUD_PACKAGE_INSTALLED_READBACK_REQUIRED'):
             contract.publication_enabled(context(False))
+
+    def test_first_native_installation_admission_does_not_require_its_future_report(self):
+        c=context(False)
+        # Native evaluation is the admission reader seam, not a fabricated
+        # installed report. No success publication guard may run in this path.
+        with patch.object(evidence,'protected_bytes',return_value=b'{}'), \
+             patch.object(evidence,'validate_admission',return_value=c), \
+             patch.object(evidence,'evaluate',return_value={'context':c,'archive_sha256':'e'*64}) as native, \
+             patch.object(evidence,'publication_enabled',side_effect=AssertionError('future report dependency')):
+            admitted=evidence.deployment_admission('/fixture',ROOT,'1')
+        self.assertEqual(admitted['installation_run_id'],'cb-'+PACKAGE+'-1')
+        native.assert_called_once()
+        with self.assertRaises(ReleaseError): contract.publication_enabled(c)
 
     def test_metadata_rejects_cross_provider_source_tree_and_uuid(self):
         metadata = contract.release_metadata(context(),SHA,TREE); run = 'cv-'+VERIFY+'-1'

@@ -21,7 +21,7 @@ import time
 import api_web_deployment as native
 import copy_runtime_deployment as runtime
 from ci_release import ReleaseError, digest, extract_release, require, verify_migrations, verify_package
-from ci_provider_evidence import installation_id, release_identity, publication_enabled
+from ci_provider_evidence import installation_id, release_identity, installation_enabled
 
 BASE = Path('/opt/commerce-os')
 PRIVATE = BASE/'private'
@@ -204,7 +204,7 @@ def package_metadata(package, source_sha, run_id):
         context = release_identity(value, source_sha, run_id, 'copy-runtime')
     except ReleaseError:
         raise ReleaseError('ROOT_REVIEW_RELEASE_IDENTITY') from None
-    publication_enabled(context)
+    installation_enabled(context)
     require(value.get('schema_version') in (1,2) and value.get('platform') == 'linux/amd64'
             and type(value.get('migration_hashes')) is dict and len(value['migration_hashes']) in {67, 68}
             and runtime.MIGRATION_NAMES <= set(value['migration_hashes']), 'ROOT_REVIEW_RELEASE_IDENTITY')

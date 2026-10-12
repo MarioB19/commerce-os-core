@@ -1,0 +1,45 @@
+# syntax=docker/dockerfile:1.7.1@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+# Reviewed trusted image; activate only its scanned immutable digest.
+FROM docker:29.9.0-cli@sha256:1a4c7cb63513f349bdad01fcc6e0f3f2f67d37b9da86f14dc0d4a0942eecda00 AS docker_cli
+FROM --platform=$BUILDPLATFORM golang:1.26.9-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS buildx_builder
+ARG TARGETOS
+ARG TARGETARCH
+ENV CGO_ENABLED=0 GOTOOLCHAIN=local GOSUMDB=sum.golang.org GOFLAGS=-mod=mod
+RUN apt-get update && apt-get install -y --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/*
+ADD --checksum=sha256:f4705415fe4e011f19c6fe0fa324fef81236791815c51bb6210b3bbbca5b1319 https://codeload.github.com/docker/buildx/tar.gz/refs/tags/v0.38.0 /tmp/buildx.tar.gz
+COPY infra/cloudbuild/patch-buildx.py /tmp/patch-buildx.py
+WORKDIR /src
+RUN tar -xzf /tmp/buildx.tar.gz --strip-components=1 \
+    && python3 /tmp/patch-buildx.py /src
+RUN --mount=type=cache,id=commerce-buildx-go126-mod,target=/go/pkg/mod,sharing=locked \
+    go get github.com/moby/go-archive@v0.3.3 golang.org/x/net@v0.60.0 \
+    && go mod tidy \
+    && GOOS="$TARGETOS" GOARCH="$TARGETARCH" go list -deps -f '{{with .Module}}{{.Path}}{{end}}' ./cmd/buildx > /tmp/compiled-modules.txt \
+    && ! grep '^github.com/docker/docker$' /tmp/compiled-modules.txt
+RUN --mount=type=cache,id=commerce-buildx-go126-mod,target=/go/pkg/mod,sharing=locked \
+    --mount=type=cache,id=commerce-buildx-go126-compile,target=/root/.cache/go-build,sharing=locked \
+    go test ./store
+RUN --mount=type=cache,id=commerce-buildx-go126-mod,target=/go/pkg/mod,sharing=locked \
+    --mount=type=cache,id=commerce-buildx-go126-compile,target=/root/.cache/go-build,sharing=locked \
+    GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build -mod=readonly -trimpath \
+       -ldflags='-w -X github.com/docker/buildx/version.Version=v0.38.0-commerce.1 -X github.com/docker/buildx/version.Package=github.com/docker/buildx' \
+       -o /out/docker-buildx ./cmd/buildx \
+    && go version -m /out/docker-buildx
+
+FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+ENV DEBIAN_FRONTEND=noninteractive PYTHONDONTWRITEBYTECODE=1
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends python3 git ca-certificates tar gzip \
+    && rm -rf /var/lib/apt/lists/* \
+    && chmod 0700 /root
+COPY --from=docker_cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=buildx_builder /out/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
+COPY scripts/cloudbuild-native-package-driver.py scripts/cloudbuild_native_package.py \
+     scripts/cloudbuild_release_evidence.py scripts/cloudbuild_native_reader.py \
+     scripts/cloudbuild_full_evidence.py scripts/cloudbuild-publish-status.py \
+     scripts/ci_release.py scripts/ci_provider_evidence.py scripts/cloudbuild_bounded_logs.py scripts/operator_identity.py /opt/commerce-ci/
+RUN python3 /opt/commerce-ci/cloudbuild-native-package-driver.py --help >/dev/null \
+    && docker --version && docker buildx version
+WORKDIR /workspace
+ENTRYPOINT ["python3", "/opt/commerce-ci/cloudbuild-native-package-driver.py"]

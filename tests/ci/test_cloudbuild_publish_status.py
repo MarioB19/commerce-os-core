@@ -18,9 +18,9 @@ NUMBER = '123456789012'
 
 
 def fixture():
-    image = 'us-east1-docker.pkg.dev/'+m.PROJECT+'/commerce-ci/verify@sha256:'+'d'*64
+    image = 'us-east1-docker.pkg.dev/'+m.PROJECT+'/commerce-ci-public/verify@sha256:'+'d'*64
     config = {
-        'serviceAccount': 'projects/$PROJECT_ID/serviceAccounts/commerce-v7-verify@$PROJECT_ID.iam.gserviceaccount.com',
+        'serviceAccount': 'projects/$PROJECT_ID/serviceAccounts/commerce-v7-verify-core@$PROJECT_ID.iam.gserviceaccount.com',
         'timeout': '5700s', 'queueTtl': '600s',
         'options': {'logging': 'CLOUD_LOGGING_ONLY', 'sourceProvenanceHash': ['SHA256'], 'automapSubstitutions': False},
         'substitutions': {'COMMIT_SHA': 'a'*40, '_VERIFY_IMAGE': image},

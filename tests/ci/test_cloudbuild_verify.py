@@ -15,11 +15,12 @@ import unittest
 from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO/'scripts'))
 spec = importlib.util.spec_from_file_location('cloudbuild_verify', REPO/'scripts/cloudbuild-verify.py')
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 BUILD = '12345678-1234-4234-8234-123456789abc'
-IMAGE = 'us-east1-docker.pkg.dev/fixture-project/commerce-ci/verify@sha256:'+'d'*64
+IMAGE = 'us-east1-docker.pkg.dev/fixture-project/commerce-ci-public/verify@sha256:'+'d'*64
 
 
 class VerificationContractTests(unittest.TestCase):
@@ -253,7 +254,7 @@ class CheckedInConfigurationTests(unittest.TestCase):
         text = (REPO/'infra/cloudbuild/verify.yaml').read_text()
         self.assertIn('timeout: 5700s', text)
         self.assertIn('--timeout-seconds 5400', text)
-        self.assertIn('commerce-v7-verify@$PROJECT_ID.iam.gserviceaccount.com', text)
+        self.assertIn('commerce-v7-verify-core@$PROJECT_ID.iam.gserviceaccount.com', text)
         self.assertIn('EXPECTED_SHA=$COMMIT_SHA', text)
         self.assertIn('sourceProvenanceHash: [SHA256]', text)
         for forbidden in ('availableSecrets:', 'secretEnv:', 'allowFailure:', 'allowExitCodes:',
@@ -271,6 +272,10 @@ class LinuxNonRootBoundaryTests(unittest.TestCase):
         # Run its real CLI under another UID with exact copies of public code.
         # /tmp is intentionally independent of a private daemon workspace path.
         names = ('copy-source-isolation-root.py', 'copy_source_isolation_root.py')
+        # The public profile adds this local import to the CLI. Keep the same
+        # code closure in the isolated fixture before exercising its UID gate.
+        if (REPO/'scripts'/'operator_identity.py').is_file():
+            names += ('operator_identity.py',)
         with tempfile.TemporaryDirectory(prefix='commerce-nonroot-', dir='/tmp') as temporary:
             root = Path(temporary)
             scripts = root/'scripts'
@@ -291,8 +296,8 @@ class LinuxNonRootBoundaryTests(unittest.TestCase):
                 user=1000, group=1000, extra_groups=[],
                 env={'PATH': os.defpath, 'PYTHONDONTWRITEBYTECODE': '1'})
             self.assertEqual(result.returncode, 1)
-            self.assertEqual(json.loads(result.stdout)['code'], 'ISOLATION_ROOT_LINUX_STDIN_ONLY')
             self.assertEqual(result.stderr, b'')
+            self.assertEqual(json.loads(result.stdout)['code'], 'ISOLATION_ROOT_LINUX_STDIN_ONLY')
             for name in names:
                 self.assertEqual(hashlib.sha256((scripts/name).read_bytes()).hexdigest(), digests[name])
 
