@@ -14,6 +14,13 @@ export async function fixtureProfiles(...profiles:FixtureProfile[]){
  await withTransaction(c=>fixtureProfilesOn(c,...profiles));
 }
 
+/** fixtureProfiles on another database's owner pool, in one transaction. */
+export async function fixtureProfilesIn(pool:{connect():Promise<QueryExecutor&{release():void}>},...profiles:FixtureProfile[]){
+ const c=await pool.connect();
+ try{await c.query('BEGIN');await fixtureProfilesOn(c,...profiles);await c.query('COMMIT');}
+ catch(error){await c.query('ROLLBACK').catch(()=>undefined);throw error;}finally{c.release();}
+}
+
 export async function fixtureProfilesOn(db:QueryExecutor,...profiles:FixtureProfile[]){
  const wanted=profiles.map(profile=>typeof profile==='string'?{id:profile,numbers:undefined as number|undefined}:profile);
  for(const profile of wanted)await ensureProfile(db,profile.id);
@@ -38,12 +45,33 @@ export async function releaseFixtureNumbers(db:QueryExecutor){
  await db.query("UPDATE profile_quota_entries SET retired_at=clock_timestamp() WHERE kind='channel_account' AND retired_at IS NULL");
 }
 
-/** A REAL connected number retired through the V7 quota path: it is admitted
- * first, then stopped, unverified and paused before `deleted_at` is set. V7
- * refuses to insert an already retired number (PROFILE_QUOTA_RETIRED_INSERT_FORBIDDEN). */
+/** Retires an existing REAL connected number through the V7 quota path, in
+ * its profile's context: ownership frozen, channel paused, stopped and
+ * unverified first, then `deleted_at`. V7 refuses any other retirement. */
+export async function retireRealAccount(workspace:string,accountId:string,deletedAt=new Date().toISOString()){
+ await withTransaction(async c=>{
+  await c.query("SELECT pg_catalog.set_config('app.workspace_id',$1,true),pg_catalog.set_config('app.environment','REAL',true)",[workspace]);
+  await c.query('UPDATE session_ownership SET frozen=true WHERE account_id=$1 AND workspace_id=$2',[accountId,workspace]);
+  await c.query("INSERT INTO manual_controls(workspace_id,scope_type,scope_id,paused,reason,actor_id) VALUES($1,'channel_account',$2,true,'Synthetic retirement','fixture') ON CONFLICT (workspace_id,scope_type,scope_id) DO UPDATE SET paused=true",[workspace,accountId]);
+  await c.query("UPDATE records SET body=body||jsonb_build_object('status','STOPPED','sending_enabled',false,'identity_verified',false,'unlinked_at',$3::text)-'active_authorization_id',version=version+1 WHERE id=$1 AND workspace_id=$2 AND kind='channel_account'",[accountId,workspace,deletedAt]);
+  await c.query("UPDATE records SET body=body||jsonb_build_object('deleted_at',$3::text),version=version+1 WHERE id=$1 AND workspace_id=$2 AND kind='channel_account'",[accountId,workspace,deletedAt]);
+ });
+}
+
+/** A REAL connected number admitted and then retired (see retireRealAccount).
+ * V7 refuses to insert an already retired number (PROFILE_QUOTA_RETIRED_INSERT_FORBIDDEN). */
 export async function retiredRealAccount(db:QueryExecutor,workspace:string,body:Body):Promise<DomainRecord>{
- const {deleted_at:_deleted,...active}=body;
- const account=await putRecord(db,{workspaceId:workspace,environment:'REAL',kind:'channel_account',body:{...active,status:'STOPPED',sending_enabled:false,identity_verified:false}});
- await db.query("INSERT INTO manual_controls(workspace_id,scope_type,scope_id,paused,reason,actor_id) VALUES($1,'channel_account',$2,true,'Synthetic retirement','fixture')",[workspace,account.id]);
- return putRecord(db,{id:account.id,version:account.version,workspaceId:workspace,environment:'REAL',kind:'channel_account',body:{...account.body,deleted_at:typeof body.deleted_at==='string'?body.deleted_at:new Date().toISOString()}});
+ const {deleted_at:deleted,...active}=body;
+ const account=await putRecord(db,{workspaceId:workspace,environment:'REAL',kind:'channel_account',body:active});
+ await retireRealAccount(workspace,account.id,typeof deleted==='string'?deleted:undefined);
+ return(await db.query('SELECT * FROM records WHERE id=$1',[account.id])).rows[0];
+}
+
+/** A synthetic second owner, so a fixture can deactivate or downgrade the acting
+ * owner: V7 keeps at least one active owner per profile (PROFILE_LAST_OWNER_REQUIRED). */
+export async function fixtureCoOwner(db:QueryExecutor,workspace:string):Promise<string>{
+ const id='co-owner-'+crypto.randomUUID();
+ await db.query('INSERT INTO "user"(id,name,email) VALUES($1,$2,$3)',[id,'Synthetic co-owner',id+'@example.test']);
+ await db.query("INSERT INTO memberships(user_id,workspace_id,role) VALUES($1,$2,'owner')",[id,workspace]);
+ return id;
 }

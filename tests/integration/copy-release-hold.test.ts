@@ -1,4 +1,5 @@
 import {afterAll,beforeAll,beforeEach,describe,expect,it,vi} from 'vitest';
+import {fixtureProfilesIn} from '../support/profile-fixture.js';
 import {fixtureProfiles} from '../support/profile-fixture.js';
 import pg from 'pg';
 import {createHash,randomUUID} from 'node:crypto';
@@ -37,6 +38,7 @@ beforeAll(async()=>{
  defaultPolicy=(await import('../../packages/contracts/src/index.js')).defaultOperationalSettings;
  const personal=await import('../../packages/db/src/personal-access-tokens.js');token=personal.newPersonalToken();
  await admin.query('INSERT INTO "user"(id,name,email) VALUES($1,$2,$3)',[user,'Synthetic hold owner',user+'@example.invalid']);
+ await fixtureProfilesIn(admin,workspace);// V7 F2: memberships belong to an adopted profile.
  await admin.query("INSERT INTO memberships(user_id,workspace_id,role) VALUES($1,$2,'owner')",[user,workspace]);
  await personal.insertPersonalToken(admin,{workspace_id:workspace,user_id:user,name:'Synthetic hold owner API',allowed_environments:['REAL'],expires_at:new Date(Date.now()+3600000).toISOString()},token);
  await admin.query("INSERT INTO operational_settings(workspace_id,environment,version,body,updated_by) VALUES($1,'REAL',1,$2,$3)",[workspace,{...defaultPolicy,allow_channel_onboarding:true},user]);
@@ -97,12 +99,12 @@ function worker(mode:'held'|'inflight'|'media-inflight',account:string,jobs=fals
 const integration=(type:'openai'|'waha',extra:Record<string,unknown>={})=>({expected_version:0,label:'Synthetic held integration',enabled:true,config:type==='waha'?{base_url:'http://waha-01:3000'}:{},secrets:type==='waha'?{api_key:'synthetic-fixture-key',webhook_secret:'synthetic-fixture-hook'}:{api_key:'synthetic-fixture-openai'},reason:'Synthetic integration hold regression',...extra});
 
 describe('Copy release hold with real restricted roles and PostgreSQL locks',()=>{
- it('retains the API status boundary and all 68 installed migration hashes',async()=>{
+ it('retains the API status boundary and every installed migration hash (68 historical + V7 0069-0097)',async()=>{
   expect((await pool.query("SELECT has_column_privilege(current_user,'commands','status','UPDATE') allowed")).rows[0].allowed).toBe(false);
   const history=(await admin.query('SELECT name,sha256 FROM schema_migrations ORDER BY name')).rows;
   const directory=new URL('../../packages/db/migrations/',import.meta.url);
   const expected=readdirSync(directory).filter(name=>name.endsWith('.sql')).sort().map(name=>({name,sha256:createHash('sha256').update(readFileSync(new URL(name,directory))).digest('hex')}));
-  expect(history).toHaveLength(68);expect(history).toEqual(expected);
+  expect(history).toHaveLength(97);expect(history).toEqual(expected);
  });
  it('rejects channel/setup/catalog/number and all integration mutations while held without domain delta',async()=>{
   const f=await fixture();await hold();const before=await watched();

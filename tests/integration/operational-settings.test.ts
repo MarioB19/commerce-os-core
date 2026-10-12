@@ -1,5 +1,7 @@
 import {explicitFixtureEnvironment} from './explicit-fixture-environment.js';
-import {afterAll,beforeAll,describe,expect,it} from 'vitest';
+import {afterAll,beforeAll,describe,expect,it,beforeEach} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
+import {disposeAllFixtureProfiles} from '../support/migrated-database.js';
 import {randomBytes,randomUUID} from 'node:crypto';
 import type {FastifyInstance} from 'fastify';
 import {pool,putRecord,withTransaction,readOperationalSettings,writeOperationalSettings,bumpOperationalRevision,hash,stableJson} from '../../packages/db/src/index.js';
@@ -18,6 +20,9 @@ async function login(role:'owner'|'viewer'){const email=randomUUID()+'@example.i
 beforeAll(async()=>{app=await createApp();cookie=await login('owner');viewerCookie=await login('viewer');});
 afterAll(async()=>{await app.close();await pool.end();});
 const patch=(payload:Record<string,unknown>,key?:string)=>app.inject(explicitFixtureEnvironment({method:'PATCH',url:'/v1/settings/operations',headers:headers(key),payload}));
+// V7 F2: in-case workspaces are adopted profiles; an installation admits three,
+// so each case's own profiles are disposed before the next case.
+beforeEach(()=>disposeAllFixtureProfiles(pool,[workspace]));
 describe('Owner operational settings and approval revision',()=>{
  it('defaults closed despite process flags, isolates environments, and denies non-owner access',async()=>{
   process.env.REAL_SENDS_ENABLED='true';process.env.DISPATCH_FROZEN='false';process.env.ALLOW_REAL_OPERATIONS='true';
@@ -70,7 +75,7 @@ describe('Owner operational settings and approval revision',()=>{
   await expect(withTransaction(async c=>{await c.query('SET LOCAL ROLE commerce_api');await c.query("INSERT INTO ownership_isolation_receipts(workspace_id,account_id,previous_owner_id,generation,method,evidence_sha256,verified_at) VALUES($1,$2,'old',1,'container_stopped_and_access_revoked',$3,now())",[workspace,randomUUID(),'a'.repeat(64)]);})).rejects.toThrow('permission denied');
  });
  it('binds REAL authorization to current policy and account assignment, with an independent per-account send switch',async()=>{
-  const ws='dispatch-policy-'+randomUUID();const policy=await withTransaction(c=>writeOperationalSettings(c,ws,'REAL',0,enabled,'synthetic'));
+  const ws='dispatch-policy-'+randomUUID();await fixtureProfiles(ws);const policy=await withTransaction(c=>writeOperationalSettings(c,ws,'REAL',0,enabled,'synthetic'));
   const account=await putRecord(pool,{workspaceId:ws,environment:'REAL',kind:'channel_account',body:{provider:'cloud',status:'WORKING',sending_enabled:true,assignment_revision:1}}),contact=await putRecord(pool,{workspaceId:ws,environment:'REAL',kind:'contact',body:{status:'LEAD'}}),offer=await putRecord(pool,{workspaceId:ws,environment:'REAL',kind:'offer',body:{status:'PUBLISHED'}});
   const conv=await putRecord(pool,{workspaceId:ws,environment:'REAL',kind:'conversation',body:{last_inbound_at:new Date().toISOString()}});
   const healthNow=Date.now(),health=(dimension:'transport'|'quality',status:'OK'|'BLOCKED',offset:number,value?:unknown)=>putRecord(pool,{workspaceId:ws,environment:'REAL',kind:'health_signal',body:{account_id:account.id,dimension,status,value,availability:'supported',source:'provider_read',scope:'account',observed_at:new Date(healthNow+offset).toISOString(),expires_at:new Date(healthNow+60_000).toISOString()}});
@@ -96,7 +101,11 @@ describe('Exclusive ownership after recreation',()=>{
  it('recovers a frozen unlinked pilot with no effects and fences the old heartbeat',async()=>{const a=await ownershipFixture();expect(await acquireOwnership(a,'new-worker')).toMatchObject({acquired:true,generation:2});await heartbeatOwnership('old-worker');const state=(await pool.query('SELECT * FROM session_ownership WHERE account_id=$1',[a.id])).rows[0];expect(state).toMatchObject({owner_id:'new-worker',generation:2,frozen:true});});
  it('does not renew a generation this process never acquired even if its owner identifier is reused',async()=>{const a=await ownershipFixture();await acquireOwnership(a,'same-owner');await pool.query("UPDATE session_ownership SET generation=generation+1,lease_expires_at=now()+interval '10 seconds' WHERE account_id=$1",[a.id]);const before=(await pool.query('SELECT lease_expires_at FROM session_ownership WHERE account_id=$1',[a.id])).rows[0].lease_expires_at;await heartbeatOwnership('same-owner');expect((await pool.query('SELECT lease_expires_at FROM session_ownership WHERE account_id=$1',[a.id])).rows[0].lease_expires_at).toEqual(before);});
  it('requires receipt for linked accounts and consumes a generation-matched receipt atomically',async()=>{const a=await ownershipFixture({identity_fingerprint:'synthetic-linked'});expect((await acquireOwnership(a,'new-worker')).acquired).toBe(false);const id=await receipt(a.id);const results=await Promise.all([acquireOwnership(a,'new-worker-a'),acquireOwnership(a,'new-worker-b')]);expect(results.filter(r=>r.acquired),JSON.stringify(results)).toHaveLength(1);expect((await pool.query('SELECT consumed_at FROM ownership_isolation_receipts WHERE id=$1',[id])).rows[0].consumed_at).toBeTruthy();});
- it.each(['stale','wrong-generation','wrong-workspace'] as const)('rejects a %s receipt',async variant=>{const a=await ownershipFixture({identity_fingerprint:'synthetic-linked'});const id=await receipt(a.id,variant==='stale'?{verified:new Date(Date.now()-25*3600_000).toISOString()}:variant==='wrong-generation'?{generation:2}:{workspace:'another-workspace'});expect((await acquireOwnership(a,'new-worker',id)).acquired).toBe(false);});
+ it.each(['stale','wrong-generation','wrong-workspace'] as const)('rejects a %s receipt',async variant=>{const a=await ownershipFixture({identity_fingerprint:'synthetic-linked'});const id=await receipt(a.id,variant==='stale'?{verified:new Date(Date.now()-25*3600_000).toISOString()}:variant==='wrong-generation'?{generation:2}:{workspace:'another-workspace'}).catch((error:Error)=>{
+  // V7 F2: the ownership scope (020) refuses a receipt outside its account's profile.
+  if(variant==='wrong-workspace'&&/PROFILE_OWNERSHIP_/.test(error.message))return undefined;throw error;});
+  if(variant==='wrong-workspace'){expect(id).toBeUndefined();expect((await acquireOwnership(a,'new-worker')).acquired).toBe(false);return;}
+  expect((await acquireOwnership(a,'new-worker',id)).acquired).toBe(false);});
  it.each(['SENDING','UNKNOWN'] as const)('never transfers with %s effects even after installer isolation',async status=>{
   const a=await ownershipFixture(),id=await receipt(a.id);
   // Global worker scans in later tests must never see fabricated foreign references.
@@ -110,10 +119,10 @@ describe('Exclusive ownership after recreation',()=>{
  it('records a late lifecycle outcome without overwriting a newer generation',async()=>{
   // A global worker can reach a different account before this race fixture.
   // Only the target account may open its controlled provider-completion gate.
-  const foreignWorkspace='foreign-lifecycle-'+randomUUID();
+  const foreignWorkspace='foreign-lifecycle-'+randomUUID();await fixtureProfiles(foreignWorkspace);
   const foreign=await putRecord(pool,{workspaceId:foreignWorkspace,environment:'SIMULATION',kind:'channel_account',body:{provider:'simulator',status:'NEW',sending_enabled:false}});
   const foreignCommand=(await pool.query("INSERT INTO commands(workspace_id,environment,kind,resource_id,actor_id,payload,idempotency_key) VALUES($1,'SIMULATION','channel_command',$2,'synthetic',$3,gen_random_uuid()::text) RETURNING id",[foreignWorkspace,foreign.id,{type:'connect'}])).rows[0];
-  const ws='late-lifecycle-'+randomUUID();await withTransaction(c=>writeOperationalSettings(c,ws,'REAL',0,{...defaultOperationalSettings,allow_channel_onboarding:true},'synthetic'));
+  const ws='late-lifecycle-'+randomUUID();await fixtureProfiles(ws);await withTransaction(c=>writeOperationalSettings(c,ws,'REAL',0,{...defaultOperationalSettings,allow_channel_onboarding:true},'synthetic'));
   const account=await putRecord(pool,{workspaceId:ws,environment:'REAL',kind:'channel_account',body:{provider:'waha',status:'SCAN_QR_CODE',gateway_ref:'SYNTHETIC_'+randomUUID().replaceAll('-',''),sending_enabled:false}});
   const command=(await pool.query("INSERT INTO commands(workspace_id,environment,kind,resource_id,actor_id,payload,idempotency_key) VALUES($1,'REAL','channel_command',$2,'synthetic',$3,gen_random_uuid()::text) RETURNING id",[ws,account.id,{type:'connect'}])).rows[0];let entered!:()=>void,finish!:(value:{status:'WORKING'})=>void;const start=new Promise<void>(resolve=>{entered=resolve}),remote=new Promise<{status:'WORKING'}>(resolve=>{finish=resolve});
   const provider=new SimulatorProvider();provider.lifecycle=async()=>{entered();return remote;};const running=processChannelCommands(100,candidate=>candidate.id===account.id?provider:new SimulatorProvider(),'late-owner');await start;

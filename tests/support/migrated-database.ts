@@ -87,3 +87,41 @@ export async function asProfileOwner<T>(pool:{connect():Promise<pg.PoolClient>},
   const result=await work(c);await c.query('COMMIT');return result;
  }catch(error){await c.query('ROLLBACK').catch(()=>undefined);throw error;}finally{c.release();}
 }
+/** Test-only: removes a fixture profile and every row that names it, so a file
+ * whose cases each need a fresh profile stays within the installation's three
+ * profiles and 20 numbers (D-14). Triggers and FK checks are bypassed only in
+ * this owner transaction (session_replication_role=replica); product code never
+ * deletes a profile. */
+export async function disposeFixtureProfile(pool:{connect():Promise<pg.PoolClient>},workspace:string){
+ const c=await pool.connect();
+ try{
+  if(!/^commerce_test_[a-z0-9_]+$/.test((await c.query('SELECT current_database() name')).rows[0].name))throw new Error('ISOLATED_TEST_DATABASE_REQUIRED');
+  await c.query('BEGIN');await c.query("SET LOCAL session_replication_role='replica'");
+  const tables=(await c.query(`SELECT DISTINCT c.relname FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+   WHERE n.nspname='public' AND c.relkind IN ('r','p') AND a.attname='workspace_id' AND NOT a.attisdropped ORDER BY 1`)).rows as {relname:string}[];
+  for(const {relname} of tables)await c.query(`DELETE FROM public."${relname.replaceAll('"','""')}" WHERE workspace_id::text=$1`,[workspace]);
+  await c.query('DELETE FROM public.profiles WHERE id=$1',[workspace]);
+  await c.query('COMMIT');
+ }catch(error){await c.query('ROLLBACK').catch(()=>undefined);throw error;}finally{c.release();}
+}
+/** Inserts one sealed fixture profile, first disposing the oldest profiles this
+ * file created (`created`, oldest first) until the installation admits it. */
+export async function fixtureProfileRow(pool:{connect():Promise<pg.PoolClient>;query:(sql:string,values?:unknown[])=>Promise<{rows:any[]}>},created:string[],id:string,
+ options:{businessName?:string;timezone?:string;numbers?:number;products?:number;daily?:number;state?:'ACTIVE'|'SUSPENDED'}={}){
+ const numbers=options.numbers??0;
+ for(;;){
+  const total=(await pool.query('SELECT count(*)::int profiles,COALESCE(sum(number_limit),0)::int numbers FROM profiles')).rows[0] as {profiles:number;numbers:number};
+  if(total.profiles<3&&total.numbers+numbers<=20)break;
+  const oldest=created.shift();if(!oldest)throw new Error('FIXTURE_PROFILE_ROOM_UNAVAILABLE');
+  await disposeFixtureProfile(pool,oldest);
+ }
+ await pool.query('INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit,state) VALUES($1,$2,$3,$4,$5,$6,$7)',
+  [id,options.businessName??'Synthetic fixture',options.timezone??'UTC',numbers,options.products??100,options.daily??100,options.state??'ACTIVE']);
+ await sealFixtureProfiles(pool,id);created.push(id);return id;
+}
+/** Test-only: disposes every profile of this file's isolated database (see
+ * disposeFixtureProfile), for legacy files whose cases each start from a fresh
+ * workspace while an installation admits only three profiles. */
+export async function disposeAllFixtureProfiles(pool:{connect():Promise<pg.PoolClient>;query:(sql:string,values?:unknown[])=>Promise<{rows:any[]}>},keep:readonly string[]=[]){
+ for(const {id} of (await pool.query('SELECT id FROM profiles ORDER BY id')).rows as {id:string}[])if(!keep.includes(id))await disposeFixtureProfile(pool,id);
+}

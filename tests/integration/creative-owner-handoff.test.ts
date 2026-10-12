@@ -1,4 +1,5 @@
-import {afterAll,afterEach,beforeEach,describe,expect,it} from 'vitest';
+import {afterAll,afterEach,beforeEach,describe,expect,it,beforeAll} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomUUID} from 'node:crypto';
 import type {FastifyRequest} from 'fastify';
 import {principalMap} from '../../apps/api/src/context.js';
@@ -9,8 +10,14 @@ import {join} from 'node:path';
 import {pool,hash,appendEvent} from '../../packages/db/src/index.js';
 import {executeOwnerHandoff,HANDOFF_AUTHORIZATION,HANDOFF_SCOPES,type HandoffInput} from '../../scripts/creative-owner-handoff.js';
 let input:HandoffInput,ownerId:string,directory:string,recipe:string,quote:string;
+// V7 F2: an installation admits three profiles; every handoff case uses one
+// adopted profile with fresh owner, pilot, device and project identities.
+const handoffWorkspace='owner-handoff-'+randomUUID();
+beforeAll(()=>fixtureProfiles(handoffWorkspace));
 beforeEach(async()=>{
- directory=await mkdtemp(join(tmpdir(),'commerce-owner-handoff-'));ownerId=randomUUID();recipe=randomUUID();quote=randomUUID();const email=ownerId+'@example.invalid',workspace='owner-handoff-'+randomUUID(),pilotId=randomUUID(),project=randomUUID(),device=randomUUID();
+ // Each case starts without handoff tokens in the shared fixture profile.
+ await pool.query('DELETE FROM service_tokens WHERE workspace_id=$1',[handoffWorkspace]);
+ directory=await mkdtemp(join(tmpdir(),'commerce-owner-handoff-'));ownerId=randomUUID();recipe=randomUUID();quote=randomUUID();const email=ownerId+'@example.invalid',workspace=handoffWorkspace,pilotId=randomUUID(),project=randomUUID(),device=randomUUID();
  input={schema_version:1,workspace_id:workspace,owner_email_sha256:hash(email),authorization_sha256:HANDOFF_AUTHORIZATION,pilot_id:randomUUID(),pilot_owner_id:pilotId,mac_device_id:device,project_ids:[project]};
  for(const [id,role]of [[ownerId,'owner'],[pilotId,'viewer']]){await pool.query('INSERT INTO "user"(id,name,email) VALUES($1,$2,$3)',[id,'Handoff fixture',id+'@example.invalid']);await pool.query('INSERT INTO memberships(user_id,workspace_id,role) VALUES($1,$2,$3)',[id,workspace,role]);}
  await appendEvent(pool,{workspace_id:workspace,environment:'REAL',event_type:'creative.technical_identity.provisioned',aggregate_id:input.pilot_id,payload:{pilot_id:input.pilot_id,user_id:pilotId,authorization_sha256:HANDOFF_AUTHORIZATION}});

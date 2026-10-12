@@ -81,14 +81,12 @@ export function profileRoutedPool<T extends {query:unknown;connect:unknown}>(poo
    try{request=requestProfileScope();}catch(error){return Promise.reject(error);}
    if(request){
     // Historical handlers keep their statement-by-statement semantics; each
-    // statement runs on a connection bound to the authenticated profile.
-    const callback=typeof args.at(-1)==='function'?args.pop() as (error:unknown,result?:unknown)=>void:undefined;
-    const run=requestScopedConnection(()=>(pool.connect as ()=>Promise<any>).apply(pool,[]),request).then(async client=>{
-     try{const result=await client.query(...args);client.release();return result;}
-     catch(error){client.release();throw error;}
-    });
-    if(callback){run.then(result=>callback(null,result),error=>callback(error));return undefined;}
-    return run;
+    // statement runs on a connection bound to the authenticated profile. The
+    // pool's own query() runs unchanged (callbacks, error release, observers)
+    // over a view whose connect() hands out that bound connection.
+    const scoped=Object.create(pool as object) as {connect:(callback:(error:unknown,client?:unknown,release?:unknown)=>void)=>void};
+    scoped.connect=callback=>{requestScopedConnection(()=>(pool.connect as ()=>Promise<any>).apply(pool,[]),request).then(client=>callback(undefined,client,client.release),error=>callback(error));};
+    return (pool.query as (...args:unknown[])=>unknown).apply(scoped,args);
    }
    return (pool.query as (...args:unknown[])=>unknown).apply(pool,args);
   }

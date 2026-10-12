@@ -4,17 +4,21 @@ import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
+import {requireMigratedProfileSchema,fixtureProfileRow} from '../support/migrated-database.js';
 import {withProfileTransaction,type ProfilePool,type ProfileExecutor} from '../../packages/db/src/profile-context.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {readResultFacts,readResultSpend,observedResultsReport as resultsReport} from '../../packages/db/src/results.js';
 import {resultOptions} from '../../packages/db/src/result-options.js';
 import {summarizeResults} from '../../packages/domain/src/sales/results.js';
 import {resultFiltersSchema} from '../../packages/contracts/src/results.js';
+// V7 F2: an installation admits three profiles and 20 numbers; each fresh
+// fixture profile is sealed and the oldest are disposed to make room.
+const createdProfiles:string[]=[];
 const suffix=randomBytes(8).toString('hex'),login='results_'+suffix;let admin:pg.Pool,api:pg.Pool,scoped:ProfilePool,serial=0;
 const day='2026-10-10',started='2026-10-10T16:00:00.000Z',response='2026-10-10T16:00:30.000Z',paid='2026-10-10T17:00:00.000Z';
 const query=resultFiltersSchema.parse({from:day,to:day,currency:'MXN'});
 function tx<T>(w:string,work:(db:ProfileExecutor)=>Promise<T>){return withProfileTransaction(scoped,w,work);}
-async function profile(timezone='America/Mexico_City'){const w='results_'+suffix+'_'+(++serial);await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic Results',$2,1,5,100)",[w,timezone]);return w;}
+async function profile(timezone='America/Mexico_City'){return fixtureProfileRow(admin,createdProfiles,'results_'+suffix+'_'+(++serial),{businessName:'Synthetic Results',timezone,numbers:1,products:5,daily:100});}
 async function rec(w:string,kind:string,body:Record<string,unknown>,environment='REAL'){const id=randomUUID();await admin.query('INSERT INTO records(id,workspace_id,environment,kind,body,created_at) VALUES($1,$2,$3,$4,$5,$6)',[id,w,environment,kind,body,started]);return id;}
 async function journey(w:string,patch:Record<string,unknown>={},environment='REAL'){
  const family=await rec(w,'product',{name:'Synthetic product'},environment),account=await rec(w,'channel_account',{provider:'simulator'},environment),offer=await rec(w,'offer',{currency:'MXN',product_id:family},environment);
@@ -38,8 +42,8 @@ async function report(j:Journey,q=query){return tx(j.w,db=>resultsReport(db,q));
 async function ai(j:Journey,{cost='150',classification='OPERATION',intent=paid,status='SUCCEEDED'}:{cost?:string|null;classification?:string;intent?:string|null;status?:string}={}){await admin.query('INSERT INTO synthetic_result_ai_cost_facts(workspace_id,environment,conversation_id,provider,model,task,operation_class,occurred_at,status,measured_cost_microusd,input_tokens,output_tokens,intent_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,50,20,$11)',[j.w,j.environment,j.conversation,'synthetic','contract-only','seller',classification,paid,status,cost,intent]);}
 describe('scoped SQL results projections against observed evidence',()=>{
  beforeAll(async()=>{
-  const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:5});
-  const c=await admin.connect();try{await c.query('BEGIN');for(const f of ['001_profile_identity.sql','008_market_variants.sql','017_results_and_goals.sql'])await c.query(await readFile(new URL('../../packages/db/profile-transition/'+f,import.meta.url),'utf8'));await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
+  const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:5});await requireMigratedProfileSchema(admin);
+  
   await admin.query(`CREATE TABLE synthetic_result_ai_cost_facts(workspace_id text,environment text,conversation_id uuid,variant_id uuid,provider text,model text,task text,operation_class text,occurred_at timestamptz,status text,measured_cost_microusd bigint,input_tokens bigint,output_tokens bigint,cache_read_tokens bigint DEFAULT 0,cache_write_tokens bigint DEFAULT 0,audio_input_tokens bigint DEFAULT 0,intent_at timestamptz);
    CREATE VIEW result_ai_cost_facts WITH(security_invoker=true) AS SELECT * FROM synthetic_result_ai_cost_facts;
    GRANT SELECT ON result_ai_cost_facts,synthetic_result_ai_cost_facts TO commerce_api;`);

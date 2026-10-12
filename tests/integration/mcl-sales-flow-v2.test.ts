@@ -1,4 +1,6 @@
 import {afterAll,beforeAll,describe,expect,it} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
+import {disposeAllFixtureProfiles} from '../support/migrated-database.js';
 import {randomBytes,randomUUID} from 'node:crypto';
 import {applyCommand} from '../../apps/automation-worker/src/commands.js';
 import {processAgents} from '../../apps/automation-worker/src/agents.js';
@@ -79,6 +81,7 @@ async function createAssignment(
 }
 
 async function createCatalog(workspace:string,pdfCount=0):Promise<Catalog>{
+ await fixtureProfiles(workspace);// V7 F2: an adopted profile
  const assets={} as Catalog['assets'];
  for(const [key,mime] of [
   ['presentation','audio/mpeg'],['pack','image/png'],['agreement','audio/mpeg'],['collection','audio/mpeg'],
@@ -195,14 +198,16 @@ async function confirmInitialDelivery(conversation:DomainRecord){
 beforeAll(async()=>{
  catalog=await createCatalog(primaryWorkspace);
  isolatedCatalog=await createCatalog(isolatedWorkspace);
- interruptionCatalog=await createCatalog(interruptionWorkspace);
- pdfCatalog=await createCatalog(pdfWorkspace,9);
 });
+// V7 F2: an installation admits three profiles; the PDF and interruption
+// catalogs are created by their own cases after disposing the other one.
+async function caseCatalog(workspace:string,pdfCount=0){await disposeAllFixtureProfiles(pool,[primaryWorkspace,isolatedWorkspace]);return createCatalog(workspace,pdfCount);}
 
 afterAll(async()=>{await pool.end();});
 
 describe('Mi Ciclo Listo sales agreement v2 runtime',()=>{
  it('holds collection until all nine direct PDFs and portal access are delivered',async()=>{
+  pdfCatalog=await caseCatalog(pdfWorkspace,9);
   const identity=`opaque:pdf-buyer-${randomUUID()}`;
   let journey=(await inbound(pdfCatalog.account,identity,'Quiero Mi Ciclo Listo'))!;
   journey=await withTransaction(client=>advanceWorkflow(client,journey));
@@ -270,6 +275,7 @@ describe('Mi Ciclo Listo sales agreement v2 runtime',()=>{
  });
 
  it('pauses the unstarted recipe suffix, answers, and resumes from that exact step only after effect-results confirms transport',async()=>{
+  interruptionCatalog=await caseCatalog(interruptionWorkspace);
   const identity=`opaque:interrupted-buyer-${randomUUID()}`;
   let journey=(await inbound(interruptionCatalog.account,identity,'Quiero Mi Ciclo Listo'))!;
   journey=await withTransaction(client=>advanceWorkflow(client,journey));

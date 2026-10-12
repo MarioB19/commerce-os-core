@@ -2,6 +2,7 @@ import {readFile,readdir} from 'node:fs/promises';
 import {randomBytes,randomUUID,createHash} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
+import {requireMigratedProfileSchema} from '../support/migrated-database.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {readProfileCatalog} from '../../packages/db/src/profile-inventory.js';
 import {buildPrivacyInventoryPlan,privacyInventoryPolicy,type PrivacyInventoryCatalog} from '../../packages/db/src/privacy-inventory-plan.js';
@@ -39,13 +40,11 @@ async function prepared(j:Awaited<ReturnType<typeof seedJourney>>,b:string,id:st
 describe('038 native asset minimization with035/036/037 evidence and permanent guards',()=>{
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:4});
-  const directory=new URL('../../packages/db/profile-transition/',import.meta.url),files=(await readdir(directory)).filter(p=>/^0(?:0[1-9]|1[0-9])_.*\.sql$/.test(p)).sort();expect(files).toHaveLength(19);
-  files.push('components/020_profile_identity_bootstrap.sql','components/020_derived_child_scopes.sql','components/020_ownership_scopes.sql','components/020_privileged_read_scopes.sql','components/020_meta_inventory_scopes.sql','components/020_idempotency_scopes.sql','components/020_manual_control_scopes.sql','components/020_global_quota_authority.sql','components/020_global_creative_budget_reader.sql','components/020_retired_creative_custody.sql','021_number_laboratory.sql','components/021_number_lab_ai_bridge.sql','022_result_projections.sql','components/022_result_source_reader.sql','023_receipt_policies.sql','components/023_receipt_worker.sql','024_result_financial_context.sql','025_privacy_closure_proof.sql','026_result_rebuild_receipts.sql','027_result_latency_histograms.sql');
-  const c=await admin.connect();try{await c.query('BEGIN');for(const name of files){if(name==='components/020_idempotency_scopes.sql')await c.query('CREATE TEMP TABLE profile_idempotency_scope_adoptions(workspace_id text,actor_id text,operation text,key text,row_sha256 text,environment text,evidence_sha256 text) ON COMMIT DROP');await c.query(await readFile(new URL(name,directory),'utf8'));}await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
-  await admin.query("INSERT INTO profile_quota_policy(singleton,max_profiles,max_numbers,daily_conversations,calendar_timezone,adoption_sha256) VALUES(true,3,20,300,'UTC',repeat('a',64))");
+  // V7 F2: the canonical chain, its components and the isolation model are
+  // installed by the migrations (0069-0097); no transition source is applied here.
+  await requireMigratedProfileSchema(admin);
   for(const[id,email]of[[owner,'privacy@example.invalid'],[owner+'-backup','privacy-backup@example.invalid']])await admin.query('INSERT INTO "user"(id,name,email,"emailVerified","createdAt","updatedAt") VALUES($1,$2,$3,true,now(),now())',[id,'Synthetic privacy Owner',email]);
   for(const workspace of[w,other]){await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic privacy jobs','UTC',0,0,100)",[workspace]);for(const id of[owner,owner+'-backup'])await admin.query("INSERT INTO memberships(user_id,workspace_id,role,active) VALUES($1,$2,'owner',true)",[id,workspace]);await tx(admin,'postgres',c=>c.query('SELECT adopt_profile_quota_inventory($1,profile_quota_inventory($1))',[workspace]),workspace);}
-  for(const name of['030_privacy_writer_fences.sql','components/030_profile_selection_authority.sql','031_privacy_job_authority.sql','029_commercial_resolution_receipts.sql','032_financial_retention_custody.sql','033_record_minimization.sql','034_privacy_result_preservation.sql','035_privacy_opaque_copies.sql','components/035_privacy_reference_fence.sql','components/036_privacy_backup_files.sql','components/037_privacy_backup_rows.sql','components/038_private_asset_minimization.sql'])await admin.query(await readFile(new URL(name,directory),'utf8'));
   // Fixture-only adoption of preparation/apply. The product grants neither.
   for(const role of ['commerce_api','commerce_automation','commerce_privacy_job_worker'])for(const fn of ['prepare_privacy_record_minimization(uuid,uuid,uuid)','apply_privacy_record_minimization(uuid,uuid)'])expect((await admin.query("SELECT has_function_privilege($1,$2,'EXECUTE') allowed",[role,fn])).rows[0].allowed).toBe(false);
   await admin.query('GRANT EXECUTE ON FUNCTION prepare_privacy_record_minimization(uuid,uuid,uuid),apply_privacy_record_minimization(uuid,uuid),capture_financial_retention(uuid,integer),capture_result_financial_context(uuid,integer),verify_financial_retention(uuid),correct_retained_financial_classification(uuid) TO commerce_privacy_job_worker');
@@ -57,7 +56,9 @@ describe('038 native asset minimization with035/036/037 evidence and permanent g
   await admin.query(buildPrivacyReferenceFencePlan(catalog).sql);
   await admin.query(buildPrivacyAssetReferencePlan(catalog).sql);
   await admin.query(buildPrivacyBackupRowPlan(catalog,privacyInventoryPolicy(catalog.tables.map(t=>t.name))).sql);
-  await admin.query(await readFile(new URL('components/038_private_asset_authority.sql',directory),'utf8'));
+  // 038_private_asset_authority depends on the generated privacy plans above; it
+  // is not a migration (erasure activation phase) and is applied from its source.
+  await admin.query(await readFile(new URL('../../packages/db/profile-transition/components/038_private_asset_authority.sql',import.meta.url),'utf8'));
   const plan=buildPrivacyInventoryPlan(catalog,privacyInventoryPolicy(catalog.tables.map(t=>t.name)));await admin.query(plan.prepare_sql);await admin.query(PRIVACY_JOB_INVENTORY_BINDING_SQL);
   for(const[name,roles]of[[workerLogin,'commerce_privacy_job_worker,commerce_privacy_fence_worker,commerce_privacy_reference_worker'],[attestorLogin,'commerce_privacy_attestor'],[apiLogin,'commerce_api']]){const secret=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${name}" LOGIN PASSWORD '${secret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION; GRANT ${roles} TO "${name}"`);const u=new URL(url);u.username=name;u.password=secret;const pool=new pg.Pool({connectionString:u.toString(),max:3});if(name===workerLogin)worker=pool;else if(name===attestorLogin)attestor=pool;else api=pool;}
   await admin.query(plan.seal_sql);await importPolicy();await importPolicy(other);

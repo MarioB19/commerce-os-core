@@ -2,6 +2,7 @@ import {readFile,readdir} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
+import {requireMigratedProfileSchema} from '../support/migrated-database.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {readProfileCatalog} from '../../packages/db/src/profile-inventory.js';
 import {buildPrivacyWriterFencePlan} from '../../packages/db/src/privacy-writer-fence.js';
@@ -16,15 +17,11 @@ async function insert(c:pg.PoolClient,workspace=w,environment='REAL'){return c.q
 describe('035 global all-profile references and stale snapshot barrier',()=>{
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:4});
-  const directory=new URL('../../packages/db/profile-transition/',import.meta.url),files=(await readdir(directory)).filter(p=>/^0(?:0[1-9]|1[0-9])_.*\.sql$/.test(p)).sort();expect(files).toHaveLength(19);
-  files.push('components/020_profile_identity_bootstrap.sql','components/020_derived_child_scopes.sql','components/020_ownership_scopes.sql','components/020_privileged_read_scopes.sql','components/020_meta_inventory_scopes.sql','components/020_idempotency_scopes.sql','components/020_manual_control_scopes.sql','components/020_global_quota_authority.sql','components/020_global_creative_budget_reader.sql','components/020_retired_creative_custody.sql','021_number_laboratory.sql','components/021_number_lab_ai_bridge.sql','022_result_projections.sql','components/022_result_source_reader.sql','023_receipt_policies.sql','components/023_receipt_worker.sql','024_result_financial_context.sql','025_privacy_closure_proof.sql','026_result_rebuild_receipts.sql','027_result_latency_histograms.sql');
-  const c=await admin.connect();try{await c.query('BEGIN');for(const name of files){if(name==='components/020_idempotency_scopes.sql')await c.query('CREATE TEMP TABLE profile_idempotency_scope_adoptions(workspace_id text,actor_id text,operation text,key text,row_sha256 text,environment text,evidence_sha256 text) ON COMMIT DROP');await c.query((await readFile(new URL(name,directory))).toString());}await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
-  await admin.query("INSERT INTO profile_quota_policy(singleton,max_profiles,max_numbers,daily_conversations,calendar_timezone,adoption_sha256) VALUES(true,3,20,300,'UTC',repeat('a',64))");
+  // V7 F2: the canonical chain, its components and the isolation model are
+  // installed by the migrations (0069-0097); no transition source is applied here.
+  await requireMigratedProfileSchema(admin);
   for(const workspace of [w,other])await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic privacy fencing','UTC',0,0,100)",[workspace]);
   for(const workspace of [w,other]){const c=await admin.connect();try{await c.query('BEGIN');await scope(c,workspace);await c.query('SELECT adopt_profile_quota_inventory($1,profile_quota_inventory($1))',[workspace]);await c.query('COMMIT');}finally{c.release();}}
-  await admin.query((await readFile(new URL('030_privacy_writer_fences.sql',directory))).toString());
-  await admin.query(await readFile(new URL('components/030_profile_selection_authority.sql',directory),'utf8'));
-  await admin.query(await readFile(new URL('components/035_privacy_reference_fence.sql',directory),'utf8'));
   const catalog=await readProfileCatalog(admin,[]);await admin.query(buildPrivacyWriterFencePlan(catalog).sql);const plan=buildPrivacyReferenceFencePlan(catalog);targetCount=plan.tables.length;await admin.query(plan.sql);
   const secret=randomBytes(32).toString('hex'),second=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${secret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;GRANT commerce_privacy_fence_worker,commerce_privacy_reference_worker TO "${login}";CREATE ROLE "${apiLogin}" LOGIN PASSWORD '${second}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;GRANT commerce_api TO "${apiLogin}"`);
   const u=new URL(url);u.username=login;u.password=secret;worker=new pg.Pool({connectionString:u.toString(),max:3});const a=new URL(url);a.username=apiLogin;a.password=second;api=new pg.Pool({connectionString:a.toString(),max:3});

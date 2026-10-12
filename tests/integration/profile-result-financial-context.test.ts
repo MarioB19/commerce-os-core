@@ -3,6 +3,7 @@ import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
+import {requireMigratedProfileSchema,fixtureProfileRow} from '../support/migrated-database.js';
 import {withProfileTransaction,type ProfilePool,type ProfileExecutor} from '../../packages/db/src/profile-context.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {projectProfileResults} from '../../packages/db/src/result-projection-worker.js';
@@ -17,13 +18,16 @@ import type {Model,Scope,RequestIdentity} from '../../packages/ai-providers/src/
 import type {ProfileAuthority} from '../../packages/domain/src/core/profile-authorization.js';
 import {resultsReport} from '../../packages/db/src/results.js';
 import {resultsReportSchema} from '../../packages/contracts/src/results-client.js';
+// V7 F2: an installation admits three profiles and 20 numbers; each fresh
+// fixture profile is sealed and the oldest are disposed to make room.
+const createdProfiles:string[]=[];
 const suffix=randomBytes(8).toString('hex'),login='result_sources_api_'+suffix,workerLogin='result_sources_worker_'+suffix;
 let admin:pg.Pool,api:pg.Pool,worker:pg.Pool,aiPool:pg.Pool,scoped:ProfilePool,workerScope:ProfilePool,serial=0;
 const aiLogin='result_sources_ai_'+suffix;
 const day='2026-10-10',started='2026-10-10T16:00:00.000Z',response='2026-10-10T16:00:30.000Z',paid='2026-10-10T17:00:00.000Z';
 const query=resultFiltersSchema.parse({from:day,to:'2026-10-13',currency:'MXN'});
 function tx<T>(w:string,work:(db:ProfileExecutor)=>Promise<T>){return withProfileTransaction(scoped,w,async db=>{await db.query("SELECT set_config('app.environment','REAL',true)");return work(db);});}
-async function profile(timezone='America/Mexico_City'){const w='results_'+suffix+'_'+(++serial);await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic Results',$2,1,5,100)",[w,timezone]);return w;}
+async function profile(timezone='America/Mexico_City'){return fixtureProfileRow(admin,createdProfiles,'results_'+suffix+'_'+(++serial),{businessName:'Synthetic Results',timezone,numbers:1,products:5,daily:100});}
 async function rec(w:string,kind:string,body:Record<string,unknown>,environment='REAL'){const id=randomUUID();await admin.query('INSERT INTO records(id,workspace_id,environment,kind,body,created_at) VALUES($1,$2,$3,$4,$5,$6)',[id,w,environment,kind,body,started]);return id;}
 async function journey(w:string,patch:Record<string,unknown>={},environment='REAL'){
  const family=await rec(w,'product',{name:'Synthetic product'},environment),account=await rec(w,'channel_account',{provider:'simulator'},environment),offer=await rec(w,'offer',{currency:'MXN',product_id:family},environment);
@@ -65,8 +69,8 @@ async function custody(j:Journey,expectedVersion=1,abort=false){return withProfi
 async function eraseStub(j:Journey){await admin.query("UPDATE records SET body='{\"privacy_erased\":true}',version=version+1 WHERE id=$1",[j.conversation]);}
 describe('retained financial context independent of conversation content',()=>{
  beforeAll(async()=>{
-  const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:5});
-  const c=await admin.connect();try{await c.query('BEGIN');for(const f of ['001_profile_identity.sql','003_profile_settings.sql','008_market_variants.sql','017_results_and_goals.sql','019_ai_admission.sql','022_result_projections.sql','027_result_latency_histograms.sql','components/022_result_source_reader.sql','024_result_financial_context.sql'])await c.query(await readFile(new URL('../../packages/db/profile-transition/'+f,import.meta.url),'utf8'));await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
+  const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:5});await requireMigratedProfileSchema(admin);
+  
   for(const [name,role]of[[login,'commerce_api'],[workerLogin,'commerce_results'],[aiLogin,'commerce_ai']]){
    const secret=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${name}" LOGIN PASSWORD '${secret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;GRANT ${role} TO "${name}"`);const native=new URL(url);native.username=name;native.password=secret;const pool=new pg.Pool({connectionString:native.toString(),max:4});
    const context:ProfilePool={async connect(){const connection=await pool.connect();try{await connection.query(`SET ROLE ${role}`);return{query:connection.query.bind(connection),release:()=>connection.release()};}catch(e){connection.release();throw e;}}};

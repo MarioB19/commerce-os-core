@@ -4,7 +4,7 @@ import {z} from 'zod';
 import {environmentSchema} from '../../../packages/contracts/src/index.js';
 import {profileScopeSchema} from '../../../packages/contracts/src/profiles.js';
 import {withProfileQueryRouting,currentProfileExecutor} from '../../../packages/db/src/profile-query-routing.js';
-import {withLegacyProfileRequest,type LegacyProfileRequestContext,type ProfileRequestDependencies} from './profile-request.js';
+import {isLegacyServiceRequest,withLegacyProfileRequest,withProfileRequest,type LegacyProfileRequestContext,type ProfileRequestDependencies} from './profile-request.js';
 
 const actionSchema=z.object({scope:profileScopeSchema,mutation:z.boolean(),interactiveOnly:z.boolean().optional()}).strict();
 type Action=z.infer<typeof actionSchema>;
@@ -82,11 +82,14 @@ export function authorizedProfileSqlHandler(actionValue:Action,handler:RouteHand
  const action=Object.freeze(actionSchema.parse(actionValue));
  return async function(req,reply){
   const environment=profileHttpEnvironment(req),response=pendingReply();
-  const staged=await withLegacyProfileRequest(req,environment,action,context=>withProfileQueryRouting(context.db,async()=>{
+  const work=(context:LegacyProfileRequestContext)=>withProfileQueryRouting(context.db,async()=>{
    const release=deps.bindIdentity(req,{...context,db:currentProfileExecutor(context.db.workspaceId)!},action);
    try{return response.finish(await handler.call(this,req,response.facade));}
    finally{release();}
-  }),deps.request);
+  });
+  // Sessions and PATs take the common profile request; only a V5 service bearer
+  // takes the service-token boundary.
+  const staged=isLegacyServiceRequest(req)?await withLegacyProfileRequest(req,environment,action,work,deps.request):await withProfileRequest(req,environment,action,work,deps.request);
   // No send/header/status mutation occurs before the awaited authority boundary.
   reply.code(staged.status);
   for(const header of staged.headers)reply.header(header.name,header.value);

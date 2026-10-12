@@ -2,11 +2,15 @@ import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
+import {requireMigratedProfileSchema,fixtureProfileRow} from '../support/migrated-database.js';
 import {withProfileTransaction,type ProfilePool,type ProfileExecutor} from '../../packages/db/src/profile-context.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {replaceResultProjection,sealResultProjection,finishResultProjectionGeneration,verifyResultProjectionRebuild} from '../../packages/db/src/result-projections.js';
 import {previewResultProjectionRebuild,rebuildResultProjection} from '../../packages/db/src/result-projection-rebuild.js';
 import {emptyResultCounters} from '../../packages/domain/src/sales/result-projection.js';
+// V7 F2: an installation admits three profiles and 20 numbers; each fresh
+// fixture profile is sealed and the oldest are disposed to make room.
+const createdProfiles:string[]=[];
 const suffix=randomBytes(8).toString('hex'),writerLogin='result_rebuild_'+suffix,apiLogin='result_rebuild_api_'+suffix;
 const grain={day:'2026-10-01',currency:'MXN',timezone:'America/Mexico_City',dimensions:{family_id:null,variant_id:null,market:null,account_id:null,campaign_id:null,ad_id:null,touch:'UNKNOWN' as const}};
 let admin:pg.Pool,writer:pg.Pool,api:pg.Pool,scoped:ProfilePool,apiScope:ProfilePool;
@@ -16,15 +20,15 @@ function tx<T>(w:string,work:(db:ProfileExecutor)=>Promise<T>,pool=scoped,repeat
 }
 async function seed(empty=false){
  const w='rebuild_'+randomUUID(),sources=[1,2].map(()=>({kind:'COHORT' as const,source_id:randomUUID(),revision:'1',facts:empty?[]:[{grain,counters:{...emptyResultCounters(),started:'1',responded:'1',response_samples:'1',response_ms_sum:'10',revenue_minor:'900719925474099101'},latencies:{response:{'10':'1'},sale:{}}}]}));
- await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic rebuild','UTC',1,5,100)",[w]);
+ await fixtureProfileRow(admin,createdProfiles,w,{businessName:'Synthetic rebuild',timezone:'UTC',numbers:1,products:5,daily:100});
  await tx(w,async db=>{for(const q of sources){const r=await replaceResultProjection(db,q);if(q===sources[0])await sealResultProjection(db,{kind:q.kind,source_id:q.source_id,revision:r.revision,fingerprint:r.fingerprint});}const watermark=(await db.query("SELECT to_char(clock_timestamp()-interval '1 second','YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') watermark")).rows[0].watermark;await finishResultProjectionGeneration(db,{watermark,source_count:'2'});});return{w,sources};
 }
 async function request(w:string){const p=await tx(w,db=>previewResultProjectionRebuild(db));return{operation_id:randomUUID(),expected_generation:p.expected_generation,canonical_sha256:p.canonical_sha256};}
 async function raw(w:string){return{state:(await admin.query('SELECT * FROM result_projection_state WHERE workspace_id=$1',[w])).rows,totals:(await admin.query('SELECT * FROM result_metric_daily WHERE workspace_id=$1 ORDER BY grain_hash',[w])).rows,sealed:(await admin.query('SELECT * FROM result_metric_sealed WHERE workspace_id=$1 ORDER BY grain_hash',[w])).rows,sources:(await admin.query('SELECT * FROM result_projection_sources WHERE workspace_id=$1 ORDER BY kind,source_digest',[w])).rows};}
 describe('atomic anonymous projection rebuild',()=>{
  beforeAll(async()=>{
-  const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:5});
-  const c=await admin.connect();try{await c.query('BEGIN');for(const n of ['001_profile_identity.sql','008_market_variants.sql','017_results_and_goals.sql','022_result_projections.sql','027_result_latency_histograms.sql','026_result_rebuild_receipts.sql'])await c.query(await readFile(new URL('../../packages/db/profile-transition/'+n,import.meta.url),'utf8'));await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
+  const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:5});await requireMigratedProfileSchema(admin);
+  
   for(const[name,role]of [[writerLogin,'commerce_results'],[apiLogin,'commerce_api']]){const secret=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${name}" LOGIN PASSWORD '${secret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;GRANT ${role} TO "${name}"`);const native=new URL(url);native.username=name;native.password=secret;const p=new pg.Pool({connectionString:native.toString(),max:4});const port:ProfilePool={async connect(){const c=await p.connect();await c.query(`SET ROLE ${role}`);return{query:c.query.bind(c),release:()=>c.release()};}};if(role==='commerce_results'){writer=p;scoped=port;}else{api=p;apiScope=port;}}
  },60000);
  afterAll(async()=>{await writer?.end();await api?.end();if(admin){try{await admin.query(`DROP ROLE IF EXISTS "${writerLogin}","${apiLogin}"`);}finally{await admin.end();}}});

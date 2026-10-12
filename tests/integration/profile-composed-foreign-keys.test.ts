@@ -3,6 +3,7 @@ import {isAbsolute,relative,resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
+import {requireMigratedProfileSchema} from '../support/migrated-database.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {readProfileCatalog,type ProfileCatalog} from '../../packages/db/src/profile-inventory.js';
 import {commerceProfileForeignKeyPolicy} from '../../packages/db/src/commerce-profile-foreign-key-policy.js';
@@ -15,11 +16,10 @@ async function newKeys(){return(await admin.query("SELECT conname FROM pg_constr
 describe('complete composed V7 FK proposal over the native schema',()=>{
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:3});
-  const directory=new URL('../../packages/db/profile-transition/',import.meta.url),files=(await readdir(directory)).filter(p=>/^0(?:0[1-9]|1[0-9])_.*\.sql$/.test(p)).sort();expect(files).toHaveLength(19);
-  files.push('components/020_profile_identity_bootstrap.sql','components/020_derived_child_scopes.sql','components/020_ownership_scopes.sql','components/020_privileged_read_scopes.sql','components/020_meta_inventory_scopes.sql','components/020_idempotency_scopes.sql','components/020_manual_control_scopes.sql','components/020_global_quota_authority.sql','components/020_global_creative_budget_reader.sql','components/020_retired_creative_custody.sql','021_number_laboratory.sql','components/021_number_lab_ai_bridge.sql','components/021_number_lab_driver_control.sql','022_result_projections.sql','components/022_result_source_reader.sql','023_receipt_policies.sql','components/023_receipt_worker.sql','024_result_financial_context.sql','025_privacy_closure_proof.sql','026_result_rebuild_receipts.sql','027_result_latency_histograms.sql','029_commercial_resolution_receipts.sql','030_privacy_writer_fences.sql');
-  const c=await admin.connect();try{await c.query('BEGIN');for(const name of files){if(name==='components/020_idempotency_scopes.sql')await c.query('CREATE TEMP TABLE profile_idempotency_scope_adoptions(workspace_id text,actor_id text,operation text,key text,row_sha256 text,environment text,evidence_sha256 text) ON COMMIT DROP');const bytes=await readFile(new URL(name,directory));await c.query(bytes.toString('utf8'));}await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
+  // V7 F2: the canonical chain, its components and the isolation model are
+  // installed by the migrations (0069-0097); no transition source is applied here.
+  await requireMigratedProfileSchema(admin);
   catalog=await readProfileCatalog(admin,['commerce_api','commerce_ingress','commerce_automation','commerce_channel','commerce_maintenance','commerce_ai','commerce_mail_dispatch','commerce_number_lab','commerce_results']);plan=planProfileForeignKeys(catalog,commerceProfileForeignKeyPolicy(catalog));
-  await admin.query("INSERT INTO profile_quota_policy(singleton,max_profiles,max_numbers,daily_conversations,calendar_timezone,adoption_sha256) VALUES(true,3,20,300,'UTC',repeat('a',64))");
   for(const w of [a,b])await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic FK','UTC',0,0,0)",[w]);
  },60000);
  afterAll(async()=>{await admin?.end();});

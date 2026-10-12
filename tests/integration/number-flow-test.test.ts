@@ -1,4 +1,5 @@
 import {afterAll,beforeAll,describe,expect,it} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomBytes,randomUUID} from 'node:crypto';
 import type {FastifyInstance} from 'fastify';
 import {createApp} from '../../apps/api/src/app.js';
@@ -156,7 +157,7 @@ describe('number flow laboratory',()=>{
 	 });
 
 	 it('never gives a REAL effect the laboratory pause exception or opens its policy',async()=>{
-	  const realWorkspace='real-pause-guard-'+randomUUID();
+	  const realWorkspace='real-pause-guard-'+randomUUID();await fixtureProfiles(realWorkspace);// V7 F2: adopted profile
 	  const account=await putRecord(pool,{workspaceId:realWorkspace,environment:'REAL',kind:'channel_account',body:{provider:'waha',status:'WORKING',sending_enabled:true,lab_snapshot:true,flow_test_transport:'ISOLATED_SIMULATOR'}});
 	  const contact=await putRecord(pool,{workspaceId:realWorkspace,environment:'REAL',kind:'contact',body:{identity:'opaque:synthetic-real-guard',status:'LEAD'}});
 	  const conversation=await putRecord(pool,{workspaceId:realWorkspace,environment:'REAL',kind:'conversation',body:{account_id:account.id,contact_id:contact.id}});

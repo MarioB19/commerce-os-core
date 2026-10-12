@@ -14,11 +14,12 @@ import {createContinuityMcp} from '../../apps/commerce-mcp/src/continuous-author
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js';
 import pg from 'pg';
-import {afterAll,beforeAll,describe,expect,it,vi} from 'vitest';
-import {asProfileOwner,requireMigratedProfileSchema} from '../support/migrated-database.js';
+import {afterAll,beforeAll,describe,expect,it,vi,beforeEach} from 'vitest';
+import {releaseFixtureNumbers} from '../support/profile-fixture.js';
+import {asProfileOwner,requireMigratedProfileSchema,sealFixtureProfiles,selectFixtureSession} from '../support/migrated-database.js';
 import {withProfileTransaction,type ProfileExecutor,type ProfilePool} from '../../packages/db/src/profile-context.js';
 import {withProfileSessionTransaction} from '../../packages/db/src/profile-session-transaction.js';
-import {selectSessionProfile,type SessionProfile} from '../../packages/db/src/profile-session.js';
+import type {SessionProfile} from '../../packages/db/src/profile-session.js';
 import * as store from '../../packages/db/src/continuous-authorization.js';
 import {readContinuousEffectAuthority} from '../../packages/db/src/continuous-effect.js';
 import {reconcileContinuousConnections} from '../../apps/channel-worker/src/continuous-connections.js';
@@ -127,7 +128,7 @@ async function startHttp(){
  cookie=response.headers.getSetCookie().map(value=>value.split(';')[0]).join('; ');expect(cookie).toContain('better-auth.session_token=');
  // Select the actual session obtained by native signed-cookie verification.
  const signed=await nativeTransaction(async c=>{const value=await createAuth(c).api.getSession({headers:new Headers({cookie}),query:{disableRefresh:true}});expect(value?.user.id).toBe(actor);return{id:value!.session.id,userId:value!.user.id};});
- await tx('commerce_api',db=>selectSessionProfile(db,signed,workspace,0));
+ await selectFixtureSession({connect:async()=>{const c=await scoped.get('commerce_api')!.connect();return c as any;}},signed,workspace,0);
 }
 async function personal(scopes:string[]){const token='cos_pat_'+randomBytes(32).toString('base64url'),id=randomUUID();
  await admin.query(`INSERT INTO personal_access_tokens(id,workspace_id,user_id,name,token_hash,allowed_environments,profile_scopes,expires_at)
@@ -169,12 +170,15 @@ async function prepareAgent(f:Awaited<ReturnType<typeof commercialReady>>){
 }
 function providerCounter(){let calls=0;const provider:SalesAiProvider={async propose(_config,raw){calls++;const context=raw as SellerContext;return{proposal:{reply:'Respuesta sintética basada en la oferta.',intent:'question',confidence:1,tool:'none',grounding:[context.sources[0]!.id]},usage:{input_tokens:7,output_tokens:11,cost_minor:3},provider:'deterministic',model:'durable-fixture'};},async receipt(){throw Error('UNUSED');}};return{provider,calls:()=>calls};}
 
+// V7 F2: cases admit their own REAL numbers; earlier cases' reservations are
+// retired (test-only) so the installation stays within 20 connected numbers.
+beforeEach(()=>releaseFixtureNumbers(admin));
 describe('F3 continuity persistence, real restricted PostgreSQL and synthetic source facts',()=>{
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');
   admin=new pg.Pool({connectionString:url.toString(),max:6,connectionTimeoutMillis:5000});
   await requireMigratedProfileSchema(admin);
-  await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic F3','UTC',20,100,100),($2,'Synthetic foreign','UTC',20,100,100)",[workspace,foreign]);
+  await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic F3','UTC',14,100,100),($2,'Synthetic foreign','UTC',6,100,100)",[workspace,foreign]);await sealFixtureProfiles(admin,workspace,foreign);// V7 F2: 20 numbers per installation
   await admin.query('INSERT INTO "user"(id,name,email,"emailVerified") VALUES($1,$1,$1||\'@example.invalid\',true)',[actor]);
   await admin.query("INSERT INTO memberships(user_id,workspace_id,role) VALUES($1,$2,'owner')",[actor,workspace]);
   session={id:randomUUID(),userId:actor};await admin.query('INSERT INTO session(id,"userId",token,"expiresAt") VALUES($1,$2,$1,clock_timestamp()+interval \'1 hour\')',[session.id,actor]);
@@ -184,7 +188,7 @@ describe('F3 continuity persistence, real restricted PostgreSQL and synthetic so
    const native=new URL(url);native.username=login;native.password=password;const pool=new pg.Pool({connectionString:native.toString(),max:5,connectionTimeoutMillis:5000});pools.set(role,pool);
    scoped.set(role,{async connect(){const c=await pool.connect();try{await c.query('SET ROLE '+role);return{query:c.query.bind(c),release:()=>c.release()};}catch(e){c.release();throw e;}}});
   }
-  await tx('commerce_api',db=>selectSessionProfile(db,session,workspace,0));
+  await selectFixtureSession({connect:async()=>{const c=await scoped.get('commerce_api')!.connect();return c as any;}},session,workspace,0);
  },60000);
  afterAll(async()=>{await app?.close();vi.unstubAllEnvs();for(const pool of pools.values())await pool.end();if(admin){try{for(const login of logins)await admin.query(`DROP ROLE IF EXISTS "${login}"`);}finally{await admin.end();}}});
  it('SQL state validator rejects absent, null, extra and malformed fields without throwing',async()=>{
@@ -546,8 +550,10 @@ describe('F3 continuity persistence, real restricted PostgreSQL and synthetic so
  it('013 returns validated profile timezone and never lets an invalid IANA fact reach QR workers',async()=>{
   await asProfileOwner(admin,workspace,c=>c.query("UPDATE profiles SET timezone='America/Los_Angeles' WHERE id=$1",[workspace]));
   try{expect(await tx('commerce_channel',db=>lockedContinuousWorkerProfile(db))).toMatchObject({timezone:'America/Los_Angeles'});
-   await asProfileOwner(admin,workspace,c=>c.query("UPDATE profiles SET timezone='Not/A_Zone' WHERE id=$1",[workspace]));
-   await expect(tx('commerce_channel',db=>lockedContinuousWorkerProfile(db))).rejects.toThrow('CONTINUITY_PROFILE_FACT_INVALID');
+   // V7 F2: the quota calendar (014) refuses storing an invalid IANA zone, so the
+   // invalid fact cannot reach a worker; the validated zone is still returned.
+   await expect(asProfileOwner(admin,workspace,c=>c.query("UPDATE profiles SET timezone='Not/A_Zone' WHERE id=$1",[workspace]))).rejects.toThrow('PROFILE_QUOTA_TIMEZONE_INVALID');
+   expect(await tx('commerce_channel',db=>lockedContinuousWorkerProfile(db))).toMatchObject({timezone:'America/Los_Angeles'});
   }finally{await asProfileOwner(admin,workspace,c=>c.query("UPDATE profiles SET timezone='UTC' WHERE id=$1",[workspace]));}
  });
 

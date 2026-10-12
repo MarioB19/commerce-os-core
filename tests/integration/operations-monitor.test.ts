@@ -1,4 +1,6 @@
-import {afterAll,expect,it} from 'vitest';
+import {afterAll,beforeEach,expect,it} from 'vitest';
+import {disposeAllFixtureProfiles} from '../support/migrated-database.js';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomUUID} from 'node:crypto';
 import {pool,putRecord,withTransaction,writeOperationalSettings} from '../../packages/db/src/index.js';
 import {defaultOperationalSettings} from '../../packages/contracts/src/index.js';
@@ -11,7 +13,10 @@ afterAll(async()=>pool.end());
 // no provider, public endpoint or production credential is used.
 const endpoint='https://alerts.example.invalid/operations';
 const token='synthetic-operational-alert-token-only';
-const workspace=()=>`operations-monitor-${randomUUID()}`;
+// V7 F2: each case's workspaces are adopted profiles; an installation admits
+// three, so the previous cases' profiles are disposed first.
+const workspace=async()=>{const id=`operations-monitor-${randomUUID()}`;await fixtureProfiles(id);return id;};
+beforeEach(()=>disposeAllFixtureProfiles(pool));
 
 async function configureAlerts(scope:string){
  await withTransaction(c=>saveIntegrationSetting(c,scope,'REAL','alerts:default',integrationPatchSchema.parse({
@@ -36,7 +41,7 @@ function captureFetch(onRequest?:(body:Record<string,unknown>,init:RequestInit)=
 }
 
 it('does not starve a configured workspace behind more than ten unconfigured pending alerts',async()=>{
- const absent=workspace(),ready=workspace();
+ const absent=await workspace(),ready=await workspace();
  const blocked=await Promise.all(Array.from({length:12},()=>insertAlert(absent,{created_at:'2000-01-01T00:00:00Z'})));
  await configureAlerts(ready);const eligible=await insertAlert(ready),transport=captureFetch();
  await deliverOperationalAlerts(transport.fetcher);
@@ -55,7 +60,7 @@ it('does not starve a configured workspace behind more than ten unconfigured pen
 });
 
 it('claims one pending alert once across two workers while the first POST is in flight',async()=>{
- const scope=workspace();await configureAlerts(scope);const row=await insertAlert(scope);
+ const scope=await workspace();await configureAlerts(scope);const row=await insertAlert(scope);
  let release!:()=>void,started!:()=>void;
  const held=new Promise<void>(resolve=>release=resolve),observed=new Promise<void>(resolve=>started=resolve);
  const transport=captureFetch(async body=>{if(body.id===row.id){started();await held;}return new Response(null,{status:202});});
@@ -67,7 +72,7 @@ it('claims one pending alert once across two workers while the first POST is in 
 });
 
 it('keeps a timed out notification UNKNOWN without retrying uncertain remote acceptance',async()=>{
- const scope=workspace();await configureAlerts(scope);const row=await insertAlert(scope);
+ const scope=await workspace();await configureAlerts(scope);const row=await insertAlert(scope);
  const transport=captureFetch(async body=>{if(body.id===row.id)throw new DOMException('Synthetic response timeout','TimeoutError');return new Response(null,{status:204});});
  await deliverOperationalAlerts(transport.fetcher);expect(await alertState(row.id)).toBe('UNKNOWN');
  await deliverOperationalAlerts(transport.fetcher);expect(await alertState(row.id)).toBe('UNKNOWN');
@@ -77,7 +82,7 @@ it('keeps a timed out notification UNKNOWN without retrying uncertain remote acc
 });
 
 it('recovers abandoned SENDING as UNKNOWN without POST and leaves a fresh claim in flight',async()=>{
- const scope=workspace();await configureAlerts(scope);
+ const scope=await workspace();await configureAlerts(scope);
  const old=await insertAlert(scope,{status:'SENDING',updated_at:'2001-01-01T00:00:00Z'});
  const fresh=await insertAlert(scope,{status:'SENDING'}),transport=captureFetch();
  await deliverOperationalAlerts(transport.fetcher);await deliverOperationalAlerts(transport.fetcher);
@@ -86,7 +91,7 @@ it('recovers abandoned SENDING as UNKNOWN without POST and leaves a fresh claim 
 });
 
 it('deduplicates deployment hold and per-number recovery alerts, then resolves them',async()=>{
- const scope=workspace(),account=await putRecord(pool,{workspaceId:scope,environment:'REAL',kind:'channel_account',body:{name:'Synthetic release alert',provider:'cloud',sending_enabled:true}});
+ const scope=await workspace(),account=await putRecord(pool,{workspaceId:scope,environment:'REAL',kind:'channel_account',body:{name:'Synthetic release alert',provider:'cloud',sending_enabled:true}});
  await withTransaction(c=>writeOperationalSettings(c,scope,'REAL',0,{...defaultOperationalSettings,dispatch_frozen:false,real_sends_enabled:true,allow_real_operations:true},'fixture'));
  await pool.query("UPDATE operational_settings SET release_hold=true,release_hold_at=now()-interval '10 minutes' WHERE workspace_id=$1 AND environment='REAL'",[scope]);
  await pool.query("INSERT INTO session_ownership(account_id,workspace_id,owner_id,generation,frozen,release_frozen,lease_expires_at) VALUES($1,$2,'synthetic-old-owner',1,true,true,now()-interval '1 minute')",[account.id,scope]);
@@ -103,7 +108,7 @@ it('deduplicates deployment hold and per-number recovery alerts, then resolves t
 });
 
 async function warmupPlanFixture(acked:number){
- const scope=workspace(),now=(await pool.query('SELECT now() now')).rows[0].now as Date;
+ const scope=await workspace(),now=(await pool.query('SELECT now() now')).rows[0].now as Date;
  // These IANA zones guarantee a different calendar date from UTC at every hour.
  const timezone=now.getUTCHours()<12?'Etc/GMT+12':'Pacific/Kiritimati';
  const localToday=new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit'}).format(now);
@@ -140,7 +145,7 @@ it.each([{acked:2,deviation:true},{acked:3,deviation:false},{acked:4,deviation:f
 
 
 it('deduplicates a fresh but blocked worker incident and resolves only with valid progress',async()=>{
- const scope=workspace();await putRecord(pool,{workspaceId:scope,environment:'REAL',kind:'channel_account',body:{name:'Synthetic worker progress',provider:'simulator'}});
+ const scope=await workspace();await putRecord(pool,{workspaceId:scope,environment:'REAL',kind:'channel_account',body:{name:'Synthetic worker progress',provider:'simulator'}});
  const body={service:'channel-worker',status:'BLOCKED',observed_at:new Date().toISOString(),expires_at:new Date(Date.now()+60_000).toISOString()};
  let heartbeat=await putRecord(pool,{workspaceId:scope,environment:'REAL',kind:'service_heartbeat',body});
  const incidents=async()=>(await pool.query("SELECT severity,resolved_at FROM operational_alerts WHERE workspace_id=$1 AND kind='CHANNEL_WORKER_UNAVAILABLE'",[scope])).rows;

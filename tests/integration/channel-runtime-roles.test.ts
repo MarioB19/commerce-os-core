@@ -1,4 +1,5 @@
 import {afterAll,beforeAll,expect,it} from 'vitest';
+import {fixtureProfilesIn} from '../support/profile-fixture.js';
 import pg from 'pg';
 import {randomUUID} from 'node:crypto';
 import {execFile} from 'node:child_process';
@@ -15,6 +16,7 @@ beforeAll(async()=>{
  await execute(process.execPath,['--import','tsx','packages/db/src/migrate.ts'],{env:{...process.env,DATABASE_URL:connection.toString()},timeout:30000});
  pool=new pg.Pool({connectionString:connection.toString()});
  await pool.query('INSERT INTO "user"(id,name,email) VALUES($1,$2,$3)',[fixture.user,'Synthetic owner',randomUUID()+'@example.invalid']);
+ await fixtureProfilesIn(pool,fixture.workspace);// V7 F2: memberships belong to an adopted profile.
  await pool.query("INSERT INTO memberships(user_id,workspace_id,role) VALUES($1,$2,'owner')",[fixture.user,fixture.workspace]);
  await insertPersonalToken(pool,{workspace_id:fixture.workspace,user_id:fixture.user,name:'Synthetic owner API',allowed_environments:['REAL'],expires_at:new Date(Date.now()+3600000).toISOString()},fixture.token);
  await pool.query("INSERT INTO integration_settings(workspace_id,environment,key,type,reference,label,version,enabled,config,updated_by) VALUES($1,'REAL',$2,'waha',$3,'Isolated fixture gateway',1,true,$4,$5)",[fixture.workspace,'waha:'+fixture.gateway,fixture.gateway,{base_url:'https://gateway.example.invalid/'+fixture.gateway},fixture.user]);
@@ -44,6 +46,8 @@ const apiPrelude=`
  const me=await call('GET','/v1/me');assert.equal(me.role,'owner');assert.equal(me.authentication_method,'personal_access_token');assert.equal(me.service,false);
  assert.equal((await pool.query('SELECT current_user role')).rows[0].role,'commerce_api');
  const path='/v1/channel-accounts/'+f.account;
+ // V7 F2: commerce_api reads and writes only inside its profile context (forced RLS).
+ async function profileQuery(sql,values){const c=await pool.connect();try{await c.query('BEGIN');await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','REAL',true)",[f.workspace]);const r=await c.query(sql,values);await c.query('COMMIT');return r;}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}}
 `;
 
 it('runs channel recovery, logout, deletion and gateway reuse through real restricted API/worker roles',async()=>{
@@ -51,9 +55,9 @@ it('runs channel recovery, logout, deletion and gateway reuse through real restr
   let s=await call('GET',path+'/session');const key=randomUUID();
   const body={expected_version:s.revision,action:'reconcile_command',command_id:f.command,outcome:'confirmed_not_applied',reason:'Synthetic pre-provider gate failure and fresh health verified'};
   await call('POST',path+'/session/recovery',{...body,expected_version:s.revision+1},409);
-  await pool.query("UPDATE channel_sessions SET health_expires_at=now()-interval '1 second' WHERE account_id=$1",[f.account]);
+  await profileQuery("UPDATE channel_sessions SET health_expires_at=now()-interval '1 second' WHERE account_id=$1",[f.account]);
   await call('POST',path+'/session/recovery',body,409);
-  await pool.query("UPDATE channel_sessions SET last_health_at=now(),health_expires_at=now()+interval '1 hour' WHERE account_id=$1",[f.account]);
+  await profileQuery("UPDATE channel_sessions SET last_health_at=now(),health_expires_at=now()+interval '1 hour' WHERE account_id=$1",[f.account]);
   s=await call('POST',path+'/session/recovery',body,200,key);
   assert.equal(s.uncertain_commands.length,0);
   assert.deepEqual(await call('POST',path+'/session/recovery',body,200,key),s);
@@ -85,7 +89,7 @@ it('runs channel recovery, logout, deletion and gateway reuse through real restr
   assert.equal(saved.sending_enabled,false);assert.equal(saved.purpose,'');assert.equal(saved.status,'DISCONNECTED');
   const health=await call('GET','/v1/channel-accounts/'+created.id+'/health');assert.equal(health.reception.messages.received,0);assert.equal(health.reception.envelopes.received,0);assert.equal(health.reception.sending_enabled,false);
   assert.equal(s.operational_pause,true);assert.equal(s.recovery_enabled,false);assert.equal(s.desired_state,'STOPPED');
-  assert.equal((await pool.query('SELECT count(*)::int n FROM commands WHERE resource_id=$1',[created.id])).rows[0].n,0);
+  assert.equal((await profileQuery('SELECT count(*)::int n FROM commands WHERE resource_id=$1',[created.id])).rows[0].n,0);
   assert.equal(s.gateway_id.startsWith('unconfigured:'),false);
   assert.equal((await call('GET','/v1/outbox')).length,0);
   await app.close();await pool.end();console.log(JSON.stringify({deleted:true,newAccount:created.id}));
@@ -155,10 +159,16 @@ print(json.dumps({'candidate':candidate,'selection':queries[0],'sql':queries[1]}
  for(const mutation of [
   "UPDATE session_ownership SET generation=generation+1 WHERE account_id=$1",
   "UPDATE session_ownership SET frozen=false WHERE account_id=$1",
-  "UPDATE records SET version=version+1,body=body||jsonb_build_object('deleted_at',now()) WHERE id=$1::uuid",
+  'RETIRE',
   "UPDATE ownership_isolation_receipts SET consumed_at=now() WHERE account_id=$1::uuid",
  ]){
-  const client=await pool.connect();try{await client.query('BEGIN');await client.query(mutation,[a.id]);expect(Number((await client.query(generated.sql)).rows[0].count)).toBe(0);}finally{await client.query('ROLLBACK');client.release();}
+  const client=await pool.connect();try{await client.query('BEGIN');
+   // V7 F2: a REAL number is deleted only through the quota retirement path.
+   if(mutation==='RETIRE'){await client.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','REAL',true)",[fixture.workspace]);
+    await client.query("INSERT INTO manual_controls(workspace_id,scope_type,scope_id,paused,reason,actor_id) VALUES($1,'channel_account',$2,true,'Synthetic retirement','fixture') ON CONFLICT (workspace_id,scope_type,scope_id) DO UPDATE SET paused=true",[fixture.workspace,a.id]);
+    await client.query("UPDATE records SET version=version+1,body=body||jsonb_build_object('status','STOPPED','sending_enabled',false,'identity_verified',false,'unlinked_at',now()::text)-'active_authorization_id' WHERE id=$1::uuid",[a.id]);
+    await client.query("UPDATE records SET version=version+1,body=body||jsonb_build_object('deleted_at',now()) WHERE id=$1::uuid",[a.id]);}
+   else await client.query(mutation,[a.id]);expect(Number((await client.query(generated.sql)).rows[0].count)).toBe(0);}finally{await client.query('ROLLBACK');client.release();}
  }
  expect(Number((await pool.query(generated.sql)).rows[0].count)).toBe(1);
  expect(Number((await pool.query(generated.sql)).rows[0].count)).toBe(0);

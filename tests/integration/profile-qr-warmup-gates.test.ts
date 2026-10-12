@@ -4,6 +4,7 @@ import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect,vi} from 'vitest';
+import {asProfileOwner,requireMigratedProfileSchema,fixtureProfileRow} from '../support/migrated-database.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {withProfileTransaction,type ProfileExecutor,type ProfilePool} from '../../packages/db/src/profile-context.js';
 import {issueVerifiedQrContinuity,applyContinuousProtection} from '../../packages/db/src/continuous-authorization.js';
@@ -20,7 +21,10 @@ const suffix=randomBytes(6).toString('hex'),roles=['commerce_api','commerce_chan
 type Role=typeof roles[number];let admin:pg.Pool;const pools=new Map<Role,pg.Pool>(),scoped=new Map<Role,ProfilePool>(),logins:string[]=[];
 const actor='qr_owner_'+suffix;let serial=0;
 function tx<T>(workspace:string,role:Role,work:(db:ProfileExecutor)=>Promise<T>){return withProfileTransaction(scoped.get(role)!,workspace,work);}
-async function profile(){const workspace='qr_'+suffix+'_'+(++serial);await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic QR','UTC',20,100,100)",[workspace]);return workspace;}
+// V7 F2: an installation admits three profiles and 20 numbers; each case's fresh
+// profile is sealed and the oldest fixture profiles are disposed to make room.
+const createdProfiles:string[]=[];
+async function profile(){return fixtureProfileRow(admin,createdProfiles,'qr_'+suffix+'_'+(++serial),{businessName:'Synthetic QR',numbers:6,products:100,daily:100});}
 async function connection(workspace:string,existing?:string){
  const account=existing??randomUUID(),command=randomUUID(),raw='1555000'+String(++serial).padStart(4,'0')+'@c.us';
  if(!existing)await admin.query("INSERT INTO records(id,workspace_id,environment,kind,body) VALUES($1,$2,'REAL','channel_account',$3)",[account,workspace,{provider:'waha',status:'WORKING',identity_verified:true,identity_fingerprint:hash(raw),session_provider_at:new Date().toISOString(),health_checked_at:new Date().toISOString(),health_status:'OK'}]);
@@ -43,7 +47,7 @@ async function live(w:string,account:string){
 }
 async function readyPair(){
  const w=await profile(),clock=(await admin.query('SELECT clock_timestamp() AS now')).rows[0].now as Date,offset=12-clock.getUTCHours(),timezone=offset===0?'UTC':`Etc/GMT${offset>0?'-':'+'}${Math.abs(offset)}`;
- await admin.query('UPDATE profiles SET timezone=$2,version=version+1 WHERE id=$1',[w,timezone]);
+ await asProfileOwner(admin,w,c=>c.query('UPDATE profiles SET timezone=$2,version=version+1 WHERE id=$1',[w,timezone]));
  const a=await connection(w),b=await connection(w);for(const n of [a,b]){await enrollment(w,n.account);await live(w,n.account);}
  const p=await pool(w),now=(await admin.query('SELECT clock_timestamp() AS now')).rows[0].now as Date;
  const settings=await readOperationalSettings(admin as any,w,'REAL');await writeOperationalSettings(admin as any,w,'REAL',settings.version,{...settings.body,dispatch_frozen:false,allow_real_operations:true,real_sends_enabled:true},'synthetic-fixture');
@@ -72,8 +76,7 @@ describe('QR dispatch gates and inbound without a peer, real PostgreSQL',()=>{
   vi.stubEnv('PRIVATE_DATA_KEY',randomBytes(32).toString('hex'));
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');
   admin=new pg.Pool({connectionString:url.toString(),max:8,connectionTimeoutMillis:5000});
-  if((await admin.query("SELECT to_regclass('public.profiles') present")).rows[0].present)throw Error('TRANSITION_SCHEMA_ALREADY_PRESENT');
-  const setup=await admin.connect();try{await setup.query('BEGIN');for(const name of ['001_profile_identity.sql','010_continuous_authorization.sql','012_continuous_effects.sql','013_continuous_worker_profile.sql','015_auto_qr_warmup.sql'])await setup.query(await readFile(new URL('../../packages/db/profile-transition/'+name,import.meta.url),'utf8'));await setup.query('COMMIT');}catch(e){await setup.query('ROLLBACK');throw e;}finally{setup.release();}
+  await requireMigratedProfileSchema(admin);
   await admin.query('INSERT INTO "user"(id,name,email,"emailVerified") VALUES($1,$1,$1||\'@example.invalid\',true)',[actor]);
   for(const role of roles){const login='qr_'+role.slice(9)+'_'+suffix,password=randomBytes(24).toString('hex');logins.push(login);
    await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${password}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT;GRANT ${role} TO "${login}"`);

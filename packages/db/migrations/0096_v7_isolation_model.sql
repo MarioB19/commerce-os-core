@@ -142,6 +142,16 @@ BEGIN
  ('public.profile_quota_record_guard()',
   ' IF current_setting(''app.workspace_id'',true) IS DISTINCT FROM NEW.workspace_id THEN RAISE EXCEPTION ''PROFILE_QUOTA_CONTEXT_REQUIRED''; END IF;',
   ' IF NOT public.v7_worker_session_without_context() AND current_setting(''app.workspace_id'',true) IS DISTINCT FROM NEW.workspace_id THEN RAISE EXCEPTION ''PROFILE_QUOTA_CONTEXT_REQUIRED''; END IF;');
+ -- Privileged readers (020): a worker without context reads the authorization
+ -- or isolation receipt of the explicit effect/account record it processes;
+ -- with any context, the exact workspace/environment is still required.
+ INSERT INTO pg_temp.v7_bind_patches VALUES
+ ('public.read_locked_operation_authorization(uuid,text,text)',
+  '   OR current_setting(''app.workspace_id'',true) IS DISTINCT FROM workspace OR current_setting(''app.environment'',true) IS DISTINCT FROM env THEN RAISE EXCEPTION ''PROFILE_READER_CONTEXT_REQUIRED'';',
+  '   OR (NOT public.v7_worker_session_without_context() AND (current_setting(''app.workspace_id'',true) IS DISTINCT FROM workspace OR current_setting(''app.environment'',true) IS DISTINCT FROM env)) THEN RAISE EXCEPTION ''PROFILE_READER_CONTEXT_REQUIRED'';'),
+ ('public.read_copy_source_isolation_receipt(uuid,text,text,integer,uuid)',
+  '   OR current_setting(''app.workspace_id'',true) IS DISTINCT FROM p_workspace_id OR current_setting(''app.environment'',true) IS DISTINCT FROM ''REAL'' THEN RAISE EXCEPTION ''PROFILE_READER_CONTEXT_REQUIRED'';',
+  '   OR (NOT public.v7_worker_session_without_context() AND (current_setting(''app.workspace_id'',true) IS DISTINCT FROM p_workspace_id OR current_setting(''app.environment'',true) IS DISTINCT FROM ''REAL'')) THEN RAISE EXCEPTION ''PROFILE_READER_CONTEXT_REQUIRED'';');
  FOR definition IN SELECT DISTINCT fn FROM pg_temp.v7_bind_patches ORDER BY 1 LOOP
   SELECT pg_get_functiondef(definition::regprocedure) INTO patched;
   DECLARE patch record; BEGIN
@@ -154,3 +164,20 @@ BEGIN
  END LOOP;
  DROP TABLE pg_temp.v7_bind_patches;
 END $bind$;
+
+-- The reader roles' own policies (020) follow the same transitional rule: the
+-- definer reads for a worker session without context, only the exact row the
+-- function's arguments name; any installed context is still enforced.
+DO $readers$
+DECLARE p record;
+BEGIN
+ FOR p IN SELECT c.relname,pol.polname,pg_get_expr(pol.polqual,pol.polrelid) qual FROM pg_policy pol JOIN pg_class c ON c.oid=pol.polrelid
+  JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND pol.polname IN('authorization_reader_scope','authorization_reader_scope_guard',
+  'isolation_reader_scope','isolation_reader_scope_guard','isolation_reader_membership','isolation_reader_membership_guard') ORDER BY 1,2 LOOP
+  EXECUTE format('ALTER POLICY %I ON public.%I USING (public.v7_worker_session_without_context() OR (%s))',p.polname,p.relname,p.qual);
+ END LOOP;
+ IF (SELECT count(*) FROM pg_policy WHERE polname IN('authorization_reader_scope','authorization_reader_scope_guard','isolation_reader_scope','isolation_reader_scope_guard',
+  'isolation_reader_membership','isolation_reader_membership_guard') AND pg_get_expr(polqual,polrelid) LIKE '%v7_worker_session_without_context()%')<>12 THEN
+  RAISE EXCEPTION 'V7_READER_POLICY_DRIFT';
+ END IF;
+END $readers$;

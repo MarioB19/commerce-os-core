@@ -1,4 +1,5 @@
 import {afterAll,afterEach,beforeAll,beforeEach,describe,expect,it,vi} from 'vitest';
+import {fixtureProfilesIn} from '../support/profile-fixture.js';
 import pg from 'pg';
 import {randomUUID} from 'node:crypto';
 import {execFile,spawn,type ChildProcess} from 'node:child_process';
@@ -33,6 +34,7 @@ beforeAll(async()=>{
  defaultPolicy=(await import('../../packages/contracts/src/index.js')).defaultOperationalSettings;
  const personal=await import('../../packages/db/src/personal-access-tokens.js');token=personal.newPersonalToken();
  await admin.query('INSERT INTO "user"(id,name,email) VALUES($1,$2,$3)',[user,'Synthetic QR operator',user+'@example.invalid']);
+ await fixtureProfilesIn(admin,workspace);// V7 F2: memberships belong to an adopted profile.
  await admin.query("INSERT INTO memberships(user_id,workspace_id,role) VALUES($1,$2,'owner')",[user,workspace]);
  await personal.insertPersonalToken(admin,{workspace_id:workspace,user_id:user,name:'Synthetic QR owner API',allowed_environments:['REAL'],expires_at:new Date(Date.now()+3600000).toISOString()},token);
  await admin.query("INSERT INTO operational_settings(workspace_id,environment,version,body,updated_by) VALUES($1,'REAL',1,$2,$3)",[workspace,{...defaultPolicy,allow_channel_onboarding:true},user]);

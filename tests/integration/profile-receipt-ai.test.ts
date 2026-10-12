@@ -57,6 +57,7 @@ import {hashPassword} from 'better-auth/crypto';
 import {ZodError} from 'zod';
 import pg from 'pg';
 import {afterAll,beforeAll,beforeEach,describe,expect,it,vi} from 'vitest';
+import {asProfileOwner,requireMigratedProfileSchema,sealFixtureProfiles} from '../support/migrated-database.js';
 import {listProfileChoicesFromSession,selectProfileFromSession} from '../../packages/db/src/profile-identity-bootstrap.js';
 import {createAuth} from '../../apps/api/src/auth.js';
 import {profileIdentityRoutes} from '../../apps/api/src/profile-identity.js';
@@ -122,13 +123,12 @@ describe('receipt019 protected provider orchestration through native worker phas
   vi.stubEnv('PRIVATE_DATA_KEY',randomBytes(32).toString('hex'));vi.stubEnv('BETTER_AUTH_SECRET','synthetic-market-'+randomBytes(32).toString('hex'));passwordHash=await hashPassword(password);
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');
   admin=new pg.Pool({connectionString:url.toString(),max:4,connectionTimeoutMillis:5000});
-  if((await admin.query("SELECT to_regclass('public.profiles') AS present")).rows[0].present)throw Error('TRANSITION_SCHEMA_ALREADY_PRESENT');
-  const c=await admin.connect();try{await c.query('BEGIN');for(const name of ['001_profile_identity.sql','002_profile_personal_tokens.sql','003_profile_settings.sql','008_market_variants.sql','013_continuous_worker_profile.sql','018_worker_profile_discovery.sql','019_ai_admission.sql','023_receipt_policies.sql','components/023_receipt_worker.sql'])await c.query(await readFile(new URL('../../packages/db/profile-transition/'+name,import.meta.url),'utf8'));await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
+  await requireMigratedProfileSchema(admin);
   const secret=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${secret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT;GRANT commerce_api,commerce_automation TO "${login}"`);
   // Existing commercial tables receive fixture-owned policies only. New market
   // tables use exactly the production-proposed 008 FORCE RLS and grants.
   for(const table of ['records','record_versions','personal_access_tokens'])await admin.query(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;CREATE POLICY market_fixture ON ${table} USING(workspace_id=NULLIF(current_setting('app.workspace_id',true),'')) WITH CHECK(workspace_id=NULLIF(current_setting('app.workspace_id',true),''))`);
-  await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic Market','UTC',1,100,100),($2,'Synthetic Foreign','UTC',1,100,100)",[one,two]);
+  await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic Market','UTC',1,100,100),($2,'Synthetic Foreign','UTC',1,100,100)",[one,two]);await sealFixtureProfiles(admin,one,two);
   url.username=login;url.password=secret;runtime=new pg.Pool({connectionString:url.toString(),options:'-c role=commerce_api',max:5,connectionTimeoutMillis:5000});
   app=Fastify({logger:false,disableRequestLogging:true});app.setErrorHandler((e:any,_r,reply)=>reply.code(e instanceof ZodError?400:e.statusCode??500).send({error:{code:e.code??'INTERNAL_ERROR'}}));
   await profileIdentityRoutes(app,{origins:[origin],session:nativeSession,list:s=>listProfileChoicesFromSession(runtime,s),select:(s,w,v)=>transaction(c=>selectProfileFromSession(c,s,w,v))});
@@ -186,7 +186,7 @@ describe('receipt019 protected provider orchestration through native worker phas
  it('altered cached evidence or a missing encrypted result never falls back to provider',async()=>{
   const f=await ready();postHook=()=>pause(f,true);await run(f.runtime);postHook=undefined;await pause(f,false);await admin.query("UPDATE records SET version=version+1,body=body-'receipt_ai_result' WHERE id=$1",[f.receipt.id]);await expect(run(f.runtime)).rejects.toThrow('RECEIPT_AI_CACHE_REQUIRED');expect(providerCalls).toBe(1);expect(await contributions(f.order.id)).toHaveLength(0);
  });
- it('a foreign or suspended profile cannot enter provider orchestration',async()=>{const f=await ready();await expect(processProfileReceiptAnalyses(f.runtime)).rejects.toThrow('RECEIPT_AI_WORKER_SCOPE_REQUIRED');const runtime=createProfileWorkerRuntime(automation,'commerce_automation','REAL'),selection=(await runtime.discover()).find(p=>p.workspaceId===one)!;await admin.query("UPDATE profiles SET state='SUSPENDED' WHERE id=$1",[one]);try{await expect(runtime.run(selection,()=>processProfileReceiptAnalyses(f.runtime))).rejects.toThrow('WORKER_PROFILE_AUTHORITY_CHANGED');expect(providerCalls).toBe(0);}finally{await admin.query("UPDATE profiles SET state='ACTIVE' WHERE id=$1",[one]);}});
+ it('a foreign or suspended profile cannot enter provider orchestration',async()=>{const f=await ready();await expect(processProfileReceiptAnalyses(f.runtime)).rejects.toThrow('RECEIPT_AI_WORKER_SCOPE_REQUIRED');const runtime=createProfileWorkerRuntime(automation,'commerce_automation','REAL'),selection=(await runtime.discover()).find(p=>p.workspaceId===one)!;await asProfileOwner(admin,one,c=>c.query("UPDATE profiles SET state='SUSPENDED' WHERE id=$1",[one]));try{await expect(runtime.run(selection,()=>processProfileReceiptAnalyses(f.runtime))).rejects.toThrow('WORKER_PROFILE_AUTHORITY_CHANGED');expect(providerCalls).toBe(0);}finally{await asProfileOwner(admin,one,c=>c.query("UPDATE profiles SET state='ACTIVE' WHERE id=$1",[one]));}});
  it('privacy erasure or explicit closure blocks new analysis before media or provider IO',async()=>{for(const field of ['privacy_erased','closed_at']){const f=await ready();await admin.query('UPDATE records SET version=version+1,body=body||jsonb_build_object($2::text,$3::jsonb) WHERE id=$1',[f.conversation.id,field,JSON.stringify(field==='privacy_erased'?true:new Date(clock()).toISOString())]);const broker=vi.spyOn(f.runtime.media,'read');await run(f.runtime);expect(broker).not.toHaveBeenCalled();expect(providerCalls).toBe(0);expect(await attempt(f)).toBeUndefined();await admin.query("UPDATE records SET version=version+1,body=jsonb_set(body,'{analysis_status}','\"FIXTURE_FINISHED\"') WHERE id=$1",[f.receipt.id]);}});
 
 });

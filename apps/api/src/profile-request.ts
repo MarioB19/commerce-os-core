@@ -84,9 +84,14 @@ export async function withProfileRequest<T>(req:FastifyRequest,environment:Profi
 
 /** Historical SQL routes: identical to withProfileRequest, plus the V5
  * service-token credential bound to its own profile (never interactive). */
+/** A V5 service bearer (never a session or PAT). */
+export function isLegacyServiceRequest(req:FastifyRequest):boolean{
+ const bearer=req.headers.authorization;
+ return typeof bearer==='string'&&bearer.startsWith('Bearer ')&&!bearer.startsWith('Bearer cos_pat_')&&isServiceBearer(bearer.slice(7));
+}
 export async function withLegacyProfileRequest<T>(req:FastifyRequest,environment:ProfileEnvironment,action:Action,work:LegacyWork<T>,deps:ProfileRequestDependencies=defaults):Promise<T>{
  const bearer=req.headers.authorization;
- if(typeof bearer==='string'&&bearer.startsWith('Bearer ')&&!bearer.startsWith('Bearer cos_pat_')&&isServiceBearer(bearer.slice(7))&&deps.service){
+ if(typeof bearer==='string'&&isLegacyServiceRequest(req)&&deps.service){
   if(environment!=='REAL'&&environment!=='SIMULATION')return deny('PROFILE_ENVIRONMENT_INVALID');
   if(req.headers['x-commerce-profile-id']!==undefined||req.headers['x-commerce-profile-version']!==undefined)return deny('PROFILE_TOKEN_CANNOT_SELECT',403);
   return deps.service(bearer.slice(7),environment,action,work);

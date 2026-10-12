@@ -4,6 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {pool as adminPool,encrypt} from '../../packages/db/src/index.js';
+import {fixtureProfilesOn} from '../support/profile-fixture.js';
 const execute=promisify(execFile),workspace='creative-roles-'+randomUUID(),actor=randomUUID(),search=randomUUID();
 const database='commerce_roles_'+randomUUID().replaceAll('-',''),fixtureConnection=new URL(process.env.DATABASE_URL!);fixtureConnection.pathname='/'+database;
 let pool:pg.Pool;
@@ -13,7 +14,10 @@ async function withTransaction<T>(run:(client:pg.PoolClient)=>Promise<T>){const 
 const model='gpt-5.4-mini-2026-03-17';
 describe('Creative published database roles, isolated PostgreSQL and fixture transport',()=>{
  it('runs the actual API mutations and automation search/analysis loop under their limited roles',async()=>{
-  await withTransaction(async c=>{await c.query('SET LOCAL ROLE commerce_api');
+  // V7 F2: the workspace is an adopted profile and commerce_api writes only in
+  // its profile context (forced RLS, ADR v7 isolation).
+  await withTransaction(c=>fixtureProfilesOn(c,workspace));
+  await withTransaction(async c=>{await c.query('SET LOCAL ROLE commerce_api');await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','SIMULATION',true)",[workspace]);
    for(const provider of ['searchapi','openai']){await c.query("INSERT INTO creative_settings(workspace_id,environment,provider,enabled,config,secret_ciphertext) VALUES($1,'SIMULATION',$2,true,$3,$4)",[workspace,provider,{models:[model]},encrypt({api_key:'ISOLATED_FIXTURE_ONLY'})]);await c.query("INSERT INTO creative_budgets(id,workspace_id,environment,provider,limit_usd,max_units,authorization_source,actor_id,expires_at) VALUES($1,$2,'SIMULATION',$3,1,100000,'Isolated role verification',$4,now()+interval '1 hour')",[randomUUID(),workspace,provider,actor]);}
   });
   async function runtime(role:string,program:string){
@@ -24,7 +28,11 @@ describe('Creative published database roles, isolated PostgreSQL and fixture tra
   const api=await runtime('commerce_api',`
    import Fastify from 'fastify';import {randomUUID} from 'node:crypto';
    import {pool} from './packages/db/src/index.ts';import {principalMap} from './apps/api/src/context.ts';import {intelligenceRoutes} from './apps/api/src/intelligence.ts';
-   const f=JSON.parse(process.env.CREATIVE_ROLE_FIXTURE),app=Fastify();app.addHook('preHandler',async req=>{principalMap.set(req,{user:{id:f.actor,name:'Fixture',email:''},workspace_id:f.workspace,role:'owner',permissions:[],service:false,scopes:[]});});await intelligenceRoutes(app);
+   import {runInRequestProfileScope,bindRequestProfileEnvironment,closeRequestProfileScope} from './packages/db/src/profile-request-scope.ts';
+   const f=JSON.parse(process.env.CREATIVE_ROLE_FIXTURE),app=Fastify();
+   // Same request profile scope as createApp after authentication (V7 F2).
+   app.addHook('onRequest',(req,reply,done)=>runInRequestProfileScope(f.workspace,()=>done()));app.addHook('preValidation',async()=>{bindRequestProfileEnvironment('SIMULATION');});app.addHook('onResponse',async()=>{closeRequestProfileScope();});
+   app.addHook('preHandler',async req=>{principalMap.set(req,{user:{id:f.actor,name:'Fixture',email:''},workspace_id:f.workspace,role:'owner',permissions:[],service:false,scopes:[]});});await intelligenceRoutes(app);
    async function call(method,url,payload){const r=await app.inject({method,url:url+'?environment=SIMULATION',payload,headers:{'idempotency-key':randomUUID()}});if(r.statusCode>=400)throw Error('API_ROLE_'+r.statusCode+':'+r.body);return r.json().data;}
    const s=await call('POST','/v1/intelligence/searches',{name:'Role fixture',query:{q:'isolated role fixture',country:'MX',pages:1,max_ads:50}});
    const tracked=await call('PATCH','/v1/intelligence/searches/'+s.id,{expected_version:1,tracking_enabled:true,daily_budget_minor:1});
@@ -48,7 +56,10 @@ describe('Creative published database roles, isolated PostgreSQL and fixture tra
   const searched=await runtime('commerce_automation',searchRuntime);expect(searched,JSON.stringify(searched)).toMatchObject({role:'commerce_automation',calls:1,runs:[{status:'COMPLETED'}]});
   const edited=await runtime('commerce_api',`
    import Fastify from 'fastify';import {randomUUID} from 'node:crypto';import {pool} from './packages/db/src/index.ts';import {principalMap} from './apps/api/src/context.ts';import {intelligenceRoutes} from './apps/api/src/intelligence.ts';
-   const f=JSON.parse(process.env.CREATIVE_ROLE_FIXTURE),app=Fastify();app.addHook('preHandler',async req=>principalMap.set(req,{user:{id:f.actor,name:'Fixture',email:''},workspace_id:f.workspace,role:'owner',permissions:[],service:false,scopes:[]}));await intelligenceRoutes(app);
+   import {runInRequestProfileScope,bindRequestProfileEnvironment,closeRequestProfileScope} from './packages/db/src/profile-request-scope.ts';
+   const f=JSON.parse(process.env.CREATIVE_ROLE_FIXTURE),app=Fastify();
+   app.addHook('onRequest',(req,reply,done)=>runInRequestProfileScope(f.workspace,()=>done()));app.addHook('preValidation',async()=>{bindRequestProfileEnvironment('SIMULATION');});app.addHook('onResponse',async()=>{closeRequestProfileScope();});
+   app.addHook('preHandler',async req=>principalMap.set(req,{user:{id:f.actor,name:'Fixture',email:''},workspace_id:f.workspace,role:'owner',permissions:[],service:false,scopes:[]}));await intelligenceRoutes(app);
    async function call(method,url,payload){const r=await app.inject({method,url:url+'?environment=SIMULATION',payload,headers:{'idempotency-key':randomUUID()}});if(r.statusCode>=400)throw Error('API_ROLE_'+r.statusCode+':'+r.body);return r.json().data;}
    const offers=await call('GET','/v1/intelligence/offers'),o=offers[0];await call('PATCH','/v1/intelligence/offers/'+o.id,{expected_version:o.version,title:'Corrected fixture',group_label:'Fixture',reason:'Explicit fixture correction'});
    const detail=await call('GET','/v1/intelligence/offers/'+o.id);await call('POST','/v1/intelligence/offers/'+o.id+'/analyze',{expected_version:detail.version});
@@ -56,7 +67,7 @@ describe('Creative published database roles, isolated PostgreSQL and fixture tra
    await app.close();await pool.end();console.log(JSON.stringify({offer:o.id}));
   `);expect(edited.offer).toBeTruthy();
   const analyzed=await runtime('commerce_automation',searchRuntime);expect(analyzed).toMatchObject({calls:1,analyses:[{status:'COMPLETED'}]});
-  await withTransaction(async c=>{await c.query('SET LOCAL ROLE commerce_api');await c.query("UPDATE intelligence_searches SET tracking_enabled=true,daily_budget_minor=1,next_run_at=now()-interval '1 second' WHERE id=$1",[api.search]);});
+  await withTransaction(async c=>{await c.query('SET LOCAL ROLE commerce_api');await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','SIMULATION',true)",[workspace]);await c.query("UPDATE intelligence_searches SET tracking_enabled=true,daily_budget_minor=1,next_run_at=now()-interval '1 second' WHERE id=$1",[api.search]);});
   const scheduled=await runtime('commerce_automation',searchRuntime);expect(scheduled).toMatchObject({calls:1,runs:[{status:'COMPLETED'},{status:'COMPLETED'}]});
   expect((await pool.query('SELECT next_run_at>now() scheduled FROM intelligence_searches WHERE id=$1',[api.search])).rows[0].scheduled).toBe(true);
   const receipts=(await pool.query('SELECT provider,status,confirmed_units FROM creative_provider_operations WHERE workspace_id=$1 ORDER BY provider',[workspace])).rows;expect(receipts).toHaveLength(3);expect(receipts.every(r=>r.status==='CONFIRMED')).toBe(true);

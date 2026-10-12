@@ -1,4 +1,5 @@
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomUUID,randomBytes} from 'node:crypto';
 import {mkdtemp,readFile,rm,stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -28,7 +29,9 @@ describe('Personal owner API access',()=>{
   expect((await call('GET','/v1/channel-accounts/'+a.id+'?environment=SIMULATION',undefined,t.token)).json().data.deleted_at).toBeTruthy();
   const event=(await pool.query("SELECT actor FROM domain_events WHERE workspace_id=$1 AND event_type='channel.deleted' AND aggregate_id=$2",[workspace,a.id])).rows[0];expect(event.actor).toMatchObject({type:'personal_api',id:userId,credential_id:t.id});
   for(const table of ['commands','outbox'])expect(Number((await pool.query(`SELECT count(*) FROM ${table} WHERE workspace_id=$1`,[workspace])).rows[0].count)).toBe(0);
-  const client=await pool.connect();try{await client.query('BEGIN');await client.query('SET LOCAL ROLE commerce_api');expect((await readPersonalToken(client,t.token))?.id).toBe(t.id);}finally{await client.query('ROLLBACK');client.release();}
+  // V7 F2: commerce_api locates a PAT only through the closed DEFINER port (002);
+  // the historical direct lookup sees no row without a profile context.
+  const client=await pool.connect();try{await client.query('BEGIN');await client.query('SET LOCAL ROLE commerce_api');expect((await client.query('SELECT token_id,workspace_id FROM public.locate_personal_profile_token($1)',[hash(t.token)])).rows).toEqual([{token_id:t.id,workspace_id:workspace}]);expect(await readPersonalToken(client,t.token)).toBeUndefined();}finally{await client.query('ROLLBACK');client.release();}
  });
  it('does not upgrade service tokens, accept wildcard scopes, or mint from a viewer',async()=>{
   const r=await call('POST','/v1/service-tokens',{environment:'REAL',name:'Scoped fixture',allowed_environments:['REAL'],scopes:['channels:read','products:read'],expires_at:expires()});expect(r.statusCode).toBe(201);const token=r.json().data.token;
@@ -40,7 +43,8 @@ describe('Personal owner API access',()=>{
  });
  it('protects environments, expiry, membership changes and workspace boundaries',async()=>{
   const t=await issue(['REAL']);expect((await call('GET','/v1/me?environment=SIMULATION',undefined,t.token)).statusCode).toBe(403);
-  const foreign=await putRecord(pool,{workspaceId:'foreign-'+randomUUID(),environment:'REAL',kind:'product',body:{name:'Foreign'}});expect((await call('GET','/v1/products/'+foreign.id+'?environment=REAL',undefined,t.token)).statusCode).toBe(404);
+  const foreignWorkspace='foreign-'+randomUUID();await fixtureProfiles(foreignWorkspace);// V7 F2: an adopted profile
+  const foreign=await putRecord(pool,{workspaceId:foreignWorkspace,environment:'REAL',kind:'product',body:{name:'Foreign'}});expect((await call('GET','/v1/products/'+foreign.id+'?environment=REAL',undefined,t.token)).statusCode).toBe(404);
   await pool.query("UPDATE memberships SET role='viewer' WHERE user_id=$1 AND workspace_id=$2",[userId,workspace]);try{expect((await call('GET','/v1/me?environment=REAL',undefined,t.token)).statusCode).toBe(401);}finally{await pool.query("UPDATE memberships SET role='owner' WHERE user_id=$1 AND workspace_id=$2",[userId,workspace]);}
   await pool.query('UPDATE memberships SET active=false WHERE user_id=$1 AND workspace_id=$2',[userId,workspace]);try{expect((await call('GET','/v1/me?environment=REAL',undefined,t.token)).statusCode).toBe(401);}finally{await pool.query('UPDATE memberships SET active=true WHERE user_id=$1 AND workspace_id=$2',[userId,workspace]);}
   await pool.query("UPDATE personal_access_tokens SET created_at=now()-interval '2 days',expires_at=now()-interval '1 day' WHERE id=$1",[t.id]);expect((await call('GET','/v1/me?environment=REAL',undefined,t.token)).statusCode).toBe(401);

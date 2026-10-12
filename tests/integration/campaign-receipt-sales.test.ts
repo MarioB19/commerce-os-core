@@ -1,5 +1,6 @@
 import {explicitFixtureEnvironment} from './explicit-fixture-environment.js';
 import {beforeAll,afterAll,beforeEach,describe,it,expect} from 'vitest';
+import {disposeAllFixtureProfiles} from '../support/migrated-database.js';
 import {randomUUID,randomBytes} from 'node:crypto';
 import type {FastifyInstance} from 'fastify';
 import {createApp} from '../../apps/api/src/app.js';
@@ -15,7 +16,9 @@ import type {Body,DomainRecord} from '../../packages/contracts/src/index.js';
 let app:FastifyInstance,w:string,cookie:string;let loginIp=1;const origin=(process.env.TRUSTED_ORIGINS??'http://127.0.0.1:5173').split(',')[0]!,day='2026-09-06';
 beforeAll(async()=>{app=await createApp();});afterAll(async()=>{await app.close();await pool.end();});
 async function login(role='owner',workspace=w){const email=randomUUID()+'@commerce.test',password=randomBytes(24).toString('base64url');await provisionUser({email,password,name:'Synthetic campaign reviewer',workspace_id:workspace,role:role as 'owner'});const r=await app.inject({method:'POST',url:'/api/auth/sign-in/email',remoteAddress:'192.0.2.24',headers:{origin,'x-forwarded-for':'192.0.2.'+(loginIp++)},payload:{email,password}});expect(r.statusCode).toBe(200);return(Array.isArray(r.headers['set-cookie'])?r.headers['set-cookie']:[r.headers['set-cookie']]).map(x=>String(x).split(';')[0]).join('; ');}
-beforeEach(async()=>{w='campaign-'+randomUUID();cookie=await login();});
+// V7 F2: each case starts from a fresh workspace; an installation admits three
+// profiles, so the previous cases' fixture profiles are disposed first.
+beforeEach(async()=>{await disposeAllFixtureProfiles(pool);w='campaign-'+randomUUID();cookie=await login();});
 const call=(method:'GET'|'POST',url:string,payload?:Body,key=randomUUID(),auth=cookie)=>app.inject(explicitFixtureEnvironment({method,url,headers:{cookie:auth,origin,'idempotency-key':key},...(payload?{payload}:{})}));
 async function data(method:'GET'|'POST',url:string,payload?:Body){const r=await call(method,url,payload);expect(r.statusCode,r.body).toBeLessThan(300);return r.json().data;}
 async function applied(id:string){await processCommands(200);const r=(await pool.query('SELECT * FROM commands WHERE id=$1',[id])).rows[0];expect(r.status,JSON.stringify(r.result)).toBe('APPLIED');return r.result;}

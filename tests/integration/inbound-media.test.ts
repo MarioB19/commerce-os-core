@@ -1,4 +1,6 @@
-import {it,expect,afterAll} from 'vitest';
+import {it,expect,afterAll,beforeAll,beforeEach} from 'vitest';
+import {disposeAllFixtureProfiles} from '../support/migrated-database.js';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomUUID,createHash} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {join} from 'node:path';
@@ -8,6 +10,9 @@ import {materializeInboundMedia,materializeFailedInboundMedia} from '../../apps/
 import {downloadInboundMedia} from '../../apps/channel-worker/src/media.js';
 import {SimulatorProvider} from '../../packages/messaging/src/index.js';
 const workspace='media-'+randomUUID();afterAll(async()=>pool.end());
+// V7 F2: fixture workspaces are adopted profiles; an installation admits three,
+// so each case's own profiles are disposed before the next case.
+beforeAll(()=>fixtureProfiles(workspace));beforeEach(()=>disposeAllFixtureProfiles(pool,[workspace]));
 it('receives media, downloads with channel credentials boundary, seals protected artifact and starts documentary review',async()=>{
  const product=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'product',body:{name:'Media fixture'}});const offer=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'offer',body:{product_id:product.id,currency:'MXN',base_amount_minor:9900,fulfillment:[],status:'PUBLISHED'}});
  const account=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'channel_account',body:{name:'Fixture line',provider:'simulator',offer_version_id:offer.id}});const contact=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'contact',body:{name:'Fixture contact',identity:'opaque:media-customer'}});const conversation=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'conversation',body:{contact_id:contact.id,account_id:account.id,offer_version_id:offer.id,stage:'COMMITTED',status:'OPEN',flow_state:{status:'WAITING',waiting_for:'receipt_approved',node_id:'benefit',steps:4,stack:[],variables:{}}}});
@@ -19,7 +24,7 @@ it('receives media, downloads with channel credentials boundary, seals protected
 });
 
 it('keeps unrelated early media private and promotes only an explicitly payment-labelled attachment',async()=>{
- const scopedWorkspace='media-early-'+randomUUID();
+ const scopedWorkspace='media-early-'+randomUUID();await fixtureProfiles(scopedWorkspace);
  const product=await putRecord(pool,{workspaceId:scopedWorkspace,environment:'SIMULATION',kind:'product',body:{name:'Early media fixture'}});
  const offer=await putRecord(pool,{workspaceId:scopedWorkspace,environment:'SIMULATION',kind:'offer',body:{product_id:product.id,currency:'MXN',base_amount_minor:9700,fulfillment:[],status:'PUBLISHED'}});
  const account=await putRecord(pool,{workspaceId:scopedWorkspace,environment:'SIMULATION',kind:'channel_account',body:{name:'Early fixture line',provider:'simulator',offer_version_id:offer.id}});
@@ -41,7 +46,7 @@ it('keeps unrelated early media private and promotes only an explicitly payment-
 });
 
 it('stores an inbound WebP attachment without treating it as a payment receipt',async()=>{
- const scopedWorkspace='media-webp-'+randomUUID();
+ const scopedWorkspace='media-webp-'+randomUUID();await fixtureProfiles(scopedWorkspace);
  const account=await putRecord(pool,{workspaceId:scopedWorkspace,environment:'SIMULATION',kind:'channel_account',body:{provider:'simulator'}});
  const message=await putRecord(pool,{workspaceId:scopedWorkspace,environment:'SIMULATION',kind:'message',body:{direction:'INBOUND',text:'Foto del material',media_status:'PENDING'}});
  const source=await appendEvent(pool,{workspace_id:scopedWorkspace,environment:'SIMULATION',event_type:'provider.media.observed',aggregate_id:account.id,payload:{message_id:message.id,media:{providerId:'fixture:webp'}}});
@@ -53,7 +58,7 @@ it('stores an inbound WebP attachment without treating it as a payment receipt',
 });
 
 it('ends a repeatedly unavailable media download and marks the attachment failed',async()=>{
- const scopedWorkspace='media-failed-'+randomUUID();
+ const scopedWorkspace='media-failed-'+randomUUID();await fixtureProfiles(scopedWorkspace);
  const account=await putRecord(pool,{workspaceId:scopedWorkspace,environment:'SIMULATION',kind:'channel_account',body:{provider:'simulator'}});
  const message=await putRecord(pool,{workspaceId:scopedWorkspace,environment:'SIMULATION',kind:'message',body:{direction:'INBOUND',media:{status:'PENDING',mime_type:'image/webp'},media_status:'PENDING'}});
  const source=await appendEvent(pool,{workspace_id:scopedWorkspace,environment:'SIMULATION',event_type:'provider.media.observed',aggregate_id:account.id,payload:{message_id:message.id,media:{providerId:'fixture:expired'}}});

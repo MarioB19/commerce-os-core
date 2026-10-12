@@ -9,7 +9,7 @@ import {buildIngress} from '../../apps/ingress/src/server.js';
 import {processInbound} from '../../apps/automation-worker/src/inbound.js';
 import {channelReception} from '../../apps/api/src/channel-reception.js';
 import type {DomainRecord} from '../../packages/contracts/src/index.js';
-import {retiredRealAccount} from '../support/profile-fixture.js';
+import {fixtureProfiles,retiredRealAccount} from '../support/profile-fixture.js';
 const workspace='reception-'+randomUUID(),origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0]!,secret='synthetic-webhook-'+randomUUID();
 let app:FastifyInstance,ingress:FastifyInstance,cookie:string,account:DomainRecord,old:DomainRecord;
 beforeAll(async()=>{
@@ -58,7 +58,7 @@ it('rejects a stale lifecycle version before creating a command',async()=>{
  expect((await pool.query('SELECT count(*)::int n FROM commands WHERE workspace_id=$1',[workspace])).rows[0].n).toBe(0);
 });
 
-it('selects the manual reply authorization by product and rejects another contact, stale version or revoked permission',async()=>{
+it('accepts a manual reply under the profile authority without pinning a temporal authorization (V7 continuity)',async()=>{
  const {channelIdentityHash}=await import('../../packages/db/src/commercial-assignments.js');
  const base={workspaceId:workspace,environment:'REAL' as const};
  const product=await putRecord(pool,{...base,kind:'product',body:{name:'Manual reply fixture',status:'PUBLISHED'}});
@@ -72,14 +72,15 @@ it('selects the manual reply authorization by product and rejects another contac
  const authorization=(await pool.query("INSERT INTO operation_authorizations(workspace_id,environment,actor_id,scope,config_hash,expires_at) VALUES($1,'REAL','synthetic-owner',$2,'synthetic',now()+interval '1 hour') RETURNING id",[workspace,scope])).rows[0];
  await pool.query('UPDATE commercial_assignments SET authorization_id=$2 WHERE id=$1',[assignment.id,authorization.id]);
  const send=(conversation=conv,version=conversation.version)=>app.inject({method:'POST',url:`/v1/conversations/${conversation.id}/commands?environment=REAL`,headers:{cookie,origin,'idempotency-key':randomUUID()},payload:{type:'send_message',expected_version:version,text:'Synthetic manual reply'}});
- const accepted=await send();expect(accepted.statusCode,accepted.body).toBe(202);expect(accepted.json().data.payload.authorization_id).toBe(authorization.id);
+ // V7 F2: the conversation command runs under the unified profile authority, so
+ // no temporal authorization is pinned at command time (continuous authorization
+ // governs the REAL effect; see continuous-authorization.test.ts). A client may
+ // not supply one, a stale version is still refused, and no effect is produced.
+ const accepted=await send();expect(accepted.statusCode,accepted.body).toBe(202);expect(accepted.json().data.payload.authorization_id).toBeUndefined();
  await pool.query("UPDATE commands SET status='FAILED',result='{\"error\":\"SYNTHETIC_API_ONLY_TEST\"}' WHERE id=$1",[accepted.json().data.id]);
+ const pinned=await app.inject({method:'POST',url:`/v1/conversations/${conv.id}/commands?environment=REAL`,headers:{cookie,origin,'idempotency-key':randomUUID()},payload:{type:'send_message',expected_version:conv.version,text:'Synthetic manual reply',authorization_id:authorization.id}});
+ expect(pinned.statusCode,pinned.body).toBe(400);expect(pinned.json().error.code).toBe('PROFILE_TEMPORAL_AUTHORIZATION_FORBIDDEN');
  expect((await send(conv,conv.version+100)).statusCode).toBe(409);
- const otherContact=await putRecord(pool,{...base,kind:'contact',body:{name:'Synthetic unauthorized contact',identity:'opaque:other-manual-fixture'}});
- const other=await putRecord(pool,{...base,kind:'conversation',body:{...conv.body,contact_id:otherContact.id}});expect((await send(other)).statusCode).toBe(409);
- const otherProduct=await putRecord(pool,{...base,kind:'product',body:{name:'Synthetic other product'}});
- const otherJourney=await putRecord(pool,{...base,kind:'conversation',body:{...conv.body,product_id:otherProduct.id}});expect((await send(otherJourney)).statusCode).toBe(409);
- await pool.query('UPDATE operation_authorizations SET revoked_at=now() WHERE id=$1',[authorization.id]);expect((await send()).statusCode).toBe(409);
  expect((await pool.query('SELECT count(*)::int n FROM outbox WHERE account_id=$1',[target.id])).rows[0].n).toBe(0);
 
 });
@@ -92,7 +93,7 @@ it('captures provider history through an owner command and imports it once witho
  const {advanceWorkflow}=await import('../../apps/automation-worker/src/workflows.js');
  // The worker scans every workspace. An unrelated pending simulator command
  // must never use this account's instrumented history transport.
- const foreignWorkspace='foreign-history-'+randomUUID();
+ const foreignWorkspace='foreign-history-'+randomUUID();await fixtureProfiles(foreignWorkspace);// V7 F2: an adopted profile
  const foreign=await putRecord(pool,{workspaceId:foreignWorkspace,environment:'SIMULATION',kind:'channel_account',body:{provider:'simulator',status:'NEW',sending_enabled:false}});
  const foreignCommand=(await pool.query("INSERT INTO commands(workspace_id,environment,kind,resource_id,actor_id,payload,idempotency_key) VALUES($1,'SIMULATION','channel_command',$2,'synthetic',$3,gen_random_uuid()::text) RETURNING id",[foreignWorkspace,foreign.id,{type:'restart'}])).rows[0];
  const product=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'product',body:{name:'Synthetic history product'}});

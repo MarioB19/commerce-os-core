@@ -1,5 +1,6 @@
-import {afterAll,expect,it,vi,beforeAll} from 'vitest';
+import {afterAll,expect,it,vi,beforeEach} from 'vitest';
 import {fixtureProfiles} from '../support/profile-fixture.js';
+import {disposeAllFixtureProfiles} from '../support/migrated-database.js';
 import {randomUUID} from 'node:crypto';
 import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -22,11 +23,11 @@ const withRole=roleExecutor(pool),roots:string[]=[];
 const originalStorage=process.env.PRIVATE_STORAGE_DIR;
 afterAll(async()=>{if(originalStorage===undefined)delete process.env.PRIVATE_STORAGE_DIR;else process.env.PRIVATE_STORAGE_DIR=originalStorage;await Promise.all(roots.map(path=>rm(path,{recursive:true,force:true})));await pool.end();});
 const update=(record:DomainRecord,body:Body)=>putRecord(pool,{id:record.id,version:record.version,workspaceId:record.workspace_id,environment:record.environment,kind:record.kind,body:{...record.body,...body}});
-// V7 F2: an installation admits three profiles; fixtures share one adopted profile.
-const fixtureWorkspace='catalog-sim-'+randomUUID();
-beforeAll(()=>fixtureProfiles(fixtureWorkspace));
+// V7 F2: each case uses a fresh adopted profile; an installation admits three,
+// so the previous cases' fixture profiles are disposed first.
+beforeEach(()=>disposeAllFixtureProfiles(pool));
 async function fixture(mode:'catalog'|'number'='catalog',fault?:string){
- const workspace=fixtureWorkspace,now=new Date().toISOString(),owner='synthetic-owner-'+randomUUID();
+ const workspace='catalog-sim-'+randomUUID();await fixtureProfiles(workspace);const now=new Date().toISOString(),owner='synthetic-owner-'+randomUUID();
  const record=(kind:string,body:Body)=>putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind,body});
  const account=await record('channel_account',{name:'Synthetic lab',provider:'simulator',status:'WORKING',sending_enabled:false,...(mode==='catalog'?{lab_snapshot:true}:{flow_test_transport:'ISOLATED_SIMULATOR'}),...(fault?{simulated_fault:fault}:{})});
  const contact=await record('contact',{identity:'opaque:synthetic-'+randomUUID(),status:'LEAD'});

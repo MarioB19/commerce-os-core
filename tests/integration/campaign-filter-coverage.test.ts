@@ -1,4 +1,5 @@
 import {beforeAll,beforeEach,afterAll,describe,it,expect,vi} from 'vitest';
+import {disposeAllFixtureProfiles} from '../support/migrated-database.js';
 import {randomUUID,randomBytes} from 'node:crypto';
 import type {FastifyInstance} from 'fastify';
 import {createApp} from '../../apps/api/src/app.js';
@@ -11,7 +12,9 @@ let app:FastifyInstance,w:string,cookie:string,actor:string;
 const origin=(process.env.TRUSTED_ORIGINS??'http://127.0.0.1:5173').split(',')[0]!;
 beforeAll(async()=>{app=await createApp();});
 afterAll(async()=>{vi.restoreAllMocks();await app.close();await pool.end();});
-beforeEach(async()=>{
+// V7 F2: each case starts from a fresh workspace; an installation admits three
+// profiles, so the previous cases' fixture profiles are disposed first.
+beforeEach(async()=>{await disposeAllFixtureProfiles(pool);
  w='campaign-filter-'+randomUUID();const email=randomUUID()+'@commerce.test',password=randomBytes(24).toString('base64url');
  actor=(await provisionUser({email,password,name:'Synthetic coverage reviewer',workspace_id:w,role:'owner'})).id;
  const r=await app.inject({method:'POST',url:'/api/auth/sign-in/email',remoteAddress:'192.0.2.76',headers:{origin},payload:{email,password}});

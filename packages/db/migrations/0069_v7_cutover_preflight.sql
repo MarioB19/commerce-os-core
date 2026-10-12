@@ -39,8 +39,9 @@ REVOKE ALL ON profile_cutover_historical_tables FROM PUBLIC,commerce_api,commerc
 
 -- Roles are cluster-wide. A reviewed V7 role may already exist from another
 -- database of the same cluster (isolated test databases, a restored copy).
--- Adopt it only with the exact reviewed attributes and no membership in a
--- non-commerce or privileged role; refuse anything else instead of inheriting it.
+-- Adopt it only with the exact reviewed attributes, no membership in a
+-- non-commerce or privileged role and no object, grant or policy in this
+-- database; refuse anything else instead of inheriting it.
 CREATE FUNCTION public.v7_ensure_reviewed_role(role_name text,inherit boolean) RETURNS void
 LANGUAGE plpgsql SET search_path=pg_catalog AS $$
 DECLARE existing record;
@@ -61,6 +62,12 @@ BEGIN
  IF EXISTS(SELECT 1 FROM pg_auth_members m JOIN pg_roles g ON g.oid=m.roleid WHERE m.member=existing.oid
   AND (g.rolsuper OR g.rolbypassrls OR g.rolcreaterole OR g.rolname !~ '^commerce_[a-z_]+$')) THEN
   RAISE EXCEPTION 'V7_ROLE_EXISTING_MEMBERSHIP_UNSAFE: %',role_name;
+ END IF;
+ -- A role that already owns, is granted or is named by a policy on anything in
+ -- this database was not created by the reviewed transition: never inherit it.
+ IF EXISTS(SELECT 1 FROM pg_shdepend d WHERE d.refclassid='pg_authid'::regclass AND d.refobjid=existing.oid
+  AND d.dbid=(SELECT oid FROM pg_database WHERE datname=current_database())) THEN
+  RAISE EXCEPTION 'V7_ROLE_EXISTING_PRIVILEGED: %',role_name;
  END IF;
 END $$;
 REVOKE ALL ON FUNCTION public.v7_ensure_reviewed_role(text,boolean) FROM PUBLIC;

@@ -3,16 +3,20 @@ import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
+import {requireMigratedProfileSchema,fixtureProfileRow} from '../support/migrated-database.js';
 import {recognizeReceipt} from '../../packages/db/src/receipt-sales.js';
 import type {Body} from '../../packages/contracts/src/index.js';
 import {applyCommand} from '../../apps/automation-worker/src/commands.js';
 import {withProfileTransaction,type ProfilePool} from '../../packages/db/src/profile-context.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
+// V7 F2: an installation admits three profiles and 20 numbers; each fresh
+// fixture profile is sealed and the oldest are disposed to make room.
+const createdProfiles:string[]=[];
 const suffix=randomBytes(8).toString('hex'),login='commercial_closure_'+suffix,apiLogin='commercial_api_'+suffix,automationLogin='commercial_worker_'+suffix;
 let admin:pg.Pool,worker:pg.Pool,api:pg.Pool,scoped:ProfilePool,automation:pg.Pool,automationScope:ProfilePool;
 async function journey(body:Record<string,unknown>={},environment='REAL'){
  const w='privacy_'+randomUUID(),id=randomUUID();
- await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic privacy','UTC',1,5,100)",[w]);
+ await fixtureProfileRow(admin,createdProfiles,w,{businessName:'Synthetic privacy',timezone:'UTC',numbers:1,products:5,daily:100});
  await admin.query('INSERT INTO records(id,workspace_id,environment,kind,body) VALUES($1,$2,$3,$4,$5)',[id,w,environment,'conversation',{status:'OPEN',...body}]);return{w,id,environment};
 }
 type Journey=Awaited<ReturnType<typeof journey>>;
@@ -52,8 +56,8 @@ async function reconcile(j:Journey,o:Body,amount=100){
 async function status(j:Journey){return(await admin.query('SELECT body FROM records WHERE id=$1',[j.id])).rows[0].body.status;}
 describe('explicit human commercial closure native ledger and delivery',()=>{
  beforeAll(async()=>{
-  const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:4});
-  const c=await admin.connect();try{await c.query('BEGIN');for(const f of ['001_profile_identity.sql','003_profile_settings.sql','008_market_variants.sql','017_results_and_goals.sql','019_ai_admission.sql','022_result_projections.sql','components/022_result_source_reader.sql','024_result_financial_context.sql','025_privacy_closure_proof.sql'])await c.query(await readFile(new URL('../../packages/db/profile-transition/'+f,import.meta.url),'utf8'));await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
+  const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:4});await requireMigratedProfileSchema(admin);
+  
   for(const[name,role]of [[login,'commerce_results'],[apiLogin,'commerce_api'],[automationLogin,'commerce_automation']]){
    const secret=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${name}" LOGIN PASSWORD '${secret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;GRANT ${role} TO "${name}"`);const native=new URL(url);native.username=name;native.password=secret;const pool=new pg.Pool({connectionString:native.toString(),max:3});
    const p:ProfilePool={async connect(){const c=await pool.connect();await c.query(`SET ROLE ${role}`);return{query:c.query.bind(c),release:()=>c.release()};}};if(role==='commerce_results'){worker=pool;scoped=p;}else if(role==='commerce_api'){api=pool;}else{automation=pool;automationScope=p;}

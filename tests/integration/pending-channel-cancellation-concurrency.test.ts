@@ -1,4 +1,5 @@
 import {afterAll,beforeAll,describe,expect,it,vi} from 'vitest';
+import {fixtureProfilesIn} from '../support/profile-fixture.js';
 import pg from 'pg';
 import {randomUUID} from 'node:crypto';
 import {execFile,spawn} from 'node:child_process';
@@ -34,6 +35,7 @@ beforeAll(async()=>{
  expect((await pool.query('SELECT current_user role')).rows[0].role).toBe('commerce_api');
  const {insertPersonalToken,newPersonalToken}=await import('../../packages/db/src/personal-access-tokens.js');token=newPersonalToken();
  await admin.query('INSERT INTO "user"(id,name,email) VALUES($1,$2,$3)',[user,'Synthetic cancellation owner',user+'@example.invalid']);
+ await fixtureProfilesIn(admin,workspace);// V7 F2: memberships belong to an adopted profile.
  await admin.query("INSERT INTO memberships(user_id,workspace_id,role) VALUES($1,$2,'owner')",[user,workspace]);
  await insertPersonalToken(admin,{workspace_id:workspace,user_id:user,name:'Synthetic cancellation tests',allowed_environments:['REAL'],expires_at:new Date(Date.now()+3600000).toISOString()},token);
  const {createApp}=await import('../../apps/api/src/app.js');app=await createApp();

@@ -2,6 +2,7 @@ import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
+import {requireMigratedProfileSchema,sealFixtureProfiles} from '../support/migrated-database.js';
 import {withProfileTransaction,type ProfilePool,type ProfileExecutor} from '../../packages/db/src/profile-context.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {createResultGoal,updateResultGoal,readResultGoal,listResultGoals,resultGoalOperation,readResultGoalOperation} from '../../packages/db/src/result-goals.js';
@@ -14,9 +15,8 @@ describe('V7 goals actual PostgreSQL isolation and audit',()=>{
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');
   admin=new pg.Pool({connectionString:url.toString(),max:5,connectionTimeoutMillis:5000});
-  if((await admin.query("SELECT to_regclass('public.profiles') AS present")).rows[0].present)throw Error('TRANSITION_SCHEMA_ALREADY_PRESENT');
-  const c=await admin.connect();try{await c.query('BEGIN');for(const name of ['001_profile_identity.sql','008_market_variants.sql','017_results_and_goals.sql'])await c.query(await readFile(new URL('../../packages/db/profile-transition/'+name,import.meta.url),'utf8'));await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
-  await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Goal fixture','America/Mexico_City',1,5,100),($2,'Foreign fixture','UTC',1,5,100)",[workspace,foreign]);
+  await requireMigratedProfileSchema(admin);
+  await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Goal fixture','America/Mexico_City',1,5,100),($2,'Foreign fixture','UTC',1,5,100)",[workspace,foreign]);await sealFixtureProfiles(admin,workspace,foreign);
   const password=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${password}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT;GRANT commerce_api TO "${login}"`);
   const native=new URL(url);native.username=login;native.password=password;api=new pg.Pool({connectionString:native.toString(),max:5,connectionTimeoutMillis:5000});scoped={async connect(){const c=await api.connect();try{await c.query('SET ROLE commerce_api');return{query:c.query.bind(c),release:()=>c.release()};}catch(e){c.release();throw e;}}};
  },60000);

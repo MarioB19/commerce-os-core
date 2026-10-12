@@ -1,4 +1,5 @@
 import {afterAll,expect,it} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomUUID} from 'node:crypto';
 import {pool,putRecord} from '../../packages/db/src/index.js';
 import {capacityReserve,readCapacitySnapshot} from '../../apps/api/src/number-capacity.js';
@@ -10,7 +11,7 @@ afterAll(async()=>{await pool.end();});
 it('keeps cross-workspace physical reservations global while excluding SIM, deleted and other providers',async()=>{
  const c=await pool.connect();await c.query('BEGIN');
  try {
-  const workspace='number-index-'+randomUUID(),other=workspace+'-other';
+  const workspace='number-index-'+randomUUID(),other=workspace+'-other';await fixtureProfiles(workspace,other);// V7 F2: adopted profiles
   const free=(await c.query(`SELECT n FROM generate_series(1,20) n WHERE
    NOT EXISTS(SELECT 1 FROM channel_sessions WHERE environment='REAL' AND archived_at IS NULL AND gateway_id='http://waha-'||lpad(n::text,2,'0')||':3000')
    AND NOT EXISTS(SELECT 1 FROM number_capacity_slots WHERE environment='REAL' AND slot=n)
@@ -31,7 +32,7 @@ it('keeps cross-workspace physical reservations global while excluding SIM, dele
 it('selects only the last webhook for the exact account and preserves expired or absent UNKNOWN',async()=>{
  const c=await pool.connect();await c.query('BEGIN');
  try {
-  const workspace='webhook-index-'+randomUUID();
+  const workspace='webhook-index-'+randomUUID();await fixtureProfiles(workspace);// V7 F2: adopted profile
   const account=await putRecord(c,{workspaceId:workspace,environment:'REAL',kind:'channel_account',body:{name:'Webhook fixture',provider:'waha'}});
   const other=await putRecord(c,{workspaceId:workspace+'-other',environment:'REAL',kind:'channel_account',body:{name:'Other workspace webhook fixture',provider:'waha'}});
   expect((await channelReception(c,account)).webhook.state).toBe('UNKNOWN');

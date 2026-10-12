@@ -27,7 +27,8 @@ export class ServiceProfileTokenError extends Error {
 }
 function need(value:unknown,code:string):asserts value{if(!value)throw new ServiceProfileTokenError(code);}
 interface Route {tokenId:string;workspaceId:string;hash:string;v5?:boolean}
-const scopesSchema=z.array(z.string().min(1).max(80)).min(1).max(64);
+// An empty scope set authenticates but authorizes nothing (historical 403, not 401).
+const scopesSchema=z.array(z.string().min(1).max(80)).max(64);
 const environmentsSchema=z.array(z.enum(['REAL','SIMULATION'])).min(1).max(2);
 const resourcesSchema=z.array(z.string().min(1).max(256)).min(1).max(256).nullable();
 

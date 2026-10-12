@@ -8,6 +8,7 @@ import {hashPassword} from 'better-auth/crypto';
 import {ZodError} from 'zod';
 import pg from 'pg';
 import {afterAll,beforeAll,describe,expect,it,vi} from 'vitest';
+import {requireMigratedProfileSchema,sealFixtureProfiles} from '../support/migrated-database.js';
 import {listProfileChoicesFromSession,selectProfileFromSession} from '../../packages/db/src/profile-identity-bootstrap.js';
 import {createAuth} from '../../apps/api/src/auth.js';
 import {paymentsRegisterRoutes} from '../../apps/api/src/payments-register.js';
@@ -74,15 +75,12 @@ describe('profile payments and canonical F7 reconciliation',()=>{
   vi.stubEnv('BETTER_AUTH_SECRET','synthetic-catalog-'+randomBytes(32).toString('hex'));passwordHash=await hashPassword(password);
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');
   admin=new pg.Pool({connectionString:url.toString(),max:3,connectionTimeoutMillis:5000});
-  if((await admin.query("SELECT to_regclass('public.profiles') AS present")).rows[0].present)throw Error('TRANSITION_SCHEMA_ALREADY_PRESENT');
-  const c=await admin.connect();try{await c.query('BEGIN');for(const name of ['001_profile_identity.sql','002_profile_personal_tokens.sql','003_profile_settings.sql','008_market_variants.sql','017_results_and_goals.sql','019_ai_admission.sql','022_result_projections.sql','components/022_result_source_reader.sql','024_result_financial_context.sql'])await c.query(await readFile(new URL('../../packages/db/profile-transition/'+name,import.meta.url),'utf8'));await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
+  await requireMigratedProfileSchema(admin);
   const secret=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${secret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT;GRANT commerce_api TO "${login}"`);
-  // Test-owned policies on the REAL migrated tables, never installed by app startup.
-  for(const table of ['records','record_versions','personal_access_tokens','payment_contributions','meta_ad_metadata','outbox','domain_events']){
-   expect((await admin.query('SELECT count(*)::int n FROM pg_policies WHERE schemaname=\'public\' AND tablename=$1',[table])).rows[0].n).toBe(0);
-   await admin.query(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;CREATE POLICY catalog_fixture ON ${table} USING(workspace_id=NULLIF(current_setting('app.workspace_id',true),'')) WITH CHECK(workspace_id=NULLIF(current_setting('app.workspace_id',true),''))`);
-  }
-  await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic One','UTC',1,10,10),($2,'Synthetic Two','UTC',1,10,10)",[one,two]);
+  // V7 F2: the migrations (0096) install forced profile RLS on these tables;
+  // the test no longer adds its own fixture policies.
+  for(const table of ['records','record_versions','personal_access_tokens','payment_contributions','meta_ad_metadata','outbox','domain_events'])expect((await admin.query('SELECT relrowsecurity AND relforcerowsecurity forced FROM pg_class WHERE oid=$1::regclass',['public.'+table])).rows[0].forced).toBe(true);
+  await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic One','UTC',1,10,10),($2,'Synthetic Two','UTC',1,10,10)",[one,two]);await sealFixtureProfiles(admin,one,two);
   url.username=login;url.password=secret;runtime=new pg.Pool({connectionString:url.toString(),options:'-c role=commerce_api',max:2,connectionTimeoutMillis:5000});
   const custodySecret=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${custodyLogin}" LOGIN PASSWORD '${custodySecret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;GRANT commerce_results TO "${custodyLogin}"`);const custodyUrl=new URL(url);custodyUrl.username=custodyLogin;custodyUrl.password=custodySecret;custodyPool=new pg.Pool({connectionString:custodyUrl.toString(),options:'-c role=commerce_results',max:2});
   app=Fastify({logger:false,disableRequestLogging:true});app.setErrorHandler((e:any,_r,reply)=>reply.code(e instanceof ZodError?400:e.statusCode??500).send({error:{code:e.code??'INTERNAL_ERROR'}}));

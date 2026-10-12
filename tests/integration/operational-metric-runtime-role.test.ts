@@ -1,4 +1,5 @@
 import {afterAll,beforeAll,expect,it} from 'vitest';
+import {fixtureProfilesIn} from '../support/profile-fixture.js';
 import pg from 'pg';
 import {randomUUID} from 'node:crypto';
 import {execFile} from 'node:child_process';
@@ -20,6 +21,7 @@ beforeAll(async()=>{
  // This login has no superuser privilege. Its inherited role uses the same
  // role=none branch as a runtime connection rather than a migration owner.
  await adminPool.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${loginPassword}' IN ROLE commerce_automation`);
+ await fixtureProfilesIn(pool,workspace);// V7 F2: an adopted profile
  const metric=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'operational_metric',body:{key:'private_storage_disk',source:'synthetic-role-fixture'}});metricId=metric.id;
  for(const environment of ['SIMULATION','REAL'] as const)await putRecord(pool,{workspaceId:workspace,environment,kind:'channel_account',body:{name:'Synthetic monitor fixture',provider:'simulator',sending_enabled:false}});
 });

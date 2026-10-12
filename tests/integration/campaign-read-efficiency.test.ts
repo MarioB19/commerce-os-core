@@ -1,4 +1,5 @@
 import {beforeAll,beforeEach,afterAll,describe,it,expect,vi} from 'vitest';
+import {disposeAllFixtureProfiles} from '../support/migrated-database.js';
 import {randomUUID,randomBytes} from 'node:crypto';
 import type {FastifyInstance} from 'fastify';
 import {createApp} from '../../apps/api/src/app.js';
@@ -11,7 +12,9 @@ let app:FastifyInstance,w:string,cookie:string,actor:string;
 const origin=(process.env.TRUSTED_ORIGINS??'http://127.0.0.1:5173').split(',')[0]!,day='2026-09-06';
 beforeAll(async()=>{app=await createApp();});
 afterAll(async()=>{vi.restoreAllMocks();await app.close();await pool.end();});
-beforeEach(async()=>{w='campaign-read-'+randomUUID();const email=randomUUID()+'@commerce.test',password=randomBytes(24).toString('base64url');actor=(await provisionUser({email,password,name:'Synthetic report operator',workspace_id:w,role:'owner'})).id;const r=await app.inject({method:'POST',url:'/api/auth/sign-in/email',remoteAddress:'192.0.2.69',headers:{origin},payload:{email,password}});expect(r.statusCode,r.body).toBe(200);cookie=(Array.isArray(r.headers['set-cookie'])?r.headers['set-cookie']:[r.headers['set-cookie']]).map(x=>String(x).split(';')[0]).join('; ');});
+// V7 F2: each case starts from a fresh workspace; an installation admits three
+// profiles, so the previous cases' fixture profiles are disposed first.
+beforeEach(async()=>{await disposeAllFixtureProfiles(pool);w='campaign-read-'+randomUUID();const email=randomUUID()+'@commerce.test',password=randomBytes(24).toString('base64url');actor=(await provisionUser({email,password,name:'Synthetic report operator',workspace_id:w,role:'owner'})).id;const r=await app.inject({method:'POST',url:'/api/auth/sign-in/email',remoteAddress:'192.0.2.69',headers:{origin},payload:{email,password}});expect(r.statusCode,r.body).toBe(200);cookie=(Array.isArray(r.headers['set-cookie'])?r.headers['set-cookie']:[r.headers['set-cookie']]).map(x=>String(x).split(';')[0]).join('; ');});
 const call=(method:'GET'|'POST',url:string,payload?:Body)=>app.inject({method,url,headers:{cookie,origin,'idempotency-key':randomUUID()},...(payload?{payload}:{})});
 async function report(extra=''){const r=await call('GET',`/v1/reports/campaign-performance?environment=SIMULATION&from=${day}&to=${day}${extra}`);expect(r.statusCode,r.body).toBe(200);return r.json().data;}
 async function seed(names:string[]){

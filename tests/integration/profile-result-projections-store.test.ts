@@ -2,6 +2,7 @@ import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
+import {requireMigratedProfileSchema,sealFixtureProfiles} from '../support/migrated-database.js';
 import {withProfileTransaction,type ProfilePool,type ProfileExecutor} from '../../packages/db/src/profile-context.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {replaceResultProjection,sealResultProjection,finishResultProjectionGeneration,verifyResultProjectionRebuild,resultSourceDigest,readResultProjectionGeneration} from '../../packages/db/src/result-projections.js';
@@ -22,9 +23,8 @@ describe('durable anonymous projections / PostgreSQL dedicated role',()=>{
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');
   admin=new pg.Pool({connectionString:url.toString(),max:5,connectionTimeoutMillis:5000});
-  if((await admin.query("SELECT to_regclass('public.profiles') present")).rows[0].present)throw Error('TRANSITION_SCHEMA_ALREADY_PRESENT');
-  const c=await admin.connect();try{await c.query('BEGIN');for(const name of ['001_profile_identity.sql','008_market_variants.sql','017_results_and_goals.sql','022_result_projections.sql','027_result_latency_histograms.sql'])await c.query(await readFile(new URL('../../packages/db/profile-transition/'+name,import.meta.url),'utf8'));await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
-  await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic projection','America/Mexico_City',1,5,100),($2,'Foreign projection','UTC',1,5,100)",[workspace,foreign]);
+  await requireMigratedProfileSchema(admin);
+  await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic projection','America/Mexico_City',1,5,100),($2,'Foreign projection','UTC',1,5,100)",[workspace,foreign]);await sealFixtureProfiles(admin,workspace,foreign);
   const w=await login(url,writerLogin,'commerce_results'),a=await login(url,apiLogin,'commerce_api');writer=w.pool;scoped=w.scoped;api=a.pool;apiScoped=a.scoped;
  },60000);
  afterAll(async()=>{await writer?.end();await api?.end();if(admin){try{await admin.query(`DROP ROLE IF EXISTS "${writerLogin}","${apiLogin}"`);}finally{await admin.end();}}});
