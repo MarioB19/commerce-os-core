@@ -1,4 +1,4 @@
-"""67→68 publication boundaries; synthetic services, real private plan writes."""
+"""67→68 and V7 68→97 publication boundaries; synthetic services, real private plan writes."""
 import contextlib
 import io
 import json
@@ -40,11 +40,13 @@ class OperatingMigration(unittest.TestCase):
         c.migration_stage_guard(history(65), {'migration_hashes': history(67)}, initial=True)
         c.migration_stage_guard(history(67), {'migration_hashes': history(67)}, stage='CORE_PREPARED')
 
-    def test_same_schema_68_uses_real_candidate_hashes_without_sql_or_new_migration_plan(self):
-        # Current V7 candidate still has exactly the historical 68 migrations.
+    def test_v7_candidate_uses_real_candidate_hashes_and_refuses_unadmitted_migrations(self):
+        # V7 F2: the candidate carries the 68 historical migrations plus the exact
+        # reviewed profile cutover set; nothing else is admitted.
         migrations = Path(__file__).resolve().parents[2]/'packages/db/migrations'
         expected = {p.name: c.sha256(p.read_bytes()) for p in migrations.glob('*.sql')}
-        self.assertEqual(len(expected), 68)
+        self.assertEqual(len(expected), c.V7_PROFILE_MIGRATION_TOTAL)
+        self.assertEqual({n for n in expected if n[:4] > '0068'}, set(c.V7_PROFILE_MIGRATION_NAMES))
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); installed = {'source_sha':'a'*40, 'migration_hashes':expected}
             (root/'RELEASE.json').write_text(json.dumps(installed))
@@ -53,12 +55,52 @@ class OperatingMigration(unittest.TestCase):
                 _write_report=lambda *_:self.fail('no migration plan write'),
                 run_deployment_task=lambda *_:self.fail('no SQL/container dispatch'))
             metadata = {'source_sha':'b'*40, 'migration_hashes':dict(expected)}
-            review = {'migration_hashes':{n:expected[n] for n in c.OPERATING_MIGRATION_NAMES}}
+            review = {'migration_hashes':{n:expected[n] for n in c.V7_PROFILE_MIGRATION_NAMES}}
             result = c.apply_reviewed_migrations(server, root, root, metadata, review, stage='OPERATING')
-            self.assertEqual(result, {'status':'ALREADY_APPLIED','migration_count':68})
-            metadata['migration_hashes']['0069_unadmitted_f2.sql'] = 'c'*64
+            self.assertEqual(result, {'status':'ALREADY_APPLIED','migration_count':c.V7_PROFILE_MIGRATION_TOTAL})
+            metadata['migration_hashes']['0098_unadmitted_f3.sql'] = 'c'*64
             with self.assertRaisesRegex(ReleaseError,'MIGRATION_SET_INVALID'):
                 c.apply_reviewed_migrations(server, root, root, metadata, review, stage='OPERATING')
+
+    def test_v7_cutover_is_only_the_exact_68_to_97_operating_transition(self):
+        v7 = history() | {name: 'd'*64 for name in c.V7_PROFILE_MIGRATION_NAMES}
+        meta = {'migration_hashes': v7}
+        self.assertEqual(c.reviewed_migration_names(meta), c.V7_PROFILE_MIGRATION_NAMES)
+        for applied in (history(), v7):
+            c.migration_stage_guard(applied, meta, stage='OPERATING')
+        partial = history() | {'0069_v7_cutover_preflight.sql': 'd'*64}
+        for applied in (history(67), partial, history() | {'unreviewed.sql': 'e'*64}):
+            with self.assertRaises(ReleaseError): c.migration_stage_guard(applied, meta, stage='OPERATING')
+        for kwargs in ({'initial': True}, {'stage': 'CORE_PREPARED'}, {'stage': 'UNKNOWN'}):
+            with self.assertRaises(ReleaseError): c.migration_stage_guard(history(), meta, **kwargs)
+        renamed = dict(v7); renamed['0099_v7_arbitrary.sql'] = renamed.pop('0097_v7_service_token_profile_binding.sql')
+        with self.assertRaises(ReleaseError): c.reviewed_migration_names({'migration_hashes': renamed})
+        with self.assertRaises(ReleaseError): c.reviewed_migration_names({'migration_hashes': v7 | {'0098_extra.sql': 'f'*64}})
+
+    def test_v7_adapter_writes_only_the_reviewed_additions_and_requires_complete_readback(self):
+        v7 = history() | {name: 'd'*64 for name in c.V7_PROFILE_MIGRATION_NAMES}
+        for good in (True, False):
+            with self.subTest(good=good), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp); (root/'release.env').write_text('COMMERCE_IMAGE=old-image\n')
+                samples = [history(), v7 if good else history()]; tasks = []
+                server = types.SimpleNamespace(PRIVATE=root, migrations=lambda _: samples.pop(0),
+                    _write_report=lambda path, value: path.write_text(json.dumps(value)),
+                    run_deployment_task=lambda *args: tasks.append(args))
+                review = {'migration_hashes': {name: 'd'*64 for name in c.V7_PROFILE_MIGRATION_NAMES}}
+                with patch.object(c.native, 'protected_bytes', side_effect=lambda path: path.read_bytes()):
+                    if good:
+                        result = c.apply_reviewed_migrations(server, root, root, {'migration_hashes': v7}, review, stage='OPERATING')
+                        self.assertEqual(result['migration_count'], c.V7_PROFILE_MIGRATION_TOTAL)
+                    else:
+                        with self.assertRaises(ReleaseError):
+                            c.apply_reviewed_migrations(server, root, root, {'migration_hashes': v7}, review, stage='OPERATING')
+                plan = json.loads((root/'migrations.json').read_text())
+                self.assertEqual(plan, {'stage': 'OPERATING', 'baseline': history(), 'additions': review['migration_hashes']})
+                args = tasks[0][2]
+                self.assertEqual(sorted(arg for arg in args if ':/copy-sql/' in arg),
+                                 sorted(str(root/'packages/db/migrations'/n)+':/copy-sql/'+n+':ro' for n in c.V7_PROFILE_MIGRATION_NAMES))
+                self.assertEqual(args[-1], c.BOUNDED_MIGRATION_JS)
+                self.assertIn('"0097_v7_service_token_profile_binding.sql"]', c.BOUNDED_MIGRATION_JS)
 
     def test_installed_release_must_match_db_and_private_source(self):
         with tempfile.TemporaryDirectory() as tmp:

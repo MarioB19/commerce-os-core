@@ -4,7 +4,7 @@ import {useEffect,useRef,useState,type ReactNode} from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import {profileRoleLabels,type ProfileBrowserBootstrap} from '../../../../packages/contracts/src/profiles.js';
 import {createProfileApplication,type ProfileApplicationState} from '../lib/profile-application.js';
-import {ApiError,api} from '../lib/api.js';
+import {ApiError,api,setProfileFence} from '../lib/api.js';
 import {AccountSecurityView} from '../pages/account-security.js';
 import {ProfileSelector} from './profile-selector.js';
 import {ProfileCatalog} from './profile-catalog.js';
@@ -34,6 +34,8 @@ export function ProfileApplication({path,login}:{path:string;login:(retry:()=>vo
  if(state.status==='SELECTING')return <main className="main-content"><h1 ref={heading} tabIndex={-1}>Tus perfiles</h1>{state.message&&<p role="status">{state.message}</p>}<a href="/account/security">Seguridad de tu cuenta</a><ProfileSelector initial={state.data.profile} onConfirmed={selection=>{void view.current?.confirm(selection);}}/><Button variant="ghost" disabled={leaving} onClick={()=>{void logout();}}>Cerrar sesión</Button>{logoutError&&<p role="alert">{logoutError}</p>}</main>;
  const data=state.data,profile=data.profile.profiles.find(p=>p.id===data.profile.selection.workspaceId&&p.selected)!;
  const fence={workspaceId:profile.id,version:data.profile.selection.version},key=JSON.stringify([data.user.id,fence,profile.role,profile.state,profile.membershipVersion]);
+ // Historical screens rendered inside this profile send the same CAS fence.
+ setProfileFence(fence);
  return <div className="profile-application">
   <a href="#profile-main" className="skip-link">Saltar al contenido</a>
   <header className="topbar"><a href="/home" className="brand">Commerce <strong>OS</strong></a><div><strong>{profile.businessName}</strong> · {profileRoleLabels[profile.role]} <Button variant="secondary" onClick={()=>setConfirmSwitch(true)}>Cambiar perfil</Button></div><details><summary>Mi cuenta · {data.user.name||data.user.email}</summary><nav aria-label="Mi cuenta"><a href="/account/security">Seguridad</a><a href="/settings/profile">Perfil del negocio</a>{profile.role==='owner'&&<><a href="/settings/employees">Empleados e invitaciones</a><a href="/account/tokens">Accesos MCP</a></>}<Button variant="ghost" disabled={leaving} onClick={()=>{void logout();}}>Cerrar sesión</Button></nav></details></header>

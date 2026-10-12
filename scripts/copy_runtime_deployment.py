@@ -517,6 +517,21 @@ import signal
 
 MIGRATION_NAMES = frozenset({'0066_pending_channel_cancellation.sql', '0067_copy_source_isolation.sql'})
 OPERATING_MIGRATION_NAMES = frozenset({'0068_operational_metric_writer.sql'})
+# V7 F2 profile cutover: the exact reviewed 68→97 set, applied as one bounded
+# OPERATING publication (docs/adr-v7-isolation-model.md). Names are fixed here;
+# hashes come from the private review and must equal the candidate's files.
+V7_PROFILE_MIGRATION_NAMES = frozenset({
+    '0069_v7_cutover_preflight.sql', '0070_v7_profile_identity.sql', '0071_v7_profile_adoption.sql',
+    '0072_v7_profile_tokens_settings.sql', '0073_v7_profile_employees_invitations.sql', '0074_v7_market_variants.sql',
+    '0075_v7_profile_token_operations.sql', '0076_v7_continuous_authorization.sql', '0077_v7_invitation_mail.sql',
+    '0078_v7_continuous_effects.sql', '0079_v7_profile_quotas.sql', '0080_v7_qr_warmup.sql',
+    '0081_v7_results_goals_discovery.sql', '0082_v7_ai_admission.sql', '0083_v7_profile_scope_components.sql',
+    '0084_v7_quota_and_budget_authority.sql', '0085_v7_quota_adoption.sql', '0086_v7_number_laboratory.sql',
+    '0087_v7_result_projections.sql', '0088_v7_receipt_policies.sql', '0089_v7_result_financial_context.sql',
+    '0090_v7_result_closure_receipts.sql', '0091_v7_privacy_writer_fences.sql', '0092_v7_privacy_job_authority.sql',
+    '0093_v7_commercial_resolution_financial_retention.sql', '0094_v7_record_minimization.sql',
+    '0095_v7_privacy_copies_backups.sql', '0096_v7_isolation_model.sql', '0097_v7_service_token_profile_binding.sql'})
+V7_PROFILE_MIGRATION_TOTAL = 68 + len(V7_PROFILE_MIGRATION_NAMES)
 
 
 def reviewed_migration_names(metadata):
@@ -525,13 +540,16 @@ def reviewed_migration_names(metadata):
             'COPY_RUNTIME_MIGRATION_SET_INVALID')
     if len(expected) == 67 and not OPERATING_MIGRATION_NAMES & set(expected):
         return MIGRATION_NAMES
-    require(len(expected) == 68 and OPERATING_MIGRATION_NAMES <= set(expected),
-            'COPY_RUNTIME_MIGRATION_SET_INVALID')
-    return OPERATING_MIGRATION_NAMES
+    if len(expected) == 68 and OPERATING_MIGRATION_NAMES <= set(expected):
+        return OPERATING_MIGRATION_NAMES
+    require(len(expected) == V7_PROFILE_MIGRATION_TOTAL and OPERATING_MIGRATION_NAMES <= set(expected)
+            and V7_PROFILE_MIGRATION_NAMES <= set(expected), 'COPY_RUNTIME_MIGRATION_SET_INVALID')
+    return V7_PROFILE_MIGRATION_NAMES
 
 
 def migration_stage_guard(applied, metadata, *, initial=False, stage=None):
-    """Only the reviewed 65→67 cold copy or 67→68 OPERATING correction."""
+    """Only the reviewed 65→67 cold copy, the 67→68 OPERATING correction or
+    the 68→97 OPERATING V7 profile cutover."""
     names = reviewed_migration_names(metadata); expected = metadata['migration_hashes']
     verify_migrations(applied, expected)
     if initial:
@@ -539,6 +557,10 @@ def migration_stage_guard(applied, metadata, *, initial=False, stage=None):
                 and set(expected)-set(applied) == MIGRATION_NAMES, 'COPY_RUNTIME_65_MIGRATION_BASELINE_REQUIRED')
     elif stage == 'CORE_PREPARED':
         require(names == MIGRATION_NAMES and applied == expected, 'COPY_RUNTIME_CONTINUATION_MIGRATIONS_CHANGED')
+    elif names == V7_PROFILE_MIGRATION_NAMES:
+        require(stage == 'OPERATING'
+                and ((len(applied) == 68 and set(expected)-set(applied) == V7_PROFILE_MIGRATION_NAMES)
+                     or applied == expected), 'COPY_RUNTIME_68_MIGRATION_BASELINE_REQUIRED')
     else:
         require(stage == 'OPERATING' and names == OPERATING_MIGRATION_NAMES
                 and ((len(applied) == 67 and set(expected)-set(applied) == OPERATING_MIGRATION_NAMES)
@@ -1135,8 +1157,8 @@ def reviewed_migrations(private, root, source_sha, metadata):
 BOUNDED_MIGRATION_JS = """import{readFile}from'node:fs/promises';
 import{pool,withTransaction,hash}from'/app/packages/db/src/index.ts';
 const plan=JSON.parse(await readFile('/copy-plan/migrations.json','utf8'));
-const profiles={INITIAL:{baseline:65,total:67,names:['0066_pending_channel_cancellation.sql','0067_copy_source_isolation.sql']},OPERATING:{baseline:67,total:68,names:['0068_operational_metric_writer.sql']}};
-const profile=profiles[plan.stage];
+const profiles=[{stage:'INITIAL',baseline:65,total:67,names:['0066_pending_channel_cancellation.sql','0067_copy_source_isolation.sql']},{stage:'OPERATING',baseline:67,total:68,names:['0068_operational_metric_writer.sql']},{stage:'OPERATING',baseline:68,total:V7_TOTAL,names:V7_NAMES}];
+const profile=profiles.find(p=>p.stage===plan.stage&&Object.keys(plan.additions??{}).sort().join()===p.names.join());
 if(!profile||Object.keys(plan).sort().join()!=='additions,baseline,stage'||Object.keys(plan.additions).sort().join()!==profile.names.join()||Object.keys(plan.baseline).length!==profile.baseline)throw Error('COPY_MIGRATION_PLAN');
 const names=profile.names;
 try{await withTransaction(async c=>{await c.query('SELECT pg_advisory_xact_lock(83947101)');
@@ -1144,7 +1166,8 @@ const applied=Object.fromEntries((await c.query('SELECT name,sha256 FROM schema_
 if(Object.keys(applied).length!==profile.baseline||Object.entries(plan.baseline).some(([k,v])=>applied[k]!==v))throw Error('COPY_MIGRATION_HISTORY_CHANGED');
 for(const name of names){const sql=await readFile('/copy-sql/'+name,'utf8');if(hash(sql)!==plan.additions[name])throw Error('COPY_SQL_CHANGED');await c.query(sql);await c.query('INSERT INTO schema_migrations(name,sha256) VALUES($1,$2)',[name,hash(sql)]);}
 const after=Object.fromEntries((await c.query('SELECT name,sha256 FROM schema_migrations')).rows.map(r=>[r.name,r.sha256]));
-if(Object.keys(after).length!==profile.total||Object.entries({...plan.baseline,...plan.additions}).some(([k,v])=>after[k]!==v))throw Error('COPY_MIGRATION_READBACK');});}finally{await pool.end();}"""
+if(Object.keys(after).length!==profile.total||Object.entries({...plan.baseline,...plan.additions}).some(([k,v])=>after[k]!==v))throw Error('COPY_MIGRATION_READBACK');});}finally{await pool.end();}""".replace(
+    'V7_NAMES', json.dumps(sorted(V7_PROFILE_MIGRATION_NAMES), separators=(',', ':'))).replace('V7_TOTAL', str(V7_PROFILE_MIGRATION_TOTAL))
 
 
 def apply_reviewed_migrations(server, root, report_dir, metadata, review, timeout=300, *, stage='INITIAL'):

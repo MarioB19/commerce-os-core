@@ -10,11 +10,21 @@ import {listProfileChoicesFromSession,selectProfileFromSession} from './profile-
  * memberships the client must send the fence it observed (409 otherwise);
  * the server never chooses "the first" profile. */
 export async function resolveImplicitSessionFence(pool:ProfilePool&QueryExecutor,session:InteractiveSession,correlation:string):Promise<ProfileFence>{
+ try{return await implicitFence(pool,session,correlation);}
+ catch(error){
+  // A concurrent request of the same session may have made the automatic
+  // selection first; its committed CAS result is re-read once, never forced.
+  if(error instanceof ProfileSessionError&&error.code==='PROFILE_SELECTION_CHANGED')return implicitFence(pool,session,correlation,false);
+  throw error;
+ }
+}
+async function implicitFence(pool:ProfilePool&QueryExecutor,session:InteractiveSession,correlation:string,select=true):Promise<ProfileFence>{
  const choices=await listProfileChoicesFromSession(pool,session);
  if(choices.length===0)throw new ProfileSessionError('PROFILE_MEMBERSHIP_REQUIRED',403);
  if(choices.length>1)throw new ProfileSessionError('PROFILE_REQUEST_FENCE_REQUIRED',409);
  const only=choices[0]!;
  if(only.selected&&only.selection_version!==null)return{workspaceId:only.id,version:only.selection_version};
+ if(!select)throw new ProfileSessionError('PROFILE_SELECTION_CHANGED');
  const c=await pool.connect();let begun=false,discard:Error|undefined;
  try{
   await c.query('BEGIN');begun=true;

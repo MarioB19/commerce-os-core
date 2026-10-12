@@ -25,6 +25,14 @@ LANGUAGE sql STABLE SET search_path=pg_catalog AS $$
 $$;
 REVOKE ALL ON FUNCTION public.v7_worker_global_without_context(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.v7_worker_global_without_context(text) TO PUBLIC;
+-- Trigger functions that are themselves SECURITY DEFINER see their owner as
+-- current_user; the connecting login identifies the worker service instead.
+CREATE FUNCTION public.v7_worker_session_without_context() RETURNS boolean
+LANGUAGE sql STABLE SET search_path=pg_catalog AS $$
+ SELECT public.v7_worker_global_without_context(session_user::text)
+$$;
+REVOKE ALL ON FUNCTION public.v7_worker_session_without_context() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.v7_worker_session_without_context() TO PUBLIC;
 
 DO $isolation$
 DECLARE t record; p record; r record; scope_column text; ctx text; worker text; was_enabled boolean; historical boolean;
@@ -127,6 +135,13 @@ BEGIN
  ('public.privacy_asset_transition(jsonb,jsonb,text,text,text)',
   ' IF COALESCE(prior,next_image)->>''workspace_id'' IS DISTINCT FROM NULLIF(current_setting(''app.workspace_id'',true),'''') OR COALESCE(prior,next_image)->>''environment'' IS DISTINCT FROM current_setting(''app.environment'',true) THEN RAISE EXCEPTION ''PRIVACY_ASSET_CONTEXT_REQUIRED'';END IF;',
   ' IF NOT public.v7_worker_global_without_context(actor) AND (COALESCE(prior,next_image)->>''workspace_id'' IS DISTINCT FROM NULLIF(current_setting(''app.workspace_id'',true),'''') OR COALESCE(prior,next_image)->>''environment'' IS DISTINCT FROM current_setting(''app.environment'',true)) THEN RAISE EXCEPTION ''PRIVACY_ASSET_CONTEXT_REQUIRED'';END IF;');
+ -- Quota guard (014): a worker without context admits a REAL product, number or
+ -- conversation into the profile of the explicit new record; every profile and
+ -- platform limit below still applies. The API always needs its context.
+ INSERT INTO pg_temp.v7_bind_patches VALUES
+ ('public.profile_quota_record_guard()',
+  ' IF current_setting(''app.workspace_id'',true) IS DISTINCT FROM NEW.workspace_id THEN RAISE EXCEPTION ''PROFILE_QUOTA_CONTEXT_REQUIRED''; END IF;',
+  ' IF NOT public.v7_worker_session_without_context() AND current_setting(''app.workspace_id'',true) IS DISTINCT FROM NEW.workspace_id THEN RAISE EXCEPTION ''PROFILE_QUOTA_CONTEXT_REQUIRED''; END IF;');
  FOR definition IN SELECT DISTINCT fn FROM pg_temp.v7_bind_patches ORDER BY 1 LOOP
   SELECT pg_get_functiondef(definition::regprocedure) INTO patched;
   DECLARE patch record; BEGIN

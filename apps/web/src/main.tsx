@@ -14,7 +14,7 @@ import {SalesOverview} from './pages/sales-overview';
 import {CampaignDashboard} from "./pages/campaign-performance";
 import { StrictMode, Suspense, lazy, useState, useEffect, useRef, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import {
   createRootRoute,
   createRoute,
@@ -55,7 +55,8 @@ import {
   useWorkspace,
 } from "./components/shared";
 import { Button } from "./components/ui/button";
-import { api, useData, type Session } from "./lib/api";
+import { api, useData, setProfileFence, type Session } from "./lib/api";
+import { loadProfiles } from "./lib/profile-identity";
 import { HomePage, ResultsPage } from "./pages/home";
 const IntelligencePage=lazy(()=>import('./pages/intelligence').then(module=>({default:module.IntelligencePage})));
 import { CatalogPage } from "./pages/catalog";
@@ -106,8 +107,16 @@ function App() {
  return <SessionApp/>;
 }
 function SessionApp() {
-  const session = useData<Session>("/me");
-  if (session.isPending)
+  // V7: business requests carry the server-confirmed profile selection. With
+  // several profiles and no selection, the profile chooser decides first.
+  const profiles = useQuery({ queryKey: ["identity", "profiles"], queryFn: ({ signal }) => loadProfiles(signal), retry: false, staleTime: 30_000, refetchOnWindowFocus: false });
+  const selection = profiles.data?.selection;
+  const ready = Boolean(profiles.data && (selection?.workspaceId || profiles.data.profiles.length <= 1));
+  if (profiles.data) setProfileFence(selection?.workspaceId ? { workspaceId: selection.workspaceId, version: selection.version } : null);
+  const session = useData<Session>("/me", ready);
+  if (profiles.error && "status" in profiles.error && profiles.error.status === 401) return <Login />;
+  if (profiles.data && !ready) return <Navigate to="/" />;
+  if (profiles.isPending || (ready && session.isPending))
     return (
       <div className="boot">
         <div className="brand-mark">

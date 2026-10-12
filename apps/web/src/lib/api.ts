@@ -88,6 +88,15 @@ export class ApiError extends Error {
     this.diagnostic = diagnostic;
   }
 }
+/** Server-confirmed profile selection (V7). Every business request carries
+ * it as a CAS fence; the server re-checks it and never treats it as authority.
+ * Identity routes never send it. Cleared on sign-out or a new identity. */
+let profileFence: { workspaceId: string; version: number } | null = null;
+export function setProfileFence(fence: { workspaceId: string; version: number } | null) {
+  profileFence = fence && typeof fence.workspaceId === "string" && fence.workspaceId.length > 0 && Number.isSafeInteger(fence.version) && fence.version > 0
+    ? { workspaceId: fence.workspaceId, version: fence.version } : null;
+}
+export const currentProfileFence = () => profileFence;
 export async function api<T>(
   path: string,
   init?: RequestInit,
@@ -130,6 +139,9 @@ export async function api<T>(
         ...(init?.body ? { "Content-Type": "application/json" } : {}),
         ...(init?.method && init.method !== "GET"
           ? { "Idempotency-Key": crypto.randomUUID() }
+          : {}),
+        ...(!identityPath && profileFence
+          ? { "X-Commerce-Profile-Id": profileFence.workspaceId, "X-Commerce-Profile-Version": String(profileFence.version) }
           : {}),
         ...init?.headers,
       },
