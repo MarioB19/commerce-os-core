@@ -82,7 +82,7 @@ export function commercialAuthorizationStatus(a:CommercialAssignment|undefined,a
  return activeAt(a,at)&&scope.mode==='product_assignment'&&scope.assignment_id===a.id&&scope.assignment_revision===a.revision&&scope.binding_id===a.binding_id&&scope.product_id===a.product_id?'REGISTERED':'INVALIDATED';
 }
 export async function assignmentGate(c:QueryExecutor,conversation:DomainRecord,effectiveAt?:string){
- if(!effectiveAt&&conversation.environment==='SIMULATION'&&conversation.body.simulation_id){const simulation=await getRecord(c,conversation.workspace_id,'simulation',conversation.body.simulation_id);effectiveAt=simulation?.body.virtual_now;}
+ if(!effectiveAt&&conversation.environment==='SIMULATION'&&conversation.body.simulation_id){const simulation=await getRecord(c,conversation.workspace_id,'simulation',conversation.body.simulation_id);if(simulation?.environment===conversation.environment)effectiveAt=simulation.body.virtual_now;}
  effectiveAt??=new Date().toISOString();
  if(conversation.body.routing_state==='PRODUCT_SELECTION_REQUIRED')return 'PRODUCT_SELECTION_REQUIRED';
  if(conversation.body.assignment_id){const a=await assignmentFor(c,conversation.workspace_id,conversation.environment,conversation.body.assignment_id,'share');if(!a||!activeAt(a,effectiveAt))return 'ASSIGNMENT_RETIRED_OR_EXPIRED';if(a.revision!==conversation.body.assignment_revision||a.binding_id!==conversation.body.binding_id)return 'ASSIGNMENT_CHANGED';}

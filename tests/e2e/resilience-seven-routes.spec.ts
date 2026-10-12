@@ -2,8 +2,9 @@ import {test,expect,type Locator,type Page} from '@playwright/test';
 import {AxeBuilder} from '@axe-core/playwright';
 import {copyFile,mkdir} from 'node:fs/promises';
 import {closureFixture} from './support/closure-fixture.js';
+import {evidenceLocation} from '../support/evidence.js';
 
-const evidenceRoot='docs/evidence/commerce-resilience-ux-20260921/ui';
+const evidenceRoot=evidenceLocation('commerce-resilience-ux-20260921/ui');
 
 const viewports=[
  {width:1440,height:1050},

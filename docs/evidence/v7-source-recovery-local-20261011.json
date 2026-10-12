@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "state": "LOCAL_VERIFICATION_ONLY",
+  "recorded_at": "2026-10-11T20:30:10.709000+00:00",
+  "source_files": {
+    "scripts/cloudbuild-http.py": "16d7f2ecb0ed9ed3467038523dbe0a7d979f86217d87a3c2cd69c5fb97f35b18",
+    "scripts/cloudbuild_connected_source.py": "d0e5a59c711348eb9aa838ebba19aad0b006cca26d70fc961176d24468055d2b",
+    "scripts/cloudbuild_runtime.py": "7786225a8bf5eb746892b65a1daa76f13ed13e3f1784d08d63cc19cd6b73614d",
+    "scripts/cloudbuild_diagnostics.py": "6e44fabcb7b8ae04c92f1b12b8da03010cfaef12aba771a0378ea152db07dde9",
+    "scripts/cloudbuild_source_recovery.py": "4c16c4536b7ce35fad0c3214b64f852b67ee0fd7cd382e547181d0d31e06ba89",
+    "tests/ci/test_cloudbuild_runtime.py": "d80c8d3ab1ad0ada9061fbafad8dc288c8b1397c2437792ac6582bba174c844e",
+    "tests/ci/test_cloudbuild_diagnostics.py": "80efc091083a3569f5d0cb63933068837097c430a2530c4661d13a02a138cb97",
+    "tests/ci/test_cloudbuild_source_recovery.py": "729361f6595a5e67a2f6334dfcfbf0bf2231ea5f281c886e108faa577bf51722"
+  },
+  "checks": [
+    {
+      "scope": "cloudbuild suite before final header comparison",
+      "tests": 590,
+      "skips": 1,
+      "result": "PASS"
+    },
+    {
+      "scope": "final source-recovery parser including header comparison",
+      "tests": 16,
+      "result": "PASS"
+    },
+    {
+      "scope": "whole factory diagnostic boundaries",
+      "tests": 5,
+      "result": "PASS"
+    },
+    {
+      "scope": "runtime including aborted ADMIT replay",
+      "tests": 33,
+      "result": "PASS"
+    }
+  ],
+  "independent_review": [
+    "source parser and diagnostics reviewed by restore agent",
+    "diagnostics and canonical meter reviewed by maintenance agent",
+    "diagnostic and recovery boundary reviewed by root"
+  ],
+  "native_failure_cause_established": false,
+  "native_full_pass": false,
+  "deployment_proven": false,
+  "source_retry_authorized": false,
+  "admit_behavior_change": "Replayed admission for an aborted event must not return RESERVED; actual state and exclusion are read back."
+}

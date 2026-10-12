@@ -1396,8 +1396,13 @@ def commit_stage(server, root, report_dir, before, services, report, stage, revi
         gateway_continuity(before, services, candidate, server.owner_auth_snapshot(root), server, server.PRIVATE)
     else:
         stage_continuity(before, services, candidate, server.owner_auth_snapshot(root), server, server.PRIVATE)
+    gateway_boot = None
+    if gateway_extension:
+        import runtime_boot_install
+        gateway_boot = runtime_boot_install.gateway_admission(server, root, report_dir, before, services, report, locks, deadline)
     with reviewed_backup_module(review['backup_tools_manifest_ref'], root, report['source_sha']) as backup:
         if deadline is not None: deadline_check(deadline)
+        if gateway_boot is not None: gateway_boot.fence()
         prepared = backup.prepare_reviewed_controllers(review['backup_tools_manifest_ref'], root,
             report['source_sha'], sha256(before['plan_raw']), sha256(before['state_raw']), candidate,
             {row['Id']: row for row in services.values()}, held_locks=dict(zip(native.LOCKS, locks)))
@@ -1413,6 +1418,7 @@ def commit_stage(server, root, report_dir, before, services, report, stage, revi
             'candidate_plan_sha256': sha256(plan_raw), 'runtime_stage': stage, 'database_rollback': False}
         journal['candidate_state_sha256'] = sha256(prepared['adoption_bytes'])
         server._write_report(journal_path, journal)
+        if gateway_boot is not None: gateway_boot.fence()
         # Tool-source changes are independently authorized/validated by the native
         # B02 helper. This second CAS protects the two unchanged old files ourselves.
         require(native.protected_bytes(server.PRIVATE/'api-web-adoption.json') == before['state_raw']
@@ -1446,6 +1452,13 @@ def commit_stage(server, root, report_dir, before, services, report, stage, revi
         # Only a confirmed pair/native mark can publish a terminal report. A
         # SIGKILL before this point leaves RUNNING, never an early SUCCEEDED.
         if deadline is not None: deadline_check(deadline)
+        if stage == 'OPERATING':
+            # Same native FULL/package admission, source bundle and held locks.
+            # Installation errors leave the applied pair without SUCCEEDED.
+            # The hook never starts containers or sessions during installation.
+            import runtime_boot_install
+            completed['host_boot'] = (gateway_boot.apply(actual_state, actual_plan, backup) if gateway_extension else
+                runtime_boot_install.install(server, root, report_dir, before, report, actual_state, actual_plan, backup, locks, deadline))
         if before_terminal is not None: before_terminal()
         server._write_report(report_dir/'report.json', completed)
         report.update(completed)
@@ -1618,12 +1631,23 @@ def reconcile_gateways(server, manifest_ref_file):
             locks = native.acquire_locks(server.PRIVATE)
             if report_dir.exists():
                 prior = _parse(native.protected_bytes(report_dir/'report.json'))
-                require(prior.get('status') == 'SUCCEEDED' and prior.get('action') == report['action']
-                        and prior.get('approval_ref') == manifest_ref, 'COPY_RUNTIME_GATEWAY_RETRY_REQUIRES_RECONCILIATION')
+                require(prior.get('status') in {'SUCCEEDED', 'RUNNING', 'FAILED'} and prior.get('action') == report['action']
+                        and prior.get('approval_ref') == manifest_ref and prior.get('source_sha') == manifest['source_sha']
+                        and prior.get('run_id') == manifest['run_id'], 'COPY_RUNTIME_GATEWAY_RETRY_REQUIRES_RECONCILIATION')
                 actual = snapshot(server, server.PRIVATE, current, report_dir)
                 require(Path(actual['state']['last_release_receipt_ref']['path']).parent == report_dir,
                         'COPY_RUNTIME_GATEWAY_IDEMPOTENT_LINEAGE_CHANGED')
-                replay = dict(prior, idempotent_replay=True); return replay
+                import runtime_boot_install
+                if prior['status'] == 'SUCCEEDED':
+                    runtime_boot_install.gateway_replay(server, current, report_dir, actual, prior)
+                    replay = dict(prior, idempotent_replay=True); return replay
+                completion = runtime_boot_install.gateway_recover(server, current, report_dir, actual, prior, locks, deadline, manifest)
+                finished = {k: v for k, v in prior.items() if k not in {'error', 'reconciliation_required'}}
+                finished.update(status='SUCCEEDED', stage='complete', host_boot=completion,
+                    runtime_stage='OPERATING', finished_at=dt.datetime.now(dt.timezone.utc).isoformat(),
+                    recovery='POLICY_READBACK_ONLY_NO_REDISPATCH')
+                server._write_report(report_dir/'report.json', finished)
+                replay = finished; return replay
             report_dir.mkdir(mode=0o700); owns_report = True; report['approval_ref'] = manifest_ref
             server._write_report(report_dir/'report.json', report)
             state_raw = native.protected_bytes(server.PRIVATE/'api-web-adoption.json'); state = _parse(state_raw); validate_state(state)
@@ -1790,7 +1814,7 @@ def publish(server, archive, archive_hash, source_sha, run_id, portal_private_en
                 'INSUFFICIENT_FREE_DISK')
         extract_release(archive, root, archive_hash); metadata = _parse((root/'RELEASE.json').read_bytes())
         context = provider_evidence.release_identity(metadata, source_sha, run_id, 'copy-runtime')
-        provider_evidence.publication_enabled(context)
+        provider_evidence.installation_enabled(context)
         if metadata.get('schema_version') == 2:
             report.update(provider_evidence.report_binding(metadata, run_id, archive_hash,
                 before['state']['portal'], _parse((root/'images.json').read_bytes())))

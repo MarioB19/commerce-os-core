@@ -17,6 +17,7 @@ import {processInbound} from '../../apps/automation-worker/src/inbound.js';
 import {processChannelCommands,heartbeatOwnership} from '../../apps/channel-worker/src/lifecycle.js';
 import {numberTools} from '../../apps/commerce-mcp/src/numbers.js';
 import {apiFailureDiagnostic,createRollingRequestBudget} from '../support/request-budget.js';
+import {evidencePath} from '../support/evidence.js';
 afterAll(()=>pool.end());
 it('uses the registered STDIO server over verified local HTTPS and persists the same API resources',async()=>{
  const directory=await mkdtemp(join(tmpdir(),'commerce-mcp-test-')),workspace='stdio-'+randomUUID();
@@ -86,7 +87,7 @@ it('uses the registered STDIO server over verified local HTTPS and persists the 
   await command('review');await command('authorize',{review:program.review,confirmation:'AUTHORIZE_REVIEWED_PROGRAM'});await command('activate',{review:program.review,confirmation:'ACTIVATE_REVIEWED_PROGRAM'});
   expect((await tool('number_preparation_get',{account_id:ids[0]})).data.progress.automatic_days).toBe(14);
   await command('pause');await command('revoke');await command('archive');await command('restore');expect(program.status).toBe('DRAFT');
-  await writeFile('docs/evidence/numbers-mcp-calendar.json',JSON.stringify({status:'PASSED',client:'MCP SDK over registered STDIO server and local verified HTTPS; not Codex desktop',environment:'SIMULATION',policy:'standard-15d/v2',manual_days:0,automatic_days:14,nominal_day:15,progress:graduated.progress,without_sales_permission:readyNumber.primary_state,maintenance_separately_authorized:true,external_effects:0,completed_at:new Date().toISOString()},null,2));
+  await writeFile(evidencePath('numbers-mcp-calendar.json'),JSON.stringify({status:'PASSED',client:'MCP SDK over registered STDIO server and local verified HTTPS; not Codex desktop',environment:'SIMULATION',policy:'standard-15d/v2',manual_days:0,automatic_days:14,nominal_day:15,progress:graduated.progress,without_sales_permission:readyNumber.primary_state,maintenance_separately_authorized:true,external_effects:0,completed_at:new Date().toISOString()},null,2));
   const capacity=(await tool('number_capacity_command',{body:{action:'preview',count:20,reason:'Dimensionar ensayo hasta veinte'}})).data;
   const expanded=(await tool('number_capacity_command',{body:{action:'expand',count:20,review:capacity.review,confirmation:'APPLY_REVIEWED_CAPACITY',reason:'Ensayo sintético de capacidad'}})).data;await processNumberOperations();expect((await tool('number_operation_get',{operation_id:expanded.operation_id})).data.state).toBe('SUCCEEDED');expect((await tool('number_capacity_get')).data.installed).toBe(20);
   const beforeFailure=(await tool('number_get',{account_id:ids[0]})).data;

@@ -1,5 +1,6 @@
 import {test,expect} from '@playwright/test';
 import {AxeBuilder} from '@axe-core/playwright';
+import {evidencePath} from '../support/evidence.js';
 const id='11111111-1111-4111-8111-111111111111';
 const states=[['READY_TO_SELL','Disponible en 1 de 2 productos'],['PREPARE','Preparación automática'],['WARMING','En preparación'],['PREPARED','Preparación completada'],['DISCONNECTED','Sin conexión']];
 async function expectSeparatedTargets(page:any,selector:string,minHeight=1){
@@ -48,23 +49,23 @@ test('number states, accessible drawer, focus and responsive contrast at require
   await expect(page.getByText('Disponible en 1 de 2 productos',{exact:true})).toBeVisible();expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);
   await expectSeparatedTargets(page,'.page-actions button',width<=420?44:1);
   expect((await new AxeBuilder({page}).withTags(['wcag2a','wcag2aa','wcag21aa']).analyze()).violations).toEqual([]);
-  await page.screenshot({path:`docs/evidence/numbers-ui/inventory-${width}.png`,fullPage:true});
+  await page.screenshot({path:evidencePath(`numbers-ui/inventory-${width}.png`),fullPage:true});
   const trigger=page.getByRole('button',{name:'Revisar productos: Equipo Centro',exact:true});await trigger.focus();await page.keyboard.press('Enter');const dialog=page.getByRole('dialog',{name:'Equipo Centro',exact:true});await expect(dialog).toBeVisible();
   await expectSeparatedTargets(page,'.numbers-tabs button',width<=420?44:1);
   await dialog.getByRole('button',{name:'Conexión',exact:true}).click();await expectSeparatedTargets(page,'.numbers-actions > button',width<=420?44:1);
   await dialog.getByRole('button',{name:'Preparación',exact:true}).click();await expect(dialog.getByText(/14 de 14 días automáticos/)).toBeVisible();
   expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);expect(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
-  await page.screenshot({path:`docs/evidence/numbers-ui/preparation-${width}.png`});await page.keyboard.press('Escape');await expect(dialog).toBeHidden();await expect(trigger).toBeFocused();
+  await page.screenshot({path:evidencePath(`numbers-ui/preparation-${width}.png`)});await page.keyboard.press('Escape');await expect(dialog).toBeHidden();await expect(trigger).toBeFocused();
  }
- await page.getByText('Apariencia',{exact:true}).click();await page.getByRole('combobox',{name:'Tema',exact:true}).selectOption('dark');await page.getByText('Apariencia',{exact:true}).click();await expect(page.locator('html')).toHaveAttribute('data-theme','dark');expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);await page.screenshot({path:'docs/evidence/numbers-ui/inventory-dark.png',fullPage:true});
- await page.getByRole('button',{name:'Revisar productos: Equipo Centro',exact:true}).click();await expect(page.getByRole('dialog',{name:'Equipo Centro',exact:true})).toBeVisible();expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);await page.screenshot({path:'docs/evidence/numbers-ui/detail-dark.png'});await page.keyboard.press('Escape');
- for(const zoom of [2,4]){/* Equivalent CSS viewport of 1440px at browser zoom; CSS zoom does not update media queries. */await page.setViewportSize({width:1440/zoom,height:1000/zoom});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);await page.screenshot({path:`docs/evidence/numbers-ui/zoom-${zoom*100}.png`,fullPage:true});}
+ await page.getByText('Apariencia',{exact:true}).click();await page.getByRole('combobox',{name:'Tema',exact:true}).selectOption('dark');await page.getByText('Apariencia',{exact:true}).click();await expect(page.locator('html')).toHaveAttribute('data-theme','dark');expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);await page.screenshot({path:evidencePath('numbers-ui/inventory-dark.png'),fullPage:true});
+ await page.getByRole('button',{name:'Revisar productos: Equipo Centro',exact:true}).click();await expect(page.getByRole('dialog',{name:'Equipo Centro',exact:true})).toBeVisible();expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);await page.screenshot({path:evidencePath('numbers-ui/detail-dark.png')});await page.keyboard.press('Escape');
+ for(const zoom of [2,4]){/* Equivalent CSS viewport of 1440px at browser zoom; CSS zoom does not update media queries. */await page.setViewportSize({width:1440/zoom,height:1000/zoom});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1)).toBe(true);await page.screenshot({path:evidencePath(`numbers-ui/zoom-${zoom*100}.png`),fullPage:true});}
  await page.emulateMedia({reducedMotion:'reduce'});expect(await page.locator('.number-card').first().evaluate(el=>getComputedStyle(el).transitionDuration)).toBe('0s');
 });
 test('empty states and guided creation avoid infrastructure fields and preserve values on review',async({page})=>{
  const f=await fixture(page);f.setEmpty();await page.goto('/sales/channels/whatsapp');await expect(page.getByRole('heading',{name:'Agrega tu primer número'})).toBeVisible();
  await page.getByRole('button',{name:'Agregar número',exact:true}).click();const form=page.getByRole('dialog',{name:'Agregar número',exact:true});await form.getByLabel('Alias',{exact:true}).fill('Equipo nuevo');await form.getByLabel('Responsable',{exact:true}).fill('Operador propio');await form.getByLabel('Dispositivo principal',{exact:true}).fill('Teléfono nuevo');expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);await form.getByRole('button',{name:'Preparar número'}).click();expect(f.writes.find(w=>w.path==='/v1/numbers')?.body).toMatchObject({alias:'Equipo nuevo',responsible:'Operador propio',device_ref:'Teléfono nuevo'});
- await page.goto('/sales/warmups');await expect(page.getByRole('heading',{name:'Prepara tu primer calentamiento'})).toBeVisible();await page.getByRole('button',{name:'Nuevo calentamiento'}).click();const wizard=page.getByRole('dialog',{name:'Nuevo calentamiento'});await expect(wizard.getByRole('button',{name:'Guardar y continuar'})).toBeDisabled();expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);await page.screenshot({path:'docs/evidence/numbers-ui/wizard-empty.png'});
+ await page.goto('/sales/warmups');await expect(page.getByRole('heading',{name:'Prepara tu primer calentamiento'})).toBeVisible();await page.getByRole('button',{name:'Nuevo calentamiento'}).click();const wizard=page.getByRole('dialog',{name:'Nuevo calentamiento'});await expect(wizard.getByRole('button',{name:'Guardar y continuar'})).toBeDisabled();expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);await page.screenshot({path:evidencePath('numbers-ui/wizard-empty.png')});
 });
 
 test('library keeps media turns editable and viewer controls stay read only',async({page})=>{
@@ -74,7 +75,7 @@ test('library keeps media turns editable and viewer controls stay read only',asy
  await page.route('**/v1/number-library**',async route=>{const req=route.request();if(req.method()!=='GET'){draft={id:'44444444-4444-4444-8444-444444444444',version:1,body:req.postDataJSON(),approved_content_id:null};}await route.fulfill({json:{data:req.method()==='GET'?(draft?[draft]:[]):draft}});});
  await page.goto('/sales/warmups');await page.getByRole('button',{name:'Biblioteca',exact:true}).click();const library=page.getByRole('dialog',{name:'Biblioteca de conversaciones'});
  await library.getByRole('button',{name:'Nueva conversación'}).click();await library.getByLabel('Nombre de la conversación').fill('Ensayo con audio propio');await library.getByLabel('Texto del turno 1').fill('Revisión interna acordada');await library.getByLabel('Tipo del turno 2').selectOption('audio');await library.getByLabel('Material del turno 2').selectOption(asset);await library.getByRole('checkbox').check();await library.getByRole('button',{name:'Guardar borrador',exact:true}).click();await expect(library.getByText('Audio propio',{exact:true})).toBeVisible();expect(draft.body.turns[1]).toEqual({kind:'audio',asset_id:asset});
- await library.getByRole('button',{name:'Editar conversación'}).click();await expect(library.getByLabel('Tipo del turno 2')).toHaveValue('audio');await expect(library.getByLabel('Material del turno 2')).toHaveValue(asset);await page.setViewportSize({width:390,height:844});expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);await page.screenshot({path:'docs/evidence/numbers-ui/library-media-390.png'});await page.keyboard.press('Escape');
+ await library.getByRole('button',{name:'Editar conversación'}).click();await expect(library.getByLabel('Tipo del turno 2')).toHaveValue('audio');await expect(library.getByLabel('Material del turno 2')).toHaveValue(asset);await page.setViewportSize({width:390,height:844});expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);await page.screenshot({path:evidencePath('numbers-ui/library-media-390.png')});await page.keyboard.press('Escape');
  f.setViewer();await page.reload();await expect(page.getByRole('button',{name:'Nuevo calentamiento'})).toBeDisabled();await page.getByRole('button',{name:'Biblioteca',exact:true}).click();await expect(library.getByRole('button',{name:'Nueva conversación'})).toBeDisabled();await expect(library.getByRole('button',{name:'Editar conversación'})).toBeDisabled();expect(f.writes).toEqual([]);
 });
 test('wizard persists three steps and separates review, authorization and activation',async({page})=>{
@@ -95,7 +96,7 @@ test('guided number dialogs retain contrast and fit the dark mobile theme',async
  }
  await page.goto('/sales/warmups');await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
  for(const [button,title,file]of [['Nuevo calentamiento','Nuevo calentamiento','wizard-dark-390'],['Biblioteca','Biblioteca de conversaciones','library-dark-390']]){
-  await page.getByRole('button',{name:button,exact:true}).click();const dialog=page.getByRole('dialog',{name:title,exact:true});await expect(dialog).toBeVisible();expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);expect(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);await page.screenshot({path:`docs/evidence/numbers-ui/${file}.png`});await page.keyboard.press('Escape');
+  await page.getByRole('button',{name:button,exact:true}).click();const dialog=page.getByRole('dialog',{name:title,exact:true});await expect(dialog).toBeVisible();expect((await new AxeBuilder({page}).analyze()).violations).toEqual([]);expect(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);await page.screenshot({path:evidencePath(`numbers-ui/${file}.png`)});await page.keyboard.press('Escape');
  }
 });
 

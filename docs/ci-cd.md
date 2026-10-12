@@ -132,6 +132,31 @@ Las invocaciones con argumentos conservan su selección en una sola base nueva.
 Esta separación requiere validación FULL del SHA candidato; una muestra local
 parcial no acredita el calendario completo ni un ahorro de tiempo en la nube.
 
+### Evidencia de pruebas fuera del árbol versionado
+
+El gate FULL vuelve a leer `git status --porcelain --untracked-files=all` al
+terminar todas las etapas. Una prueba que escribe en una ruta versionada hace
+fallar el candidato con `SOURCE_TREE_NOT_CLEAN`, aunque todas sus assertions
+pasen. Eso ocurrió en el FULL de `51f72e0`: E2E e integración escribían capturas
+y JSON en `docs/evidence/`.
+
+- Las pruebas escriben evidencia sólo con `tests/support/evidence.ts`
+  (`evidencePath`, `evidenceLocation`). La raíz por defecto es `test-evidence/`,
+  ignorada por Git y Docker. `COMMERCE_TEST_EVIDENCE_DIR` la cambia: una ruta
+  absoluta, o relativa al repositorio bajo un prefijo ignorado
+  (`test-evidence`, `test-results`, `.runtime`, `.local`). Cualquier otro destino
+  dentro del repositorio se rechaza con `TEST_EVIDENCE_DIR_VERSIONED`.
+- `tests/ci/test_test_evidence_contract.py` (etapa `python-ci`) falla si un
+  archivo de `tests/` escribe con ruta literal en un destino no ignorado o vuelve
+  a mencionar `docs/evidence`.
+- `scripts/source-tree-guard.mjs` compara el estado Git antes y después de
+  `pnpm test:integration` y `pnpm test:e2e`; si una suite deja archivos nuevos o
+  modificados, el comando falla con `TEST_WROTE_VERSIONED_PATHS` y lista las
+  rutas. Cubre también destinos dinámicos que el contrato estático no ve.
+- `scripts/sanitize-test-artifacts.py` y el transporte privado de verificación
+  incluyen la nueva raíz. La imagen verificadora no cambia: su driver ya exige el
+  árbol limpio y la raíz por defecto queda ignorada sin variables nuevas.
+
 ## Contrato V5 vigente (2026-09-13)
 
 Push sólo en main; las ramas reciben checks por PR, sin duplicar push+PR. PR borrador y narrativa: ligero. PR listo: impacto portal/web/full. Dependencias, base, auth, workflows, rutas desconocidas y diff incompleto siempre amplían. Los renombres cuentan ambos lados. `Commerce CI gate` es el check terminal estable: fallo, cancelación, missing o scope desconocido nunca pasan.

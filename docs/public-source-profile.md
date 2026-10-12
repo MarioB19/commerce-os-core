@@ -28,3 +28,7 @@ El marcador `PUBLIC_FIXTURE_PROFILE.json` y la etiqueta de imagen `org.commerce-
 6. Habilitar CI automática y publicación sólo cuando custodia, IAM, identidad, presupuesto, protección de rama, exclusión mutua del publicador y readback estén validados. Este borrador no hace esas mutaciones.
 
 El original privado tampoco es apto para un cambio directo de visibilidad: conserva material comercial y datos personales en historia/logs, además de binarios grandes y superficies GitHub sin cobertura completa. El conjunto nuevo evita importarlos; no afirma haber borrado caches o referencias históricas de GitHub.
+
+## Lector FULL compartido
+
+El incremento del lector REST conserva las validaciones del publicador local y la identidad del bootstrap privado. Adquirir ADC y autenticar la lectura de fuente son tareas del controlador confiable todavía no instalado. El módulo no crea builds ni aprueba triggers y sigue rechazando que la fuente pública herede la identidad privada. La cuenta personal del CLI continúa siendo exclusivamente configuración privada mediante `operator_identity`. Las pruebas locales no acreditan un FULL nativo del nuevo SHA.

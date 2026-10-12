@@ -12,6 +12,7 @@ import {provisionUser} from '../../apps/api/src/auth.js';
 import {pool} from '../../packages/db/src/index.js';
 import {processNumberOperations} from '../../apps/channel-worker/src/number-operations.js';
 import {numberTools} from '../../apps/commerce-mcp/src/numbers.js';
+import {evidencePath} from '../support/evidence.js';
 afterAll(()=>pool.end());
 it('retires through registered MCP with canonical version, environment and replay guards',async()=>{
  const directory=await mkdtemp(join(tmpdir(),'commerce-mcp-retire-')),workspace='mcp-retire-'+randomUUID();
@@ -44,6 +45,6 @@ it('retires through registered MCP with canonical version, environment and repla
   expect((await ok('numbers_list',{limit:100})).some((n:any)=>n.id===created.id)).toBe(false);
   const record=(await pool.query('SELECT body,version FROM records WHERE id=$1 AND workspace_id=$2',[created.id,workspace])).rows[0];expect(record.body.deleted_at).toBeTruthy();expect(record.version).toBe(account.version+1);
   expect((await pool.query('SELECT count(*)::int n FROM outbox WHERE workspace_id=$1',[workspace])).rows[0].n).toBe(0);
-  await writeFile('docs/evidence/numbers-mcp-retirement.json',JSON.stringify({status:'PASSED',environment:'SIMULATION',registered_tools:Object.keys(numberTools).length,client:'Registered STDIO server over verified local HTTPS',canonical_delete:true,stale_version_rejected:true,real_scope_rejected:true,exact_replay:true,history_preserved:true,external_effects:0,completed_at:new Date().toISOString()},null,2)+'\n');
+  await writeFile(evidencePath('numbers-mcp-retirement.json'),JSON.stringify({status:'PASSED',environment:'SIMULATION',registered_tools:Object.keys(numberTools).length,client:'Registered STDIO server over verified local HTTPS',canonical_delete:true,stale_version_rejected:true,real_scope_rejected:true,exact_replay:true,history_preserved:true,external_effects:0,completed_at:new Date().toISOString()},null,2)+'\n');
  }finally{await client.close();await transport.close();server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));await app.close();await rm(directory,{recursive:true,force:true});}
 },60000);

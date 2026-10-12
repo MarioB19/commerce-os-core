@@ -117,11 +117,11 @@ sys.exit(99)
         responses={'deployments?environment=production&per_page=30':[{'id':2,'sha':'2'*40},installed],
                    'deployments/2/statuses?per_page=1':[{'state':'failure'}],
                    'deployments/1/statuses?per_page=1':[{'state':'success','environment_url':'https://commerce-os.inovaris.online',
-                    'log_url':'https://github.com/MarioB19/commerce-os/actions/runs/100'}]}
-        baseline=changes.deployed_baseline(responses.__getitem__,'MarioB19/commerce-os')
+                    'log_url':'https://github.com/MarioB19/commerce-os-core/actions/runs/100'}]}
+        baseline=changes.deployed_baseline(responses.__getitem__,'MarioB19/commerce-os-core')
         self.assertEqual(baseline,'1'*40)
         self.assertTrue(changes.should_deploy('push','refs/heads/main',baseline,['docs/notes.md','apps/api/src/app.ts']))
-        self.assertTrue(changes.should_deploy('push','refs/heads/main',changes.deployed_baseline(lambda _: [],'MarioB19/commerce-os'),['README.md']))
+        self.assertTrue(changes.should_deploy('push','refs/heads/main',changes.deployed_baseline(lambda _: [],'MarioB19/commerce-os-core'),['README.md']))
 
 if __name__=='__main__':
     unittest.main()

@@ -4,6 +4,7 @@ import { AxeBuilder } from '@axe-core/playwright';
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { prepareRateBudget } from './support/rate-budget.js';
+import {evidencePath} from '../support/evidence.js';
 test.beforeEach(async ({page}) => { await useSimulationFixtureTransport(page); });
 test.beforeEach(async ({ request }, info) => { await prepareRateBudget(request, info); });
 
@@ -51,7 +52,7 @@ test('navigation remains reachable at all requested sizes, collapsed and keyboar
       await sidebar.getByRole('button', { name: 'Contraer menú' }).click();
       await expect(sidebar.getByRole('link', { name: 'Mis números', exact: true })).toHaveAccessibleName('Mis números');
       await expect(sidebar.getByRole('button', { name: 'Cerrar sesión' })).toBeInViewport();
-      await page.screenshot({ path: `docs/evidence/ui-audit/compact-${width}x${height}.png` });
+      await page.screenshot({ path: evidencePath(`ui-audit/compact-${width}x${height}.png`) });
       await sidebar.getByRole('button', { name: 'Expandir menú' }).click();
     } else {
       for (let n = 0; n < 24; n++) {

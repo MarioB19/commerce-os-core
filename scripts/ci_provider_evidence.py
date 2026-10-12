@@ -10,7 +10,7 @@ import uuid
 
 from ci_release import require
 
-REPOSITORY = 'MarioB19/commerce-os'
+REPOSITORY = 'MarioB19/commerce-os-core'
 PROJECT = 'project-c6f43813-9ac9-47ab-9fe'
 PROVIDER = 'google-cloud-build'
 UUID_PATTERN = r'[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}'
@@ -70,7 +70,7 @@ def validate_context(value):
             and all(sha(value[key]) for key in ('package_config_sha256','package_driver_sha256')),
             'CLOUD_PACKAGE_IDENTITY_INVALID')
     require(type(value['package_image']) is str and re.fullmatch(
-        r'[a-z0-9-]+-docker\.pkg\.dev/'+re.escape(PROJECT)+r'/commerce-ci/package@sha256:[a-f0-9]{64}',
+        r'[a-z0-9-]+-docker\.pkg\.dev/'+re.escape(PROJECT)+r'/commerce-ci-public/package@sha256:[a-f0-9]{64}',
         value['package_image']), 'CLOUD_PACKAGE_IMAGE_REQUIRED')
     return value
 
@@ -129,9 +129,36 @@ def release_metadata(context, source_sha, source_tree):
             'component_policy': dict(COMPONENT_POLICY)}
 
 
-def publication_enabled(context):
-    require(context is None or context['package_origin'] == 'canonical-local',
-            'NATIVE_CLOUD_PACKAGE_PUBLICATION_NOT_ENABLED')
+def installation_enabled(context):
+    """Identity guard, not permission or evidence of an installed release.
+
+    Native FULL/package readers and the budget journal admit the transport.
+    Root still authenticates its sealed migration/tool/edge approvals before
+    installation. A prior successful installation cannot be its prerequisite.
+    """
+    if context is not None:
+        validate_context(context)
+
+
+def publication_enabled(context, *, installed_report=None):
+    """Guard after authenticated Root + HTTPS validation, never an attestation.
+
+    The caller must first validate_installed() with fresh trusted readers. A
+    package/context JSON alone cannot enable native success publication.
+    """
+    installation_enabled(context)
+    if context is None or context['package_origin'] == 'canonical-local':
+        return
+    report = installed_report
+    require(type(report) is dict and report.get('provider_evidence') == context
+            and report.get('source_sha') == context['source_sha']
+            and report.get('source_tree') == context['source_tree']
+            and type(report.get('run_id')) is str and CLOUD_RUN.fullmatch(report['run_id'])
+            and CLOUD_RUN.fullmatch(report['run_id'])[1] == context['package_build_id']
+            and report.get('status') == 'SUCCEEDED' and report.get('deployment_scope') == 'copy-runtime'
+            and report.get('runtime_stage') == 'OPERATING' and report.get('consumers_started') is True
+            and report.get('healthy_services') == 6 and report.get('https_web_parity') is True,
+            'NATIVE_CLOUD_PACKAGE_INSTALLED_READBACK_REQUIRED')
 
 
 def report_binding(metadata, run_id, archive_sha256, portal, images):

@@ -42,7 +42,7 @@ def software_installation(deployment, status, fetch, repository, *, provider_ver
     if isinstance(payload,dict) and payload.get('provider')=='google-cloud-build':
         # Only the trusted local publisher may supply the native/custody reader.
         # Actions/verifier workers without it conservatively use no baseline.
-        return repository=='MarioB19/commerce-os' and callable(provider_verify) and provider_verify(deployment,status) is True
+        return repository=='MarioB19/commerce-os-core' and callable(provider_verify) and provider_verify(deployment,status) is True
     if isinstance(payload,dict) and payload.get('deployment_scope')=='copy-runtime':
         if payload.get('runtime_stage')!='OPERATING' or payload.get('consumers_started') is not True:return False
     job_link=re.fullmatch(re.escape(prefix)+r'([1-9][0-9]*)/job/([1-9][0-9]*)',log)

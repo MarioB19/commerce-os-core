@@ -22,19 +22,31 @@ Commands (unknown fields are rejected):
   projected_gross_microusd, credit_verified=True, inventory_complete=True).
 * submit_intent: attempt_id, source(bucket, object, generation, archive_sha256),
   nonce (UUID), request_sha256. Persist source generation before the only POST.
+* approve_intent: attempt_id, gate(build_id, trigger_id, repository_id,
+  source_sha, source_tree, config_sha256), nonce, request_sha256. Attestation
+  only: reserve before approving an already-existing native PENDING Build.
 * bind: attempt_id, build_id (native UUID), source, config_sha256,
   native_evidence_sha256. The source must equal the persisted intent exactly.
+* bind_gate: the same binding using gate instead of source; never CreateBuild.
 * unknown: attempt_id, reason, evidence_sha256; keeps reservation and global lock.
 * running: attempt_id, build_id.
 * terminal: attempt_id, observation(build_id, status, started_at, finished_at,
   execution_not_started, evidence_sha256). This never releases a reservation.
 * reconcile: attempt_id, evidence_sha256, native_verified=True. Accounts the
   stored terminal interval, regardless of failure/success, then releases lock.
+* abort_before_dispatch: attempt_id, evidence_sha256, native_verified=True.
+  Full-stage RESERVED only: the trusted recovery adapter must prove the request finished,
+  fenced against continuation, source acquire never uploaded, source absent,
+  and complete native inventory without dispatch. Retains the historical plan
+  and reservation; releases only unexecuted capacity. Never creates a Build ID.
+* reduce_monthly_limit: from_seconds=28800, to_seconds=25200,
+  evidence_sha256, native_verified=True. Protected operator only: no live or
+  blocked attempt, preserved usage/history and one immutable reduction receipt.
 * account_external: observation, native_verified=True. Imports already-terminal
   bootstrap/unmanaged builds into the same budget, deduplicated by native UUID.
 * block: reason, evidence_sha256. Closed admission is not automatically reopened.
 
-Only one attempt may reserve globally. The fixed pool is 480 minutes per UTC
+Only one attempt may reserve globally. The fixed operational pool is 420 minutes per UTC
 month, including every stage, bootstrap and failures. Unknown work retains its
 full reservation in every touched month, also reserving a possible queue/run
 crossing into the next month. Verified usage is conservatively rounded UP to a
@@ -59,7 +71,8 @@ import re
 from typing import Protocol
 import uuid
 
-MONTHLY_LIMIT_SECONDS = 480 * 60
+MONTHLY_LIMIT_SECONDS = 420 * 60
+HISTORICAL_MONTHLY_LIMIT_SECONDS = 480 * 60
 GROSS_CAP_MICROUSD = 100 * 1_000_000
 STAGE_LIMITS = {'full': 5700, 'attestation': 120, 'package': 1800,
                 'publisher': 900, 'toolchain': 5700, 'diagnostic': 5700}
@@ -187,18 +200,40 @@ def new_ledger():
 
 
 def validate_ledger(doc):
-    exact(doc, 'schema_version revision updated_at monthly_limit_seconds events attempts external_builds active_attempt blocked',
+    """Operational validation: historical 480-minute ledgers cannot admit work."""
+    _validate_ledger(doc)
+    need(doc['monthly_limit_seconds'] == MONTHLY_LIMIT_SECONDS, 'OPERATING_POOL_REDUCTION_REQUIRED')
+
+
+def validate_historical_ledger(doc):
+    """Read-only historical interpretation, never an operational admission."""
+    _validate_ledger(doc)
+
+
+def _validate_ledger(doc):
+    need(type(doc) is dict, 'LEDGER_FIELDS_INVALID')
+    extra = ' limit_reduction' if 'limit_reduction' in doc else ''
+    exact(doc, 'schema_version revision updated_at monthly_limit_seconds events attempts external_builds active_attempt blocked' + extra,
           'LEDGER_FIELDS_INVALID')
     need(type(doc['schema_version']) is int and doc['schema_version'] == 1
-         and type(doc['monthly_limit_seconds']) is int and doc['monthly_limit_seconds'] == MONTHLY_LIMIT_SECONDS,
+         and type(doc['monthly_limit_seconds']) is int and doc['monthly_limit_seconds'] in {MONTHLY_LIMIT_SECONDS, HISTORICAL_MONTHLY_LIMIT_SECONDS},
          'LEDGER_POLICY_CHANGED')
     need(type(doc['revision']) is int and doc['revision'] >= 0, 'LEDGER_REVISION_INVALID')
     for key in ('events', 'attempts', 'external_builds'):
         need(type(doc[key]) is dict, 'LEDGER_MAP_REQUIRED')
     if doc['updated_at'] is None:
-        need(doc == new_ledger(), 'LEDGER_INITIAL_STATE_INVALID')
+        initial = new_ledger(); initial['monthly_limit_seconds'] = doc['monthly_limit_seconds']
+        need(doc == initial, 'LEDGER_INITIAL_STATE_INVALID')
         return
     updated = timestamp(doc['updated_at'])
+    if 'limit_reduction' in doc:
+        receipt = doc['limit_reduction']
+        exact(receipt, 'from_seconds to_seconds evidence_sha256 reduced_at', 'LIMIT_REDUCTION_FIELDS_INVALID')
+        need(type(receipt['from_seconds']) is int and receipt['from_seconds'] == HISTORICAL_MONTHLY_LIMIT_SECONDS
+             and type(receipt['to_seconds']) is int and receipt['to_seconds'] == MONTHLY_LIMIT_SECONDS
+             and doc['monthly_limit_seconds'] == MONTHLY_LIMIT_SECONDS, 'LIMIT_REDUCTION_POLICY_CHANGED')
+        digest(receipt['evidence_sha256'])
+        need(timestamp(receipt['reduced_at']) <= updated, 'DURABLE_CHRONOLOGY_INVALID')
     if doc['blocked'] is not None:
         validate_reason(doc['blocked'])
     active = []
@@ -208,14 +243,17 @@ def validate_ledger(doc):
         native_uuid(attempt_id)
         need(type(attempt) is dict, 'ATTEMPT_FIELDS_INVALID')
         state = attempt.get('state')
-        need(type(state) is str and state in LIVE_STATES | {'DISCOVERED', 'SOURCE_APPROVED', 'RECONCILED'}, 'STATE_INVALID')
+        need(type(state) is str and state in LIVE_STATES | {
+            'DISCOVERED', 'SOURCE_APPROVED', 'RECONCILED', 'ABORTED_BEFORE_DISPATCH'}, 'STATE_INVALID')
         fields = {'plan', 'state', 'discovered_at'}
         if state != 'DISCOVERED':
             fields |= {'approval'}
         if state not in {'DISCOVERED', 'SOURCE_APPROVED'}:
             fields |= {'reserved_at', 'admission'}
-        if state not in {'DISCOVERED', 'SOURCE_APPROVED', 'RESERVED'}:
+        if state not in {'DISCOVERED', 'SOURCE_APPROVED', 'RESERVED', 'ABORTED_BEFORE_DISPATCH'}:
             fields |= {'intent', 'submitted_at'}
+        if state == 'ABORTED_BEFORE_DISPATCH':
+            fields |= {'abortion'}
         if state == 'UNKNOWN':
             fields |= {'uncertainty'}
         if state in {'UUID_BOUND', 'RUNNING', 'TERMINAL_UNRECONCILED', 'RECONCILED'} or (
@@ -245,10 +283,9 @@ def validate_ledger(doc):
             need(reserved <= submitted <= updated, 'DURABLE_CHRONOLOGY_INVALID')
             validate_approval(attempt['approval'], attempt['plan'], submitted)
             validate_admission(attempt['admission'], submitted, attempt['approval'])
-            exact(attempt['intent'], 'source nonce request_sha256', 'SUBMIT_INTENT_FIELDS_INVALID')
             intent = attempt['intent']
-            validate_source(intent['source']); native_uuid(intent['nonce']); digest(intent['request_sha256'])
-            locator = source_locator(intent['source'])
+            validate_intent(intent, attempt['plan'])
+            locator = intent_locator(intent)
             need(intent['nonce'] not in nonces and locator not in sources, 'SUBMIT_SOURCE_OR_NONCE_REUSED')
             nonces.add(intent['nonce']); sources.add(locator)
         if 'uncertainty' in attempt:
@@ -270,6 +307,15 @@ def validate_ledger(doc):
             digest(attempt['reconciliation_sha256'])
             need(timestamp(attempt['terminal']['finished_at']) <= timestamp(attempt['reconciled_at']) <= updated,
                  'DURABLE_CHRONOLOGY_INVALID')
+        if state == 'ABORTED_BEFORE_DISPATCH':
+            abortion = attempt['abortion']
+            need(attempt['plan']['stage'] == 'full', 'UNDISPATCHED_FULL_REQUIRED')
+            exact(abortion, 'evidence_sha256 aborted_at reserved_seconds', 'ABORTION_FIELDS_INVALID')
+            digest(abortion['evidence_sha256'])
+            need(type(abortion['reserved_seconds']) is int and
+                 abortion['reserved_seconds'] == attempt['plan']['timeout_seconds'],
+                 'HISTORICAL_RESERVATION_CHANGED')
+            need(reserved <= timestamp(abortion['aborted_at']) <= updated, 'DURABLE_CHRONOLOGY_INVALID')
     need(len(doc['events']) == len(doc['attempts']), 'EVENT_INDEX_MISMATCH')
     need(len(active) <= 1 and doc['active_attempt'] == (active[0] if active else None), 'GLOBAL_LOCK_INVALID')
     for build_id, record in doc['external_builds'].items():
@@ -309,6 +355,15 @@ def charges(observation):
 
 def budget_usage(document, *, now):
     validate_ledger(document)
+    return _budget_usage(document, now=now)
+
+
+def budget_usage_historical(document, *, now):
+    validate_historical_ledger(document)
+    return _budget_usage(document, now=now)
+
+
+def _budget_usage(document, *, now):
     moment = utc(now)
     if document['updated_at'] is not None:
         need(moment >= timestamp(document['updated_at']), 'CLOCK_MOVED_BACKWARD')
@@ -370,6 +425,33 @@ def validate_source(source):
     digest(source['archive_sha256'])
 
 
+def validate_gate(gate, plan):
+    exact(gate, 'build_id trigger_id repository_id source_sha source_tree config_sha256 github_check_name', 'GATE_FIELDS_INVALID')
+    native_uuid(gate['build_id']); native_uuid(gate['trigger_id']); digest(gate['config_sha256'])
+    need(type(gate['github_check_name']) is str and 0 < len(gate['github_check_name'].encode('utf-8')) <= 256
+         and all(c.isprintable() for c in gate['github_check_name']), 'GATE_CHECK_NAME_INVALID')
+    need(plan['stage'] == 'attestation', 'ATTESTATION_STAGE_REQUIRED')
+    need(type(gate['repository_id']) is int and all(gate[key] == plan['identity'][key]
+         for key in ('repository_id', 'source_sha', 'source_tree'))
+         and gate['config_sha256'] == plan['config_sha256'], 'GATE_PLAN_BINDING_MISMATCH')
+
+
+def validate_intent(intent, plan):
+    need(type(intent) is dict, 'SUBMIT_INTENT_FIELDS_INVALID')
+    if 'gate' in intent:
+        exact(intent, 'gate nonce request_sha256', 'SUBMIT_INTENT_FIELDS_INVALID')
+        validate_gate(intent['gate'], plan)
+    else:
+        exact(intent, 'source nonce request_sha256', 'SUBMIT_INTENT_FIELDS_INVALID')
+        need(plan['stage'] != 'attestation', 'ATTESTATION_APPROVAL_INTENT_REQUIRED')
+        validate_source(intent['source'])
+    native_uuid(intent['nonce']); digest(intent['request_sha256'])
+
+
+def intent_locator(intent):
+    return ('gate', intent['gate']['build_id']) if 'gate' in intent else ('source', *source_locator(intent['source']))
+
+
 def validate_observation(value, now):
     exact(value, 'build_id status started_at finished_at execution_not_started evidence_sha256', 'OBSERVATION_FIELDS_INVALID')
     native_uuid(value['build_id']); digest(value['evidence_sha256'])
@@ -384,8 +466,21 @@ def validate_observation(value, now):
 
 
 def transition(document, command, *, now):
+    """Operational transitions, except the one prospective protected reduction."""
+    reducer = type(command) is dict and command.get('op') == 'reduce_monthly_limit'
+    validator = validate_historical_ledger if reducer else validate_ledger
+    return _transition(document, command, now=now, validator=validator)
+
+
+def transition_historical_abort(document, command, *, now):
+    """Reproduce the already-adopted historical abort; cannot dispatch or reset."""
+    need(type(command) is dict and command.get('op') == 'abort_before_dispatch', 'HISTORICAL_ABORT_ONLY')
+    return _transition(document, command, now=now, validator=validate_historical_ledger)
+
+
+def _transition(document, command, *, now, validator):
     """Return a proposal. Never execute proposed_effect before a confirmed CAS."""
-    validate_ledger(document)
+    validator(document)
     moment = utc(now)
     if document['updated_at']:
         need(moment >= utc(document['updated_at']), 'CLOCK_MOVED_BACKWARD')
@@ -395,10 +490,14 @@ def transition(document, command, *, now):
         'discover': 'op attempt_id plan', 'approve_source': 'op attempt_id approval',
         'reserve': 'op attempt_id admission',
         'submit_intent': 'op attempt_id source nonce request_sha256',
+        'approve_intent': 'op attempt_id gate nonce request_sha256',
         'bind': 'op attempt_id build_id source config_sha256 native_evidence_sha256',
+        'bind_gate': 'op attempt_id build_id gate config_sha256 native_evidence_sha256',
         'unknown': 'op attempt_id reason evidence_sha256', 'running': 'op attempt_id build_id',
         'terminal': 'op attempt_id observation',
         'reconcile': 'op attempt_id evidence_sha256 native_verified',
+        'abort_before_dispatch': 'op attempt_id evidence_sha256 native_verified',
+        'reduce_monthly_limit': 'op from_seconds to_seconds evidence_sha256 native_verified',
         'account_external': 'op observation native_verified', 'block': 'op reason evidence_sha256',
     }
     need(op in fields, 'COMMAND_UNKNOWN')
@@ -428,6 +527,23 @@ def transition(document, command, *, now):
             return replay()
         need(doc['blocked'] is None, 'ALREADY_BLOCKED')
         doc['blocked'] = value
+    elif op == 'reduce_monthly_limit':
+        need(command['native_verified'] is True, 'NATIVE_VERIFICATION_REQUIRED')
+        digest(command['evidence_sha256'])
+        need(type(command['from_seconds']) is int and command['from_seconds'] == HISTORICAL_MONTHLY_LIMIT_SECONDS
+             and type(command['to_seconds']) is int and command['to_seconds'] == MONTHLY_LIMIT_SECONDS,
+             'LIMIT_REDUCTION_POLICY_CHANGED')
+        if 'limit_reduction' in doc:
+            need(doc['limit_reduction']['evidence_sha256'] == command['evidence_sha256'], 'LIMIT_REDUCTION_EVIDENCE_CHANGED')
+            return replay()
+        need(doc['monthly_limit_seconds'] == HISTORICAL_MONTHLY_LIMIT_SECONDS, 'HISTORICAL_POOL_REQUIRED')
+        need(doc['active_attempt'] is None, 'LIMIT_REDUCTION_ACTIVE_ATTEMPT')
+        need(doc['blocked'] is None, 'LIMIT_REDUCTION_BLOCKED')
+        need(all(row['total_seconds'] <= MONTHLY_LIMIT_SECONDS
+                 for row in _budget_usage(doc, now=moment).values()), 'REDUCED_MONTHLY_POOL_EXCEEDED')
+        doc['monthly_limit_seconds'] = MONTHLY_LIMIT_SECONDS
+        doc['limit_reduction'] = {k: command[k] for k in ('from_seconds', 'to_seconds', 'evidence_sha256')}
+        doc['limit_reduction']['reduced_at'] = stamp(moment)
     elif op == 'account_external':
         need(command['native_verified'] is True, 'NATIVE_VERIFICATION_REQUIRED')
         value = command['observation']; validate_observation(value, moment)
@@ -459,11 +575,12 @@ def transition(document, command, *, now):
             validate_admission(command['admission'], moment, attempt['approval'])
             attempt.update(state='RESERVED', reserved_at=stamp(moment), admission=deepcopy(command['admission']))
             doc['active_attempt'] = attempt_id
-            need(all(row['total_seconds'] <= MONTHLY_LIMIT_SECONDS for row in budget_usage(doc, now=moment).values()),
+            need(all(row['total_seconds'] <= MONTHLY_LIMIT_SECONDS for row in _budget_usage(doc, now=moment).values()),
                  'MONTHLY_POOL_EXCEEDED')
-        elif op == 'submit_intent':
-            validate_source(command['source']); native_uuid(command['nonce']); digest(command['request_sha256'])
-            intent = {k: deepcopy(command[k]) for k in ('source', 'nonce', 'request_sha256')}
+        elif op in {'submit_intent', 'approve_intent'}:
+            target = 'gate' if op == 'approve_intent' else 'source'
+            intent = {k: deepcopy(command[k]) for k in (target, 'nonce', 'request_sha256')}
+            validate_intent(intent, attempt['plan'])
             if 'intent' in attempt:
                 need(attempt['intent'] == intent, 'SUBMIT_INTENT_CHANGED')
                 return replay()
@@ -471,18 +588,24 @@ def transition(document, command, *, now):
             need(doc['blocked'] is None, 'ADMISSION_BLOCKED')
             validate_approval(attempt['approval'], attempt['plan'], moment)
             validate_admission(attempt['admission'], moment, attempt['approval'])
-            need(all(row['total_seconds'] <= MONTHLY_LIMIT_SECONDS for row in budget_usage(doc, now=moment).values()),
+            need(all(row['total_seconds'] <= MONTHLY_LIMIT_SECONDS for row in _budget_usage(doc, now=moment).values()),
                  'MONTHLY_POOL_EXCEEDED')
             for other in doc['attempts'].values():
                 if 'intent' in other:
                     need(other['intent']['nonce'] != intent['nonce']
-                         and source_locator(other['intent']['source']) != source_locator(intent['source']),
+                         and intent_locator(other['intent']) != intent_locator(intent),
                          'SUBMIT_SOURCE_OR_NONCE_REUSED')
             attempt.update(state='SUBMIT_INTENT', intent=intent, submitted_at=stamp(moment))
-            effect = 'CREATE_ONCE'
-        elif op == 'bind':
-            native_uuid(command['build_id']); validate_source(command['source']); digest(command['native_evidence_sha256'])
-            need('intent' in attempt and command['source'] == attempt['intent']['source'], 'NATIVE_SOURCE_MISMATCH')
+            effect = 'APPROVE_ONCE' if op == 'approve_intent' else 'CREATE_ONCE'
+        elif op in {'bind', 'bind_gate'}:
+            target = 'gate' if op == 'bind_gate' else 'source'
+            native_uuid(command['build_id']); digest(command['native_evidence_sha256'])
+            if target == 'gate':
+                validate_gate(command['gate'], attempt['plan'])
+                need(command['build_id'] == command['gate']['build_id'], 'NATIVE_GATE_UUID_MISMATCH')
+            else:
+                validate_source(command['source'])
+            need('intent' in attempt and command[target] == attempt['intent'].get(target), 'NATIVE_SOURCE_MISMATCH')
             need(command['config_sha256'] == attempt['plan']['config_sha256'], 'NATIVE_CONFIG_MISMATCH')
             if attempt.get('build_id'):
                 need(attempt['build_id'] == command['build_id'], 'NATIVE_UUID_CHANGED')
@@ -515,6 +638,22 @@ def transition(document, command, *, now):
             if value['started_at'] is not None:
                 need(utc(value['started_at']) >= utc(attempt['submitted_at']), 'NATIVE_INTERVAL_BEFORE_INTENT')
             attempt.update(state='TERMINAL_UNRECONCILED', terminal=deepcopy(value))
+        elif op == 'abort_before_dispatch':
+            # Native absence and the dead-request fence are authenticated by
+            # the protected recovery adapter, never inferred from this state.
+            need(command['native_verified'] is True, 'NATIVE_VERIFICATION_REQUIRED')
+            digest(command['evidence_sha256'])
+            if state == 'ABORTED_BEFORE_DISPATCH':
+                need(attempt['abortion']['evidence_sha256'] == command['evidence_sha256'],
+                     'ABORTION_EVIDENCE_CHANGED')
+                return replay()
+            need(state == 'RESERVED' and doc['active_attempt'] == attempt_id,
+                 'UNDISPATCHED_RESERVATION_REQUIRED')
+            need(attempt['plan']['stage'] == 'full', 'UNDISPATCHED_FULL_REQUIRED')
+            attempt.update(state='ABORTED_BEFORE_DISPATCH', abortion={
+                'evidence_sha256': command['evidence_sha256'], 'aborted_at': stamp(moment),
+                'reserved_seconds': attempt['plan']['timeout_seconds']})
+            doc['active_attempt'] = None
         elif op == 'reconcile':
             need(command['native_verified'] is True, 'NATIVE_VERIFICATION_REQUIRED')
             digest(command['evidence_sha256'])
@@ -527,12 +666,12 @@ def transition(document, command, *, now):
             if sum(charges(attempt['terminal']).values()) > attempt['plan']['timeout_seconds']:
                 doc['blocked'] = {'reason': 'OBSERVED_USAGE_EXCEEDS_RESERVATION', 'evidence_sha256': command['evidence_sha256']}
     if op in {'reconcile', 'account_external'}:
-        if any(row['total_seconds'] > MONTHLY_LIMIT_SECONDS for row in budget_usage(doc, now=moment).values()):
+        if any(row['total_seconds'] > MONTHLY_LIMIT_SECONDS for row in _budget_usage(doc, now=moment).values()):
             doc['blocked'] = {'reason': 'OBSERVED_MONTHLY_POOL_EXCEEDED',
                               'evidence_sha256': command.get('evidence_sha256', command.get('observation', {}).get('evidence_sha256'))}
     doc['revision'] += 1
     doc['updated_at'] = stamp(moment)
-    validate_ledger(doc)
+    (validate_ledger if op == 'reduce_monthly_limit' else validator)(doc)
     return Transition(doc, True, effect, attempt_id)
 
 

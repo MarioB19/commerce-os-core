@@ -10,6 +10,7 @@ import {createApp} from '../../apps/api/src/app.js';
 import {provisionUser} from '../../apps/api/src/auth.js';
 import {pool} from '../../packages/db/src/index.js';
 import {processNumberOperations} from '../../apps/channel-worker/src/number-operations.js';
+import {evidencePath} from '../support/evidence.js';
 afterAll(()=>pool.end());
 it('drains twenty simulated accounts, terminates the actual owner process and transfers only after expiry plus verified isolation',async()=>{
  const workspace='restart-'+randomUUID(),directory=await mkdtemp(join(tmpdir(),'numbers-restart-')),proofKey=randomBytes(32).toString('hex');
@@ -43,6 +44,6 @@ it('drains twenty simulated accounts, terminates the actual owner process and tr
   // Saturate only this fixture process's connection pool, then release without altering database records.
   const held=await Promise.all(Array.from({length:pool.options.max??10},()=>pool.connect()));const pressureStarted=performance.now();const waiting=call('GET','/v1/number-capacity');setTimeout(()=>held.forEach(c=>c.release()),250);const capacity=await waiting;const dbPressure=performance.now()-pressureStarted;
   expect(dbPressure).toBeGreaterThanOrEqual(240);expect(capacity.topology).toHaveLength(20);expect((await pool.query('SELECT count(*)::int n FROM outbox WHERE workspace_id=$1',[workspace])).rows[0].n).toBe(0);
-  const evidence={status:'PASSED',environment:'SIMULATION',accounts:20,actual_child_terminated:true,owner_generation_before:1,owner_generation_after:2,expired_lease_without_proof_rejected:true,transfer_frozen:true,explicit_resume:true,recovery_ms:performance.now()-recoveryStarted,db_pressure_ms:dbPressure,outbox_effects:0,physical_isolation_verified:false,completed_at:new Date().toISOString()};await writeFile('docs/evidence/numbers-worker-restart.json',JSON.stringify(evidence,null,2));
+  const evidence={status:'PASSED',environment:'SIMULATION',accounts:20,actual_child_terminated:true,owner_generation_before:1,owner_generation_after:2,expired_lease_without_proof_rejected:true,transfer_frozen:true,explicit_resume:true,recovery_ms:performance.now()-recoveryStarted,db_pressure_ms:dbPressure,outbox_effects:0,physical_isolation_verified:false,completed_at:new Date().toISOString()};await writeFile(evidencePath('numbers-worker-restart.json'),JSON.stringify(evidence,null,2));
  }finally{for(const child of children)if(child.exitCode===null&&child.signalCode===null){const exited=once(child,'exit');child.kill('SIGTERM');await exited;}await app.close();await rm(directory,{recursive:true,force:true});}
 },180000);
