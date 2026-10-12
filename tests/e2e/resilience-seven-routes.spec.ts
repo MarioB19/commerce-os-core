@@ -1,4 +1,3 @@
-import {evidencePath} from '../support/test-evidence-path.js';
 import {test,expect,type Locator,type Page} from '@playwright/test';
 import {AxeBuilder} from '@axe-core/playwright';
 import {copyFile,mkdir} from 'node:fs/promises';

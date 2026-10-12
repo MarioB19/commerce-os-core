@@ -1,4 +1,3 @@
-import {evidencePath} from '../support/test-evidence-path.js';
 import {fixtureRequest,useSimulationFixtureTransport} from "./support/simulation-fixture-transport.js";
 import { test, expect, type Page } from '@playwright/test';
 import { AxeBuilder } from '@axe-core/playwright';

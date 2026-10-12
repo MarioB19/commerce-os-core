@@ -1,4 +1,3 @@
-import {evidencePath} from '../support/test-evidence-path.js';
 import {test,expect} from '@playwright/test';
 import {closureFixture} from './support/closure-fixture.js';
 import {evidencePath} from '../support/evidence.js';

@@ -5,7 +5,7 @@ import {beforeAll,afterAll,describe,it,expect} from 'vitest';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {readProfileCatalog} from '../../packages/db/src/profile-inventory.js';
 import {buildPrivacyInventoryPlan,privacyInventoryPolicy,type PrivacyInventoryCatalog} from '../../packages/db/src/privacy-inventory-plan.js';
-import {buildPrivacyWriterFencePlan,withPrivacyWriterFence} from '../../packages/db/src/privacy-writer-fence.js';
+import {buildPrivacyWriterFencePlan} from '../../packages/db/src/privacy-writer-fence.js';
 import {preparePrivacyJob,PRIVACY_JOB_INVENTORY_BINDING_SQL} from '../../packages/db/src/privacy-jobs.js';
 import {buildPrivacyReferenceFencePlan,withPrivacyReferenceFence} from '../../packages/db/src/privacy-reference-fence.js';
 import {buildPrivacyAssetReferencePlan} from '../../packages/db/src/privacy-asset-reference-plan.js';
