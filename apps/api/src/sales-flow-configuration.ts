@@ -1,3 +1,5 @@
+import {registerCatalogProfileRoute} from './catalog-profile-route.js';
+import type {RouteHandlerMethod} from 'fastify';
 import type {FastifyInstance,FastifyRequest} from 'fastify';
 import {z} from 'zod';
 import {offerSchema,salesFlowSaveDraftInputSchema,salesFlowValidateInputSchema,type Body,type DomainRecord} from '../../../packages/contracts/src/index.js';
@@ -39,14 +41,15 @@ function publicConfiguration(source:DomainRecord,result:SalesFlowConfigurationVa
 }
 
 export async function salesFlowConfigurationRoutes(app:FastifyInstance){
- app.get('/v1/offers/:id/sales-flow',async req=>{
+ const route=(method:'GET'|'POST'|'PATCH',url:string,handler:RouteHandlerMethod)=>registerCatalogProfileRoute(app,method,url,'offer',handler,method==='PATCH'?'write':'read');
+ route('GET','/v1/offers/:id/sales-flow',async req=>{
   offerReadPermission(principal(req));
   const source=await scopedRecord(req,'offer',z.uuid().parse((req.params as Body).id));
   const checked=await validation(req,source,{});
   return{data:publicConfiguration(source,checked.validation)};
  });
 
-	 app.post('/v1/offers/:id/sales-flow/validate',async req=>{
+	 route('POST','/v1/offers/:id/sales-flow/validate',async req=>{
 	  offerReadPermission(principal(req));
 	  const input=salesFlowValidateInputSchema.parse(parseBody(req));
   const source=await scopedRecord(req,'offer',z.uuid().parse((req.params as Body).id));
@@ -55,7 +58,7 @@ export async function salesFlowConfigurationRoutes(app:FastifyInstance){
   return{data:publicConfiguration({...source,body:checked.body},checked.validation)};
  });
 
-	 app.patch('/v1/offers/:id/sales-flow',async req=>{
+	 route('PATCH','/v1/offers/:id/sales-flow',async req=>{
 	  writePermission(principal(req),'offer');
 	  const input=salesFlowSaveDraftInputSchema.parse(parseBody(req));
   const result=await mutate(req,'offer.sales_flow_draft:'+(req.params as Body).id,async client=>{

@@ -1,0 +1,10 @@
+import {describe,it,expect} from 'vitest';
+import {randomUUID} from 'node:crypto';
+import {legacyQrSnapshot,adoptionDigest,legacyQrAdoptionSchema} from './continuity-adoption.js';
+import {systemQrContents,systemQrProfile} from './qr-policy.js';
+function fixture(){return{workspaceId:'historical-profile',environment:'REAL' as const,accountId:randomUUID(),stateVersion:7,poolId:randomUUID(),profileId:randomUUID(),episodeId:randomUUID(),topology:'direct' as const,purpose:'preparation' as const,programId:null,groupId:null,groupVersion:null,identityFingerprint:'a'.repeat(64),grantId:randomUUID(),connectionId:randomUUID(),config:systemQrProfile('UTC'),content:[{id:randomUUID(),...systemQrContents[0]}]};}
+describe('explicit historical QR authority snapshot',()=>{
+ it.each(['legacy-30d/v1','standard-15d/v1','standard-15d/v2'])('preserves policy %s without inventing or converting credits',policy=>{const f=fixture();const result=legacyQrSnapshot({...f,config:{...f.config,policy_version:policy}});expect(result.snapshot.policyVersion).toBe(policy);expect(result.snapshot.episodeId).toBe(f.episodeId);expect(result.sha256).toBe(adoptionDigest(result.snapshot));expect(Object.keys(result.snapshot)).not.toContain('effectiveDays');});
+ it('changes the review hash when scope, grant or existing version changes',()=>{const f=fixture(),before=legacyQrSnapshot(f).sha256;for(const patch of [{workspaceId:'other'},{environment:'SIMULATION' as const},{stateVersion:8},{grantId:randomUUID()}])expect(legacyQrSnapshot({...f,...patch}).sha256).not.toBe(before);});
+ it('rejects changed or repeated content and open-ended operation input',()=>{const f=fixture();expect(()=>legacyQrSnapshot({...f,content:[{...f.content[0],content_hash:'b'.repeat(64)}]})).toThrow('ADOPTION_CONTENT_CHANGED');expect(()=>legacyQrSnapshot({...f,content:[...f.content,...f.content]})).toThrow('ADOPTION_CONTENT_DUPLICATE');expect(()=>legacyQrAdoptionSchema.parse({operationId:randomUUID(),accountId:f.accountId,expectedStateVersion:7,snapshotSha256:'a'.repeat(64),renew:true})).toThrow();});
+});

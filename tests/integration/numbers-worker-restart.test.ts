@@ -1,3 +1,4 @@
+import {evidencePath} from '../support/test-evidence-path.js';
 import {it,expect,afterAll} from 'vitest';
 import {fork,type ChildProcess} from 'node:child_process';
 import {once} from 'node:events';

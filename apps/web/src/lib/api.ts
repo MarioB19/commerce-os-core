@@ -93,9 +93,10 @@ export async function api<T>(
   init?: RequestInit,
   preserveEnvelope = false,
 ): Promise<T> {
+  const identityPath=path.startsWith('/api/')||/^\/v2\/me\/(profiles|profile-selection)$/.test(path);
   // The standalone official client defaults explicitly to REAL; lab callers always
   // provide their SIMULATION query. Identity routes are outside business context.
-  if (!path.startsWith("/api/")) {
+  if (!identityPath) {
     const [base, query] = path.split("?");
     const search = new URLSearchParams(query);
     if (!search.has("environment")) search.set("environment", "REAL");
@@ -121,7 +122,7 @@ export async function api<T>(
     );
   };
   try {
-    const response = await fetch(path.startsWith("/api/") ? path : `/v1${path}`, {
+    const response = await fetch(identityPath ? path : `/v1${path}`, {
       ...init,
       signal: controller.signal,
       credentials: "include",

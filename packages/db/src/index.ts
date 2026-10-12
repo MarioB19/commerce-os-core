@@ -1,10 +1,15 @@
+import {profileRoutedPool,currentProfileExecutor,profileQueryClient,joinProfileQueryWork} from './profile-query-routing.js';
+import {createProfileWorkerRuntime,currentWorkerProfile,withWorkerProfilePhase} from './profile-worker-scope.js';
 import pg from 'pg';
 import {drizzle} from 'drizzle-orm/node-postgres';
 import {createCipheriv,createDecipheriv,randomBytes,randomUUID,createHash} from 'node:crypto';
 import type {DomainRecord,Environment,Body} from '../../contracts/src/index.js';
 import * as schema from './schema.js';
-export type QueryExecutor=Pick<pg.Pool,'query'>;
-export const pool=new pg.Pool({connectionString:process.env.DATABASE_URL,max:Number(process.env.DB_POOL_MAX||5),idleTimeoutMillis:10000,connectionTimeoutMillis:5000});
+import type {ProfileQuery} from './profile-context.js';
+export type QueryExecutor={query:ProfileQuery};
+const nativePool=new pg.Pool({connectionString:process.env.DATABASE_URL,max:Number(process.env.DB_POOL_MAX||5),idleTimeoutMillis:10000,connectionTimeoutMillis:5000});
+export const pool=profileRoutedPool(nativePool);
+export const createDatabaseWorkerRuntime=(role:'commerce_automation'|'commerce_channel',environment:Environment)=>createProfileWorkerRuntime(nativePool,role,environment);
 // pg removes failed idle clients. Keep services alive so readiness and later queries can recover.
 // Never log the client or error object: connection details and query text can contain private data.
 pool.on('error',()=>{process.stderr.write('database_idle_connection_failed; reconnecting on next query\n');});
@@ -12,7 +17,7 @@ export const db=drizzle(pool,{schema});
 export const uuid=()=>randomUUID();
 export const hash=(value:string|Buffer)=>createHash('sha256').update(value).digest('hex');
 export async function query<T extends pg.QueryResultRow=any>(sql:string,values:any[]=[]):Promise<pg.QueryResult<T>>{return pool.query<T>(sql,values);}
-export async function withTransaction<T>(fn:(client:pg.PoolClient)=>Promise<T>):Promise<T>{const c=await pool.connect();try{await c.query('BEGIN');const result=await fn(c);await c.query('COMMIT');return result;}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}}
+export async function withTransaction<T>(fn:(client:pg.PoolClient)=>Promise<T>):Promise<T>{const scoped=currentProfileExecutor();if(scoped)return joinProfileQueryWork(scoped,()=>fn(profileQueryClient(scoped) as unknown as pg.PoolClient));if(currentWorkerProfile())return withWorkerProfilePhase(db=>fn(profileQueryClient(db) as unknown as pg.PoolClient));const c=await pool.connect();try{await c.query('BEGIN');const result=await fn(c);await c.query('COMMIT');return result;}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}}
 export async function getRecord(client:QueryExecutor,workspace:string,kind:string,id:string):Promise<DomainRecord|undefined>{if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))return undefined;return(await client.query('SELECT * FROM records WHERE workspace_id=$1 AND kind=$2 AND id=$3',[workspace,kind,id])).rows[0];}
 export async function listRecords(client:QueryExecutor,workspace:string,kind:string,environment?:Environment):Promise<DomainRecord[]>{return(await client.query(`SELECT * FROM records WHERE workspace_id=$1 AND kind=$2 AND ($3::text IS NULL OR environment=$3) AND (kind<>'channel_account' OR NOT (body ? 'deleted_at')) ORDER BY created_at DESC`,[workspace,kind,environment??null])).rows;}
 export async function putRecord(client:QueryExecutor,input:{id?:string;workspaceId:string;environment:Environment;kind:string;body:Body;version?:number}):Promise<DomainRecord>{if(input.id&&input.version!==undefined){const r=await client.query('UPDATE records SET body=$1,version=version+1,updated_at=now() WHERE id=$2 AND workspace_id=$3 AND kind=$4 AND environment=$5 AND version=$6 RETURNING *',[input.body,input.id,input.workspaceId,input.kind,input.environment,input.version]);if(!r.rows[0])throw Object.assign(new Error('VERSION_CONFLICT'),{statusCode:409});return r.rows[0];}return(await client.query('INSERT INTO records(id,workspace_id,environment,kind,body) VALUES($1,$2,$3,$4,$5) RETURNING *',[input.id??uuid(),input.workspaceId,input.environment,input.kind,input.body])).rows[0];}

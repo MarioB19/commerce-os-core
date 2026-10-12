@@ -1,0 +1,19 @@
+import {describe,it,expect} from 'vitest';
+import {commerceProfileRowTableNames} from './commerce-profile-row-policy.js';
+import {commerceProfileForeignKeyPolicy} from './commerce-profile-foreign-key-policy.js';
+import type {ProfileCatalog} from './profile-inventory.js';
+
+// Deliberately synthetic metadata. Native edge pins are exercised separately
+// against all323 original constraints in the composed PostgreSQL fixture.
+function fixture():ProfileCatalog{
+ const tables=commerceProfileRowTableNames.map(name=>({name,owner:'synthetic_owner',rls:true,force_rls:true,columns:[]}));
+ const privateTables=tables.filter(t=>t.name.includes('.')).map(t=>({...t,schema:t.name.split('.')[0]!,name:t.name.split('.')[1]!}));
+ return{tables:tables.filter(t=>!t.name.includes('.')),non_public_tables:privateTables,foreign_keys:[],non_public_foreign_keys:[],policies:['creative_devices','creative_pairings'].map(table=>({table,name:'retired_creative_custody',command:'*',permissive:false,roles:['PUBLIC'],using:'false',with_check:'false'})),roles:[],privileged_functions:[],grants:[],column_grants:[],schema_grants:[],function_grants:[],default_grants:[],views:[],other_relations:privateTables.map(t=>({schema:t.schema,name:t.name,owner:t.owner,kind:'r'})),triggers:[],migrations:[]};
+}
+describe('composed V7 foreign-key policy',()=>{
+ it('classifies all188 identities and keeps6 exact reviewed native edges separate',()=>{const p=commerceProfileForeignKeyPolicy(fixture());expect(Object.keys(p.tables)).toHaveLength(188);expect(Object.keys(p.reviewed_edges!)).toHaveLength(6);expect(Object.values(p.reviewed_edges!).filter(e=>e.preserve_delete_cascade)).toHaveLength(2);});
+ it('preserves profile-shared identity, global catalogs and retired nullable history explicitly',()=>{const p=commerceProfileForeignKeyPolicy(fixture());expect(p.tables.user).toBe(null);expect(p.tables.ai_model_prices).toBe(null);expect(p.tables.profiles).toEqual({workspace:'id',environment:null});expect(p.tables.personal_access_tokens).toEqual({workspace:'workspace_id',environment:null});expect(p.tables.manual_controls).toMatchObject({environment:'environment',nullable_columns:['environment']});expect(p.tables.creative_pairings).toMatchObject({environment:null,nullable_columns:['workspace_id']});});
+ it('does not substitute execution SIMULATION for native budget/source environment',()=>{const p=commerceProfileForeignKeyPolicy(fixture());expect(p.tables['commerce_number_lab.ai_bindings']).toEqual({workspace:'workspace_id',environment:null});const entries=Object.values(p.reviewed_edges!);expect(entries.filter(e=>e.source_scope?.environment==='source_environment')).toHaveLength(2);expect(entries.filter(e=>e.source_scope?.environment==='budget_environment')).toHaveLength(1);expect(entries.filter(e=>e.target_scope?.environment==='budget_environment')).toHaveLength(1);});
+ it('refuses unknown relations, missing reviewed components and any new retired-pairing edge',()=>{const c=fixture();c.tables.push({...c.tables[0]!,name:'unclassified'});expect(()=>commerceProfileForeignKeyPolicy(c)).toThrow('UNCLASSIFIED_RELATION');const d=fixture();d.tables.find(t=>t.name==='profile_quota_entries')!.force_rls=false;expect(()=>commerceProfileForeignKeyPolicy(d)).toThrow('QUOTA_COMPONENT_REQUIRED');const e=fixture();e.foreign_keys.push({name:'unexpected',table:'creative_pairings',columns:['workspace_id'],referenced_schema:'public',referenced_table:'profiles',referenced_columns:['id'],validated:true});expect(()=>commerceProfileForeignKeyPolicy(e)).toThrow('RETIRED_PAIRING_EDGE');});
+ it('returns new review objects so one proposal cannot alter a later authority',()=>{const a=commerceProfileForeignKeyPolicy(fixture());a.reviewed_edges!['ai_attempts.number_lab_attempt_binding']!.original_sha256='0'.repeat(64);expect(commerceProfileForeignKeyPolicy(fixture()).reviewed_edges!['ai_attempts.number_lab_attempt_binding']!.original_sha256).not.toBe('0'.repeat(64));});
+});

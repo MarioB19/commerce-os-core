@@ -1,3 +1,4 @@
+import {ProfileApplication,isProfileApplicationPath} from './components/profile-application';
 import {NumbersPage,WarmupsPage} from './pages/numbers';
 import {LaunchHelpPage} from './pages/launch-help';
 import {DisplayPreferences} from './components/display-preferences';
@@ -101,6 +102,7 @@ function App() {
  const pathname=useRouterState({select:state=>state.location.pathname});
  if(pathname==='/forgot-password')return <ForgotPasswordPage/>;
  if(pathname==='/reset-password')return <ResetPasswordPage/>;
+ if(isProfileApplicationPath(pathname))return <ProfileApplication path={pathname} login={retry=><Login onSignedIn={retry}/>}/>;
  return <SessionApp/>;
 }
 function SessionApp() {
@@ -138,7 +140,7 @@ function AuthenticatedApp({ session }: { session: Session }) {
   }, [session.workspace_id, session.user.id]);
   return <WorkspaceContext.Provider value={{ session: { ...session, environment: "REAL" }, environment: "REAL" }}><Shell /></WorkspaceContext.Provider>;
 }
-function Login() {
+function Login({onSignedIn}:{onSignedIn?:()=>void}={}) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [pending, setPending] = useState(false);
@@ -156,6 +158,7 @@ function Login() {
       });
       setPassword("");
       await queryClient.invalidateQueries();
+      onSignedIn?.();
     } catch (e) {
       setError(e as Error);
     } finally {
@@ -377,7 +380,16 @@ function Shell() {
   </div>;
 }
 const rootRoute = createRootRoute({ component: App });
+const EmptyProfileRoute=()=>null;
 const routes = [
+  ["/products", EmptyProfileRoute],
+  ["/products/$productId/variants", EmptyProfileRoute],
+  ["/sales/payments", EmptyProfileRoute],
+  ["/sales/payments/rules", EmptyProfileRoute],
+  ["/results/goals", EmptyProfileRoute],
+  ["/settings/profile", EmptyProfileRoute],
+  ["/settings/employees", EmptyProfileRoute],
+  ["/account/tokens", EmptyProfileRoute],
   ["/account/security", AccountSecurityPage],
   ["/forgot-password", ForgotPasswordPage],
   ["/reset-password", ResetPasswordPage],

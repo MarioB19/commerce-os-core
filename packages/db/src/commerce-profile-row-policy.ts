@@ -1,0 +1,93 @@
+import type {ProfileCatalog} from './profile-inventory.js';
+import type {ProfileRowIsolationPolicy,ProfileRowScope} from './profile-row-isolation-plan.js';
+
+// Explicit reviewed application roles. ACLs remain the source of SQL privileges;
+// membership in this list grants nothing and does not include closed-port owners.
+const applicationRoles=['commerce_api','commerce_ingress','commerce_automation','commerce_channel','commerce_maintenance','commerce_ai','commerce_number_lab','commerce_results','commerce_mail_dispatch'];
+// Fixed table identities, not names selected from columns or observed grants.
+const environmentTables=[
+ 'ai_admission_denials','ai_attempt_allocations','ai_attempt_events','ai_attempts',
+ 'ai_budget_periods','ai_credential_operations','ai_credential_versions','ai_credentials',
+ 'ai_key_budgets','ai_runtime_grants','campaign_products','channel_session_events',
+ 'channel_sessions','commands','commercial_assignment_history','commercial_assignments',
+ 'commercial_buyer_exclusions','commercial_resolution_receipts','commercial_remarketing_attempts','commercial_remarketing_cycles','consumer_receipts',
+ 'continuous_authorization_events','continuous_authorization_operations','continuous_authorizations','copy_source_isolation_challenges',
+ 'creative_artifacts','creative_assets','creative_attempts','creative_batch_versions',
+ 'creative_batches','creative_budgets','creative_conformities','creative_jobs',
+ 'creative_playbook_receipts','creative_projects','creative_provider_operations','creative_quotes',
+ 'creative_recipe_intakes','creative_recipe_versions','creative_recipes','creative_reviews',
+ 'creative_settings','creative_steps','creative_storage_usage','creative_uploads',
+ 'creative_voice_brief_versions','creative_voice_briefs','creative_voice_operations','domain_events',
+ 'effect_attempts','finished_asset_intakes','health_observation_index','idempotency',
+ 'inbound_envelopes','integration_diagnostics','integration_secrets','integration_setting_versions',
+ 'integration_settings','intelligence_analyses','intelligence_analysis_batches','intelligence_corpus_evaluations',
+ 'intelligence_observations','intelligence_offers','intelligence_opportunities','intelligence_runs',
+ 'intelligence_searches','market_families','market_journey_snapshots','market_operations',
+ 'market_releases','market_variant_events','market_variants','mcl_sponsorships',
+ 'mcl_test_scopes','meta_ad_metadata','meta_insight_accounts','meta_insight_coverage',
+ 'meta_insight_days','meta_insight_jobs','meta_links','meta_syncs',
+ 'number_capacity_observations','number_capacity_slots','number_dispatch_slots','number_link_access',
+ 'number_operations','number_simulation_groups','operation_authorizations','operational_alerts',
+ 'operational_evidence','operational_settings','outbox','outbox_gate_schedule',
+ 'ownership_isolation_receipts','payment_contributions','physical_chats','platform_retirement_ledger',
+ 'privacy_closure_receipts','product_assistant_proposals','provider_diagnostics','receipt_order_policy_snapshots',
+ 'receipt_policy_heads','receipt_policy_operations','receipt_policy_versions','record_versions',
+ 'records','reported_sales','result_financial_context','result_goal_events',
+ 'result_goal_operations','result_goals','result_metric_daily','result_metric_sealed',
+ 'result_projection_sources','result_projection_state','result_rebuild_receipts','retention_files',
+ 'retention_plans','retention_policies','retention_tombstones','sales_command_proposals',
+ 'sales_history_imports','session_ownership','timers','warmup_account_reservations',
+ 'warmup_content','warmup_content_usage','warmup_continuity_adoptions','warmup_conversations',
+ 'warmup_day_credits','warmup_effect_origins','warmup_episodes','warmup_group_events',
+ 'warmup_group_receipts','warmup_groups','warmup_identities','warmup_library_drafts',
+ 'warmup_manual_declarations','warmup_observations','warmup_plans','warmup_pools',
+ 'warmup_profiles','warmup_programs','warmup_rate_buckets','warmup_rate_reservations',
+ 'warmup_schedule_runs','warmup_simulated_events','warmup_simulation_runs','warmup_states',
+ 'warmup_turns'
+];
+const sharedProfileTables=[
+ 'creative_global_budgets','creative_members','integration_imports','memberships',
+ 'personal_access_tokens','profile_invitation_mail_attempts','profile_invitation_mail_jobs','profile_invitations',
+ 'profile_personal_token_routes','profile_session_context','profile_token_operations','service_tokens'
+];
+const globalIdentityTables=[
+ 'account','identity_audit','identity_mail_jobs','identity_mail_settings',
+ 'identity_rate_limits','identity_reset_links','session','user',
+ 'verification'
+];
+const privateLaboratoryTables=['commerce_number_lab.runs','commerce_number_lab.operations','commerce_number_lab.events','commerce_number_lab.run_releases','commerce_number_lab.ai_bindings'];
+const quotaTables=['profile_quota_policy','profile_quota_load_admissions','profile_quota_coverage','profile_quota_entries'];
+const privacyFenceTables=['privacy_writer_epochs','privacy_writer_leases'];
+const retiredTables=['creative_devices','creative_pairings'];
+/** Metadata inventory only, for composition/review. Does not grant access. */
+export const commerceProfileRowTableNames:readonly string[]=Object.freeze([...environmentTables,...sharedProfileTables,...globalIdentityTables,...privateLaboratoryTables,...quotaTables,...privacyFenceTables,...retiredTables,'profiles','schema_migrations','ai_model_prices','manual_controls'].sort());
+function check(value:unknown,code:string):asserts value{if(!value)throw Error(code);}
+
+/** Pure, complete classification for the composed V7 schema through030.
+ * This is not approval of catalog ACLs, functions, roles, policy bodies or mounts.
+ * The independent row planner pins their native metadata before any DDL.
+ */
+export function commerceProfileRowPolicy(catalog:ProfileCatalog):ProfileRowIsolationPolicy{
+ const all=[...catalog.tables.map(t=>[t.name,t] as const),...(catalog.non_public_tables??[]).map(t=>[t.schema+'.'+t.name,t] as const)];
+ const rows=new Map(all);check(rows.size===all.length,'COMMERCE_ROW_DUPLICATE_RELATION');
+ const result:Record<string,ProfileRowScope>={};
+ const add=(name:string,scope:ProfileRowScope)=>{check(rows.has(name)&&!result[name],'COMMERCE_ROW_RELATION_REQUIRED');result[name]=scope;};
+ const scoped=(name:string,workspace:string,environment:string|null)=>{
+  const table=rows.get(name);check(table,'COMMERCE_ROW_RELATION_REQUIRED');
+  add(name,{mode:'scope',workspace,environment,roles:[...applicationRoles],initialize_permission:!table.rls});
+ };
+ for(const name of environmentTables)scoped(name,'workspace_id','environment');
+ for(const name of sharedProfileTables)scoped(name,'workspace_id',null);
+ scoped('profiles','id',null);
+ for(const name of globalIdentityTables)add(name,{mode:'preserve',reason:'Global authenticated identity, separate from profile authority; identity pool and ACL review remain required.'});
+ add('schema_migrations',{mode:'preserve',reason:'Global immutable migration metadata; no tenant business payload or profile authority.'});
+ add('ai_model_prices',{mode:'preserve',reason:'Global immutable model price catalog; protected administration and grants remain separately reviewed.'});
+ for(const name of quotaTables){const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_QUOTA_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Closed quota owner needs all adopted profiles for existing global counts; preserve reviewed020 policies and ACL.'});}
+ for(const name of privacyFenceTables){const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_PRIVACY_FENCE_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Closed030 session leases and writer epochs are profile-wide authority; only the reviewed fence owner may access rows, through its exact scoped policies and ports.'});}
+ const manual=rows.get('manual_controls');check(manual?.rls&&manual.force_rls,'COMMERCE_ROW_MANUAL_COMPONENT_REQUIRED');
+ add('manual_controls',{mode:'preserve',reason:'Reviewed020 separates record environments while preserving the workspace stop shared across both environments.'});
+ for(const name of retiredTables){const row=rows.get(name),pol=catalog.policies.filter(p=>p.table===name);check(row?.rls&&row.force_rls&&pol.length===1&&pol[0]!.name==='retired_creative_custody'&&pol[0]!.command==='*'&&!pol[0]!.permissive&&pol[0]!.roles.length===1&&pol[0]!.roles[0]==='PUBLIC'&&pol[0]!.using==='false'&&pol[0]!.with_check==='false','COMMERCE_ROW_RETIRED_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Retired credentials remain administrative history under restrictive deny; no invented profile or environment.'});}
+ for(const name of privateLaboratoryTables){const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_LAB_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Dedicated021 control is profile scoped with immutable source/budget REAL and execution SIMULATION dimensions; preserve its exact reviewed gates.'});}
+ check(Object.keys(result).length===rows.size,'COMMERCE_ROW_UNCLASSIFIED_RELATION');
+ return{schema_version:1,tables:result};
+}

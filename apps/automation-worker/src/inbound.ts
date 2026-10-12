@@ -1,3 +1,5 @@
+import {withNumberLabEngine,type NumberLabEngineLease} from '../../../packages/db/src/number-lab-engine-runtime.js';
+import {bindNumberLabDispatch,type NumberLabDispatch} from '../../channel-worker/src/catalog-simulator.js';
 import {classifyGroupEvent} from '../../../packages/db/src/warmup-groups.js';
 import {materializeProviderHistory} from './inbound-history.js';
 import {launchTestOrderFields,lockLaunchTestOrderCreation} from '../../../packages/db/src/launch-test-scope.js';
@@ -59,10 +61,16 @@ export async function materializeMessage(client:QueryExecutor,account:DomainReco
   if(!normalized.fromMe&&!late&&!routingBlocked)await acceptCustomerResponse(client,conversation,message.id);
   return conversation;
 }
-export async function processInbound(limit=25){await materializeProviderHistory(limit);let count=0;for(let i=0;i<limit;i++){const processed=await withTransaction(async client=>{
-  const envelope=(await client.query(`SELECT * FROM inbound_envelopes WHERE status='PENDING' ORDER BY received_at FOR UPDATE SKIP LOCKED LIMIT 1`)).rows[0];if(!envelope)return false;
-  const account=await getRecord(client,envelope.workspace_id,'channel_account',envelope.account_id);if(!account)throw new Error('INBOUND_ACCOUNT_NOT_FOUND');const raw=JSON.parse(decrypt(envelope.payload_ciphertext));
+async function processInboundImpl(limit:number,transaction:<T>(work:(db:QueryExecutor)=>Promise<T>)=>Promise<T>,lab?:ReturnType<typeof bindNumberLabDispatch>){let count=0;for(let i=0;i<limit;i++){const processed=await transaction(async client=>{
+  const envelope=(await client.query(`SELECT * FROM inbound_envelopes WHERE status='PENDING' ${lab?"AND workspace_id=$1 AND environment='SIMULATION' AND account_id=$2 AND provider='simulator' AND metadata->>'source'='catalog_simulator' AND metadata->>'simulation_id'=$3 AND EXISTS(SELECT 1 FROM outbox o WHERE o.id::text=inbound_envelopes.metadata->>'effect_id' AND o.workspace_id=inbound_envelopes.workspace_id AND o.environment='SIMULATION' AND o.account_id=inbound_envelopes.account_id AND o.conversation_id=$4)":''} ORDER BY received_at FOR UPDATE SKIP LOCKED LIMIT 1`,lab?[lab.scope.workspaceId,lab.scope.accountId,lab.scope.runId,lab.scope.conversationId]:[])).rows[0];if(!envelope)return false;
+  const account=await getRecord(client,envelope.workspace_id,'channel_account',envelope.account_id);if(!account)throw new Error('INBOUND_ACCOUNT_NOT_FOUND');const raw=JSON.parse(lab?lab.openEnvelope(envelope):decrypt(envelope.payload_ciphertext));
   let normalized:CanonicalEvent[];try{const cloudSettings=envelope.provider==='cloud'?await readIntegrationSettings(client,account.workspace_id,account.environment,`cloud:${account.body.gateway_ref??'CLOUD'}`,{secrets:false}):undefined;if(envelope.provider==='cloud'&&(!cloudSettings?.enabled||!cloudSettings.config.phone_number_id))throw new Error('CLOUD_CONFIGURATION_REQUIRED');normalized=envelope.provider==='cloud'?normalizeCloud(raw,new Date(envelope.received_at).toISOString(),String(cloudSettings!.config.phone_number_id)):envelope.provider==='waha'?normalizeWaha(raw,new Date(envelope.received_at).toISOString()):normalizeSimulator(raw,new Date(envelope.received_at).toISOString());}catch{await client.query(`UPDATE inbound_envelopes SET status='FAILED',error='NORMALIZATION_INVALID' WHERE id=$1`,[envelope.id]);return true;}
   for(const e of normalized){if(e.type!=='message'&&await classifyGroupEvent(client,account,e,envelope.id))continue;if(e.type==='message')await materializeMessage(client,account,e,envelope.id,undefined,undefined,undefined,envelope.metadata?.source==='provider_history');else if(['ack','session','restriction'].includes(e.type)){await appendEvent(client,{workspace_id:envelope.workspace_id,environment:envelope.environment,event_type:`provider.${e.type}.observed`,aggregate_id:envelope.account_id,causation_id:envelope.id,actor:{type:'provider',id:envelope.provider},payload:{canonical_key:e.key,provider_message_id:e.providerMessageId??null,status:e.status??'UNKNOWN',provider_at:e.providerAt,envelope_id:envelope.id,effect_id_hint:typeof e.payload.biz_opaque_callback_data==='string'?e.payload.biz_opaque_callback_data:null,signal_details:e.type==='session'?{reachout_timelock:(e.payload.data as Record<string,any>|undefined)?.reachoutTimelock??null,message_capping:(e.payload.data as Record<string,any>|undefined)?.messageCapping??null}:null}});}}
   await client.query(`UPDATE inbound_envelopes SET status='PROCESSED',processed_at=now() WHERE id=$1`,[envelope.id]);return true;
 });if(!processed)break;count++;}return count;}
+
+export async function processInbound(limit=25){await materializeProviderHistory(limit);return processInboundImpl(limit,work=>withTransaction(work));}
+export async function processNumberLabInbound(lease:NumberLabEngineLease,handle:NumberLabDispatch,limit=100){
+ if(!Number.isInteger(limit)||limit<1||limit>100)throw Error('LAB_ENGINE_BATCH_LIMIT');
+ return withNumberLabEngine(lease,ports=>processInboundImpl(limit,work=>ports.transaction(work),bindNumberLabDispatch(handle,ports)));
+}

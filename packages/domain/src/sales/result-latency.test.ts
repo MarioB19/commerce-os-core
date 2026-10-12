@@ -1,0 +1,22 @@
+import {describe,it,expect} from 'vitest';
+import {applyResultLatencyDelta,emptyResultLatencies,mergeResultLatencies,resultLatencyDelta,resultLatencyPercentile} from './result-latency.js';
+import {singleSourceLatencies} from './result-latency-source.js';
+import {emptyResultCounters,mergeResultContributions,resultProjectionDeltas} from './result-projection.js';
+import {latencyCoverageValid,resultLatenciesSchema} from '../../../contracts/src/result-latency.js';
+import {resultContributionSchema} from '../../../contracts/src/result-projection.js';
+const grain={day:'2026-10-01',currency:'MXN',timezone:'UTC',dimensions:{family_id:null,variant_id:null,market:null,account_id:null,campaign_id:null,ad_id:null,touch:'UNKNOWN' as const}};
+const hist=(response:Record<string,string>)=>({response,sale:{}});
+const fact=(response:Record<string,string>,n:string,sum:string)=>({grain,counters:{...emptyResultCounters(),response_samples:n,response_ms_sum:sum},latencies:hist(response)});
+describe('exact anonymous latency frequencies',()=>{
+ it('computes nearest-rank p50/p95 from merged observations, never averaged local percentiles',()=>{const h=mergeResultLatencies([hist({'10':'99'}),hist({'1000':'1'})]);expect(resultLatencyPercentile(h.response,'100',50).value).toBe('10');expect(resultLatencyPercentile(h.response,'100',95).value).toBe('10');});
+ it('keeps huge weights and durations exact',()=>{const n='9007199254740993',h={'9007199254740994':n};expect(resultLatencyPercentile(h,n,95).value).toBe('9007199254740994');});
+ it('uses ceil at both sides of a percentile threshold',()=>{expect(resultLatencyPercentile({'1':'18','2':'2'},'20',95).value).toBe('2');expect(resultLatencyPercentile({'1':'19','2':'1'},'20',95).value).toBe('1');});
+ it('distinguishes an observed zero from no samples and incomplete historical coverage',()=>{expect(resultLatencyPercentile({'0':'1'},'1',95)).toEqual({value:'0',reason:null});expect(resultLatencyPercentile({},'0',50).reason).toBe('NO_DENOMINATOR');expect(resultLatencyPercentile({'2':'1'},'2',50).reason).toBe('LATENCY_COVERAGE_INCOMPLETE');});
+ it('reverses and replaces the exact frequency even when sum and count are unchanged',()=>{const a=fact({'10':'1','30':'1'},'2','40'),b=fact({'20':'2'},'2','40'),delta=resultProjectionDeltas([a],[b]);expect(delta).toHaveLength(1);expect(applyResultLatencyDelta(a.latencies,delta[0]!.latency_delta)).toEqual(b.latencies);});
+ it('canonicalizes same-frequency distributions independently of insertion order',()=>{const a=hist({'9000000000':'1','20':'1'}),b=hist({'20':'1','9000000000':'1'});expect(JSON.stringify(mergeResultLatencies([a]))).toBe(JSON.stringify(mergeResultLatencies([b])));expect(resultLatencyDelta(a,b)).toEqual(emptyResultLatencies());});
+ it('retains missing historical sample coverage while combining known frequencies',()=>{const a=fact({'10':'1'},'1','10'),b={grain,counters:{...emptyResultCounters(),response_samples:'1',response_ms_sum:'30'}};const r=mergeResultContributions([a,b])[0]!;expect(resultLatencyPercentile(r.latencies!.response,r.counters.response_samples,50).reason).toBe('LATENCY_COVERAGE_INCOMPLETE');});
+ it.each([{response:{phone:'1'},sale:{}},{response:{'2':'0'},sale:{}},{response:{'-2':'1'},sale:{}},{response:{'2':'1'},sale:{},contact_id:'synthetic'}])('rejects identifying, negative and zero-weight cells',bad=>{expect(resultLatenciesSchema.safeParse(bad).success).toBe(false);});
+ it('rejects moments or weights inconsistent with source counters',()=>{expect(resultContributionSchema.safeParse(fact({'10':'2'},'1','20')).success).toBe(false);expect(latencyCoverageValid(hist({'10':'1'}),{response_samples:'1',response_ms_sum:'20',sale_samples:'0',sale_ms_sum:'0'})).toBe(false);});
+ it('never invents a distribution from an aggregated mean',()=>{const a={grain,counters:{...emptyResultCounters(),response_samples:'2',response_ms_sum:'40'}};expect(()=>singleSourceLatencies([a])).toThrow('RESULT_SOURCE_LATENCY_NOT_SINGLE');const one={...a,counters:{...a.counters,response_samples:'1',response_ms_sum:'0'}};expect(singleSourceLatencies([one])[0]?.latencies).toEqual(hist({'0':'1'}));});
+ it('rejects underflow and overflow during signed frequency corrections',()=>{expect(()=>applyResultLatencyDelta(hist({'1':'1'}),hist({'1':'-2'}))).toThrow('RESULT_LATENCY_BOUND');expect(()=>mergeResultLatencies([hist({'1':'9'.repeat(30)}),hist({'1':'1'})])).toThrow('RESULT_LATENCY_OVERFLOW');});
+});

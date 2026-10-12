@@ -1,3 +1,5 @@
+import {registerCatalogProfileRoute} from './catalog-profile-route.js';
+import type {RouteHandlerMethod} from 'fastify';
 import type {FastifyInstance,FastifyRequest} from 'fastify';
 import {z} from 'zod';
 import {pool,putRecord,listRecords,type QueryExecutor} from '../../../packages/db/src/index.js';
@@ -79,7 +81,8 @@ export async function workflowValidation(req:FastifyRequest,body:Body,client:Que
 }
 
 export async function catalogVersionRoutes(app:FastifyInstance){
- app.post('/v1/products/:id/versions',async(req,reply)=>{
+ const route=(method:'GET'|'POST',url:string,kind:'product'|'offer'|'workflow',handler:RouteHandlerMethod,mode:'read'|'write'=method==='GET'?'read':'write')=>registerCatalogProfileRoute(app,method,url,kind,handler,mode);
+ route('POST','/v1/products/:id/versions','product',async(req,reply)=>{
   writePermission(principal(req),'product');const input=z.object({expected_version:revision,changes:productSchema.omit({initial_offer:true}).partial().default({})}).strict().parse(parseBody(req));
   const result=await mutate(req,'product.version:'+recordId(req),async c=>{
    const source=await lockCatalogRecord(req,'product',recordId(req),c);if(source.version!==input.expected_version)throw fail(409,'VERSION_CONFLICT');
@@ -89,7 +92,7 @@ export async function catalogVersionRoutes(app:FastifyInstance){
    await audit(c,req,'product.version_created',row.id,{previous_version:source.version});return{data:present(row),status:201};
   });reply.code(result.status??201);return{data:result.data};
  });
- app.post('/v1/products/:id/transition',async req=>{
+ route('POST','/v1/products/:id/transition','product',async req=>{
   const input=z.object({expected_version:revision,status:z.enum(['DRAFT','PUBLISHED','ARCHIVED'])}).strict().parse(parseBody(req));
   if(input.status==='PUBLISHED')publishPermission(req,'products');else writePermission(principal(req),'product');
   const result=await mutate(req,'product.transition:'+recordId(req),async c=>{
@@ -103,13 +106,13 @@ export async function catalogVersionRoutes(app:FastifyInstance){
  });
  for(const kind of ['offer','workflow'] as const){
   const path=kind==='offer'?'offers':'workflows';
-  app.get(`/v1/${path}/:id/versions`,async req=>{
+  route('GET',`/v1/${path}/:id/versions`,kind,async req=>{
    readPermission(principal(req),kind);const source=await scopedRecord(req,kind,recordId(req)),restricted=principal(req).service&&!!principal(req).resource_ids,series=restricted?(source.body.series_id??source.id):await lineageId(req,kind,source);
    const rows=await listRecords(pool,source.workspace_id,kind,source.environment),versions:DomainRecord[]=[];
    for(const row of rows)if(resourcePermitted(principal(req),row.id)&&(restricted?(row.body.series_id??row.id):await lineageId(req,kind,row))===series)versions.push(row);
    return{data:versions.map(present),meta:{total:versions.length,series_id:series}};
   });
-	 app.post(`/v1/${path}/:id/versions`,async(req,reply)=>{
+	 route('POST',`/v1/${path}/:id/versions`,kind,async(req,reply)=>{
 	  writePermission(principal(req),kind);const schema:z.ZodObject<any>=kind==='offer'?offerSchema:workflowSchema;
 	  const input:Body=(kind==='offer'?offerVersionCreateInputSchema:z.object({expected_version:revision,changes:schema.omit({status:true}).partial().default({})}).strict()).parse(parseBody(req));
    const result=await mutate(req,kind+'.version:'+recordId(req),async c=>{
@@ -122,10 +125,10 @@ export async function catalogVersionRoutes(app:FastifyInstance){
    });reply.code(result.status??201);return{data:result.data};
   });
  }
- app.post('/v1/workflows/:id/validate',async req=>{
+ route('POST','/v1/workflows/:id/validate','workflow',async req=>{
   readPermission(principal(req),'workflow');const row=await scopedRecord(req,'workflow',recordId(req));return{data:await workflowValidation(req,row.body)};
- });
- for(const action of ['publish','duplicate','rollback'] as const)app.post(`/v1/workflows/:id/${action}`,async req=>{
+ },'read');
+ for(const action of ['publish','duplicate','rollback'] as const)route('POST',`/v1/workflows/:id/${action}`,'workflow',async req=>{
   if(action!=='duplicate')publishPermission(req,'workflows');else writePermission(principal(req),'workflow');
   const input=(action==='publish'?z.object({expected_version:revision}).strict():action==='rollback'?z.object({version_id:z.string().uuid(),expected_version:revision.optional()}).strict():z.object({name:z.string().trim().min(1).max(160).optional()}).strict()).parse(parseBody(req)) as Body;
   const result=await mutate(req,`workflow.${action}:`+recordId(req),async c=>{

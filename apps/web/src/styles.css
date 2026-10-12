@@ -4045,3 +4045,14 @@ input:not([type="checkbox"]):not([type="radio"]),select,textarea{min-height:44px
 :root[data-theme="dark"] .empty-icon { background:var(--ux-state-neutral-bg); color:var(--ux-state-neutral-fg); }
 :root[data-theme="dark"] .capability-row strong { color:var(--v5-text); }
 :root[data-theme="dark"] .capability-row p { color:var(--v5-muted); }
+
+/* Selected-profile application: controls wrap at narrow and enlarged viewports. */
+.profile-application { min-height:100vh; }
+.profile-application .topbar { gap:1rem; flex-wrap:wrap; height:auto; padding:1rem; }
+.profile-application .topbar details { position:relative; }
+.profile-application .topbar details nav { display:flex; flex-direction:column; gap:.75rem; background:var(--v5-surface,#fff); padding:1rem; border:1px solid var(--v5-line,#ccc); }
+.profile-application-nav { display:flex; flex-wrap:wrap; gap:1.25rem; padding:1rem; border-bottom:1px solid var(--v5-line,#ccc); }
+.profile-application-nav [aria-current=page] { font-weight:700; text-decoration:underline; text-underline-offset:.25em; }
+.profile-switch-overlay { position:fixed; inset:0; z-index:100; background:rgb(0 0 0 / .45); }
+.profile-switch-dialog { position:fixed; z-index:101; left:50%; top:50%; transform:translate(-50%,-50%); width:min(32rem,calc(100vw - 2rem)); max-height:calc(100dvh - 2rem); overflow:auto; padding:1.5rem; border-radius:1rem; background:var(--v5-surface,#fff); color:var(--v5-text,#18232f); box-shadow:0 1rem 3rem rgb(0 0 0 / .2); }
+.profile-switch-dialog > div { flex-wrap:wrap; }

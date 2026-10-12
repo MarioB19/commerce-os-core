@@ -17,9 +17,9 @@ export async function invalidateResetLinks(c:QueryExecutor,user:string){
  await c.query("UPDATE identity_mail_jobs SET status='CANCELLED',payload_ciphertext=NULL,finished_at=now(),diagnostic_code='LINK_INVALIDATED' WHERE user_id=$1 AND status IN ('PENDING','SENDING')",[user]);
 }
 /** Fixed windows anchored at first use; the atomic upsert works across processes/restarts. */
-export async function identityLimit(kind:string,value:string,max:number,seconds=900){
+export async function identityLimit(kind:string,value:string,max:number,seconds=900,executor:QueryExecutor=pool){
  const key=identityDigest(kind,value);
- const r=await pool.query(`INSERT INTO identity_rate_limits(bucket,hits,expires_at) VALUES($1,1,now()+$2*interval '1 second')
+ const r=await executor.query(`INSERT INTO identity_rate_limits(bucket,hits,expires_at) VALUES($1,1,now()+$2*interval '1 second')
  ON CONFLICT(bucket) DO UPDATE SET hits=CASE WHEN identity_rate_limits.expires_at<=now() THEN 1 ELSE LEAST(identity_rate_limits.hits+1,$3+1) END,
  expires_at=CASE WHEN identity_rate_limits.expires_at<=now() THEN now()+$2*interval '1 second' ELSE identity_rate_limits.expires_at END RETURNING hits`,[key,seconds,max]);
  return r.rows[0].hits<=max;

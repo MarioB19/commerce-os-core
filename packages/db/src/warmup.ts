@@ -3,6 +3,9 @@ import type {Environment,DomainRecord,Body} from '../../contracts/src/index.js';
 import {canonicalIdentity} from '../../messaging/src/security.js';
 import {isStandard15dPolicy,warmupProfileSchema,type WarmupProfile} from '../../domain/src/warmup/policy.js';
 import {hash,encrypt,decrypt,appendEvent,type QueryExecutor} from './index.js';
+import {currentProfileExecutor} from './profile-query-routing.js';
+import {readCurrentQrContinuity,continuousWarmupAuthorityBlock} from './continuous-warmup.js';
+import {readEffectiveHealthBatch,currentEffectiveSignal,currentRestrictionClear,effectiveHealthBlockers} from './effective-health.js';
 
 export async function warmupOverview(c:QueryExecutor,workspace:string,environment:Environment,resourceIds?:string[]){
  const pool=(await c.query('SELECT * FROM warmup_pools WHERE workspace_id=$1 AND environment=$2 AND program_id IS NULL ORDER BY created_at,id',[workspace,environment])).rows[0];
@@ -29,8 +32,45 @@ export async function warmupOverview(c:QueryExecutor,workspace:string,environmen
  return{installed:true,enabled:pool.enabled,pool:resourceIds?{id:pool.id,enabled:pool.enabled,paused:pool.paused,breaker_open:pool.breaker_open}:pool,accounts:states.map(({identity_id:_identity,...s})=>s),plans,pair_stats:pairStats,jobs,provider_verified:!!providerEvidence,provider_evidence:providerEvidence?{id:providerEvidence.id,observed_at:providerEvidence.observed_at,expires_at:providerEvidence.expires_at,source:providerEvidence.source}:null};
 }
 export async function commercialWarmupGuard(c:QueryExecutor,account:DomainRecord){
- const state=(await c.query('SELECT s.status,i.address_fingerprint,i.address_ciphertext FROM warmup_states s JOIN warmup_pools p ON p.id=s.pool_id LEFT JOIN warmup_identities i ON i.id=s.identity_id AND i.account_id=s.account_id WHERE s.account_id=$1 AND s.workspace_id=$2 AND s.environment=$3 AND (s.enrolled_at IS NOT NULL OR p.enabled)',[account.id,account.workspace_id,account.environment])).rows[0];
+ const state=(await c.query("SELECT s.status,s.paused,s.confirmed_block,s.pool_id,s.profile_ready_at,p.enabled,p.paused AS pool_paused,p.breaker_open,to_jsonb(p)->>'continuity_mode' AS continuity_mode,i.address_fingerprint,i.address_ciphertext,to_jsonb(i)->>'qr_verified_at' qr_verified_at,to_jsonb(i)->>'qr_command_id' qr_command_id,to_jsonb(i)->>'qr_identity_fingerprint' qr_identity_fingerprint FROM warmup_states s JOIN warmup_pools p ON p.id=s.pool_id LEFT JOIN warmup_identities i ON i.id=s.identity_id AND i.account_id=s.account_id WHERE s.account_id=$1 AND s.workspace_id=$2 AND s.environment=$3 AND (s.enrolled_at IS NOT NULL OR p.enabled)",[account.id,account.workspace_id,account.environment])).rows[0];
  if(isStandard15dPolicy(account.body.number_policy_version)&&!state)return 'ACCOUNT_PREPARATION_REQUIRED';
+ if(state&&account.environment==='REAL'&&account.body.provider==='waha'&&!warmupIdentityMatches(account,state))return 'WARMUP_REGISTERED_IDENTITY_CHANGED';
+ if(state?.continuity_mode==='QR_CONTINUOUS'&&['AWAITING_PEER','WARMING','AWAITING_CONTENT'].includes(state.status)
+  &&!state.paused&&!state.confirmed_block&&state.enabled&&!state.pool_paused&&!state.breaker_open){
+  const db=currentProfileExecutor(account.workspace_id);if(!db)return 'CONTINUITY_PROFILE_CONTEXT_REQUIRED';
+  const own=await readCurrentQrContinuity(db,account.environment,account.id);
+  if(own&&!own.revokedAt&&!own.humanPaused&&!own.protections.length){
+   const now=(await c.query('SELECT clock_timestamp() AS now')).rows[0].now as Date;
+   const matchesOrigin=(identity:Body,grant:typeof own|undefined)=>grant?.source.kind==='VERIFIED_QR_CONNECTION'&&identity.qr_verified_at&&new Date(identity.qr_verified_at)<=now&&identity.qr_command_id===grant.source.connectionId&&identity.qr_identity_fingerprint===grant.source.identityFingerprint;
+   if(!state.profile_ready_at||new Date(state.profile_ready_at)>now||!matchesOrigin(state,own))return 'ACCOUNT_WARMING';
+   const candidates=(await c.query(`SELECT r.*,i.address_fingerprint,i.address_ciphertext,to_jsonb(i)->>'qr_verified_at' qr_verified_at,to_jsonb(i)->>'qr_command_id' qr_command_id,to_jsonb(i)->>'qr_identity_fingerprint' qr_identity_fingerprint FROM warmup_states s
+    JOIN records r ON r.id=s.account_id AND r.workspace_id=s.workspace_id AND r.environment=s.environment
+    JOIN warmup_identities i ON i.id=s.identity_id AND i.account_id=s.account_id
+    JOIN channel_sessions cs ON cs.account_id=s.account_id AND cs.workspace_id=s.workspace_id AND cs.environment=s.environment
+    JOIN session_ownership o ON o.account_id=s.account_id::text AND o.workspace_id=s.workspace_id
+    WHERE s.pool_id=$1 AND s.workspace_id=$2 AND s.environment=$3 AND s.account_id<>$4
+     AND s.paused=false AND NOT s.confirmed_block AND s.profile_ready_at<=$5 AND s.status IN('AWAITING_PEER','WARMING','AWAITING_CONTENT','GRADUATED')
+     AND r.body->>'status'='WORKING' AND NOT(r.body?'deleted_at') AND r.body->>'identity_verified'='true'
+     AND cs.desired_state='RUNNING' AND NOT cs.operational_pause AND cs.observed_state='CONNECTED' AND cs.auth_state='VERIFIED'
+     AND cs.archived_at IS NULL AND cs.health_expires_at>$5 AND NOT o.frozen AND o.lease_expires_at>$5
+     AND NOT EXISTS(SELECT 1 FROM manual_controls m WHERE m.workspace_id=s.workspace_id
+      AND (m.scope_type='workspace' AND m.scope_id=s.workspace_id OR m.scope_type='channel_account' AND m.scope_id=s.account_id::text)
+      AND (m.paused OR m.suppressed OR m.takeover))
+    ORDER BY s.account_id LIMIT 21`,[state.pool_id,account.workspace_id,account.environment,account.id,now])).rows;
+   if(candidates.length>20)return 'WARMUP_PEER_INVENTORY_OVERFLOW';
+   const health=await readEffectiveHealthBatch(c,{workspaceId:account.workspace_id,environment:account.environment,accountIds:candidates.map(p=>p.id),now});
+   let eligible=false;
+   for(const peer of candidates){
+    const other=await readCurrentQrContinuity(db,account.environment,peer.id),h=health.get(peer.id)!;
+    if(!continuousWarmupAuthorityBlock(own,other,{workspaceId:account.workspace_id,environment:account.environment,senderId:account.id,peerId:peer.id})
+     &&matchesOrigin(peer,other)&&warmupIdentityMatches(peer,peer)&&currentEffectiveSignal(h,'session')?.status==='OK'
+     &&currentEffectiveSignal(h,'transport')?.status==='OK'&&(currentEffectiveSignal(h,'transport')?.value as Body|undefined)?.identity_fingerprint===peer.body.identity_fingerprint&&currentRestrictionClear(h)&&!effectiveHealthBlockers(h).length){eligible=true;break;}
+   }
+   // D17: lack of an eligible own peer must not stop customer inbound. Other
+   // commercial consent, health, pause and authority gates still run normally.
+   if(!eligible)return null;
+  }
+ }
  if(state&&state.status!=='GRADUATED')return 'ACCOUNT_WARMING';
  return state&&account.environment==='REAL'&&account.body.provider==='waha'&&!warmupIdentityMatches(account,state)?'WARMUP_REGISTERED_IDENTITY_CHANGED':null;
 }

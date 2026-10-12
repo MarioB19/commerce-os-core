@@ -1,0 +1,8 @@
+# Local synthetic PostgreSQL17/pgBackRest laboratory, not a production image.
+# Native arm64 test base already present on the controlled local Docker host.
+FROM postgres@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826
+RUN apt-get update && apt-get install -y --no-install-recommends pgbackrest python3 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --chmod=0555 tests/recovery/pitr-fixture.sh /opt/pitr-fixture.sh
+USER postgres
+ENTRYPOINT ["bash", "/opt/pitr-fixture.sh"]

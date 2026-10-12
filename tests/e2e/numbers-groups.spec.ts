@@ -1,3 +1,4 @@
+import {evidencePath} from '../support/test-evidence-path.js';
 import {test,expect} from '@playwright/test';
 import {AxeBuilder} from '@axe-core/playwright';
 import {evidencePath} from '../support/evidence.js';

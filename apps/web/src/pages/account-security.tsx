@@ -49,9 +49,12 @@ function PasswordForm({token,onSuccess,change=false}:{token?:string;onSuccess:()
  </form>;
 }
 export function AccountSecurityPage(){
- const {session}=useWorkspace();const [done,setDone]=useState(false);const status=useRef<HTMLDivElement>(null);
+ const {session}=useWorkspace();return <AccountSecurityView user={session.user}/>;
+}
+export function AccountSecurityView({user}:{user:{name:string;email:string}}){
+ const [done,setDone]=useState(false);const status=useRef<HTMLDivElement>(null);
  return <section className="account-security"><div className="page-heading"><span className="eyebrow">MI CUENTA</span><h1>Seguridad</h1><p>Gestiona el acceso a tu cuenta de Commerce OS.</p></div>
-  <div className="security-card"><div className="security-identity"><span className="user-avatar" aria-hidden="true">{session.user.name.slice(0,2).toUpperCase()}</span><div><strong>{session.user.name}</strong><p>{session.user.email}</p></div></div><h2>Cambiar contraseña</h2><p className="form-hint">Tu cuenta es la misma en Simulación y Operación real.</p>
+  <div className="security-card"><div className="security-identity"><span className="user-avatar" aria-hidden="true">{user.name.slice(0,2).toUpperCase()}</span><div><strong>{user.name}</strong><p>{user.email}</p></div></div><h2>Cambiar contraseña</h2><p className="form-hint">Tu cuenta te permite acceder a tus perfiles autorizados.</p>
   {done&&<div ref={status} role="status" tabIndex={-1} className="security-success">Contraseña actualizada. Tus sesiones anteriores se cerraron y continuas con una sesión nueva en este dispositivo.</div>}
   <PasswordForm change onSuccess={()=>{setDone(true);requestAnimationFrame(()=>status.current?.focus());}}/></div></section>;
 }

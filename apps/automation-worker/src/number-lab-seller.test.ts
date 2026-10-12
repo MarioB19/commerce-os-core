@@ -1,0 +1,21 @@
+import {describe,it,expect} from 'vitest';
+import {createNumberLabSeller,bindNumberLabSeller,type NumberLabSellerOptions} from './number-lab-seller.js';
+import type {NumberLabEnginePorts} from '../../../packages/db/src/number-lab-engine-runtime.js';
+import type {DomainRecord} from '@commerce/contracts';
+const id=(n:number)=>'10000000-0000-4000-8000-'+String(n).padStart(12,'0');
+const pool={async connect(){throw Error('UNEXPECTED_NATIVE_IO');}};
+const binding={workspaceId:'source',runId:id(1),operationId:id(2),snapshotSha256:'a'.repeat(64),variantId:id(3),releaseId:id(4),grantId:id(5),conversationId:id(6),accountId:id(7),offerId:id(8),agentId:id(9)};
+const options=():NumberLabSellerOptions=>({binding:{...binding},controlPool:pool,enterprisePool:pool,custodyKey:new Uint8Array(32),maximumMicrousd:1000});
+const ports=():NumberLabEnginePorts=>({workspaceId:'number-lab:'+binding.runId,binding:{runId:binding.runId,operationId:binding.operationId,snapshotSha256:binding.snapshotSha256},query:async()=>{throw Error('UNEXPECTED_NATIVE_IO');},transaction:async()=>{throw Error('UNEXPECTED_NATIVE_IO');},transactionUnderAuthority:async()=>{throw Error('UNEXPECTED_NATIVE_IO');}});
+const base={version:1,created_at:new Date(0).toISOString(),updated_at:new Date(0).toISOString()};
+const conv=()=>({...base,id:binding.conversationId,workspace_id:ports().workspaceId,environment:'SIMULATION',kind:'conversation',body:{simulation_id:binding.runId,account_id:binding.accountId,offer_version_id:binding.offerId,agent_version_id:binding.agentId}} as DomainRecord);
+const agent=()=>({...base,id:binding.agentId,workspace_id:ports().workspaceId,environment:'SIMULATION',kind:'agent',body:{provider:'workspace'}} as DomainRecord);
+describe('opaque laboratory seller composition',()=>{
+ it('rejects fabricated handles before native IO',()=>{expect(()=>bindNumberLabSeller({kind:'NUMBER_LAB_SELLER'},ports())).toThrow('LAB_SELLER_REQUIRED');});
+ it('binds once to the installed operation and validates the canonical remapped tuple',()=>{const h=createNumberLabSeller(options()),s=bindNumberLabSeller(h,ports());expect(Object.isFrozen(h)).toBe(true);expect(()=>s.validate(conv(),agent())).not.toThrow();expect(()=>bindNumberLabSeller(h,ports())).toThrow('LAB_SELLER_REQUIRED');});
+ it.each(['runId','operationId','snapshotSha256'] as const)('rejects %s from a different operation',field=>{const p=ports();(p.binding as any)[field]=field==='snapshotSha256'?'b'.repeat(64):id(99);expect(()=>bindNumberLabSeller(createNumberLabSeller(options()),p)).toThrow('LAB_SELLER_BINDING');});
+ it.each(['simulation_id','account_id','offer_version_id','agent_version_id'] as const)('rejects changed %s in the engine conversation',field=>{const s=bindNumberLabSeller(createNumberLabSeller(options()),ports()),c=conv();c.body[field]=id(99);expect(()=>s.validate(c,agent())).toThrow('LAB_SELLER_CONTEXT_CHANGED');});
+ it('rejects a REAL or foreign conversation and an unrelated agent',()=>{const s=bindNumberLabSeller(createNumberLabSeller(options()),ports());for(const c of [{...conv(),environment:'REAL' as const},{...conv(),workspace_id:'foreign'},{...conv(),id:id(99)}])expect(()=>s.validate(c,agent())).toThrow('LAB_SELLER_CONTEXT_CHANGED');expect(()=>s.validate(conv(),{...agent(),id:id(99)})).toThrow('LAB_SELLER_CONTEXT_CHANGED');});
+ it('detaches the protected binding from its caller',()=>{const o=options(),h=createNumberLabSeller(o);o.binding.runId=id(99);o.custodyKey.fill(255);expect(()=>bindNumberLabSeller(h,ports()).validate(conv(),agent())).not.toThrow();});
+ it('rejects public selectors and invalid budgets at construction',()=>{expect(()=>createNumberLabSeller({...options(),binding:{...binding,environment:'REAL'} as any})).toThrow();expect(()=>createNumberLabSeller({...options(),maximumMicrousd:0})).toThrow('LAB_SELLER_CONFIGURATION');});
+});

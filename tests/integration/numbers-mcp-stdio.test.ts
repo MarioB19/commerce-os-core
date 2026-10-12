@@ -1,3 +1,4 @@
+import {evidencePath} from '../support/test-evidence-path.js';
 import {it,expect,afterAll} from 'vitest';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';

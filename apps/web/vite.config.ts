@@ -8,6 +8,7 @@ export default defineConfig({
     port: 5173,
     headers: privateReviewHeaders,
     proxy: {
+      "/v2": process.env.API_PROXY_TARGET ?? `http://127.0.0.1:${process.env.API_PORT??3001}`,
       "/v1": process.env.API_PROXY_TARGET ?? `http://127.0.0.1:${process.env.API_PORT??3001}`,
       "/api/auth": process.env.API_PROXY_TARGET ?? `http://127.0.0.1:${process.env.API_PORT??3001}`,
       "/health": process.env.API_PROXY_TARGET ?? `http://127.0.0.1:${process.env.API_PORT??3001}`,
@@ -17,6 +18,7 @@ export default defineConfig({
     port: 4173,
     headers: privateReviewHeaders,
     proxy: {
+      "/v2": process.env.API_PROXY_TARGET ?? `http://127.0.0.1:${process.env.API_PORT??3001}`,
       "/v1": process.env.API_PROXY_TARGET ?? `http://127.0.0.1:${process.env.API_PORT??3001}`,
       "/api/auth": process.env.API_PROXY_TARGET ?? `http://127.0.0.1:${process.env.API_PORT??3001}`,
       "/health": process.env.API_PROXY_TARGET ?? `http://127.0.0.1:${process.env.API_PORT??3001}`,

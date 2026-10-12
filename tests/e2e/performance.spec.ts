@@ -1,3 +1,4 @@
+import {evidencePath} from '../support/test-evidence-path.js';
 import {fixtureRequest,useSimulationFixtureTransport} from "./support/simulation-fixture-transport.js";
 import { test, expect } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
