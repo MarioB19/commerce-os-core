@@ -2,8 +2,9 @@ import {fixtureRequest,useSimulationFixtureTransport} from "./support/simulation
 import { test, expect, type Page } from "@playwright/test";
 import { AxeBuilder } from "@axe-core/playwright";
 import { randomUUID, randomBytes } from "node:crypto";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { prepareRateBudget } from "./support/rate-budget.js";
+import { evidencePath } from "../support/evidence.js";
 const origin = process.env.E2E_BASE_URL ?? "http://127.0.0.1:5173";
 let cachedCookies:
   | Awaited<ReturnType<ReturnType<Page["context"]>["cookies"]>>
@@ -163,7 +164,7 @@ test("map and steps edit one graph, autosave on selection/reload and undo connec
       r.nodes.find((n: any) => n.id === "start").next === "message",
   );
   await page.screenshot({
-    path: "docs/evidence/screenshots/sales-steps-edit.png",
+    path: evidencePath("screenshots/sales-steps-edit.png"),
     fullPage: true,
   });
 });
@@ -377,7 +378,7 @@ test("guided seller preserves advanced instructions; integrated test exposes sou
     page.getByText("Evaluar proveedor externo · pendiente"),
   ).toBeVisible();
   await page.screenshot({
-    path: "docs/evidence/screenshots/sales-seller-test.png",
+    path: evidencePath("screenshots/sales-seller-test.png"),
     fullPage: true,
   });
 });
@@ -423,7 +424,7 @@ test("100 nodes, search, responsive steps and accessibility checks", async ({
     ).toEqual([]);
     checks.push({ width, overflow, axe_violations: axe.violations.length });
     await page.screenshot({
-      path: `docs/evidence/screenshots/sales-steps-${width}.png`,
+      path: evidencePath(`screenshots/sales-steps-${width}.png`),
       fullPage: true,
     });
   }
@@ -433,9 +434,8 @@ test("100 nodes, search, responsive steps and accessibility checks", async ({
   expect(
     await page.evaluate(() => document.activeElement !== document.body),
   ).toBe(true);
-  mkdirSync("docs/evidence", { recursive: true });
   writeFileSync(
-    "docs/evidence/sales-visual-browser.json",
+    evidencePath("sales-visual-browser.json"),
     JSON.stringify(
       {
         opened_100_nodes_ms: openedMs,

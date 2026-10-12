@@ -37,6 +37,7 @@ test-results-v5-platform/
 .local
 .runtime
 test-results
+test-evidence
 playwright-report
 scripts/rotate-local-test-credential.mjs
 gha-creds-*.json

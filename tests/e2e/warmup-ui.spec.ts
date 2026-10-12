@@ -1,5 +1,6 @@
 import {test,expect} from '@playwright/test';
 import {closureFixture} from './support/closure-fixture.js';
+import {evidencePath} from '../support/evidence.js';
 
 for(const example of [{turns:4,phase:2,feasible:'5–6 conversaciones distintas'},{turns:5,phase:3,feasible:'12 conversaciones distintas'}])test(`warm-up editor approves ${example.turns} explicit turns compatible with phase ${example.phase}`,async({page})=>{
  await closureFixture(page);const submitted:Record<string,unknown>[]=[];
@@ -16,7 +17,7 @@ for(const example of [{turns:4,phase:2,feasible:'5–6 conversaciones distintas'
  for(let i=1;i<=example.turns;i++)await modal.getByLabel(`Mensaje del turno ${i}`,{exact:true}).fill(`Contenido ficticio aprobado, turno ${i}`);
  await expect(save).toBeDisabled();expect(submitted).toEqual([]);
  await modal.getByRole('checkbox',{name:/Confirmo que todos los turnos/}).check();await expect(save).toBeEnabled();
- if(example.phase===3){await modal.evaluate(element=>{element.scrollTop=0;});await page.screenshot({path:'docs/evidence/v5-ui/warmup-content-editor-1440.png'});}
+ if(example.phase===3){await modal.evaluate(element=>{element.scrollTop=0;});await page.screenshot({path:evidencePath('v5-ui/warmup-content-editor-1440.png')});}
  await save.click();await expect(modal).toBeHidden();
  expect(submitted).toEqual([{label:'Contenido propio sintético de verificación',turns:Array.from({length:example.turns},(_,i)=>({kind:'text',text:`Contenido ficticio aprobado, turno ${i+1}`})),ownership_confirmed:true,environment:'REAL'}]);
 });
@@ -50,5 +51,5 @@ test('numbers show persisted plan, ACK activity and planned pair concentration w
  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
  expect(await page.locator('.warmup-observations p').evaluateAll(elements=>elements.every(element=>element.getBoundingClientRect().right<=innerWidth&&element.scrollWidth<=element.clientWidth+1))).toBe(true);
  const {AxeBuilder}=await import('@axe-core/playwright');const audit=await new AxeBuilder({page}).withTags(['wcag2a','wcag2aa','wcag21aa']).analyze();expect(audit.violations.map(v=>v.id)).toEqual([]);
- await page.screenshot({path:'docs/evidence/v5-ui/warmup-plans-concentration-360.png',fullPage:true});
+ await page.screenshot({path:evidencePath('v5-ui/warmup-plans-concentration-360.png'),fullPage:true});
 });

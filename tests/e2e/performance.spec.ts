@@ -1,9 +1,10 @@
 import {fixtureRequest,useSimulationFixtureTransport} from "./support/simulation-fixture-transport.js";
 import { test, expect } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import pg from 'pg';
 import { prepareRateBudget } from './support/rate-budget.js';
+import {evidencePath} from '../support/evidence.js';
 test.beforeEach(async ({page}) => { await useSimulationFixtureTransport(page); });
 test.beforeEach(async ({ request }, info) => { await prepareRateBudget(request, info); });
 
@@ -48,7 +49,7 @@ test('production inbox durable → visible latency with foreground polling', asy
     }
     const sorted=[...samples].sort((a,b)=>a-b),p95=sorted[Math.ceil(sorted.length*.95)-1]!;
     const evidence={measured_at:new Date().toISOString(),build:'production Vite preview + bundled independent Node services',database:'PostgreSQL 17 local Docker',transport:'authenticated simulator HTTP; no real WhatsApp session',profile:{samples:30,active_browser_tabs:1,foreground_polling_ms:1000,concurrent_load:'separate load profile; not simultaneous'},metric:'durable received_at in PostgreSQL → rendered exact message text; same host clocks',samples_ms:samples,p50_ms:sorted[14],p95_ms:p95,max_ms:sorted.at(-1),target_p95_ms:2000,passed:p95<=2000,limits:'Local host measurement; excludes WAN and real gateway latency; no production SLO claim.'};
-    mkdirSync('docs/evidence',{recursive:true});writeFileSync('docs/evidence/ui-latency.json',JSON.stringify(evidence,null,2)+'\n');
+    writeFileSync(evidencePath('ui-latency.json'),JSON.stringify(evidence,null,2)+'\n');
     expect(p95,'Foreground inbox p95 durable→visible target').toBeLessThanOrEqual(2000);
   } finally { await db.end(); }
 });

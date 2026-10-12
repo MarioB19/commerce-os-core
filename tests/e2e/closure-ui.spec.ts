@@ -1,10 +1,11 @@
 import {test,expect} from '@playwright/test';
 import {closureFixture} from './support/closure-fixture.js';
+import {evidencePath} from '../support/evidence.js';
 test('sanitized priority screenshots before and after closure',async({page})=>{
  await closureFixture(page);
  const phase=process.env.CLOSURE_BEFORE?'before':'after';
  for(const [name,path] of [['inbox','/sales/inbox?conversation=conversation-fixture'],['numbers','/sales/channels/whatsapp'],['catalog','/catalog?product=product-fixture']]){
-  await page.goto(path!);await expect(page.locator('main')).toBeVisible();await expect(page.locator('main .loading')).toHaveCount(0);await page.screenshot({path:`docs/evidence/operational-closure-ui/${phase}-${name}-1440.png`,fullPage:true});
+  await page.goto(path!);await expect(page.locator('main')).toBeVisible();await expect(page.locator('main .loading')).toHaveCount(0);await page.screenshot({path:evidencePath(`operational-closure-ui/${phase}-${name}-1440.png`),fullPage:true});
  }
 });
 
@@ -39,7 +40,7 @@ test('explicit lab uses snapshot, local simulation commands and discards session
  await page.getByRole('dialog').getByRole('button',{name:'Iniciar simulación'}).click();await expect(page.getByRole('dialog')).toContainText('Comando registrado');
  await page.getByRole('dialog').getByRole('button',{name:'Cerrar',exact:true}).click();
  await expect(page.locator('.command-notice')).toBeVisible();
- await page.screenshot({path:'docs/evidence/operational-closure-ui/after-laboratory-active-1440.png',fullPage:true});
+ await page.screenshot({path:evidencePath('operational-closure-ui/after-laboratory-active-1440.png'),fullPage:true});
  const mutations=requests.filter(r=>r.method!=='GET');expect(mutations.length).toBe(3);
  expect(mutations.every(r=>r.environment==='SIMULATION'&&r.body?.environment==='SIMULATION')).toBe(true);
  expect(mutations[0]).toMatchObject({path:'/v1/simulation-snapshots',body:{workflow_version_id:'flow-fixture',expected_version:2}});
@@ -76,7 +77,7 @@ test('all screen families reflow and pass automated accessibility at requested s
    expect(reflow.scroll,`${name} reflow ${width}: ${JSON.stringify(reflow.offenders)}`).toBeLessThanOrEqual(width);
    const audit=await new AxeBuilder({page}).withTags(['wcag2a','wcag2aa','wcag21aa']).analyze();
    expect(audit.violations.map(v=>({id:v.id,targets:v.nodes.map(n=>n.target)})),`${name} axe ${width}`).toEqual([]);
-   await page.screenshot({path:`docs/evidence/operational-closure-ui/after-${name}-${width}.png`,fullPage:true});
+   await page.screenshot({path:evidencePath(`operational-closure-ui/after-${name}-${width}.png`),fullPage:true});
   }
  }
  await page.setViewportSize({width:1440,height:1000});
@@ -84,7 +85,7 @@ test('all screen families reflow and pass automated accessibility at requested s
   await page.goto(path!);await expect(page.locator('h1').first(),`${name} heading at ${path}`).toBeVisible();await expect(page.locator('main .loading')).toHaveCount(0);
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`${name} reflow`).toBe(true);
   const audit=await new AxeBuilder({page}).withTags(['wcag2a','wcag2aa','wcag21aa']).analyze();expect(audit.violations.map(v=>({id:v.id,targets:v.nodes.map(n=>n.target)})),`${name} axe`).toEqual([]);
-  await page.screenshot({path:`docs/evidence/operational-closure-ui/after-${name}-1440.png`,fullPage:true});
+  await page.screenshot({path:evidencePath(`operational-closure-ui/after-${name}-1440.png`),fullPage:true});
  }
 });
 
@@ -137,7 +138,7 @@ test('identity forms share the blue system and reflow without sending credential
   await page.setViewportSize({width,height:1000});
   for(const [name,path] of [['login','/login'],['recovery','/forgot-password'],['reset','/reset-password#token=synthetic-ui-only']]){
    await page.goto(path!);await expect(page.locator('input').first()).toBeVisible();expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
-   const audit=await new AxeBuilder({page}).withTags(['wcag2a','wcag2aa','wcag21aa']).analyze();expect(audit.violations.map(v=>({id:v.id,targets:v.nodes.map(n=>n.target)})),`${name} ${width}`).toEqual([]);await page.screenshot({path:`docs/evidence/operational-closure-ui/after-${name}-${width}.png`,fullPage:true});
+   const audit=await new AxeBuilder({page}).withTags(['wcag2a','wcag2aa','wcag21aa']).analyze();expect(audit.violations.map(v=>({id:v.id,targets:v.nodes.map(n=>n.target)})),`${name} ${width}`).toEqual([]);await page.screenshot({path:evidencePath(`operational-closure-ui/after-${name}-${width}.png`),fullPage:true});
   }
  }
  expect(requests.every(r=>r.method==='GET')).toBe(true);

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { applyLocalEnv } from './local-env.mjs';
+import { assertSourceTreeUnchanged, sourceTreeSnapshot } from './source-tree-guard.mjs';
 
 export const calendarTest = 'tests/integration/numbers-mcp-stdio.test.ts';
 
@@ -52,14 +53,16 @@ export async function runIntegration({ args, env, createClient, run, log = conso
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   applyLocalEnv();
+  const before = sourceTreeSnapshot();
   const { default: pg } = await import('pg');
   const run = (cmd, args, env) => new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { stdio: 'inherit', env });
     child.once('error', reject);
     child.once('exit', code => resolve(code ?? 1));
   });
-  process.exitCode = await runIntegration({
+  const tests = await runIntegration({
     args: process.argv.slice(2), env: process.env,
     createClient: options => new pg.Client(options), run,
   });
+  process.exitCode = tests || assertSourceTreeUnchanged(before, { suite: 'integration' });
 }

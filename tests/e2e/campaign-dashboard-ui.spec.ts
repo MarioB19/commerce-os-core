@@ -1,6 +1,7 @@
 import {test,expect,type Page} from '@playwright/test';
 import {AxeBuilder} from '@axe-core/playwright';
 import {closureFixture} from './support/closure-fixture.js';
+import {evidencePath} from '../support/evidence.js';
 
 const product={id:'catalog-costura',name:'Costura que Vende · demo'};
 const metric={id:'campaign-demo',name:'WA | TEST | Costura que Vende | Video · demo',day:'2026-09-08',meta_ad_account_id:'act_demo',campaign_id:'campaign-demo',ad_id:'ad-demo',spend_minor:48000,revenue_minor:125000,sales:10,attributed_sales:8,attributed_revenue_minor:100000,cpa_minor:6000,roas:2.08,balance_minor:77000,average_ticket_minor:12500,cost_per_meta_conversation_minor:2000,conversations:'24',impressions:'4800',clicks:'180',extraction:{key:'costura que vende',label:'Costura que Vende',source:'CAMPAIGN_NAME'},product_resolution:{status:'EXACT_NAME_CANDIDATE',product_ids:[],candidate_product_id:product.id}};
@@ -36,7 +37,7 @@ test('table search and grouping are local; a candidate requires explicit version
 });
 test('partial snapshot is explicit and dashboard reflows with sanitized visual evidence',async({page})=>{
  test.setTimeout(180000);await dashboardFixture(page,true);await page.emulateMedia({reducedMotion:'reduce'});await expect(page.getByRole('heading',{name:'Resultado parcial del periodo'})).toBeVisible();await expect(page.getByText('Fuente parcial',{exact:true})).toBeVisible();await expect(page.getByText('Fuente parcial',{exact:true})).toHaveClass(/badge-warning/);await expect(page.getByText('Periodo cubierto',{exact:false})).toHaveCount(0);
- for(const width of [1440,1024,768,390,320]){await page.setViewportSize({width,height:1000});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`reflow ${width}`).toBe(true);const a=await new AxeBuilder({page}).withTags(['wcag2a','wcag2aa','wcag21aa']).analyze();expect(a.violations.map(v=>({id:v.id,targets:v.nodes.map(n=>n.target)})),`axe ${width}`).toEqual([]);await page.screenshot({path:`docs/evidence/campaign-dashboard/dashboard-partial-${width}.png`,fullPage:true});}
+ for(const width of [1440,1024,768,390,320]){await page.setViewportSize({width,height:1000});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`reflow ${width}`).toBe(true);const a=await new AxeBuilder({page}).withTags(['wcag2a','wcag2aa','wcag21aa']).analyze();expect(a.violations.map(v=>({id:v.id,targets:v.nodes.map(n=>n.target)})),`axe ${width}`).toEqual([]);await page.screenshot({path:evidencePath(`campaign-dashboard/dashboard-partial-${width}.png`),fullPage:true});}
 });
 test('missing Meta data never becomes simulated data or zero spend',async({page})=>{
  await closureFixture(page);await page.goto('/campaigns');await expect(page.getByText('Sin lectura de Meta',{exact:false})).toBeVisible();await expect(page.getByRole('heading',{name:'Falta el gasto para calcular el balance'})).toBeVisible();await expect(page.locator('.performance-kpi').filter({hasText:'Gasto publicitario'}).locator('.kpi-value')).toHaveText('No disponible');await expect(page.getByText('Fixtures de simulación',{exact:false})).toHaveCount(0);

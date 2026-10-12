@@ -37,7 +37,7 @@ def redact(data):
             data = data.replace(value, b'[REDACTED]')
     return data
 
-for directory in [Path('test-results'), Path('playwright-report')]:
+for directory in [Path('test-results'), Path('playwright-report'), Path(os.environ.get('COMMERCE_TEST_EVIDENCE_DIR') or 'test-evidence')]:
     for path in directory.rglob('*'):
         if not path.is_file() or path.suffix not in {'.html', '.md', '.json', '.txt', '.log'}:
             continue
