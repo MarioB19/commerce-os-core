@@ -9,6 +9,7 @@ import {buildIngress} from '../../apps/ingress/src/server.js';
 import {processInbound} from '../../apps/automation-worker/src/inbound.js';
 import {channelReception} from '../../apps/api/src/channel-reception.js';
 import type {DomainRecord} from '../../packages/contracts/src/index.js';
+import {retiredRealAccount} from '../support/profile-fixture.js';
 const workspace='reception-'+randomUUID(),origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0]!,secret='synthetic-webhook-'+randomUUID();
 let app:FastifyInstance,ingress:FastifyInstance,cookie:string,account:DomainRecord,old:DomainRecord;
 beforeAll(async()=>{
@@ -19,7 +20,8 @@ beforeAll(async()=>{
  cookie=([r.headers['set-cookie']].flat().filter(Boolean) as string[]).map(v=>v.split(';')[0]).join('; ');
  const ref='RX_'+randomUUID().replaceAll('-','');
  await withTransaction(c=>saveIntegrationSetting(c,workspace,'REAL','waha:'+ref,{expected_version:0,label:'Synthetic gateway',enabled:true,config:{base_url:'http://waha-10:3000'},secrets:{api_key:'synthetic-api-key',webhook_secret:secret},clear_secrets:[],reason:'Synthetic reception test'},'fixture'));
- old=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'channel_account',body:{name:'Retired fixture',provider:'waha',gateway_ref:ref,status:'STOPPED',deleted_at:new Date().toISOString(),sending_enabled:false}});
+ // V7 F2: a retired REAL number is admitted and then retired (quota history).
+ old=await retiredRealAccount(pool,workspace,{name:'Retired fixture',provider:'waha',gateway_ref:ref,status:'STOPPED',deleted_at:new Date().toISOString(),sending_enabled:false});
  account=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'channel_account',body:{name:'New fixture',provider:'waha',gateway_ref:ref,status:'WORKING',purpose:'',sending_enabled:false}});
 });
 afterAll(async()=>{await app.close();await ingress.close();await pool.end();});

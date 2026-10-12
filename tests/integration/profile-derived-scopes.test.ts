@@ -1,11 +1,10 @@
-import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID,createHash} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
-import {localInventoryTarget} from '../../scripts/profile-inventory.js';
+import {openMigratedDatabase,isolatedAdminUrl,promotedSource} from '../support/migrated-database.js';
 const tag=randomBytes(6).toString('hex'),login='derived_'+tag,one='derived_one_'+tag,two='derived_two_'+tag;
 const children=['effect_attempts','consumer_receipts','retention_plans','retention_files','warmup_rate_buckets','warmup_rate_reservations','warmup_schedule_runs','creative_attempts','creative_steps','creative_reviews','creative_voice_brief_versions','creative_batch_versions','commercial_assignment_history','warmup_simulated_events','warmup_manual_declarations','warmup_account_reservations','warmup_group_receipts','outbox_gate_schedule'];
-let admin:pg.Pool,runtime:pg.Pool,component:string,assignment:string,binding:string;
+let admin:pg.Pool,runtime:pg.Pool,component:string,assignment:string,binding:string,closeDatabase:(()=>Promise<void>)|undefined;
 const effects:Record<string,string>={},events:Record<string,string>={};let original:unknown,guards:unknown;
 async function scope<T>(workspace:string,environment:string,work:(db:pg.PoolClient)=>Promise<T>){const c=await runtime.connect();try{await c.query('BEGIN');await c.query('SET LOCAL ROLE commerce_channel');await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment',$2,true)",[workspace,environment]);const value=await work(c);expect((await c.query('COMMIT')).command).toBe('COMMIT');return value;}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}}
 async function cleanColumns(){return(await admin.query("SELECT table_name,column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=ANY($1) AND column_name=ANY($2) ORDER BY 1,2",[children,['workspace_id','environment']])).rows;}
@@ -13,10 +12,11 @@ async function history(){return(await admin.query("SELECT to_jsonb(h)-ARRAY['wor
 async function triggers(){return(await admin.query("SELECT c.relname,t.tgname,t.tgenabled,encode(sha256(convert_to(pg_get_triggerdef(t.oid,true),'UTF8')),'hex') sha256 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid WHERE t.tgname=ANY($1) ORDER BY 1,2",[['immutable_assignment_history','creative_batch_version_immutable','creative_review_immutable','creative_voice_brief_version_immutable','immutable_manual_declarations']])).rows;}
 describe('derived child scopes preserve history and close native tenant boundaries',()=>{
  beforeAll(async()=>{
-  const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');
-  admin=new pg.Pool({connectionString:url.toString(),max:4,connectionTimeoutMillis:5000});if((await admin.query("SELECT to_regclass('public.profiles') present")).rows[0].present)throw Error('TRANSITION_SCHEMA_ALREADY_PRESENT');
-  await admin.query(await readFile(new URL('../../packages/db/profile-transition/001_profile_identity.sql',import.meta.url),'utf8'));
-  component=await readFile(new URL('../../packages/db/profile-transition/components/020_derived_child_scopes.sql',import.meta.url),'utf8');
+  // V7 F2: a database migrated through 0082 is the exact state the promoted
+  // component in 0083 sees; the test applies that installed text.
+  const database=await openMigratedDatabase('0082');admin=database.pool;closeDatabase=database.close;const url=new URL(database.url);
+  component=await promotedSource('components/020_derived_child_scopes.sql');
+  await admin.query("INSERT INTO profile_quota_policy(singleton,max_profiles,max_numbers,daily_conversations,calendar_timezone,adoption_sha256) VALUES(true,3,20,300,'UTC',repeat('a',64))");
   await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic One','UTC',0,0,0),($2,'Synthetic Two','UTC',0,0,0)",[one,two]);
   for(const [key,workspace,environment]of [['one',one,'REAL'],['two',two,'REAL'],['simulation',one,'SIMULATION']]){
    const event=randomUUID(),effect=randomUUID();events[key!]=event;effects[key!]=effect;
@@ -33,7 +33,7 @@ describe('derived child scopes preserve history and close native tenant boundari
   const secret=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${secret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT;GRANT commerce_channel TO "${login}"`);
   url.username=login;url.password=secret;runtime=new pg.Pool({connectionString:url.toString(),max:2,connectionTimeoutMillis:5000});
  },60000);
- afterAll(async()=>{await runtime?.end();if(admin){try{await admin.query(`DROP ROLE IF EXISTS "${login}"`);}finally{await admin.end();}}});
+ afterAll(async()=>{await runtime?.end();await closeDatabase?.();const parent=new pg.Pool({connectionString:isolatedAdminUrl().toString(),max:1});try{await parent.query(`DROP ROLE IF EXISTS "${login}"`);}finally{await parent.end();}});
  it('does not permit a restricted runtime to apply the data transition',async()=>{
   expect((await runtime.query('SELECT rolsuper,rolbypassrls FROM pg_roles WHERE rolname=current_user')).rows[0]).toEqual({rolsuper:false,rolbypassrls:false});
   await expect(runtime.query(component)).rejects.toThrow('PROFILE_MIGRATION_OWNER_REQUIRED');expect(await cleanColumns()).toEqual([]);

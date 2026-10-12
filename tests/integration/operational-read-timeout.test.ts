@@ -1,4 +1,5 @@
 import {afterAll,beforeAll,expect,it} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomBytes,randomUUID} from 'node:crypto';
 import {createApp} from '../../apps/api/src/app.js';
 import {hash,pool,putRecord} from '../../packages/db/src/index.js';
@@ -6,6 +7,8 @@ import {withOperationalReadBudget} from '../../apps/api/src/operational-read-bud
 import {roleExecutor} from '../support/database-role.js';
 
 const workspace='operational-read-'+randomUUID(),withRole=roleExecutor(pool);
+// V7 F2: fixture workspaces are adopted profiles (max three per installation).
+beforeAll(()=>fixtureProfiles(workspace));
 let app:Awaited<ReturnType<typeof createApp>>,token:string,accountId:string;
 async function credential(scopes:string[],resources?:string[]){
  const value=randomBytes(32).toString('hex');

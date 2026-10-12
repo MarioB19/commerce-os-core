@@ -3,6 +3,7 @@ import {readFile} from 'node:fs/promises';
 import {randomBytes} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
+import {asProfileOwner,requireMigratedProfileSchema} from '../support/migrated-database.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {createProfileWorkerRuntime} from '../../packages/db/src/profile-worker-scope.js';
 import {profileRoutedPool,currentProfileExecutor} from '../../packages/db/src/profile-query-routing.js';
@@ -18,8 +19,7 @@ describe('worker phases use native profile transactions with committed intent be
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');
   admin=new pg.Pool({connectionString:url.toString(),max:5,connectionTimeoutMillis:5000});
-  if((await admin.query("SELECT to_regclass('public.profiles') present")).rows[0].present)throw Error('TRANSITION_SCHEMA_ALREADY_PRESENT');
-  for(const file of ['001_profile_identity.sql','013_continuous_worker_profile.sql','018_worker_profile_discovery.sql'])await admin.query(await readFile(new URL('../../packages/db/profile-transition/'+file,import.meta.url),'utf8'));
+  await requireMigratedProfileSchema(admin);
   await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'One','UTC',1,1,1),($2,'Two','UTC',1,1,1)",[one,two]);
   // Explicit fixture RLS. This is not an assertion that production policies were installed.
   await admin.query(`CREATE TABLE worker_phase_fixture(id text PRIMARY KEY,workspace_id text NOT NULL,environment text NOT NULL,state text NOT NULL,xid bigint NOT NULL);
@@ -70,19 +70,21 @@ describe('worker phases use native profile transactions with committed intent be
  it('does not roll back an earlier committed intent when authority changes before reconcile',async()=>{
   await expect(runtime.run(await selected(),async()=>{
    await routed.query("INSERT INTO worker_phase_fixture VALUES('uncertain',$1,'REAL','PREPARED',1)",[one]);
-   await admin.query("UPDATE profiles SET state='SUSPENDED',version=version+1 WHERE id=$1",[one]);
+   await asProfileOwner(admin,one,c=>c.query("UPDATE profiles SET state='SUSPENDED',version=version+1 WHERE id=$1",[one]));
    await withTransaction(c=>c.query("UPDATE worker_phase_fixture SET state='BAD' WHERE id='uncertain'"));
   })).rejects.toThrow('WORKER_PROFILE_AUTHORITY_CHANGED');
   expect((await admin.query("SELECT state FROM worker_phase_fixture WHERE id='uncertain'")).rows[0].state).toBe('PREPARED');
   await expect(runtime.run(await selected(),async()=>{})).rejects.toThrow('WORKER_PROFILE_INACTIVE');
-  await admin.query("UPDATE profiles SET state='ACTIVE',version=version+1 WHERE id=$1",[one]);
+  await asProfileOwner(admin,one,c=>c.query("UPDATE profiles SET state='ACTIVE',version=version+1 WHERE id=$1",[one]));
  });
  it('locks profile authority through the phase commit',async()=>{
   const other=await admin.connect();try{
    await other.query("SET statement_timeout='100ms'");
+   // V7 F2: a profile row is privacy-fenced; the owner writes from its context.
+   await other.query("SELECT set_config('app.workspace_id',$1,false)",[one]);
    await runtime.run(await selected(),()=>withTransaction(async()=>{await expect(other.query('UPDATE profiles SET version=version+1 WHERE id=$1',[one])).rejects.toMatchObject({code:'57014'});}));
    await other.query('UPDATE profiles SET version=version+1 WHERE id=$1',[one]);
-  }finally{await other.query('RESET statement_timeout');other.release();}
+  }finally{await other.query('RESET statement_timeout');await other.query("SELECT set_config('app.workspace_id','',false)");other.release();}
  });
  it('rolls back a joined business failure even when caught by the caller',async()=>{
   await expect(runtime.run(await selected(),()=>withTransaction(async()=>{

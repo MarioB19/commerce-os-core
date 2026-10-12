@@ -3,6 +3,7 @@ import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {hashPassword,verifyPassword} from 'better-auth/crypto';
 import {afterAll,beforeAll,describe,expect,it,vi} from 'vitest';
+import {asProfileOwner,requireMigratedProfileSchema} from '../support/migrated-database.js';
 import {encrypt} from '../../packages/db/src/index.js';
 import {withProfileTransaction} from '../../packages/db/src/profile-context.js';
 import {acceptExistingProfileInvitation,readExistingProfileInvitation,registerInvitedProfileIdentity,generateInvitationLink} from '../../packages/db/src/profile-invitation-acceptance.js';
@@ -28,8 +29,7 @@ describe('isolated recipient acceptance and transactional expiry',()=>{
  beforeAll(async()=>{
   vi.stubEnv('PRIVATE_DATA_KEY',randomBytes(32).toString('hex'));vi.stubEnv('BETTER_AUTH_SECRET','synthetic-acceptance-'+randomBytes(32).toString('hex'));
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');
-  admin=new pg.Pool({connectionString:url.toString(),max:6,connectionTimeoutMillis:5000});if((await admin.query("SELECT to_regclass('public.profiles') AS existing")).rows[0].existing)throw Error('TRANSITION_SCHEMA_ALREADY_PRESENT');
-  const setup=await admin.connect();try{await setup.query('BEGIN');for(const file of ['001_profile_identity.sql','004_profile_employees.sql','005_profile_invitations.sql','006_profile_invitation_acceptance.sql','007_profile_invitation_registration.sql'])await setup.query(await readFile(new URL('../../packages/db/profile-transition/'+file,import.meta.url),'utf8'));await setup.query('COMMIT');}catch(e){await setup.query('ROLLBACK');throw e;}finally{setup.release();}
+  admin=new pg.Pool({connectionString:url.toString(),max:6,connectionTimeoutMillis:5000});await requireMigratedProfileSchema(admin);
   const password=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${password}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT`);await admin.query(`GRANT commerce_api TO "${login}"`);
   await admin.query('INSERT INTO "user"(id,name,email,"emailVerified") VALUES($1,$1,$1||\'@example.invalid\',true)',[owner]);
   await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic','UTC',1,10,10)",[workspace]);
@@ -103,7 +103,7 @@ describe('isolated recipient acceptance and transactional expiry',()=>{
  });
  it('registration rejects profile suspension and a mismatched recipient before creating identity',async()=>{
   const row=await newRecipient(),hash=await hashPassword(rawPassword);await expect(registerInvitedProfileIdentity(runtime!,{token:row.token,email:'foreign@example.invalid',name:'Synthetic',passwordHash:hash},'c')).rejects.toThrow('RECIPIENT_MISMATCH');
-  await admin!.query("UPDATE profiles SET state='SUSPENDED' WHERE id=$1",[workspace]);try{await expect(register(row,hash)).rejects.toThrow('INVALID_OR_EXPIRED');}finally{await admin!.query("UPDATE profiles SET state='ACTIVE' WHERE id=$1",[workspace]);}expect((await admin!.query('SELECT id FROM "user" WHERE email=$1',[row.email])).rows).toHaveLength(0);
+  await asProfileOwner(admin!,workspace,c=>c.query("UPDATE profiles SET state='SUSPENDED' WHERE id=$1",[workspace]));try{await expect(register(row,hash)).rejects.toThrow('INVALID_OR_EXPIRED');}finally{await asProfileOwner(admin!,workspace,c=>c.query("UPDATE profiles SET state='ACTIVE' WHERE id=$1",[workspace]));}expect((await admin!.query('SELECT id FROM "user" WHERE email=$1',[row.email])).rows).toHaveLength(0);
  });
  it('two profile invitations racing the same email create only one native identity',async()=>{
   const other=workspace+'_other';await admin!.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic','UTC',1,10,10)",[other]);await admin!.query("INSERT INTO memberships(user_id,workspace_id,role) VALUES($1,$2,'owner')",[owner,other]);

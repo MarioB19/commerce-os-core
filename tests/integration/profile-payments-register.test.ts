@@ -8,10 +8,10 @@ import {hashPassword} from 'better-auth/crypto';
 import {ZodError} from 'zod';
 import pg from 'pg';
 import {afterAll,beforeAll,describe,expect,it,vi} from 'vitest';
+import {listProfileChoicesFromSession,selectProfileFromSession} from '../../packages/db/src/profile-identity-bootstrap.js';
 import {createAuth} from '../../apps/api/src/auth.js';
 import {paymentsRegisterRoutes} from '../../apps/api/src/payments-register.js';
 import {profileIdentityRoutes} from '../../apps/api/src/profile-identity.js';
-import {listSessionProfiles,selectSessionProfile} from '../../packages/db/src/profile-session.js';
 import {withProfileTransaction} from '../../packages/db/src/profile-context.js';
 import {withProfileSessionTransaction} from '../../packages/db/src/profile-session-transaction.js';
 import {withPersonalProfileTransaction} from '../../packages/db/src/profile-personal-token.js';
@@ -86,7 +86,7 @@ describe('profile payments and canonical F7 reconciliation',()=>{
   url.username=login;url.password=secret;runtime=new pg.Pool({connectionString:url.toString(),options:'-c role=commerce_api',max:2,connectionTimeoutMillis:5000});
   const custodySecret=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${custodyLogin}" LOGIN PASSWORD '${custodySecret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;GRANT commerce_results TO "${custodyLogin}"`);const custodyUrl=new URL(url);custodyUrl.username=custodyLogin;custodyUrl.password=custodySecret;custodyPool=new pg.Pool({connectionString:custodyUrl.toString(),options:'-c role=commerce_results',max:2});
   app=Fastify({logger:false,disableRequestLogging:true});app.setErrorHandler((e:any,_r,reply)=>reply.code(e instanceof ZodError?400:e.statusCode??500).send({error:{code:e.code??'INTERNAL_ERROR'}}));
-  await profileIdentityRoutes(app,{origins:[origin],session:nativeSession,list:s=>listSessionProfiles(runtime!,s),select:(s,w,v)=>transaction(c=>selectSessionProfile(c,s,w,v))});
+  await profileIdentityRoutes(app,{origins:[origin],session:nativeSession,list:s=>listProfileChoicesFromSession(runtime!,s),select:(s,w,v)=>transaction(c=>selectProfileFromSession(c,s,w,v))});
   await paymentsRegisterRoutes(app,{origins:[origin],nativeSession,
    session:(s,f,environment,action,work)=>withProfileSessionTransaction(runtime!,s,f,action,(db,profile)=>work({db,profile,environment})),
    personal:(t,environment,action,work)=>withPersonalProfileTransaction(runtime!,t,environment,action,(db,profile)=>work({db,profile,environment})),

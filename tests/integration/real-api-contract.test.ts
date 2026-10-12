@@ -1,4 +1,5 @@
 import {afterAll,beforeAll,describe,expect,it} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomBytes,randomUUID} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
@@ -10,6 +11,9 @@ import {createDefaultRemarketingPolicy} from '../../packages/domain/src/sales/re
 import {salesAgreementRecipeV1,salesAgreementWorkflowV1} from '../../packages/domain/src/sales/sales-recipe-v2.js';
 import {CommerceClient} from '../../scripts/commerce-client.mjs';
 const workspace='real-contract-'+randomUUID(),origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0]!;
+// V7 F2: fixture workspaces are adopted profiles (max three per installation).
+const anotherWorkspace='another-'+randomUUID();
+beforeAll(()=>fixtureProfiles(workspace,anotherWorkspace));
 let app:FastifyInstance,cookie:string,baseUrl:string;
 const request=(method:any,url:string,payload?:any,token?:string,key=randomUUID())=>app.inject({method,url,payload,headers:{origin,...(token?{authorization:'Bearer '+token}:{cookie}),'idempotency-key':key}});
 const data=(r:any,status=200)=>{expect(r.statusCode,r.body).toBe(status);return r.json().data;};
@@ -43,7 +47,7 @@ describe('REAL API contract and scoped executable assistant client',()=>{
   expect((await request('GET','/v1/products?environment=SIMULATION',undefined,grant.token)).statusCode).toBe(403);
   expect((await request('POST','/v1/products',{environment:'REAL',name:'Forbidden root'},grant.token)).statusCode).toBe(403);
   expect((await request('GET','/v1/assets/'+randomUUID()+'/content',undefined,grant.token)).statusCode).toBe(403);
-  const other=await putRecord(pool,{workspaceId:'another-'+randomUUID(),environment:'REAL',kind:'product',body:{name:'Foreign'}});
+  const other=await putRecord(pool,{workspaceId:anotherWorkspace,environment:'REAL',kind:'product',body:{name:'Foreign'}});
   expect((await request('GET','/v1/products/'+other.id,undefined,grant.token)).statusCode).toBe(404);
   const client=new CommerceClient({baseUrl,token:grant.token}),key=randomUUID();
   const patch={expected_version:1,name:'Concurrent'};const replies=await Promise.all([client.request('PATCH','/v1/products/'+a.id,{body:patch,key}),client.request('PATCH','/v1/products/'+a.id,{body:patch,key})]);expect(replies[0].data).toEqual(replies[1].data);

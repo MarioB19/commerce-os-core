@@ -12,7 +12,9 @@ let app:FastifyInstance,cookie:string;
 beforeAll(async()=>{
  app=await createApp();
  const email=randomUUID()+'@example.invalid',password=randomBytes(24).toString('base64url');
- await provisionUser({name:'Synthetic analyst',email,password,workspace_id:workspace,role:'analyst'});
+ // V7 F2 (D-23): analyst is adopted as viewer, which has no reports:export alias;
+ // the export contract is exercised by the profile owner.
+ await provisionUser({name:'Synthetic owner',email,password,workspace_id:workspace,role:'owner'});
  const login=await app.inject({method:'POST',url:'/api/auth/sign-in/email',remoteAddress:'192.0.2.73',headers:{origin},payload:{email,password}});
  expect(login.statusCode).toBe(200);cookie=login.cookies.map(value=>`${value.name}=${value.value}`).join('; ');
 });

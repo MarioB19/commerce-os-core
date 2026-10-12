@@ -5,13 +5,14 @@ import {fromNodeHeaders} from 'better-auth/node';
 import {hashPassword} from 'better-auth/crypto';
 import pg from 'pg';
 import {afterAll,beforeAll,describe,expect,it,vi} from 'vitest';
+import {listProfileChoicesFromSession,selectProfileFromSession} from '../../packages/db/src/profile-identity-bootstrap.js';
+import {requireMigratedProfileSchema} from '../support/migrated-database.js';
 import {createAuth} from '../../apps/api/src/auth.js';
 import {invitationRegistrationRoutes} from '../../apps/api/src/profile-invitation-registration.js';
 import {invitationAcceptanceRoutes} from '../../apps/api/src/profile-invitation-acceptance.js';
 import {profileIdentityRoutes} from '../../apps/api/src/profile-identity.js';
 import {encrypt} from '../../packages/db/src/index.js';
 import {identityAudit,identityLimit} from '../../packages/db/src/identity.js';
-import {listSessionProfiles,selectSessionProfile} from '../../packages/db/src/profile-session.js';
 import {withProfileTransaction} from '../../packages/db/src/profile-context.js';
 import {acceptExistingProfileInvitation,readExistingProfileInvitation,registerInvitedProfileIdentity,generateInvitationLink} from '../../packages/db/src/profile-invitation-acceptance.js';
 import {invitationRecipientDigest} from '../../packages/db/src/profile-invitation.js';
@@ -31,8 +32,7 @@ describe('loopback HTTP invitation registration with real native auth and restri
  beforeAll(async()=>{
   vi.stubEnv('PRIVATE_DATA_KEY',randomBytes(32).toString('hex'));vi.stubEnv('BETTER_AUTH_SECRET','synthetic-http-'+randomBytes(32).toString('hex'));
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');
-  admin=new pg.Pool({connectionString:url.toString(),max:6,connectionTimeoutMillis:5000});if((await admin.query("SELECT to_regclass('public.profiles') AS existing")).rows[0].existing)throw Error('TRANSITION_SCHEMA_ALREADY_PRESENT');
-  const setup=await admin.connect();try{await setup.query('BEGIN');for(const file of ['001_profile_identity.sql','004_profile_employees.sql','005_profile_invitations.sql','006_profile_invitation_acceptance.sql','007_profile_invitation_registration.sql'])await setup.query(await readFile(new URL('../../packages/db/profile-transition/'+file,import.meta.url),'utf8'));await setup.query('COMMIT');}catch(e){await setup.query('ROLLBACK');throw e;}finally{setup.release();}
+  admin=new pg.Pool({connectionString:url.toString(),max:6,connectionTimeoutMillis:5000});await requireMigratedProfileSchema(admin);
   const secret=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${secret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT`);await admin.query(`GRANT commerce_api TO "${login}"`);
   await admin.query('INSERT INTO "user"(id,name,email,"emailVerified") VALUES($1,$1,$1||\'@example.invalid\',true)',[owner]);await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic HTTP','UTC',1,10,10)",[workspace]);await admin.query("INSERT INTO memberships(user_id,workspace_id,role) VALUES($1,$2,'owner')",[owner,workspace]);
   url.username=login;url.password=secret;runtime=new pg.Pool({connectionString:url.toString(),max:6,connectionTimeoutMillis:5000});expect((await runtime.query('SELECT rolsuper,rolbypassrls FROM pg_roles WHERE rolname=current_user')).rows[0]).toEqual({rolsuper:false,rolbypassrls:false});
@@ -40,7 +40,7 @@ describe('loopback HTTP invitation registration with real native auth and restri
   app.setErrorHandler((error:any,_req,reply)=>reply.code(error.statusCode??500).send({error:{code:error.code??'INTERNAL_ERROR',message:(error.statusCode??500)<500?error.message:'No se pudo completar la operación.'}}));
   await invitationRegistrationRoutes(app,{origins:[origin],hasSession:async req=>Boolean(await session(req)),limit:(kind,value,max)=>identityLimit(kind,value,max,900,runtime!),hash:hashPassword,register:(input,correlation)=>registerInvitedProfileIdentity(runtime!,input,correlation)});
   await invitationAcceptanceRoutes(app,{origins:[origin],nativeSession:session,accept:(identity,token,correlation)=>acceptExistingProfileInvitation(runtime!,identity,token,correlation),read:(identity,token)=>readExistingProfileInvitation(runtime!,identity,token)});
-  await profileIdentityRoutes(app,{origins:[origin],session,list:identity=>listSessionProfiles(runtime!,identity),select:(identity,target,version,correlation)=>transaction(async client=>{const result=await selectSessionProfile(client,identity,target,version);await identityAudit(client,'profile.selection','SUCCEEDED',correlation,identity.userId,identity.userId);return result;})});
+  await profileIdentityRoutes(app,{origins:[origin],session,list:identity=>listProfileChoicesFromSession(runtime!,identity),select:(identity,target,version,correlation)=>transaction(async client=>{const result=await selectProfileFromSession(client,identity,target,version);await identityAudit(client,'profile.selection','SUCCEEDED',correlation,identity.userId,identity.userId);return result;})});
   // Test-only loopback adapter around the installed native Better Auth handler.
   // No mock session, account or response; COMMIT precedes disclosure of cookies.
   app.post('/api/auth/*',{bodyLimit:4096},async(req,reply)=>{if(req.headers.origin!==origin)return reply.code(403).send({error:{code:'ORIGIN_REJECTED',message:'ORIGIN_REJECTED'}});const response=await transaction(async client=>createAuth(client).handler(new Request('http://localhost:3001'+req.url,{method:'POST',headers:fromNodeHeaders(req.headers),body:JSON.stringify(req.body)})));reply.code(response.status);if(response.ok)reply.header('set-cookie',response.headers.getSetCookie());return{signedIn:response.ok};});

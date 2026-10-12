@@ -1,9 +1,10 @@
-import {readFile} from 'node:fs/promises';
 import {randomBytes} from 'node:crypto';
 import pg from 'pg';
 import {afterAll,beforeAll,describe,expect,it} from 'vitest';
+import {asProfileOwner,requireMigratedProfileSchema,selectFixtureSession} from '../support/migrated-database.js';
+import {listProfileChoicesFromSession} from '../../packages/db/src/profile-identity-bootstrap.js';
 import {withProfileTransaction} from '../../packages/db/src/profile-context.js';
-import {listSessionProfiles,resolveSessionProfile,selectSessionProfile} from '../../packages/db/src/profile-session.js';
+import {resolveSessionProfile,type ProfileFence} from '../../packages/db/src/profile-session.js';
 import {withProfileSessionTransaction} from '../../packages/db/src/profile-session-transaction.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 
@@ -12,18 +13,21 @@ const user='identity_'+suffix,outsider='outsider_'+suffix,one='one_'+suffix,two=
 const session={id:'session_'+suffix,userId:user},otherSession={id:'other_session_'+suffix,userId:user};
 const observationTable='profile_transaction_fixture_'+suffix;
 let admin:pg.Pool|undefined,runtime:pg.Pool|undefined,created=false;
-const select=(target:string,expected:number,s=session)=>withProfileTransaction(runtime!,target,db=>selectSessionProfile(db,s,target,expected));
+const select=(target:string,expected:number,s=session)=>selectFixtureSession(runtime!,s,target,expected);
+// V7 F2: profile_session_context is under forced profile RLS for commerce_api.
+// Like the browser, the caller presents the profile it selected (read here by
+// the fixture owner); resolution then runs inside that profile's context.
+async function resolve(s:typeof session,...rest:[ProfileFence?,{lock?:boolean}?]){
+ const selected=(await admin!.query('SELECT workspace_id FROM profile_session_context WHERE session_id=$1',[s.id])).rows[0]?.workspace_id as string|undefined;
+ return selected?withProfileTransaction(runtime!,selected,db=>resolveSessionProfile(db,s,...rest)):resolveSessionProfile(runtime!,s,...rest);
+}
 describe('per-session profile authority on actual PostgreSQL',()=>{
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));
   if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw new Error('ISOLATED_TEST_DATABASE_REQUIRED');
   admin=new pg.Pool({connectionString:url.toString(),max:2,connectionTimeoutMillis:5000});
-  // This transitional schema is deliberately absent from automatic migrations.
-  // The fixture owns only a fresh isolated DB and refuses to replace any schema.
-  if((await admin.query("SELECT to_regclass('public.profiles') AS existing")).rows[0].existing)throw new Error('TRANSITION_SCHEMA_ALREADY_PRESENT');
-  const source=await readFile(new URL('../../packages/db/profile-transition/001_profile_identity.sql',import.meta.url),'utf8');
-  const setup=await admin.connect();
-  try{await setup.query('BEGIN');await setup.query(source);await setup.query('COMMIT');created=true;}catch(e){await setup.query('ROLLBACK');throw e;}finally{setup.release();}
+  // V7 F2: the identity schema is installed by the migrations (0070).
+  await requireMigratedProfileSchema(admin);created=true;
   const password=randomBytes(32).toString('hex');
   await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${password}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT`);
   await admin.query(`GRANT commerce_api TO "${login}"`);
@@ -42,70 +46,68 @@ describe('per-session profile authority on actual PostgreSQL',()=>{
   if(admin){try{
    if(created){
     await admin.query(`DROP TABLE IF EXISTS "${observationTable}"`);
-    await admin.query('DELETE FROM session WHERE id=ANY($1)',[[session.id,otherSession.id]]);
-    await admin.query('DELETE FROM memberships WHERE user_id=ANY($1)',[[user,outsider]]);
-    await admin.query('DELETE FROM "user" WHERE id=ANY($1)',[[user,outsider]]);
-    await admin.query('DROP TABLE profile_session_context;DROP TABLE profiles;DROP FUNCTION guard_profile_identity();DROP TRIGGER version_profile_membership ON memberships;DROP FUNCTION version_profile_membership();ALTER TABLE memberships DROP COLUMN version;ALTER TABLE session DROP CONSTRAINT session_profile_user_unique');
    }
    await admin.query(`DROP ROLE IF EXISTS "${login}"`);
   }finally{await admin.end();}}
  });
  it('uses a restricted login and refuses unselected sessions without an arbitrary workspace',async()=>{
   expect((await runtime!.query('SELECT current_user,rolsuper,rolbypassrls FROM pg_roles WHERE rolname=current_user')).rows[0]).toEqual({current_user:login,rolsuper:false,rolbypassrls:false});
-  await expect(resolveSessionProfile(runtime!,session)).rejects.toMatchObject({code:'PROFILE_SELECTION_REQUIRED'});
-  expect((await listSessionProfiles(runtime!,session)).map(x=>x.id).sort()).toEqual([one,two].sort());
+  await expect(resolve(session)).rejects.toMatchObject({code:'PROFILE_SELECTION_REQUIRED'});
+  expect((await listProfileChoicesFromSession(runtime!,session)).map(x=>x.id).sort()).toEqual([one,two].sort());
  });
  it('selects independently for two sessions and fences requests from the previous profile',async()=>{
   expect(await select(one,0)).toEqual({workspaceId:one,version:1});
   expect(await select(two,0,otherSession)).toEqual({workspaceId:two,version:1});
-  expect((await resolveSessionProfile(runtime!,session)).profile.id).toBe(one);
-  expect((await resolveSessionProfile(runtime!,otherSession)).profile.id).toBe(two);
+  expect((await resolve(session)).profile.id).toBe(one);
+  expect((await resolve(otherSession)).profile.id).toBe(two);
   expect(await select(two,1)).toEqual({workspaceId:two,version:2});
-  await expect(resolveSessionProfile(runtime!,session,{workspaceId:one,version:1})).rejects.toMatchObject({code:'PROFILE_SELECTION_CHANGED'});
+  await expect(resolve(session,{workspaceId:one,version:1})).rejects.toMatchObject({code:'PROFILE_SELECTION_CHANGED'});
  });
  it('allows exactly one competing CAS and does not change profile on replay',async()=>{
   const result=await Promise.allSettled([select(one,2),select(two,2)]);
   expect(result.filter(x=>x.status==='fulfilled')).toHaveLength(1);
   expect(result.filter(x=>x.status==='rejected')).toHaveLength(1);
-  expect((await resolveSessionProfile(runtime!,session)).selection.version).toBe(3);
+  expect((await resolve(session)).selection.version).toBe(3);
   await expect(select(one,2)).rejects.toMatchObject({code:'PROFILE_SELECTION_CHANGED'});
  });
  it('holds the session fence until the current transaction completes, then exposes the new selection',async()=>{
-  const before=await resolveSessionProfile(runtime!,session);
+  const before=await resolve(session);
   const db=await runtime!.connect();let waiting:Promise<unknown>|undefined;
   try{
-   await db.query('BEGIN');await resolveSessionProfile(db,session,before.selection,{lock:true});
+   await db.query('BEGIN');await db.query("SELECT set_config('app.workspace_id',$1,true)",[before.profile.id]);await resolveSessionProfile(db,session,before.selection,{lock:true});
    waiting=select(before.profile.id===one?two:one,3);
    // Inspect actual wait locks instead of claiming serialization from a timer.
    let blocked=false;
    for(let i=0;i<50&&!blocked;i++){
-    blocked=Boolean((await admin!.query("SELECT 1 FROM pg_stat_activity WHERE usename=$1 AND wait_event_type='Lock' AND query LIKE '%FROM session%'",[login])).rowCount);
+    blocked=Boolean((await admin!.query("SELECT 1 FROM pg_stat_activity WHERE usename=$1 AND wait_event_type='Lock' AND (query LIKE '%FROM session%' OR query LIKE '%select_authenticated_profile%')",[login])).rowCount);
     if(!blocked)await new Promise(r=>setTimeout(r,10));
    }
    expect(blocked).toBe(true);
    await db.query('COMMIT');await waiting;
   }finally{await db.query('ROLLBACK');db.release();if(waiting)await waiting;}
-  expect((await resolveSessionProfile(runtime!,session)).selection.version).toBe(4);
+  expect((await resolve(session)).selection.version).toBe(4);
  });
  it('immediately invalidates removed or downgraded membership and does not allow a version rewind',async()=>{
-  const current=await resolveSessionProfile(runtime!,session);
-  await runtime!.query("UPDATE memberships SET role='viewer',active=false,version=999 WHERE user_id=$1 AND workspace_id=$2",[user,current.profile.id]);
+  const current=await resolve(session);
+  // V7 F2: membership changes are owner/employee operations in the profile's
+  // context (004); the fixture owner performs them, not the session runtime.
+  await asProfileOwner(admin!,current.profile.id,c=>c.query("UPDATE memberships SET role='viewer',active=false,version=999 WHERE user_id=$1 AND workspace_id=$2",[user,current.profile.id]));
   expect((await admin!.query('SELECT version FROM memberships WHERE user_id=$1 AND workspace_id=$2',[user,current.profile.id])).rows[0].version).toBe(2);
-  await expect(resolveSessionProfile(runtime!,session)).rejects.toMatchObject({code:'PROFILE_MEMBERSHIP_REQUIRED'});
-  await runtime!.query('UPDATE memberships SET active=true,version=1 WHERE user_id=$1 AND workspace_id=$2',[user,current.profile.id]);
-  await expect(resolveSessionProfile(runtime!,session)).rejects.toMatchObject({code:'PROFILE_SESSION_ACCESS_CHANGED'});
+  await expect(resolve(session)).rejects.toMatchObject({code:'PROFILE_MEMBERSHIP_REQUIRED'});
+  await asProfileOwner(admin!,current.profile.id,c=>c.query('UPDATE memberships SET active=true,version=1 WHERE user_id=$1 AND workspace_id=$2',[user,current.profile.id]));
+  await expect(resolve(session)).rejects.toMatchObject({code:'PROFILE_SESSION_ACCESS_CHANGED'});
   await select(current.profile.id,4);
-  expect((await resolveSessionProfile(runtime!,session)).membership).toEqual({role:'viewer',version:3});
+  expect((await resolve(session)).membership).toEqual({role:'viewer',version:3});
  });
  it('permits native read locks without granting profile state, quota or ID mutation',async()=>{
-  const current=await resolveSessionProfile(runtime!,session);
+  const current=await resolve(session);
   await withProfileTransaction(runtime!,current.profile.id,db=>resolveSessionProfile(db,session,current.selection,{lock:true}));
   await expect(runtime!.query("UPDATE profiles SET state='SUSPENDED' WHERE id=$1",[one])).rejects.toMatchObject({code:'42501'});
   await expect(runtime!.query('UPDATE profiles SET number_limit=20 WHERE id=$1',[one])).rejects.toMatchObject({code:'42501'});
-  await expect(runtime!.query('UPDATE profiles SET id=$2 WHERE id=$1',[one,'changed_'+one])).rejects.toThrow('PROFILE_IDENTITY_IMMUTABLE');
+  await expect(withProfileTransaction(runtime!,one,db=>db.query('UPDATE profiles SET id=$2 WHERE id=$1',[one,'changed_'+one]))).rejects.toThrow('PROFILE_IDENTITY_IMMUTABLE');
  });
  it('combines native session authorization with the scoped SQL executor and actual RLS before content',async()=>{
-  const before=await resolveSessionProfile(runtime!,session);
+  const before=await resolve(session);
   await admin!.query("UPDATE memberships SET role='operator' WHERE user_id=$1 AND workspace_id=$2",[user,before.profile.id]);
   const fence=await select(before.profile.id,before.selection.version);
   await withProfileSessionTransaction(runtime!,session,fence,{scope:'products:write',mutation:true},async db=>{
@@ -122,7 +124,7 @@ describe('per-session profile authority on actual PostgreSQL',()=>{
   expect((await admin!.query(`SELECT marker FROM "${observationTable}"`)).rows).toEqual([{marker:'committed'}]);
  });
  it('rolls back an otherwise valid commercial write if the native session expires during SQL work',async()=>{
-  const before=await resolveSessionProfile(runtime!,session);
+  const before=await resolve(session);
   try{
    await admin!.query('UPDATE session SET "expiresAt"=clock_timestamp()+interval \'1 second\' WHERE id=$1',[session.id]);
    await expect(withProfileSessionTransaction(runtime!,session,before.selection,{scope:'products:write',mutation:true},async db=>{
@@ -133,7 +135,7 @@ describe('per-session profile authority on actual PostgreSQL',()=>{
   }finally{await admin!.query('UPDATE session SET "expiresAt"=clock_timestamp()+interval \'1 hour\' WHERE id=$1',[session.id]);}
  });
  it('does not commit selection after the native session expires while waiting on a membership lock',async()=>{
-  const before=await resolveSessionProfile(runtime!,session),blocker=await admin!.connect();
+  const before=await resolve(session),blocker=await admin!.connect();
   let selecting:Promise<unknown>|undefined;
   try{
    await admin!.query('UPDATE session SET "expiresAt"=clock_timestamp()+interval \'2 seconds\' WHERE id=$1',[session.id]);
@@ -142,7 +144,7 @@ describe('per-session profile authority on actual PostgreSQL',()=>{
    selecting=select(one,before.selection.version);void selecting.catch(()=>{});
    let blocked=false;
    for(let i=0;i<100&&!blocked;i++){
-    blocked=Boolean((await admin!.query("SELECT 1 FROM pg_stat_activity WHERE usename=$1 AND wait_event_type='Lock' AND query LIKE '%FROM memberships%'",[login])).rowCount);
+    blocked=Boolean((await admin!.query("SELECT 1 FROM pg_stat_activity WHERE usename=$1 AND wait_event_type='Lock' AND (query LIKE '%FROM memberships%' OR query LIKE '%select_authenticated_profile%')",[login])).rowCount);
     if(!blocked)await new Promise(r=>setTimeout(r,10));
    }
    expect(blocked).toBe(true);
@@ -157,13 +159,16 @@ describe('per-session profile authority on actual PostgreSQL',()=>{
   }
  });
  it('enforces session-user and membership-profile relationships in PostgreSQL, then cascades session revocation',async()=>{
-  await expect(runtime!.query('UPDATE profile_session_context SET user_id=$2 WHERE session_id=$1',[session.id,outsider])).rejects.toMatchObject({code:'23503'});
-  await expect(runtime!.query('UPDATE profile_session_context SET workspace_id=$2 WHERE session_id=$1',[session.id,'foreign_'+suffix])).rejects.toMatchObject({code:'23503'});
+  // V7 F2: selection writes go only through the closed bootstrap port (0091);
+  // the runtime role has no direct write privilege; the FKs still hold for the owner.
+  await expect(runtime!.query('UPDATE profile_session_context SET user_id=$2 WHERE session_id=$1',[session.id,outsider])).rejects.toMatchObject({code:'42501'});
+  await expect(admin!.query('UPDATE profile_session_context SET user_id=$2 WHERE session_id=$1',[session.id,outsider])).rejects.toMatchObject({code:'23503'});
+  await expect(admin!.query('UPDATE profile_session_context SET workspace_id=$2 WHERE session_id=$1',[session.id,'foreign_'+suffix])).rejects.toMatchObject({code:'23503'});
   // Refresh the other session if its shared membership was changed above.
   await select(two,1,otherSession);
   await admin!.query('DELETE FROM session WHERE id=$1',[session.id]);
   expect((await admin!.query('SELECT 1 FROM profile_session_context WHERE session_id=$1',[session.id])).rowCount).toBe(0);
-  await expect(resolveSessionProfile(runtime!,session)).rejects.toMatchObject({code:'PROFILE_SESSION_EXPIRED'});
-  expect((await resolveSessionProfile(runtime!,otherSession)).profile.id).toBe(two);
+  await expect(resolve(session)).rejects.toMatchObject({code:'PROFILE_SESSION_EXPIRED'});
+  expect((await resolve(otherSession)).profile.id).toBe(two);
  });
 });

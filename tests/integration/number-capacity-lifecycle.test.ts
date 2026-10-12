@@ -1,4 +1,5 @@
 import {beforeAll,afterAll,it,expect} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomUUID,randomBytes} from 'node:crypto';
 import {createApp} from '../../apps/api/src/app.js';
 import {provisionUser} from '../../apps/api/src/auth.js';
@@ -8,6 +9,8 @@ import {processNumberOperations} from '../../apps/channel-worker/src/number-oper
 import {attachCapacityOperationSlots} from '../../apps/api/src/number-capacity-lifecycle.js';
 import {roleExecutor} from '../support/database-role.js';
 const withRole=roleExecutor(pool),workspace='capacity-lifecycle-'+randomUUID(),origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0]!;
+// V7 F2: fixture workspaces are adopted profiles (max three per installation).
+beforeAll(()=>fixtureProfiles(workspace));
 let app:Awaited<ReturnType<typeof createApp>>,cookie:string,agent:string;
 const call=(method:any,path:string,body?:any,token?:string,key=randomUUID(),environment='REAL')=>withRole('commerce_api',()=>app.inject({method,url:path+'?environment='+environment,payload:body,headers:{origin,...(token?{authorization:'Bearer '+token}:{cookie}),'idempotency-key':key}}));
 const data=(r:any,status=200)=>{expect(r.statusCode,r.body).toBe(status);return r.json().data;};

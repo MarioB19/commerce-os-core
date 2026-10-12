@@ -1,5 +1,6 @@
 import {consumeProviderObservations} from '../../apps/channel-worker/src/observations.js';
 import {beforeAll,afterAll,it,expect} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomUUID,randomBytes} from 'node:crypto';
 import {createApp} from '../../apps/api/src/app.js';
 import {provisionUser} from '../../apps/api/src/auth.js';
@@ -12,6 +13,8 @@ import {collectSessionAlerts} from '../../apps/automation-worker/src/session-ale
 import {SimulatorProvider,type HealthSignal} from '../../packages/messaging/src/index.js';
 import type {DomainRecord} from '../../packages/contracts/src/index.js';
 const workspace='continuity-'+randomUUID(),origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0]!;
+// V7 F2: fixture workspaces are adopted profiles (max three per installation).
+beforeAll(()=>fixtureProfiles(workspace));
 let app:Awaited<ReturnType<typeof createApp>>,cookie:string,user:string;
 const request=(method:any,url:string,body?:any,key=randomUUID())=>app.inject({method,url:url+(url.includes('?')?'&':'?')+'environment=REAL',payload:body,headers:{cookie,origin,'idempotency-key':key}});
 const signals=(state='WORKING',fingerprint='fixture-identity',at=new Date()):HealthSignal[]=>[{dimension:'session',status:state==='WORKING'?'OK':'BLOCKED',value:state,source:'provider_read',scope:'account',availability:'supported',observedAt:at.toISOString(),expiresAt:new Date(at.getTime()+60000).toISOString()},...(state==='WORKING'?[{dimension:'transport' as const,status:'OK' as const,value:{identity_fingerprint:fingerprint},source:'provider_read' as const,scope:'account' as const,availability:'supported' as const,observedAt:at.toISOString(),expiresAt:new Date(at.getTime()+60000).toISOString()}]:[])];

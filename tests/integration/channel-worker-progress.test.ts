@@ -1,4 +1,5 @@
-import {afterAll,expect,it} from 'vitest';
+import {afterAll,expect,it,beforeAll} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomUUID} from 'node:crypto';
 import {pool,putRecord} from '../../packages/db/src/index.js';
 import {acquireOwnership,heartbeatOwnership,discoverSessionOwnership} from '../../apps/channel-worker/src/lifecycle.js';
@@ -9,6 +10,8 @@ import {roleExecutor} from '../support/database-role.js';
 
 afterAll(()=>pool.end());
 const owner='lease-progress-'+randomUUID(),workspace='lease-progress-'+randomUUID();
+// V7 F2: fixture workspaces are adopted profiles (max three per installation).
+beforeAll(()=>fixtureProfiles(workspace));
 const withRole=roleExecutor(pool);
 async function fixture(){
  const account=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'channel_account',body:{name:'Synthetic ownership progress',provider:'waha',gateway_ref:'fixture-'+randomUUID(),status:'WORKING',sending_enabled:false}});

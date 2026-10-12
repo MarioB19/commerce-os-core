@@ -1,8 +1,8 @@
 /** Isolated PostgreSQL bootstrap component of 020, not production RLS. */
-import {readFile} from 'node:fs/promises';
 import {randomBytes} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
+import {asProfileOwner,requireMigratedProfileSchema} from '../support/migrated-database.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {listProfileChoicesFromSession,selectProfileFromSession} from '../../packages/db/src/profile-identity-bootstrap.js';
 import {withProfileTransaction} from '../../packages/db/src/profile-context.js';
@@ -17,13 +17,9 @@ describe('closed identity bootstrap with native RLS and restricted runtime',()=>
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');
   admin=new pg.Pool({connectionString:url.toString(),max:5,connectionTimeoutMillis:5000});
-  if((await admin.query("SELECT to_regclass('public.profiles') present")).rows[0].present)throw Error('TRANSITION_SCHEMA_ALREADY_PRESENT');
-  await admin.query(await readFile(new URL('../../packages/db/profile-transition/001_profile_identity.sql',import.meta.url),'utf8'));
-  await admin.query(await readFile(new URL('../../packages/db/profile-transition/components/020_profile_identity_bootstrap.sql',import.meta.url),'utf8'));
-  // Only these fixture tables are closed. Commercial 020 remains a separate gate.
-  for(const table of ['memberships','profile_session_context','profiles']){
-   await admin.query(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;CREATE POLICY fixture_runtime_scope ON ${table} TO commerce_api USING(${table==='profiles'?'id':'workspace_id'}=NULLIF(current_setting('app.workspace_id',true),'')) WITH CHECK(${table==='profiles'?'id':'workspace_id'}=NULLIF(current_setting('app.workspace_id',true),''))`);
-  }
+  // V7 F2: identity, the closed bootstrap and forced profile RLS on memberships,
+  // selection and profiles are installed by the migrations (0070, 0083, 0096).
+  await requireMigratedProfileSchema(admin);
   await admin.query('INSERT INTO "user"(id,name,email) VALUES($1,$1,$1||\'@example.test\'),($2,$2,$2||\'@example.test\')',[user,outsider]);
   await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'One','UTC',1,10,10),($2,'Two','UTC',1,10,10),($3,'Private Other','UTC',1,10,10)",[one,two,other]);
   await admin.query("INSERT INTO memberships(user_id,workspace_id,role) VALUES($1,$2,'operator'),($1,$3,'viewer'),($4,$5,'owner')",[user,one,two,outsider,other]);
@@ -44,6 +40,8 @@ describe('closed identity bootstrap with native RLS and restricted runtime',()=>
  it('keeps listed membership and profile authority locked until the identity transaction commits',async()=>{
   const session=await freshSession(),reader=await runtime.connect(),memberWriter=await admin.connect(),profileWriter=await admin.connect();let pending:Promise<unknown>[]=[];
   try{
+   // V7 F2: a profile row is privacy-fenced; the owner writes from its context.
+   await profileWriter.query("SELECT set_config('app.workspace_id',$1,false)",[two]);
    await reader.query('BEGIN');expect((await listProfileChoicesFromSession(reader,session)).map(r=>r.id).sort()).toEqual([one,two].sort());
    const memberPid=(await memberWriter.query('SELECT pg_backend_pid() pid')).rows[0].pid,profilePid=(await profileWriter.query('SELECT pg_backend_pid() pid')).rows[0].pid;
    pending=[memberWriter.query('UPDATE memberships SET active=false WHERE user_id=$1 AND workspace_id=$2',[user,one]),profileWriter.query("UPDATE profiles SET state='SUSPENDED',version=version+1 WHERE id=$1",[two])];
@@ -52,8 +50,8 @@ describe('closed identity bootstrap with native RLS and restricted runtime',()=>
    await reader.query('COMMIT');await Promise.all(pending);pending=[];
    const after=await listProfileChoicesFromSession(runtime,session);expect(after.map(r=>r.id)).toEqual([two]);expect(after[0].state).toBe('SUSPENDED');
   }finally{
-   await reader.query('ROLLBACK');await Promise.allSettled(pending);reader.release();memberWriter.release();profileWriter.release();
-   await admin.query('UPDATE memberships SET active=true WHERE user_id=$1 AND workspace_id=$2',[user,one]);await admin.query("UPDATE profiles SET state='ACTIVE',version=version+1 WHERE id=$1",[two]);
+   await reader.query('ROLLBACK');await Promise.allSettled(pending);await profileWriter.query("SELECT set_config('app.workspace_id','',false)");reader.release();memberWriter.release();profileWriter.release();
+   await admin.query('UPDATE memberships SET active=true WHERE user_id=$1 AND workspace_id=$2',[user,one]);await asProfileOwner(admin,two,c=>c.query("UPDATE profiles SET state='ACTIVE',version=version+1 WHERE id=$1",[two]));
   }
  });
  it('rejects another native owner and expiry without returning selector data',async()=>{
@@ -84,9 +82,9 @@ describe('closed identity bootstrap with native RLS and restricted runtime',()=>
   finally{await admin.query("UPDATE memberships SET role='operator' WHERE user_id=$1 AND workspace_id=$2",[user,one]);}
  });
  it('retains suspended profiles as metadata without granting commercial authority',async()=>{
-  const s=await freshSession();await admin.query("UPDATE profiles SET state='SUSPENDED',version=version+1 WHERE id=$1",[two]);
+  const s=await freshSession();await asProfileOwner(admin,two,c=>c.query("UPDATE profiles SET state='SUSPENDED',version=version+1 WHERE id=$1",[two]));
   try{const fence=await transaction(c=>selectProfileFromSession(c,s,two,0));expect(fence.workspaceId).toBe(two);expect((await listProfileChoicesFromSession(runtime,s)).find(r=>r.id===two)?.state).toBe('SUSPENDED');}
-  finally{await admin.query("UPDATE profiles SET state='ACTIVE',version=version+1 WHERE id=$1",[two]);}
+  finally{await asProfileOwner(admin,two,c=>c.query("UPDATE profiles SET state='ACTIVE',version=version+1 WHERE id=$1",[two]));}
  });
  it('cannot switch a selection from inside a commercial scope',async()=>{
   const s=await freshSession();await expect(withProfileTransaction(runtime,one,db=>selectProfileFromSession(db,s,two,0))).rejects.toThrow('PROFILE_BOOTSTRAP_OUTSIDE_SCOPE_REQUIRED');expect((await listProfileChoicesFromSession(runtime,s)).every(r=>!r.selected)).toBe(true);
@@ -104,16 +102,19 @@ describe('closed identity bootstrap with native RLS and restricted runtime',()=>
   }finally{await blocker.query('ROLLBACK');blocker.release();if(call)await call.catch(()=>{});}
  });
  it('rejects an unadopted legacy role rather than widening its permissions',async()=>{
-  const s=await freshSession();await admin.query("UPDATE memberships SET role='seller' WHERE user_id=$1 AND workspace_id=$2",[user,one]);
-  try{await expect(listProfileChoicesFromSession(runtime,s)).rejects.toThrow('PROFILE_ROLE_ADOPTION_REQUIRED');await expect(transaction(c=>selectProfileFromSession(c,s,one,0))).rejects.toThrow('PROFILE_ROLE_ADOPTION_REQUIRED');}
-  finally{await admin.query("UPDATE memberships SET role='operator' WHERE user_id=$1 AND workspace_id=$2",[user,one]);}
+  // V7 F2 (D-23): memberships_v7_role (0071) refuses a historical role in the
+  // database itself; the bootstrap keeps returning only adopted roles.
+  const s=await freshSession();await expect(admin.query("UPDATE memberships SET role='seller' WHERE user_id=$1 AND workspace_id=$2",[user,one])).rejects.toMatchObject({code:'23514',constraint:'memberships_v7_role'});
+  expect((await listProfileChoicesFromSession(runtime,s)).find(r=>r.id===one)?.role).toBe('operator');
  });
  it('rejects an excessive selector inventory without truncating it',async()=>{
+  // V7 F2 (D-14): the platform admits three profiles, so a fourth choice can no
+  // longer exist; the selector returns all three without truncation.
   const s=await freshSession(),extra='extra_'+tag;
-  await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Extra','UTC',0,0,0)",[extra]);
-  await admin.query("INSERT INTO memberships(user_id,workspace_id,role) VALUES($1,$2,'viewer'),($1,$3,'viewer')",[user,other,extra]);
-  try{await expect(listProfileChoicesFromSession(runtime,s)).rejects.toThrow('PROFILE_BOOTSTRAP_BOUND');}
-  finally{await admin.query('DELETE FROM memberships WHERE user_id=$1 AND workspace_id=ANY($2)',[user,[other,extra]]);await admin.query('DELETE FROM profiles WHERE id=$1',[extra]);}
+  await expect(admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Extra','UTC',0,0,0)",[extra])).rejects.toThrow('PROFILE_QUOTA_ALLOCATION_EXCEEDED');
+  await admin.query("INSERT INTO memberships(user_id,workspace_id,role) VALUES($1,$2,'viewer')",[user,other]);
+  try{expect((await listProfileChoicesFromSession(runtime,s)).map(r=>r.id).sort()).toEqual([one,two,other].sort());}
+  finally{await admin.query('DELETE FROM memberships WHERE user_id=$1 AND workspace_id=$2',[user,other]);}
  });
  it('does not grant the worker role access to the identity bootstrap',async()=>{
   const c=await admin.connect();try{await c.query('BEGIN');await c.query('SET LOCAL ROLE commerce_channel');await expect(c.query('SELECT * FROM list_authenticated_profile_choices($1,$2)',['none','none'])).rejects.toMatchObject({code:'42501'});}finally{await c.query('ROLLBACK');c.release();}

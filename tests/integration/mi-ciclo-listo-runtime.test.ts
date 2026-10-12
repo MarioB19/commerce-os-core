@@ -1,5 +1,6 @@
 import {directAgreementWorkflow} from '../../packages/domain/src/sales/direct-agreement.js';
-import {afterAll,afterEach,expect,it} from 'vitest';
+import {afterAll,afterEach,expect,it,beforeAll} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomUUID} from 'node:crypto';
 import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -15,6 +16,8 @@ import {dispatchOutbox,acquireOwnership,recordHealth} from '../../apps/channel-w
 import {SimulatorProvider,type OutboundMessage} from '../../packages/messaging/src/index.js';
 
 const workspace='mcl-runtime-'+randomUUID(),owner='mcl-test-owner';
+// V7 F2: fixture workspaces are adopted profiles (max three per installation).
+beforeAll(()=>fixtureProfiles(workspace));
 const root=await mkdtemp(join(tmpdir(),'mcl-runtime-'));await mkdir(join(root,'assets'));
 const priorStorage=process.env.PRIVATE_STORAGE_DIR;process.env.PRIVATE_STORAGE_DIR=root;
 afterEach(async()=>{await pool.query("UPDATE records SET body=body||'{\"ai_pending\":false}'::jsonb,version=version+1 WHERE workspace_id=$1 AND kind='conversation'",[workspace]);await pool.query("UPDATE outbox SET status='CANCELLED' WHERE workspace_id=$1 AND status IN('READY','BLOCKED')",[workspace]);await pool.query("UPDATE timers SET status='CANCELLED' WHERE workspace_id=$1 AND status='PENDING'",[workspace]);});

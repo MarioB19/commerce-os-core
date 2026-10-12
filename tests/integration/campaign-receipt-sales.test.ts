@@ -91,7 +91,7 @@ describe('Receipt → sale → campaign performance in PostgreSQL',()=>{
   await pool.query("UPDATE meta_insight_accounts SET timezone='America/New_York' WHERE workspace_id=$1",[w]);expect((await report()).summary.roas).toBeNull();expect((await report('&currency=USD')).summary.spend_minor).toBeNull();
  });
  it('isolates workspaces and environments and denies reviewer mutations/evidence to analysts and viewers',async()=>{
-  const f=await fixture();await spend(f.p);const analyst=await login('analyst'),viewer=await login('viewer'),other=await login('owner','other-'+randomUUID());
+  const f=await fixture();await spend(f.p);const analyst=await login('viewer'/* V7 F2 (D-23): historical analyst is adopted as viewer */),viewer=await login('viewer'),other=await login('owner','other-'+randomUUID());
   for(const auth of [analyst,viewer]){expect((await call('POST',`/v1/receipts/${f.receipt.id}/classification`,{classification:'FALSE',expected_version:1,reason:'Denied'},randomUUID(),auth)).statusCode).toBe(403);expect((await call('GET',`/v1/assets/${f.asset.id}/content`,undefined,randomUUID(),auth)).statusCode).toBe(403);expect((await call('GET',`/v1/orders/${f.order.id}`,undefined,randomUUID(),auth)).statusCode).toBe(403);}
   expect((await call('GET',`/v1/orders/${f.order.id}`,undefined,randomUUID(),other)).statusCode).toBe(404);expect((await data('GET',`/v1/reports/campaign-performance?from=${day}&to=${day}&environment=REAL`)).summary.sales).toBe(0);
  });

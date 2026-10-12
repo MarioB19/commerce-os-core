@@ -7,24 +7,29 @@ import {fileURLToPath} from 'node:url';
 import {realpathSync} from 'node:fs';
 import {setTimeout as pause} from 'node:timers/promises';
 import type {DomainRecord} from '../../packages/contracts/src/index.js';
+import {fixtureProfilesOn,releaseFixtureNumbers} from '../support/profile-fixture.js';
 import type {ProviderFactory} from '../../apps/channel-worker/src/providers.js';
 const original=process.env.DATABASE_URL!,control=new pg.Pool({connectionString:original});
 const database='group_hold_'+randomUUID().replaceAll('-',''),ownerUrl=new URL(original);ownerUrl.pathname='/'+database;
 const workerUrl=new URL(ownerUrl);workerUrl.searchParams.set('options','-c role=commerce_channel -c application_name=group-hold-worker');
 const root=fileURLToPath(new URL('../../',import.meta.url));
 let created=false,admin:pg.Pool,pool:pg.Pool;
+// V7 F2: an installation admits three profiles and 20 numbers. Held groups share
+// one profile sorted first; every other fixture uses the eligible profile.
+const heldWorkspace='a-held-'+randomUUID(),eligibleWorkspace='groups-'+randomUUID();
 let putRecord:typeof import('../../packages/db/src/index.js').putRecord,encrypt:typeof import('../../packages/db/src/index.js').encrypt,hash:typeof import('../../packages/db/src/index.js').hash;
 let active:typeof import('../../apps/channel-worker/src/number-group-observation.js').refreshActiveNumberGroups,effectRefresh:typeof import('../../apps/channel-worker/src/warmup-group-dispatch.js').refreshEffectGroup,dispatch:typeof import('../../apps/channel-worker/src/dispatch.js').dispatchOutbox;
 beforeAll(async()=>{
  await control.query(`CREATE DATABASE "${database}" TEMPLATE template0`);created=true;
  await promisify(execFile)(process.execPath,['--import','tsx',realpathSync(fileURLToPath(new URL('../../packages/db/src/migrate.ts',import.meta.url)))],{cwd:root,env:{...process.env,DATABASE_URL:ownerUrl.toString()},timeout:30000});
- admin=new pg.Pool({connectionString:ownerUrl.toString()});process.env.DATABASE_URL=workerUrl.toString();vi.resetModules();
+ admin=new pg.Pool({connectionString:ownerUrl.toString()});
+ {const c=await admin.connect();try{await c.query('BEGIN');await fixtureProfilesOn(c,{id:heldWorkspace,numbers:14},{id:eligibleWorkspace,numbers:6});await c.query('COMMIT');}finally{c.release();}}process.env.DATABASE_URL=workerUrl.toString();vi.resetModules();
  ({pool,putRecord,encrypt,hash}=await import('../../packages/db/src/index.js'));({refreshActiveNumberGroups:active}=await import('../../apps/channel-worker/src/number-group-observation.js'));({refreshEffectGroup:effectRefresh}=await import('../../apps/channel-worker/src/warmup-group-dispatch.js'));({dispatchOutbox:dispatch}=await import('../../apps/channel-worker/src/dispatch.js'));
  expect((await pool.query('SELECT current_user role')).rows[0].role).toBe('commerce_channel');
 });
-beforeEach(async()=>{await admin.query('UPDATE warmup_pools SET enabled=false');await admin.query("UPDATE outbox SET status='CANCELLED'");});
+beforeEach(async()=>{await admin.query('UPDATE warmup_pools SET enabled=false');await admin.query('DELETE FROM operational_settings');await releaseFixtureNumbers(admin);await admin.query("UPDATE outbox SET status='CANCELLED'");});
 afterAll(async()=>{await pool?.end();await admin?.end();process.env.DATABASE_URL=original;try{if(created)await control.query(`DROP DATABASE "${database}"`);}finally{await control.end();}});
-async function fixture(environment:'REAL'|'SIMULATION'='REAL',workspace='groups-'+randomUUID(),held=false){
+async function fixture(environment:'REAL'|'SIMULATION'='REAL',workspace=eligibleWorkspace,held=false){
  const account=await putRecord(admin,{workspaceId:workspace,environment,kind:'channel_account',body:{provider:'waha',gateway_ref:'synthetic-'+randomUUID(),engine:environment==='REAL'?'GOWS':'SIMULATOR',status:'WORKING',sending_enabled:false}});
  const groupId=randomUUID(),groupAddress='synthetic-group-'+groupId+'@g.us',profile=randomUUID(),poolId=randomUUID();
  await admin.query("INSERT INTO warmup_profiles(id,workspace_id,environment,config) VALUES($1,$2,$3,'{}')",[profile,workspace,environment]);
@@ -46,7 +51,7 @@ async function state(f:Fixture){return(await admin.query("SELECT json_build_obje
 async function waitFor(check:()=>Promise<boolean>){const deadline=Date.now()+5000;while(Date.now()<deadline){if(await check())return;await pause(10);}throw Error('CANONICAL_LOCK_NOT_OBSERVED');}
 async function hold(c:pg.PoolClient,workspace:string){await c.query("UPDATE operational_settings SET release_hold=true,release_hold_at=clock_timestamp() WHERE workspace_id=$1 AND environment='REAL'",[workspace]);await c.query('COMMIT');}
 it('does not claim held groups or consume the global five-group quota',async()=>{
- const held:Fixture[]=[];for(let i=0;i<6;i++)held.push(await fixture('REAL','a-held-'+i+'-'+randomUUID(),true));
+ const held:Fixture[]=[];for(let i=0;i<6;i++)held.push(await fixture('REAL',heldWorkspace,true));
  const eligible=await fixture(),before=await Promise.all(held.map(state)),reads:string[]=[];
  expect(await active('synthetic-eligible',provider(eligible,reads))).toEqual({groups:1,failed:0});expect(reads).toEqual([eligible.account.id]);expect(await Promise.all(held.map(state))).toEqual(before);
 });

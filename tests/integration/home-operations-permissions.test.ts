@@ -5,16 +5,19 @@ import {provisionUser} from '../../apps/api/src/auth.js';
 import {pool,putRecord} from '../../packages/db/src/index.js';
 
 const workspace='home-permissions-'+randomUUID(),origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0]!;
-const cookies:Record<string,string>={};
+const cookies:Record<string,string>={},ids:Record<string,string>={};
 let app:Awaited<ReturnType<typeof createApp>>,actor='';
 
 beforeAll(async()=>{
  app=await createApp();
- for(const role of ['owner','operator','reconciler','analyst','viewer','seller'] as const){
-  const email=`home-${role}-${randomUUID()}@example.invalid`,password=randomBytes(24).toString('base64url'),user=await provisionUser({name:`Home ${role}`,email,password,workspace_id:workspace,role});
-  if(role==='owner')actor=user.id;
+ // V7 F2 (D-23): memberships are owner/operator/viewer. Historical reconciler is
+ // adopted as operator, analyst as viewer, and a former member has no active
+ // membership (the historical 403 for a role without home access).
+ for(const [who,role] of [['owner','owner'],['operator','operator'],['reconciler','operator'],['analyst','viewer'],['viewer','viewer'],['former','viewer']] as const){
+  const email=`home-${who}-${randomUUID()}@example.invalid`,password=randomBytes(24).toString('base64url'),user=await provisionUser({name:`Home ${who}`,email,password,workspace_id:workspace,role});
+  ids[who]=user.id;if(who==='owner')actor=user.id;
   const login=await app.inject({method:'POST',url:'/api/auth/sign-in/email',payload:{email,password},headers:{origin},remoteAddress:`192.0.2.${20+Object.keys(cookies).length}`});expect(login.statusCode,login.body).toBe(200);
-  cookies[role]=login.cookies.map(cookie=>`${cookie.name}=${cookie.value}`).join('; ');
+  cookies[who]=login.cookies.map(cookie=>`${cookie.name}=${cookie.value}`).join('; ');
  }
  const channel=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'channel_account',body:{name:'Canal restringido',provider:'waha',status:'DISCONNECTED',sending_enabled:false}});
  await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'conversation',body:{status:'OPEN',stage:'HUMAN_REVIEW',flow_state:{status:'HUMAN_REVIEW'}}});
@@ -36,11 +39,12 @@ it('returns only sections and destinations readable by each reporting role',asyn
  const viewer=await summary('viewer');expect(viewer.sections.map((section:any)=>section.key)).toEqual(['numbers','sales','capacity']);
  const viewerSales=viewer.sections.find((section:any)=>section.key==='sales');expect(viewerSales.summary.metrics.receipts_review).toBe(0);expect(viewerSales.queue.every((item:any)=>item.reason_code!=='RECEIPT_HUMAN_REVIEW')).toBe(true);
 
- const analyst=await summary('analyst');expect(analyst).toMatchObject({status:'NO_DATA',partial:false,sections:[],priority:{code:'REPORTS_ONLY_ROLE',href:'/results',status:'READY'}});
- expect(JSON.stringify(analyst)).not.toContain('Canal restringido');
+ const analyst=await summary('analyst');expect(analyst.sections.map((section:any)=>section.key)).toEqual(['numbers','sales','capacity']);
+ expect(analyst.sections.find((section:any)=>section.key==='sales').queue.every((item:any)=>item.reason_code!=='RECEIPT_HUMAN_REVIEW')).toBe(true);
 
  for(const role of ['operator','reconciler']){const result=await summary(role);expect(result.sections.map((section:any)=>section.key)).toEqual(['numbers','sales','operations','capacity']);expect(result.sections.find((section:any)=>section.key==='operations').queue).toEqual(expect.arrayContaining([expect.objectContaining({reason_code:'REMOTE_OUTCOME_UNKNOWN',href:'/settings?section=audit'}),expect.objectContaining({reason_code:'REAL_POLICY_FROZEN',href:'/settings'})]));}
- const denied=await app.inject({method:'GET',url:'/v1/home/operations-summary?environment=REAL',headers:{origin,cookie:cookies.seller}});expect(denied.statusCode).toBe(403);
+ await pool.query('UPDATE memberships SET active=false WHERE user_id=$1 AND workspace_id=$2',[ids.former,workspace]);
+ const denied=await app.inject({method:'GET',url:'/v1/home/operations-summary?environment=REAL',headers:{origin,cookie:cookies.former}});expect(denied.statusCode).toBe(403);
  },60000);
 
 it('separates policy-held effects from technical blockers without changing either',async()=>{

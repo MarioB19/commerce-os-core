@@ -1,5 +1,6 @@
 import {explicitFixtureEnvironment} from './explicit-fixture-environment.js';
 import {afterAll,beforeAll,describe,expect,it} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomBytes,randomUUID} from 'node:crypto';
 import type {FastifyInstance} from 'fastify';
 import {createApp} from '../../apps/api/src/app.js';
@@ -13,6 +14,8 @@ import {proposeEffect} from '../../apps/automation-worker/src/shared.js';
 import type {DomainRecord} from '../../packages/contracts/src/index.js';
 
 const workspace='removal-'+randomUUID(),owner='removal-worker',origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0]!;
+// V7 F2: fixture workspaces are adopted profiles (max three per installation).
+beforeAll(()=>fixtureProfiles(workspace));
 let app:FastifyInstance,cookie:string,viewerCookie:string;
 async function login(role:'owner'|'viewer') {
  const email=randomUUID()+'@example.invalid',password=randomBytes(24).toString('base64url');

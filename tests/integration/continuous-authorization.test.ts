@@ -15,6 +15,7 @@ import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js';
 import pg from 'pg';
 import {afterAll,beforeAll,describe,expect,it,vi} from 'vitest';
+import {asProfileOwner,requireMigratedProfileSchema} from '../support/migrated-database.js';
 import {withProfileTransaction,type ProfileExecutor,type ProfilePool} from '../../packages/db/src/profile-context.js';
 import {withProfileSessionTransaction} from '../../packages/db/src/profile-session-transaction.js';
 import {selectSessionProfile,type SessionProfile} from '../../packages/db/src/profile-session.js';
@@ -172,8 +173,7 @@ describe('F3 continuity persistence, real restricted PostgreSQL and synthetic so
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');
   admin=new pg.Pool({connectionString:url.toString(),max:6,connectionTimeoutMillis:5000});
-  if((await admin.query("SELECT to_regclass('public.profiles') AS present")).rows[0].present)throw Error('TRANSITION_SCHEMA_ALREADY_PRESENT');
-  const setup=await admin.connect();try{await setup.query('BEGIN');for(const name of ['001_profile_identity.sql','002_profile_personal_tokens.sql','010_continuous_authorization.sql','012_continuous_effects.sql','013_continuous_worker_profile.sql'])await setup.query(await readFile(new URL('../../packages/db/profile-transition/'+name,import.meta.url),'utf8'));await setup.query('COMMIT');}catch(e){await setup.query('ROLLBACK');throw e;}finally{setup.release();}
+  await requireMigratedProfileSchema(admin);
   await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic F3','UTC',20,100,100),($2,'Synthetic foreign','UTC',20,100,100)",[workspace,foreign]);
   await admin.query('INSERT INTO "user"(id,name,email,"emailVerified") VALUES($1,$1,$1||\'@example.invalid\',true)',[actor]);
   await admin.query("INSERT INTO memberships(user_id,workspace_id,role) VALUES($1,$2,'owner')",[actor,workspace]);
@@ -282,8 +282,8 @@ describe('F3 continuity persistence, real restricted PostgreSQL and synthetic so
   expect(await human((db,p)=>store.issueCommercialContinuity(db,'REAL',{operationId:randomUUID(),assignmentId:f.origin.assignment,expectedRevision:1},p.authority))).toEqual(revoked);
  });
  it('session suspension revalidation rejects issuance and leaves no operation',async()=>{
-  const f=await commercial(),operationId=randomUUID();await admin.query("UPDATE profiles SET state='SUSPENDED' WHERE id=$1",[workspace]);
-  try{await expect(human((db,p)=>store.issueCommercialContinuity(db,'REAL',{operationId,assignmentId:f.assignment,expectedRevision:1},p.authority))).rejects.toThrow('PROFILE_SUSPENDED');expect((await admin.query('SELECT operation_id FROM continuous_authorization_operations WHERE operation_id=$1',[operationId])).rows).toHaveLength(0);}finally{await admin.query("UPDATE profiles SET state='ACTIVE' WHERE id=$1",[workspace]);}
+  const f=await commercial(),operationId=randomUUID();await asProfileOwner(admin,workspace,c=>c.query("UPDATE profiles SET state='SUSPENDED' WHERE id=$1",[workspace]));
+  try{await expect(human((db,p)=>store.issueCommercialContinuity(db,'REAL',{operationId,assignmentId:f.assignment,expectedRevision:1},p.authority))).rejects.toThrow('PROFILE_SUSPENDED');expect((await admin.query('SELECT operation_id FROM continuous_authorization_operations WHERE operation_id=$1',[operationId])).rows).toHaveLength(0);}finally{await asProfileOwner(admin,workspace,c=>c.query("UPDATE profiles SET state='ACTIVE' WHERE id=$1",[workspace]));}
  });
  it('QR-origin issue uses channel role and database creator; wrong fingerprint or revision fails',async()=>{
   const f=await qr();await expect(tx('commerce_api',db=>store.issueVerifiedQrContinuity(db,'REAL',f))).rejects.toThrow('CONTINUITY_INTERNAL_ROLE_REQUIRED');
@@ -441,7 +441,7 @@ describe('F3 continuity persistence, real restricted PostgreSQL and synthetic so
   const f=await commercialReady();
   await expect(tx('commerce_automation',db=>proposeEffect(db,f.conversation,{kind:'text'},randomUUID()))).rejects.toThrow('CONTINUITY_PROFILE_CONTEXT_REQUIRED');
   await expect(tx('commerce_automation',db=>withProfileQueryRouting(db,()=>proposeEffect(db,f.conversation,{kind:'text'},randomUUID())),foreign)).rejects.toThrow(/PROFILE_QUERY_CONTEXT_MISMATCH/);
-  await admin.query("UPDATE profiles SET state='SUSPENDED' WHERE id=$1",[workspace]);try{await expect(f.propose()).rejects.toThrow('CONTINUITY_PROFILE_SUSPENDED');}finally{await admin.query("UPDATE profiles SET state='ACTIVE' WHERE id=$1",[workspace]);}
+  await asProfileOwner(admin,workspace,c=>c.query("UPDATE profiles SET state='SUSPENDED' WHERE id=$1",[workspace]));try{await expect(f.propose()).rejects.toThrow('CONTINUITY_PROFILE_SUSPENDED');}finally{await asProfileOwner(admin,workspace,c=>c.query("UPDATE profiles SET state='ACTIVE' WHERE id=$1",[workspace]));}
   await humanCommand(f.state,'pause');expect(await f.propose()).toMatchObject({status:'BLOCKED',continuous_authorization_id:f.state.id,result:{reason:'CONTINUITY_HUMAN_PAUSED'}});
  });
  it('dispatch re-reads pause, resume, protection and terminal revoke on the original immutable grant',async()=>{
@@ -544,11 +544,11 @@ describe('F3 continuity persistence, real restricted PostgreSQL and synthetic so
   const ownPaused=await humanCommand(a,'pause');expect(await check()).toBe('CONTINUITY_HUMAN_PAUSED');await humanCommand(ownPaused,'revoke');expect(await check()).toBe('CONTINUITY_REVOKED');
  });
  it('013 returns validated profile timezone and never lets an invalid IANA fact reach QR workers',async()=>{
-  await admin.query("UPDATE profiles SET timezone='America/Los_Angeles' WHERE id=$1",[workspace]);
+  await asProfileOwner(admin,workspace,c=>c.query("UPDATE profiles SET timezone='America/Los_Angeles' WHERE id=$1",[workspace]));
   try{expect(await tx('commerce_channel',db=>lockedContinuousWorkerProfile(db))).toMatchObject({timezone:'America/Los_Angeles'});
-   await admin.query("UPDATE profiles SET timezone='Not/A_Zone' WHERE id=$1",[workspace]);
+   await asProfileOwner(admin,workspace,c=>c.query("UPDATE profiles SET timezone='Not/A_Zone' WHERE id=$1",[workspace]));
    await expect(tx('commerce_channel',db=>lockedContinuousWorkerProfile(db))).rejects.toThrow('CONTINUITY_PROFILE_FACT_INVALID');
-  }finally{await admin.query("UPDATE profiles SET timezone='UTC' WHERE id=$1",[workspace]);}
+  }finally{await asProfileOwner(admin,workspace,c=>c.query("UPDATE profiles SET timezone='UTC' WHERE id=$1",[workspace]));}
  });
 
  it('paused workflow persists its intent before advancing and final dispatch stays blocked until resume',async()=>{

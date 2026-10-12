@@ -3,9 +3,9 @@ import {randomBytes} from 'node:crypto';
 import pg from 'pg';
 import Fastify,{type FastifyInstance} from 'fastify';
 import {afterAll,beforeAll,describe,expect,it} from 'vitest';
+import {asProfileOwner,requireMigratedProfileSchema,selectFixtureSession} from '../support/migrated-database.js';
 import {profileSettingsRoutes} from '../../apps/api/src/profile-settings.js';
 import {withProfileTransaction} from '../../packages/db/src/profile-context.js';
-import {selectSessionProfile} from '../../packages/db/src/profile-session.js';
 import {withProfileSessionTransaction} from '../../packages/db/src/profile-session-transaction.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 
@@ -18,24 +18,23 @@ const headers=()=>({origin:'https://fixture.test','x-commerce-profile-id':one,'x
 const read=async(id=one)=>(await admin!.query('SELECT id,business_name,timezone,version,updated_at FROM profiles WHERE id=$1',[id])).rows[0];
 const patch=async(payload:Record<string,unknown>)=>app!.inject({method:'PATCH',url:'/v2/profile',headers:headers(),payload});
 const events=async()=>Number((await admin!.query("SELECT count(*) FROM domain_events WHERE workspace_id=$1 AND event_type='profile.settings.changed'",[one])).rows[0].count);
-async function refresh(){selection=(await withProfileTransaction(runtime!,one,db=>selectSessionProfile(db,session,one,selection))).version;}
+async function refresh(){selection=(await selectFixtureSession(runtime!,session,one,selection)).version;}
 describe('own profile settings on restricted native PostgreSQL',()=>{
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));
   if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw new Error('ISOLATED_TEST_DATABASE_REQUIRED');
   admin=new pg.Pool({connectionString:url.toString(),max:3,connectionTimeoutMillis:5000});
-  if((await admin.query("SELECT to_regclass('public.profiles') AS existing")).rows[0].existing)throw new Error('TRANSITION_SCHEMA_ALREADY_PRESENT');
-  const setup=await admin.connect();try{
-   await setup.query('BEGIN');
-   for(const file of ['001_profile_identity.sql','003_profile_settings.sql'])await setup.query(await readFile(new URL('../../packages/db/profile-transition/'+file,import.meta.url),'utf8'));
-   await setup.query('COMMIT');
-  }catch(e){await setup.query('ROLLBACK');throw e;}finally{setup.release();}
+  await requireMigratedProfileSchema(admin);
   const password=randomBytes(32).toString('hex');
   await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${password}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT`);
   await admin.query(`GRANT commerce_api TO "${login}"`);
   await admin.query('INSERT INTO "user"(id,name,email) VALUES($1,$1,$1||\'@example.test\')',[user]);
   await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic One','UTC',1,10,10),($2,'Synthetic Two','UTC',1,10,10)",[one,two]);
   await admin.query("INSERT INTO memberships(user_id,workspace_id,role) VALUES($1,$2,'owner')",[user,one]);
+  // V7 F2: a profile keeps at least one owner (004); a synthetic co-owner lets
+  // the fixture downgrade the acting user.
+  await admin.query('INSERT INTO "user"(id,name,email) VALUES($1,$1,$1||\'@example.test\')',['co_'+user]);
+  await admin.query("INSERT INTO memberships(user_id,workspace_id,role) VALUES($1,$2,'owner')",['co_'+user,one]);
   await admin.query('INSERT INTO session(id,"userId",token,"expiresAt") VALUES($1,$2,$1,now()+interval \'1 hour\')',[session.id,user]);
   url.username=login;url.password=password;runtime=new pg.Pool({connectionString:url.toString(),max:3,connectionTimeoutMillis:5000});
   await refresh();
@@ -47,8 +46,10 @@ describe('own profile settings on restricted native PostgreSQL',()=>{
  it('grants only the business fields and preserves IDs, state, quota, timestamps and version authority',async()=>{
   const role=(await runtime!.query('SELECT rolsuper,rolbypassrls FROM pg_roles WHERE rolname=current_user')).rows[0];expect(role).toEqual({rolsuper:false,rolbypassrls:false});
   for(const assignment of ["state='SUSPENDED'",'number_limit=20','product_limit=100','daily_conversation_limit=1000','version=99','updated_at=now()'])await expect(runtime!.query('UPDATE profiles SET '+assignment+' WHERE id=$1',[one])).rejects.toMatchObject({code:'42501'});
-  await expect(runtime!.query('UPDATE profiles SET id=$2 WHERE id=$1',[one,'changed_'+one])).rejects.toThrow('PROFILE_IDENTITY_IMMUTABLE');
-  await expect(runtime!.query("UPDATE profiles SET business_name='No context' WHERE id=$1",[one])).rejects.toThrow('PROFILE_SETTINGS_CONTEXT_REQUIRED');
+  await expect(withProfileTransaction(runtime!,one,db=>db.query('UPDATE profiles SET id=$2 WHERE id=$1',[one,'changed_'+one]))).rejects.toThrow('PROFILE_IDENTITY_IMMUTABLE');
+  // V7 F2: commerce_api runs under FORCE RLS; a row outside the transaction's
+  // profile context is invisible, so the write matches no row (ADR v7 isolation).
+  expect((await runtime!.query("UPDATE profiles SET business_name='No context' WHERE id=$1",[one])).rowCount).toBe(0);
  });
  it('commits one authenticated-profile update and its immutable actor/version event atomically',async()=>{
   const before=await read(),count=await events();
@@ -71,7 +72,9 @@ describe('own profile settings on restricted native PostgreSQL',()=>{
  });
  it('rejects a foreign row even through the column grant with another profile context',async()=>{
   const before=await read(two);
-  await expect(withProfileTransaction(runtime!,one,db=>db.query("UPDATE profiles SET business_name='Crossed' WHERE id=$1",[two]))).rejects.toThrow('PROFILE_SETTINGS_CONTEXT_REQUIRED');
+  // V7 F2: commerce_api runs under FORCE RLS; a row outside the transaction's
+  // profile context is invisible, so the write matches no row (ADR v7 isolation).
+  expect((await withProfileTransaction(runtime!,one,db=>db.query("UPDATE profiles SET business_name='Crossed' WHERE id=$1",[two]))).rowCount).toBe(0);
   expect(await read(two)).toEqual(before);
   expect((await app!.inject({method:'PATCH',url:'/v2/profile?workspace_id='+two,headers:headers(),payload:{expectedVersion:1,businessName:'Crossed',timezone:'UTC'}})).statusCode).toBe(400);
  });
@@ -81,9 +84,9 @@ describe('own profile settings on restricted native PostgreSQL',()=>{
    await admin!.query("UPDATE memberships SET role='operator' WHERE user_id=$1 AND workspace_id=$2",[user,one]);await refresh();
    expect((await patch({expectedVersion:before.version,businessName:'Forbidden',timezone:'UTC'})).statusCode).toBe(403);
    await admin!.query("UPDATE memberships SET role='owner' WHERE user_id=$1 AND workspace_id=$2",[user,one]);await refresh();
-   await admin!.query("UPDATE profiles SET state='SUSPENDED' WHERE id=$1",[one]);
+   await asProfileOwner(admin!,one,c=>c.query("UPDATE profiles SET state='SUSPENDED' WHERE id=$1",[one]));
    expect((await patch({expectedVersion:before.version,businessName:'Forbidden',timezone:'UTC'})).statusCode).toBe(403);
-  }finally{await admin!.query("UPDATE profiles SET state='ACTIVE' WHERE id=$1",[one]);}
+  }finally{await asProfileOwner(admin!,one,c=>c.query("UPDATE profiles SET state='ACTIVE' WHERE id=$1",[one]));}
   expect(await read()).toEqual(before);expect(await events()).toBe(count);
  });
  it('checks expiration after a real profile lock wait before writing',async()=>{

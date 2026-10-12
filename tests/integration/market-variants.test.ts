@@ -8,10 +8,12 @@ import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js';
 import {ZodError} from 'zod';
 import pg from 'pg';
 import {afterAll,beforeAll,describe,expect,it,vi} from 'vitest';
+import {listProfileChoicesFromSession,selectProfileFromSession} from '../../packages/db/src/profile-identity-bootstrap.js';
+import {requireMigratedProfileSchema,sealFixtureProfiles} from '../support/migrated-database.js';
 import {createAuth} from '../../apps/api/src/auth.js';
 import {marketVariantRoutes} from '../../apps/api/src/market-variants.js';
 import {profileIdentityRoutes} from '../../apps/api/src/profile-identity.js';
-import {listSessionProfiles,selectSessionProfile,type InteractiveSession} from '../../packages/db/src/profile-session.js';
+import {type InteractiveSession} from '../../packages/db/src/profile-session.js';
 import {withProfileTransaction,type ProfileExecutor} from '../../packages/db/src/profile-context.js';
 import {withProfileSessionTransaction} from '../../packages/db/src/profile-session-transaction.js';
 import {withPersonalProfileTransaction} from '../../packages/db/src/profile-personal-token.js';
@@ -73,16 +75,15 @@ describe('F4 persisted variants with native profile authority and restricted Pos
   vi.stubEnv('BETTER_AUTH_SECRET','synthetic-market-'+randomBytes(32).toString('hex'));passwordHash=await hashPassword(password);
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');
   admin=new pg.Pool({connectionString:url.toString(),max:4,connectionTimeoutMillis:5000});
-  if((await admin.query("SELECT to_regclass('public.profiles') AS present")).rows[0].present)throw Error('TRANSITION_SCHEMA_ALREADY_PRESENT');
-  const c=await admin.connect();try{await c.query('BEGIN');for(const name of ['001_profile_identity.sql','002_profile_personal_tokens.sql','008_market_variants.sql'])await c.query(await readFile(new URL('../../packages/db/profile-transition/'+name,import.meta.url),'utf8'));await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
+  await requireMigratedProfileSchema(admin);
   const secret=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${secret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT;GRANT commerce_api TO "${login}"`);
   // Existing commercial tables receive fixture-owned policies only. New market
   // tables use exactly the production-proposed 008 FORCE RLS and grants.
   for(const table of ['records','record_versions','personal_access_tokens'])await admin.query(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;CREATE POLICY market_fixture ON ${table} USING(workspace_id=NULLIF(current_setting('app.workspace_id',true),'')) WITH CHECK(workspace_id=NULLIF(current_setting('app.workspace_id',true),''))`);
-  await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic Market','UTC',1,100,100),($2,'Synthetic Foreign','UTC',1,100,100)",[one,two]);
+  await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic Market','UTC',10,100,100),($2,'Synthetic Foreign','UTC',1,100,100)",[one,two]);await sealFixtureProfiles(admin,one,two);
   url.username=login;url.password=secret;runtime=new pg.Pool({connectionString:url.toString(),max:5,connectionTimeoutMillis:5000});
   app=Fastify({logger:false,disableRequestLogging:true});app.setErrorHandler((e:any,_r,reply)=>reply.code(e instanceof ZodError?400:e.statusCode??500).send({error:{code:e.code??'INTERNAL_ERROR'}}));
-  await profileIdentityRoutes(app,{origins:[origin],session:nativeSession,list:s=>listSessionProfiles(runtime,s),select:(s,w,v)=>transaction(c=>selectSessionProfile(c,s,w,v))});
+  await profileIdentityRoutes(app,{origins:[origin],session:nativeSession,list:s=>listProfileChoicesFromSession(runtime,s),select:(s,w,v)=>transaction(c=>selectProfileFromSession(c,s,w,v))});
   await marketVariantRoutes(app,{origins:[origin],nativeSession,session:(s,f,environment,action,work)=>withProfileSessionTransaction(runtime,s,f,action,(db,profile)=>work({db,profile,environment})),personal:(t,environment,action,work)=>withPersonalProfileTransaction(runtime,t,environment,action,(db,profile)=>work({db,profile,environment}))});
   app.post('/api/auth/*',{bodyLimit:4096},async(req,reply)=>{if(req.headers.origin!==origin)return reply.code(403).send({error:'ORIGIN'});const result=await transaction(c=>createAuth(c).handler(new Request('http://localhost:3001'+req.url,{method:'POST',headers:fromNodeHeaders(req.headers),body:JSON.stringify(req.body)})));reply.code(result.status);if(result.ok)reply.header('set-cookie',result.headers.getSetCookie());return{signedIn:result.ok};});
   address=await app.listen({host:'127.0.0.1',port:0});owner=await account();

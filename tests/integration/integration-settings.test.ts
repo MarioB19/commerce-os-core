@@ -1,5 +1,6 @@
 import {explicitFixtureEnvironment} from './explicit-fixture-environment.js';
 import {afterAll,beforeAll,describe,expect,it,vi} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomBytes,randomUUID} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
@@ -10,6 +11,8 @@ import {pool,getRecord,putRecord,withTransaction,readOperationalSettings,hash,st
 import {readIntegrationSettings,saveIntegrationSetting,integrationReadiness} from '../../packages/db/src/integration-settings.js';
 import {providerFor,assertGatewayIsolation,fulfillmentProviderFor} from '../../apps/channel-worker/src/providers.js';
 const workspace='integrations-'+randomUUID(),other='integration-other-'+randomUUID(),origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0]!;
+// V7 F2: fixture workspaces are adopted profiles (max three per installation).
+beforeAll(()=>fixtureProfiles(workspace,other));
 const secret='synthetic-access-token-fixture-only',replacement='synthetic-rotated-credential-only';
 let app:FastifyInstance,cookie='',viewerCookie='',actor='';
 let gatewayFixtureAccountId:string|undefined;

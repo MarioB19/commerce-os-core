@@ -3,6 +3,8 @@ import {readFile} from 'node:fs/promises';
 import pg from 'pg';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {migrate,migrationFiles} from '../../packages/db/src/migrate.js';
+import {selectProfileFromSession} from '../../packages/db/src/profile-identity-bootstrap.js';
+import type {InteractiveSession,ProfileFence} from '../../packages/db/src/profile-session.js';
 
 /** The isolated group database already ran every migration (test-isolated.mjs).
  * V7 profile tests require it instead of applying transition sources by hand. */
@@ -21,6 +23,20 @@ export async function migrationSql(prefix:string){
  const name=(await migrationFiles()).find(file=>file.startsWith(prefix+'_'));
  if(!name)throw new Error('MIGRATION_NOT_FOUND:'+prefix);
  return readFile(new URL('../../packages/db/migrations/'+name,import.meta.url),'utf8');
+}
+/** The exact block a migration promoted from a transition source (between its
+ * `-- >>> promoted from` and `-- <<< end` markers), for component tests that
+ * exercise the installed text on a database migrated through the previous
+ * migration. Role creation in that text is the reviewed adoption form. */
+export async function promotedSource(source:string){
+ const start='-- >>> promoted from packages/db/profile-transition/'+source+' ',end='-- <<< end '+source+'\n';
+ for(const name of await migrationFiles()){
+  const sql=await readFile(new URL('../../packages/db/migrations/'+name,import.meta.url),'utf8'),from=sql.indexOf(start);
+  if(from<0)continue;
+  const to=sql.indexOf(end,from);if(to<0)throw new Error('PROMOTED_SOURCE_UNTERMINATED:'+source);
+  return sql.slice(sql.indexOf('\n',from)+1,to);
+ }
+ throw new Error('PROMOTED_SOURCE_NOT_FOUND:'+source);
 }
 /** A second, empty database in the same cluster migrated through `through`
  * (four digits), for tests of a migration's own adoption guards on prepared
@@ -44,4 +60,30 @@ export async function openMigratedDatabase(through:string):Promise<{pool:pg.Pool
 export async function withMigratedDatabase<T>(through:string,work:(pool:pg.Pool,url:URL)=>Promise<T>):Promise<T>{
  const database=await openMigratedDatabase(through);
  try{return await work(database.pool,database.url);}finally{await database.close();}
+}
+/** Explicit session selection through the closed V7 bootstrap port, outside
+ * any profile context (as the identity route does), committed on its own. */
+export async function selectFixtureSession(pool:{connect():Promise<pg.PoolClient>},session:InteractiveSession,workspaceId:string,expectedVersion:number):Promise<ProfileFence>{
+ const c=await pool.connect();
+ try{await c.query('BEGIN');const fence=await selectProfileFromSession(c,session,workspaceId,expectedVersion);await c.query('COMMIT');return fence;}
+ catch(error){await c.query('ROLLBACK').catch(()=>undefined);throw error;}finally{c.release();}
+}
+/** Seals the quota baseline of profiles a fixture inserted directly (as the
+ * migration and ensureProfile do), so REAL quota records can be admitted. */
+export async function sealFixtureProfiles(pool:{connect():Promise<pg.PoolClient>},...workspaces:string[]){
+ const c=await pool.connect();
+ try{
+  await c.query('BEGIN');
+  for(const workspace of workspaces){await c.query("SELECT pg_catalog.set_config('app.workspace_id',$1,true)",[workspace]);await c.query('SELECT public.adopt_profile_quota_inventory($1,public.profile_quota_inventory($1))',[workspace]);}
+  await c.query('COMMIT');
+ }catch(error){await c.query('ROLLBACK').catch(()=>undefined);throw error;}finally{c.release();}
+}
+/** Runs owner fixture work with one profile's context (privacy-fenced rows such
+ * as `profiles` accept updates only from their own profile context). */
+export async function asProfileOwner<T>(pool:{connect():Promise<pg.PoolClient>},workspace:string,work:(c:pg.PoolClient)=>Promise<T>,environment='REAL'):Promise<T>{
+ const c=await pool.connect();
+ try{
+  await c.query('BEGIN');await c.query("SELECT pg_catalog.set_config('app.workspace_id',$1,true),pg_catalog.set_config('app.environment',$2,true)",[workspace,environment]);
+  const result=await work(c);await c.query('COMMIT');return result;
+ }catch(error){await c.query('ROLLBACK').catch(()=>undefined);throw error;}finally{c.release();}
 }

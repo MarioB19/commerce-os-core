@@ -1,4 +1,5 @@
-import {afterAll,describe,expect,it} from 'vitest';
+import {afterAll,describe,expect,it,beforeAll} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomUUID} from 'node:crypto';
 import {pool,putRecord,withTransaction} from '../../packages/db/src/index.js';
 import {proposeEffect} from '../../apps/automation-worker/src/shared.js';
@@ -6,6 +7,8 @@ import {acquireOwnership,dispatchOutbox,recordHealth} from '../../apps/channel-w
 import {SimulatorProvider} from '../../packages/messaging/src/index.js';
 
 const workspace='causal-'+randomUUID();
+// V7 F2: fixture workspaces are adopted profiles (max three per installation).
+beforeAll(()=>fixtureProfiles(workspace));
 afterAll(async()=>pool.end());
 // These tests inspect one complete causal pass, not global scheduler pagination.
 // Other files retain isolated fixtures; LIMIT 100 can exclude this account's third sibling.

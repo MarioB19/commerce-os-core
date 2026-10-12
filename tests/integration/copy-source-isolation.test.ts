@@ -1,4 +1,5 @@
 import {afterAll,beforeAll,describe,expect,it,vi} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import pg from 'pg';
 import {randomUUID} from 'node:crypto';
 import {execFile} from 'node:child_process';
@@ -11,6 +12,8 @@ const database='source_isolation_'+randomUUID().replaceAll('-',''),ownerUrl=new 
 const apiUrl=new URL(ownerUrl);apiUrl.searchParams.set('options','-c role=commerce_api');
 const root=fileURLToPath(new URL('../../',import.meta.url)),execute=promisify(execFile);
 const workspace='source-isolation-'+randomUUID(),user=randomUUID();
+// V7 F2: fixture workspaces are adopted profiles (max three per installation).
+beforeAll(()=>fixtureProfiles(workspace));
 let app:FastifyInstance,admin:pg.Pool,pool:pg.Pool,token:string,created=false;
 let putRecord:typeof import('../../packages/db/src/index.js').putRecord;
 beforeAll(async()=>{

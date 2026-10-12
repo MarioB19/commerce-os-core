@@ -61,7 +61,9 @@ export async function resolveSessionProfile(db:QueryExecutor,session:Interactive
  // legacy selection writers, which acquire UPDATE on that parent first. The
  // child is SELECT-only for the API after030; locking it would require UPDATE.
  const selected=await selectionRow(db,session,undefined);
- need(selected&&version(selected.version),'PROFILE_SELECTION_REQUIRED');
+ // Under forced profile RLS (V7 F2) the selection row is visible only in the
+ // fenced profile's context: a fence for another profile reads as no row.
+ need(selected&&version(selected.version),fence?'PROFILE_SELECTION_CHANGED':'PROFILE_SELECTION_REQUIRED');
  if(fence)need(typeof fence.workspaceId==='string'&&version(fence.version)&&fence.workspaceId===selected.workspace_id&&fence.version===selected.version,'PROFILE_SELECTION_CHANGED');
  const {member,profile}=await memberAndProfile(db,session.userId,selected.workspace_id,Boolean(options.lock));
  need(member.version===selected.membership_version,'PROFILE_SESSION_ACCESS_CHANGED');

@@ -4,6 +4,7 @@ import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect,vi} from 'vitest';
+import {asProfileOwner} from '../support/migrated-database.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {withProfileTransaction,type ProfileExecutor,type ProfilePool} from '../../packages/db/src/profile-context.js';
 import {issueVerifiedQrContinuity,applyContinuousProtection} from '../../packages/db/src/continuous-authorization.js';
@@ -94,7 +95,7 @@ describe('auto QR enrollment and planner, isolated PostgreSQL',()=>{
  it('refuses changed ciphertext, foreign profile and suspended profile',async()=>{
   const w=await profile(),q=await connection(w);await admin.query('UPDATE channel_sessions SET observed_identity_ciphertext=$2 WHERE account_id=$1',[q.account,encrypt('15559999999@c.us')]);
   await expect(enrollment(w,q.account)).rejects.toThrow('QR_OBSERVED_IDENTITY_CHANGED');await expect(enrollment(await profile(),q.account)).rejects.toThrow('QR_CURRENT_CONNECTION_REQUIRED');
-  await admin.query("UPDATE profiles SET state='SUSPENDED' WHERE id=$1",[w]);await expect(enrollment(w,q.account)).rejects.toThrow();expect(await pool(w)).toBeUndefined();
+  await asProfileOwner(admin,w,c=>c.query("UPDATE profiles SET state='SUSPENDED' WHERE id=$1",[w]));await expect(enrollment(w,q.account)).rejects.toThrow();expect(await pool(w)).toBeUndefined();
  });
  it('does not let the API forge system content, QR pool mode or observation',async()=>{
   const w=await profile(),q=await connection(w);await enrollment(w,q.account);const p=await pool(w);

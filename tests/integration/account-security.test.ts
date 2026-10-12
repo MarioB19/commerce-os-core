@@ -53,7 +53,8 @@ describe('Account security through native HTTP endpoints',()=>{
   const current=(await pool.query('SELECT "expiresAt" FROM session WHERE "userId"=$1',[p.id])).rows[0];expect(new Date(current.expiresAt).getTime()).toBeGreaterThan(Date.now()+11*60*60*1000);
  });
  it('supports every active human role, preserves spaces, and enforces mandatory revocation when omitted',async()=>{
-  for(const role of ['owner','operator','reconciler','seller','analyst','viewer']){const p=await person(role);const next='  '+secret()+'  ';const r=await call('/change-password',{currentPassword:p.password,newPassword:next,confirmPassword:next},p);expect(r.statusCode,r.body).toBe(200);expect((await login(p,next)).statusCode).toBe(200);expect((await call('/get-session',undefined,p)).statusCode).toBe(401);}
+  // V7 F2 (D-23): the active human roles are owner, operator and viewer.
+  for(const role of ['owner','operator','viewer']){const p=await person(role);const next='  '+secret()+'  ';const r=await call('/change-password',{currentPassword:p.password,newPassword:next,confirmPassword:next},p);expect(r.statusCode,r.body).toBe(200);expect((await login(p,next)).statusCode).toBe(200);expect((await call('/get-session',undefined,p)).statusCode).toBe(401);}
  });
  it('rejects anonymous, expired, inactive, service, hostile origin, target manipulation and alternate routes',async()=>{
   const p=await person(),next=secret(),body={currentPassword:p.password,newPassword:next,confirmPassword:next};

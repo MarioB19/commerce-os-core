@@ -3,9 +3,9 @@ import {randomBytes} from 'node:crypto';
 import pg from 'pg';
 import Fastify,{type FastifyInstance} from 'fastify';
 import {afterAll,beforeAll,describe,expect,it} from 'vitest';
+import {requireMigratedProfileSchema,selectFixtureSession} from '../support/migrated-database.js';
 import {profileEmployeeRoutes} from '../../apps/api/src/profile-employees.js';
 import {withProfileTransaction} from '../../packages/db/src/profile-context.js';
-import {selectSessionProfile} from '../../packages/db/src/profile-session.js';
 import {withProfileSessionTransaction} from '../../packages/db/src/profile-session-transaction.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 const suffix=randomBytes(8).toString('hex'),login='f2_employees_'+suffix,one='employees_one_'+suffix,two='employees_two_'+suffix;
@@ -16,12 +16,11 @@ const selections=new Map<string,number>();
 const read=async(userId=employee,workspace=one)=>(await admin!.query('SELECT user_id,role,active,version FROM memberships WHERE workspace_id=$1 AND user_id=$2',[workspace,userId])).rows[0];
 const events=async()=>Number((await admin!.query("SELECT count(*) FROM domain_events WHERE workspace_id=$1 AND event_type='profile.employee.access.changed'",[one])).rows[0].count);
 const update=async(userId:string,body:Record<string,unknown>,as=actor)=>app!.inject({method:'PATCH',url:'/v2/employees/'+encodeURIComponent(userId),headers:{origin:'https://fixture.test','x-commerce-profile-id':one,'x-commerce-profile-version':String(selections.get(as)),'x-fixture-actor':as},payload:body});
-async function refresh(as:string){selections.set(as,(await withProfileTransaction(runtime!,one,db=>selectSessionProfile(db,sessions.get(as)!,one,selections.get(as)??0))).version);}
+async function refresh(as:string){selections.set(as,(await selectFixtureSession(runtime!,sessions.get(as)!,one,selections.get(as)??0)).version);}
 describe('employee authority on restricted native PostgreSQL',()=>{
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw new Error('ISOLATED_TEST_DATABASE_REQUIRED');
-  admin=new pg.Pool({connectionString:url.toString(),max:5,connectionTimeoutMillis:5000});if((await admin.query("SELECT to_regclass('public.profiles') AS existing")).rows[0].existing)throw new Error('TRANSITION_SCHEMA_ALREADY_PRESENT');
-  const setup=await admin.connect();try{await setup.query('BEGIN');for(const file of ['001_profile_identity.sql','004_profile_employees.sql'])await setup.query(await readFile(new URL('../../packages/db/profile-transition/'+file,import.meta.url),'utf8'));await setup.query('COMMIT');}catch(e){await setup.query('ROLLBACK');throw e;}finally{setup.release();}
+  admin=new pg.Pool({connectionString:url.toString(),max:5,connectionTimeoutMillis:5000});await requireMigratedProfileSchema(admin);
   const password=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${password}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT`);await admin.query(`GRANT commerce_api TO "${login}"`);
   for(const id of [actor,other,employee,foreign])await admin.query('INSERT INTO "user"(id,name,email) VALUES($1,$1,$1||\'@example.test\')',[id]);
   await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic One','UTC',1,10,10),($2,'Synthetic Two','UTC',1,10,10)",[one,two]);
@@ -34,8 +33,10 @@ describe('employee authority on restricted native PostgreSQL',()=>{
  it('limits native runtime grants and rejects missing/foreign context and historical roles',async()=>{
   expect((await runtime!.query('SELECT rolsuper,rolbypassrls FROM pg_roles WHERE rolname=current_user')).rows[0]).toEqual({rolsuper:false,rolbypassrls:false});
   for(const sql of ['DELETE FROM memberships WHERE user_id=$1','UPDATE memberships SET user_id=user_id WHERE user_id=$1','UPDATE memberships SET version=99 WHERE user_id=$1'])await expect(runtime!.query(sql,[employee])).rejects.toMatchObject({code:'42501'});
-  await expect(runtime!.query("UPDATE memberships SET role='viewer' WHERE user_id=$1",[employee])).rejects.toThrow('PROFILE_MEMBERSHIP_CONTEXT_OR_ROLE_INVALID');
-  await expect(withProfileTransaction(runtime!,two,db=>db.query("UPDATE memberships SET role='viewer' WHERE user_id=$1 AND workspace_id=$2",[employee,one]))).rejects.toThrow('PROFILE_MEMBERSHIP_CONTEXT_OR_ROLE_INVALID');
+  // V7 F2: commerce_api runs under FORCE RLS; a row outside the transaction's
+  // profile context is invisible, so the write matches no row (ADR v7 isolation).
+  expect((await runtime!.query("UPDATE memberships SET role='viewer' WHERE user_id=$1",[employee])).rowCount).toBe(0);
+  expect((await withProfileTransaction(runtime!,two,db=>db.query("UPDATE memberships SET role='viewer' WHERE user_id=$1 AND workspace_id=$2",[employee,one]))).rowCount).toBe(0);
   await expect(withProfileTransaction(runtime!,one,db=>db.query("UPDATE memberships SET role='seller' WHERE user_id=$1 AND workspace_id=$2",[employee,one]))).rejects.toThrow('PROFILE_MEMBERSHIP_CONTEXT_OR_ROLE_INVALID');
  });
  it('commits one access revision and audit with no global-user changes',async()=>{

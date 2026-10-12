@@ -1,4 +1,4 @@
-import {beforeAll,afterAll,it,expect,vi} from 'vitest';
+import {beforeAll,beforeEach,afterAll,it,expect,vi} from 'vitest';
 import pg from 'pg';
 import {randomUUID} from 'node:crypto';
 import {execFile} from 'node:child_process';
@@ -7,36 +7,45 @@ import {fileURLToPath} from 'node:url';
 import {realpathSync} from 'node:fs';
 import type {DomainRecord} from '../../packages/contracts/src/index.js';
 import type {HealthSignal} from '../../packages/messaging/src/index.js';
+import {fixtureProfilesOn,releaseFixtureNumbers} from '../support/profile-fixture.js';
 
 const original=process.env.DATABASE_URL!,control=new pg.Pool({connectionString:original});
 const database='health_claim_'+randomUUID().replaceAll('-',''),ownerUrl=new URL(original);ownerUrl.pathname='/'+database;
 const workerUrl=new URL(ownerUrl);workerUrl.searchParams.set('options','-c role=commerce_channel');
 const root=fileURLToPath(new URL('../../',import.meta.url));
+// V7 F2: an installation admits three profiles and 20 connected numbers. The
+// disabled batch keeps its own profile sorted first; other REAL accounts share
+// one profile and peers without settings use the third. The >20 account worker
+// bound keeps its pathological fixture by retiring quota reservations (test-only).
+const disabledWorkspace='a-health-disabled-'+randomUUID(),sharedWorkspace='health-quarantine-'+randomUUID(),otherWorkspace='health-other-'+randomUUID();
 let created=false,admin:pg.Pool,pool:pg.Pool,collectHealth:typeof import('../../apps/channel-worker/src/lifecycle.js').collectHealth,recordHealth:typeof import('../../apps/channel-worker/src/lifecycle.js').recordHealth;
 let putRecord:typeof import('../../packages/db/src/index.js').putRecord,SimulatorProvider:typeof import('../../packages/messaging/src/index.js').SimulatorProvider;
 beforeAll(async()=>{
  await control.query(`CREATE DATABASE "${database}" TEMPLATE template0`);created=true;
  await promisify(execFile)(process.execPath,['--import','tsx',realpathSync(fileURLToPath(new URL('../../packages/db/src/migrate.ts',import.meta.url)))],{cwd:root,env:{...process.env,DATABASE_URL:ownerUrl.toString()},timeout:30000});
- admin=new pg.Pool({connectionString:ownerUrl.toString()});process.env.DATABASE_URL=workerUrl.toString();vi.resetModules();
+ admin=new pg.Pool({connectionString:ownerUrl.toString()});
+ {const c=await admin.connect();try{await c.query('BEGIN');await fixtureProfilesOn(c,disabledWorkspace,sharedWorkspace,otherWorkspace);await c.query('COMMIT');}finally{c.release();}}process.env.DATABASE_URL=workerUrl.toString();vi.resetModules();
  ({pool,putRecord}=await import('../../packages/db/src/index.js'));({collectHealth,recordHealth}=await import('../../apps/channel-worker/src/lifecycle.js'));
  ({SimulatorProvider}=await import('../../packages/messaging/src/index.js'));
  expect((await pool.query('SELECT current_user role')).rows[0].role).toBe('commerce_channel');
 });
+beforeEach(async()=>{await admin.query('DELETE FROM operational_settings');});
 afterAll(async()=>{await pool?.end();await admin?.end();process.env.DATABASE_URL=original;try{if(created)await control.query(`DROP DATABASE "${database}"`);}finally{await control.end();}});
-async function account(workspace='health-quarantine-'+randomUUID(),environment:'REAL'|'SIMULATION'='REAL',disabled?:boolean){
+async function account(workspace=sharedWorkspace,environment:'REAL'|'SIMULATION'='REAL',disabled?:boolean){
  const ref='health-'+randomUUID();
  const a=await putRecord(admin,{workspaceId:workspace,environment,kind:'channel_account',body:{provider:'waha',gateway_ref:ref,sending_enabled:false,status:'UNKNOWN'}});
+ if(environment==='REAL')await releaseFixtureNumbers(admin);
  if(disabled!==undefined)await admin.query("INSERT INTO integration_settings(workspace_id,environment,key,type,reference,label,version,enabled,updated_by,config) VALUES($1,$2,$3,'waha',$4,'Synthetic health profile',1,$5,'synthetic',$6)",[workspace,environment,'waha:'+ref,ref,!disabled,{base_url:'http://'+ref+'.example.invalid'}]);
  return a;
 }
 const healthy=():HealthSignal[]=>{const at=new Date(Date.now()-1);return[{dimension:'session',status:'OK',value:'WORKING',source:'provider_read',scope:'account',availability:'supported',observedAt:at.toISOString(),expiresAt:new Date(at.getTime()+60000).toISOString()}];};
 function factory(seen:Set<string>){return(a:DomainRecord)=>{seen.add(a.id);const provider=new SimulatorProvider();provider.health=async()=>healthy();provider.lifecycle=async()=>{throw new Error('EXTERNAL_MUTATION_FORBIDDEN');};return provider;};}
-async function frozen(workspace:string,hold=false){await admin.query("INSERT INTO operational_settings(workspace_id,environment,version,body,updated_by,release_hold) VALUES($1,'REAL',1,$2,'synthetic',$3)",[workspace,{dispatch_frozen:true,real_sends_enabled:false,allow_real_operations:false,allow_channel_onboarding:false,contact_messages_per_minute:1,channel_account_concurrency:1},hold]);}
+async function frozen(workspace:string,hold=false){await admin.query("INSERT INTO operational_settings(workspace_id,environment,version,body,updated_by,release_hold) VALUES($1,'REAL',1,$2,'synthetic',$3) ON CONFLICT (workspace_id,environment) DO UPDATE SET release_hold=EXCLUDED.release_hold",[workspace,{dispatch_frozen:true,real_sends_enabled:false,allow_real_operations:false,allow_channel_onboarding:false,contact_messages_per_minute:1,channel_account_concurrency:1},hold]);}
 async function state(ids:string[]){return(await admin.query(`SELECT json_build_object('accounts',(SELECT jsonb_agg(r ORDER BY r.id) FROM records r WHERE id=ANY($1::uuid[])), 'sessions',(SELECT jsonb_agg(s ORDER BY s.id) FROM channel_sessions s WHERE account_id=ANY($1::uuid[])), 'ownership',(SELECT coalesce(jsonb_agg(o ORDER BY o.account_id),'[]') FROM session_ownership o WHERE account_id=ANY($1::text[])), 'health',(SELECT coalesce(jsonb_agg(r ORDER BY r.id),'[]') FROM records r WHERE kind='health_signal' AND body->>'account_id'=ANY($1::text[])), 'events',(SELECT coalesce(jsonb_agg(e ORDER BY e.id),'[]') FROM domain_events e WHERE aggregate_id=ANY($1::text[]))) data`,[ids])).rows[0].data;}
 async function recentOthers(ids:string[]){await admin.query('UPDATE channel_sessions SET last_health_at=clock_timestamp() WHERE NOT(account_id=ANY($1::uuid[]))',[ids]);}
 
 it('explicitly disabled REAL profiles do not call factory or alter account/session/health/probe and do not consume the global 20 limit',async()=>{
- const workspace='a-health-disabled-'+randomUUID(),disabled=[];for(let i=0;i<21;i++)disabled.push(await account(workspace,'REAL',true));
+ const workspace=disabledWorkspace,disabled=[];for(let i=0;i<21;i++)disabled.push(await account(workspace,'REAL',true));
  const eligible=[];for(let i=0;i<21;i++)eligible.push(await account(workspace));
  const disabledIds=disabled.map(a=>a.id),before=await state(disabledIds),seen=new Set<string>();
  expect(await collectHealth(factory(seen),'synthetic-quarantine-owner')).toBe(20);
@@ -51,7 +60,7 @@ it('release hold skips the health claim and transport factory with an exact unch
  expect(await collectHealth(factory(seen),'synthetic-hold-owner')).toBe(0);expect(seen.size).toBe(0);expect(await state([a.id])).toEqual(before);
 });
 it('missing REAL profiles and disabled SIMULATION profiles retain the previous polling behavior',async()=>{
- const missing=await account(),sim=await account('health-sim-'+randomUUID(),'SIMULATION',true);await recentOthers([missing.id,sim.id]);
+ const missing=await account(),sim=await account(otherWorkspace,'SIMULATION',true);await recentOthers([missing.id,sim.id]);
  const seen=new Set<string>();expect(await collectHealth(factory(seen),'synthetic-compatible-owner')).toBe(2);expect(seen).toEqual(new Set([missing.id,sim.id]));
  const rows=(await admin.query('SELECT health_probe_until,health_probe_owner,last_health_at FROM channel_sessions WHERE account_id=ANY($1::uuid[])',[[missing.id,sim.id]])).rows;
  expect(rows.every(s=>s.health_probe_until===null&&s.health_probe_owner==='synthetic-compatible-owner'&&s.last_health_at!==null)).toBe(true);
@@ -93,7 +102,7 @@ async function stoppedFrozen(a:DomainRecord){
  await admin.query("INSERT INTO session_ownership(account_id,workspace_id,owner_id,generation,frozen,lease_expires_at) VALUES($1,$2,'preserved-frozen-owner',9,true,now()-interval '1 minute')",[a.id,a.workspace_id]);
 }
 it('does not probe an enabled REAL profile in a frozen stopped session or consume its global health slot',async()=>{
- const quiet=await account(undefined,'REAL',false),normal=await account(undefined,'REAL',false),sim=await account('health-stopped-sim-'+randomUUID(),'SIMULATION',false);
+ const quiet=await account(undefined,'REAL',false),normal=await account(otherWorkspace,'REAL',false),sim=await account(otherWorkspace,'SIMULATION',false);
  await frozen(quiet.workspace_id);await stoppedFrozen(quiet);await stoppedFrozen(sim);await recentOthers([quiet.id,normal.id,sim.id]);
  const before=await state([quiet.id]),seen=new Set<string>();
  expect(await collectHealth(factory(seen),'synthetic-enabled-frozen-owner')).toBe(2);expect(seen).toEqual(new Set([normal.id,sim.id]));expect(await state([quiet.id])).toEqual(before);

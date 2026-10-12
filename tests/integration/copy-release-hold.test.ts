@@ -1,4 +1,5 @@
 import {afterAll,beforeAll,beforeEach,describe,expect,it,vi} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import pg from 'pg';
 import {createHash,randomUUID} from 'node:crypto';
 import {execFile,spawn,type ChildProcess} from 'node:child_process';
@@ -19,6 +20,8 @@ const root=fileURLToPath(new URL('../../',import.meta.url));
 const migration=realpathSync(fileURLToPath(new URL('../../packages/db/src/migrate.ts',import.meta.url)));
 const workerFixture=fileURLToPath(new URL('../fixtures/copy-release-hold-worker.ts',import.meta.url));
 const execute=promisify(execFile),workspace='copy-hold-'+randomUUID(),user=randomUUID();
+// V7 F2: fixture workspaces are adopted profiles (max three per installation).
+beforeAll(()=>fixtureProfiles(workspace));
 let app:FastifyInstance,admin:pg.Pool,pool:pg.Pool,token:string,created=false,changed=false;
 let putRecord:typeof import('../../packages/db/src/index.js').putRecord;
 let defaultPolicy:typeof import('../../packages/contracts/src/index.js').defaultOperationalSettings;

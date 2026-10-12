@@ -1,4 +1,5 @@
-import {describe,it,expect,afterAll} from 'vitest';
+import {describe,it,expect,afterAll,beforeAll} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomUUID} from 'node:crypto';
 import {pool,putRecord,withTransaction,getRecord,hash,stableJson} from '../../packages/db/src/index.js';
 import {materializeMessage} from '../../apps/automation-worker/src/inbound.js';
@@ -12,6 +13,9 @@ import {SimulatorProvider} from '../../packages/messaging/src/index.js';
 import type {SalesAiProvider,AgentResult} from '../../packages/domain/src/sales/ai.js';
 import {chatLock} from '../../packages/db/src/commercial-assignments.js';
 const workspace='automation-'+randomUUID(),owner='automation-test-owner';
+// V7 F2: fixture workspaces are adopted profiles (max three per installation).
+const lifecyclePeerWorkspace='automation-lifecycle-peer-'+randomUUID();
+beforeAll(()=>fixtureProfiles(workspace,lifecyclePeerWorkspace));
 afterAll(async()=>pool.end());
 async function fixture(){const product=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'product',body:{name:'Fixture product'}});const offer=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'offer',body:{product_id:product.id,base_amount_minor:9900,currency:'MXN',status:'PUBLISHED',fulfillment:[],billing_delay_seconds:30}});const account=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'channel_account',body:{name:'Fixture account',provider:'simulator',status:'WORKING'}});const contact=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'contact',body:{name:'Fixture contact',identity:'opaque:'+randomUUID(),status:'LEAD',consent:{purpose:'messages',source:'fixture',evidence:'local explicit consent fixture',observed_at:new Date().toISOString()}}});const conversation=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'conversation',body:{account_id:account.id,contact_id:contact.id,offer_version_id:offer.id,status:'OPEN',stage:'NEW',sequence:1,last_customer_text:'Información',last_inbound_at:new Date().toISOString(),ai_pending:false}});return{product,offer,account,contact,conversation};}
 const aiResult:AgentResult={proposal:{reply:'Grounded fixture reply',intent:'question',confidence:1,tool:'none',grounding:['offer_snapshot']},usage:{input_tokens:5,output_tokens:5,cost_minor:0},provider:'deterministic',model:'fixture'};
@@ -133,7 +137,7 @@ describe('Automation durable controls with real PostgreSQL',()=>{
   expect(command.status).toBe('FAILED');expect(command.result.recovery).toBe('NO_AUTOMATIC_RETRY');
   // The lifecycle worker scans every workspace. An unrelated, eligible command
   // must use its normal simulator without entering this account's call counter.
-  const foreignWorkspace='automation-lifecycle-peer-'+randomUUID();
+  const foreignWorkspace=lifecyclePeerWorkspace;
   const foreign=await putRecord(pool,{workspaceId:foreignWorkspace,environment:'SIMULATION',kind:'channel_account',body:{name:'Unrelated lifecycle fixture',provider:'simulator',status:'WORKING'}});
   expect((await acquireOwnership(foreign,owner)).acquired).toBe(true);
   const foreignCommand=randomUUID();

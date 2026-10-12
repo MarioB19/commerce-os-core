@@ -6,10 +6,11 @@ import {hashPassword} from 'better-auth/crypto';
 import {ZodError} from 'zod';
 import pg from 'pg';
 import {afterAll,beforeAll,describe,expect,it,vi} from 'vitest';
+import {listProfileChoicesFromSession,selectProfileFromSession} from '../../packages/db/src/profile-identity-bootstrap.js';
+import {requireMigratedProfileSchema,sealFixtureProfiles} from '../support/migrated-database.js';
 import {createAuth} from '../../apps/api/src/auth.js';
 import {profileCatalogRoutes} from '../../apps/api/src/profile-catalog.js';
 import {profileIdentityRoutes} from '../../apps/api/src/profile-identity.js';
-import {listSessionProfiles,selectSessionProfile} from '../../packages/db/src/profile-session.js';
 import {withProfileTransaction} from '../../packages/db/src/profile-context.js';
 import {withProfileSessionTransaction} from '../../packages/db/src/profile-session-transaction.js';
 import {withPersonalProfileTransaction} from '../../packages/db/src/profile-personal-token.js';
@@ -46,15 +47,12 @@ describe('commercial catalog HTTP on actual records with profile RLS and native 
   vi.stubEnv('BETTER_AUTH_SECRET','synthetic-catalog-'+randomBytes(32).toString('hex'));passwordHash=await hashPassword(password);
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');
   admin=new pg.Pool({connectionString:url.toString(),max:3,connectionTimeoutMillis:5000});
-  if((await admin.query("SELECT to_regclass('public.profiles') AS present")).rows[0].present)throw Error('TRANSITION_SCHEMA_ALREADY_PRESENT');
-  const c=await admin.connect();try{await c.query('BEGIN');for(const name of ['001_profile_identity.sql','002_profile_personal_tokens.sql'])await c.query(await readFile(new URL('../../packages/db/profile-transition/'+name,import.meta.url),'utf8'));await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
+  await requireMigratedProfileSchema(admin);
   const secret=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${secret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT;GRANT commerce_api TO "${login}"`);
-  // Test-owned policies on the REAL migrated tables, never installed by app startup.
-  for(const table of ['records','record_versions','personal_access_tokens']){
-   expect((await admin.query('SELECT count(*)::int n FROM pg_policies WHERE schemaname=\'public\' AND tablename=$1',[table])).rows[0].n).toBe(0);
-   await admin.query(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;CREATE POLICY catalog_fixture ON ${table} USING(workspace_id=NULLIF(current_setting('app.workspace_id',true),'')) WITH CHECK(workspace_id=NULLIF(current_setting('app.workspace_id',true),''))`);
-  }
-  await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic One','UTC',1,10,10),($2,'Synthetic Two','UTC',1,10,10)",[one,two]);
+  // V7 F2: the migrations (0096) install forced profile RLS on these tables;
+  // the test no longer adds its own fixture policies.
+  for(const table of ['records','record_versions','personal_access_tokens'])expect((await admin.query('SELECT relrowsecurity AND relforcerowsecurity forced FROM pg_class WHERE oid=$1::regclass',['public.'+table])).rows[0].forced).toBe(true);
+  await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic One','UTC',1,10,10),($2,'Synthetic Two','UTC',1,10,10)",[one,two]);await sealFixtureProfiles(admin,one,two);
   for(const [id,workspace,environment,body]of [
    [productOne,one,'REAL',{name:'Visible One',description:'Catalog',status:'DRAFT',secret_ciphertext:'needle-private'}],
    [productTwo,two,'REAL',{name:'Visible Two',status:'DRAFT'}],
@@ -64,7 +62,7 @@ describe('commercial catalog HTTP on actual records with profile RLS and native 
   await admin.query("UPDATE records SET version=2,body=body||'{\"description\":\"Revision Two\"}'::jsonb WHERE id=$1",[productOne]);
   url.username=login;url.password=secret;runtime=new pg.Pool({connectionString:url.toString(),max:2,connectionTimeoutMillis:5000});
   app=Fastify({logger:false,disableRequestLogging:true});app.setErrorHandler((e:any,_r,reply)=>reply.code(e instanceof ZodError?400:e.statusCode??500).send({error:{code:e.code??'INTERNAL_ERROR'}}));
-  await profileIdentityRoutes(app,{origins:[origin],session:nativeSession,list:s=>listSessionProfiles(runtime!,s),select:(s,w,v)=>transaction(c=>selectSessionProfile(c,s,w,v))});
+  await profileIdentityRoutes(app,{origins:[origin],session:nativeSession,list:s=>listProfileChoicesFromSession(runtime!,s),select:(s,w,v)=>transaction(c=>selectProfileFromSession(c,s,w,v))});
   await profileCatalogRoutes(app,{origins:[origin],nativeSession,
    session:(s,f,environment,action,work)=>withProfileSessionTransaction(runtime!,s,f,action,(db,profile)=>work({db,profile,environment})),
    personal:(t,environment,action,work)=>withPersonalProfileTransaction(runtime!,t,environment,action,(db,profile)=>work({db,profile,environment})),
@@ -76,7 +74,8 @@ describe('commercial catalog HTTP on actual records with profile RLS and native 
  it('enforces native RLS without impersonating a superuser, and leaves pooled SQL context empty',async()=>{
   expect((await runtime!.query('SELECT current_user,session_user,rolsuper,rolbypassrls FROM pg_roles WHERE rolname=current_user')).rows[0]).toEqual({current_user:login,session_user:login,rolsuper:false,rolbypassrls:false});
   for(const table of ['records','record_versions']){expect((await runtime!.query('SELECT * FROM '+table)).rows).toEqual([]);const row=(await admin!.query('SELECT relrowsecurity,relforcerowsecurity,pg_get_userbyid(relowner) owner FROM pg_class WHERE oid=$1::regclass',[table])).rows[0];expect(row).toMatchObject({relrowsecurity:true,relforcerowsecurity:true});expect(row.owner).not.toBe(login);}
-  await expect(withProfileTransaction(runtime!,one,db=>db.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','product','{}')",[two]))).rejects.toMatchObject({code:'42501'});
+  // V7 F2: the record privacy guard (0094) refuses the foreign profile before RLS.
+  await expect(withProfileTransaction(runtime!,one,db=>db.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','product','{}')",[two]))).rejects.toThrow(/PRIVACY_ASSET_CONTEXT_REQUIRED|row-level security/);
  });
  it('uses the explicit native selection, then rejects the stale profile fence after switching',async()=>{
   const {cookie}=await account();expect((await request('/v2/catalog/products',fence(cookie))).status).toBe(409);await select(cookie);

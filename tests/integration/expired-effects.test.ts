@@ -3,6 +3,8 @@ import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
+import {asProfileOwner,requireMigratedProfileSchema,sealFixtureProfiles} from '../support/migrated-database.js';
+import {bindProfileEnvironment} from '../../packages/db/src/profile-environment.js';
 import {cancelExpiredUnsentEffects} from '../../apps/channel-worker/src/expired-effects.js';
 import {withProfileTransaction,type ProfilePool,type ProfileExecutor} from '../../packages/db/src/profile-context.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
@@ -10,7 +12,9 @@ import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 const suffix=randomBytes(8).toString('hex'),workspace='expiry_'+suffix,foreign=workspace+'_foreign';
 let admin:pg.Pool,worker:pg.Pool,scoped:ProfilePool;
 const login='expiry_channel_'+suffix;
-function tx<T>(work:(db:ProfileExecutor)=>Promise<T>,scope=workspace){return withProfileTransaction(scoped,scope,work);}
+// V7 F2: derived child rows (gate schedule, attempts) are scoped by profile and
+// environment; a profile-scoped worker transaction binds REAL like WorkerScope.
+function tx<T>(work:(db:ProfileExecutor)=>Promise<T>,scope=workspace){return withProfileTransaction(scoped,scope,async db=>{await bindProfileEnvironment(db,'REAL');return work(db);});}
 async function effect(options:{scope?:string;status?:string;environment?:string;attempts?:number;claim?:string;providerId?:string;future?:boolean;attemptStatus?:string;payload?:object}={}){
  const id=randomUUID();
  await admin.query(`INSERT INTO outbox(id,workspace_id,environment,account_id,conversation_id,contact_id,
@@ -28,9 +32,8 @@ describe('V7 expired unsent effects with actual restricted PostgreSQL',()=>{
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');
   admin=new pg.Pool({connectionString:url.toString(),max:5,connectionTimeoutMillis:5000});
-  if((await admin.query("SELECT to_regclass('public.profiles') AS present")).rows[0].present)throw Error('TRANSITION_SCHEMA_ALREADY_PRESENT');
-  const setup=await admin.connect();try{await setup.query('BEGIN');for(const name of ['001_profile_identity.sql','013_continuous_worker_profile.sql'])await setup.query(await readFile(new URL('../../packages/db/profile-transition/'+name,import.meta.url),'utf8'));await setup.query('COMMIT');}catch(e){await setup.query('ROLLBACK');throw e;}finally{setup.release();}
-  await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Expiry fixture','UTC',1,1,1),($2,'Foreign fixture','UTC',1,1,1)",[workspace,foreign]);
+  await requireMigratedProfileSchema(admin);
+  await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Expiry fixture','UTC',1,10,10),($2,'Foreign fixture','UTC',1,1,1)",[workspace,foreign]);await sealFixtureProfiles(admin,workspace,foreign);
   const password=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${password}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT;GRANT commerce_channel TO "${login}"`);
   const native=new URL(url);native.username=login;native.password=password;worker=new pg.Pool({connectionString:native.toString(),max:5,connectionTimeoutMillis:5000});
   scoped={async connect(){const c=await worker.connect();try{await c.query('SET ROLE commerce_channel');return{query:c.query.bind(c),release:()=>c.release()};}catch(e){c.release();throw e;}}};
@@ -44,8 +47,8 @@ describe('V7 expired unsent effects with actual restricted PostgreSQL',()=>{
   expect(await tx(db=>cancelExpiredUnsentEffects(db))).toBe(0);expect(await events(id)).toHaveLength(1);
  });
  it('cancels BLOCKED in a suspended profile without relaxing its suspension',async()=>{
-  const id=await effect({status:'BLOCKED'});await admin.query("UPDATE profiles SET state='SUSPENDED' WHERE id=$1",[workspace]);
-  try{expect(await tx(db=>cancelExpiredUnsentEffects(db))).toBe(1);expect((await state(id)).status).toBe('CANCELLED');expect((await admin.query('SELECT state FROM profiles WHERE id=$1',[workspace])).rows[0].state).toBe('SUSPENDED');}finally{await admin.query("UPDATE profiles SET state='ACTIVE' WHERE id=$1",[workspace]);}
+  const id=await effect({status:'BLOCKED'});await asProfileOwner(admin,workspace,c=>c.query("UPDATE profiles SET state='SUSPENDED' WHERE id=$1",[workspace]));
+  try{expect(await tx(db=>cancelExpiredUnsentEffects(db))).toBe(1);expect((await state(id)).status).toBe('CANCELLED');expect((await admin.query('SELECT state FROM profiles WHERE id=$1',[workspace])).rows[0].state).toBe('SUSPENDED');}finally{await asProfileOwner(admin,workspace,c=>c.query("UPDATE profiles SET state='ACTIVE' WHERE id=$1",[workspace]));}
  });
  it('preserves uncertain attempts, claimed rows, provider IDs, simulation and future effects',async()=>{
   const ids=await Promise.all([{status:'SENDING',attempts:1,claim:'current'},{status:'UNKNOWN',attempts:1},{attempts:1},{claim:'stale'},{providerId:'synthetic-provider'},{environment:'SIMULATION'},{future:true},{attemptStatus:'UNKNOWN'},{attemptStatus:'SENT'}].map(effect));
