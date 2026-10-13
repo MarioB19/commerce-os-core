@@ -62,7 +62,7 @@ export async function processVariantReceipts(limit=3,deps:{workers?:Workers;aiPo
  const aiPool=deps.aiPool!==undefined?deps.aiPool:profileAiPool();let custodyKey:Uint8Array|null=deps.custodyKey??null;
  if(aiPool&&!custodyKey){try{custodyKey=aiCredentialKey();}catch{custodyKey=null;}}
  const runtime=deps.workers??createDatabaseWorkerRuntime('commerce_automation','REAL');let processed=0;
- let profiles:Awaited<ReturnType<Workers['discover']>>=[];
+ let profiles:Awaited<ReturnType<Workers['discover']>>;
  try{profiles=await runtime.discover();}catch(error){process.stderr.write(`variant_receipts_discovery_failed ${code(error)}\n`);return 0;}
  for(const profile of profiles){
   if(profile.state!=='ACTIVE')continue;
