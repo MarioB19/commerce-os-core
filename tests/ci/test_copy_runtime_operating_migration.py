@@ -51,13 +51,19 @@ class OperatingMigration(unittest.TestCase):
             root = Path(tmp); installed = {'source_sha':'a'*40, 'migration_hashes':expected}
             (root/'RELEASE.json').write_text(json.dumps(installed))
             c.installed_migration_identity(root, {'COMMERCE_RELEASE_SHA':'a'*40}, expected)
-            server = types.SimpleNamespace(migrations=lambda _:dict(expected),
+            assets = root/'assets'; assets.mkdir()
+            (root/'release.env').write_text('COMMERCE_PRIVATE_ASSETS_DIR='+str(assets)+'\n')
+            server = types.SimpleNamespace(PRIVATE=root, migrations=lambda _:dict(expected),
                 _write_report=lambda *_:self.fail('no migration plan write'),
                 run_deployment_task=lambda *_:self.fail('no SQL/container dispatch'))
             metadata = {'source_sha':'b'*40, 'migration_hashes':dict(expected)}
             review = {'migration_hashes':{n:expected[n] for n in c.V7_PROFILE_MIGRATION_NAMES}}
-            result = c.apply_reviewed_migrations(server, root, root, metadata, review, stage='OPERATING')
-            self.assertEqual(result, {'status':'ALREADY_APPLIED','migration_count':c.V7_PROFILE_MIGRATION_TOTAL})
+            with patch.object(c.native, 'protected_bytes', side_effect=lambda path: path.read_bytes()):
+                result = c.apply_reviewed_migrations(server, root, root, metadata, review, stage='OPERATING')
+            self.assertEqual(result, {'status':'ALREADY_APPLIED','migration_count':c.V7_PROFILE_MIGRATION_TOTAL,'lab_storage':'READY'})
+            # V7 RF-19: the laboratory directory exists once, 0700, owned like the assets directory.
+            lab = assets/'number-lab'
+            self.assertEqual((lab.stat().st_mode & 0o777, lab.stat().st_uid), (0o700, assets.stat().st_uid))
             metadata['migration_hashes']['0098_unadmitted_f3.sql'] = 'c'*64
             with self.assertRaisesRegex(ReleaseError,'MIGRATION_SET_INVALID'):
                 c.apply_reviewed_migrations(server, root, root, metadata, review, stage='OPERATING')
@@ -81,22 +87,40 @@ class OperatingMigration(unittest.TestCase):
         v7 = history() | {name: 'd'*64 for name in c.V7_PROFILE_MIGRATION_NAMES}
         for good in (True, False):
             with self.subTest(good=good), tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp); (root/'release.env').write_text('COMMERCE_IMAGE=old-image\n')
+                root = Path(tmp); (root/'assets').mkdir()
+                (root/'release.env').write_text('COMMERCE_IMAGE=old-image\nCOMMERCE_PRIVATE_ASSETS_DIR='+str(root/'assets')+'\n')
                 samples = [history(), v7 if good else history()]; tasks = []
+
+                def task(*args):
+                    tasks.append(args)
+                    if args[3] == 'v7-retirement-export':
+                        target = root/c.V7_RETIREMENT_EXPORT_DIR/args[2][-1].rsplit('/', 1)[1]
+                        target.mkdir(mode=0o700); (target/'manifest.json').write_text('{}')
                 server = types.SimpleNamespace(PRIVATE=root, migrations=lambda _: samples.pop(0),
                     _write_report=lambda path, value: path.write_text(json.dumps(value)),
-                    run_deployment_task=lambda *args: tasks.append(args))
+                    run_deployment_task=task)
                 review = {'migration_hashes': {name: 'd'*64 for name in c.V7_PROFILE_MIGRATION_NAMES}}
+                meta = {'migration_hashes': v7, 'source_sha': 'a'*40}
                 with patch.object(c.native, 'protected_bytes', side_effect=lambda path: path.read_bytes()):
                     if good:
-                        result = c.apply_reviewed_migrations(server, root, root, {'migration_hashes': v7}, review, stage='OPERATING')
+                        result = c.apply_reviewed_migrations(server, root, root, meta, review, stage='OPERATING')
                         self.assertEqual(result['migration_count'], c.V7_PROFILE_MIGRATION_TOTAL)
+                        self.assertEqual(result['retirement_export']['status'], 'EXPORTED')
                     else:
                         with self.assertRaises(ReleaseError):
-                            c.apply_reviewed_migrations(server, root, root, {'migration_hashes': v7}, review, stage='OPERATING')
+                            c.apply_reviewed_migrations(server, root, root, meta, review, stage='OPERATING')
                 plan = json.loads((root/'migrations.json').read_text())
                 self.assertEqual(plan, {'stage': 'OPERATING', 'baseline': history(), 'additions': review['migration_hashes']})
-                args = tasks[0][2]
+                # The encrypted export of the retired V5 tables runs first, with the
+                # candidate image and the owner connection, into a private 0700 directory.
+                self.assertEqual([t[3] for t in tasks], ['v7-retirement-export', 'copy-migrations'])
+                export = tasks[0][2]
+                self.assertEqual(export[-3:-1], ['scripts/v7-retirement-export.ts', 'export'])
+                self.assertRegex(export[-1], r'^/v7-retirement-export/export-aaaaaaaaaaaa-\d{8}T\d{6}Z$')
+                self.assertIn(str(root/'admin.env'), export)
+                self.assertIn(str(root/c.V7_RETIREMENT_EXPORT_DIR)+':/v7-retirement-export', export)
+                self.assertEqual(oct((root/c.V7_RETIREMENT_EXPORT_DIR).stat().st_mode & 0o777), '0o700')
+                args = tasks[1][2]
                 self.assertEqual(sorted(arg for arg in args if ':/copy-sql/' in arg),
                                  sorted(str(root/'packages/db/migrations'/n)+':/copy-sql/'+n+':ro' for n in c.V7_PROFILE_MIGRATION_NAMES))
                 self.assertEqual(args[-1], c.BOUNDED_MIGRATION_JS)

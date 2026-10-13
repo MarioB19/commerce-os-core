@@ -437,6 +437,12 @@ def cmd_enable(host, args):
         except BaseException as error:
             rollback = disable_after_failure(host, before)
             raise PitrError('PITR_ENABLE_FAILED_ROLLED_BACK:' + ','.join(steps) + ':' + rollback + ':' + str(error)[:400]) from None
+        # Root evidence for scripts/v7_infra_adoption.py: the exact container
+        # replacement this command made, same volume and cluster identity.
+        write_atomic(host.private / 'enable-receipt.json', (json.dumps({
+            'schema_version': 1, 'state': 'PITR_ENABLED', 'enabled_at': iso(utc_now()),
+            'before': before, 'after': {'container': cid, 'image': image_id, 'network': host.config['network']},
+            'first_full_label': backup.get('label')}, sort_keys=True) + '\n').encode(), 0o600)
     return {'state': 'PITR_ENABLED', 'image_id': image_id, 'previous_image': before['image'],
             'previous_container': before['container'][:12], 'container': cid[:12], 'system_identifier': before['system_identifier'],
             'client_backends_at_switch': clients, 'steps': steps, 'first_full': backup}
@@ -465,6 +471,11 @@ def cmd_disable(host, _args):
         row = host.container()
         before = {'volume': data_mount(row), 'system_identifier': system_identifier(host, row['Id'])}
         marker.unlink()
+        # The enable evidence no longer describes the running container; keep it
+        # aside so a later Root adoption fails closed instead of reusing it.
+        receipt = host.private / 'enable-receipt.json'
+        if receipt.exists():
+            os.replace(receipt, host.private / ('enable-receipt.disabled-' + iso(utc_now()).replace(':', '') + '.json'))
         row = recreate(host)
         need(data_mount(row) == before['volume'] and system_identifier(host, row['Id']) == before['system_identifier'],
              'PITR_DISABLE_IDENTITY_CHANGED')

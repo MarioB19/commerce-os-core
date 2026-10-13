@@ -139,9 +139,9 @@ def run_deployment_task(root,report_dir,args,phase,timeout,runner=None):
     failure=None
     try:
         result=run_bounded_process(args,cwd=root,
-            log_path=report_dir/({'prepare':'prepare.log','activate':'install.log','rollback':'rollback.log','copy-migrations':'copy-migrations.log'}[phase]),
+            log_path=report_dir/({'prepare':'prepare.log','activate':'install.log','rollback':'rollback.log','copy-migrations':'copy-migrations.log','v7-retirement-export':'v7-retirement-export.log'}[phase]),
             timeout=timeout,env=env,runner=runner)
-        require(result.returncode==0,{'prepare':'PREPARATION_FAILED','activate':'INSTALLER_FAILED','rollback':'ROLLBACK_COMMAND_FAILED','copy-migrations':'COPY_BOUNDED_MIGRATIONS_FAILED'}[phase])
+        require(result.returncode==0,{'prepare':'PREPARATION_FAILED','activate':'INSTALLER_FAILED','rollback':'ROLLBACK_COMMAND_FAILED','copy-migrations':'COPY_BOUNDED_MIGRATIONS_FAILED','v7-retirement-export':'V7_RETIREMENT_EXPORT_FAILED'}[phase])
     except BaseException as error:
         failure=error;journal['phase_error']=error_code(error)
     # A killed docker CLI is not proof that its daemon-owned task stopped.

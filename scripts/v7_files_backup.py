@@ -109,7 +109,9 @@ def local_files(root):
     need(root.is_dir() and not root.is_symlink(), 'FILES_ASSETS_DIR_INVALID')
     found = {}
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(d for d in dirnames if not (Path(dirpath) / d).is_symlink() and d != 'uploads')
+        # uploads/ is temporary; number-lab/ is the laboratory's own 30-day storage (D-18).
+        dirnames[:] = sorted(d for d in dirnames if not (Path(dirpath) / d).is_symlink()
+                             and d != 'uploads' and not (Path(dirpath) == root and d == 'number-lab'))
         for f in sorted(filenames):
             p = Path(dirpath) / f
             st = p.lstat()

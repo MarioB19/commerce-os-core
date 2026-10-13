@@ -187,6 +187,12 @@ class PitrOperatorTests(unittest.TestCase):
         self.assertEqual({p.name for p in self.locks.iterdir()}, set(m.ROOT_LOCKS))
         self.assertTrue((self.private / 'enabled').exists())
         self.assertNotIn(self.secret(), json.dumps(result))
+        receipt = json.loads((self.private / 'enable-receipt.json').read_text())
+        self.assertEqual(oct((self.private / 'enable-receipt.json').stat().st_mode & 0o777), '0o600')
+        self.assertEqual(set(receipt['before']), {'container', 'image', 'volume', 'networks', 'system_identifier'})
+        self.assertNotEqual(receipt['before']['container'], receipt['after']['container'])
+        self.assertEqual(receipt['after']['network'], 'commerce-os_pitr-edge')
+        self.assertNotIn(self.secret(), json.dumps(receipt))
 
     def test_enable_failure_after_recreate_returns_to_previous_configuration(self):
         fake = FakeDocker(self.private, fail={'--stanza=commerce check'})
@@ -195,6 +201,7 @@ class PitrOperatorTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn('PITR_ENABLE_FAILED_ROLLED_BACK:recreated,stanza:ROLLED_BACK', result['error'])
         self.assertFalse((self.private / 'enabled').exists())
+        self.assertFalse((self.private / 'enable-receipt.json').exists())
         self.assertEqual(fake.recreations, 2)
 
     def test_enable_refuses_clients_rerender_and_busy_lock(self):

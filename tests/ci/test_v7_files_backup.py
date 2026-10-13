@@ -39,6 +39,7 @@ class FilesBackupTests(unittest.TestCase):
         self.assets = root / 'private'; (self.assets / 'assets').mkdir(parents=True); (self.assets / 'uploads' / 'x').mkdir(parents=True)
         (self.assets / 'assets' / 'a.enc').write_bytes(b'sealed-a'); (self.assets / 'assets' / 'b.enc').write_bytes(b'sealed-b')
         (self.assets / 'uploads' / 'x' / 'part').write_bytes(b'partial upload')
+        (self.assets / 'number-lab').mkdir(); (self.assets / 'number-lab' / 'lab.enc').write_bytes(b'laboratory only')
         self.config = {'assets_dir': str(self.assets), 'bucket': 'commerce-v7-pitr-1', 'prefix': 'private-assets', 'grace_days': 35, 'receipt': str(root / 'r' / 'last.json')}
 
     def tearDown(self):

@@ -144,17 +144,17 @@ base son puntos únicos de falla; F1 entrega recuperación medida, no failover.
 
 ## 4c. Arranque durable (RNF-03.c)
 
-- `commerce-boot.service` (Root, `WantedBy=multi-user.target`, después de
-  Docker) ejecuta `scripts/v7_boot.py run /opt/commerce-os/private/boot/operator.json`.
-- Sólo hace `compose-release.sh <release.env> up -d --no-recreate --no-build
-  --pull never <servicios>` con la release instalada (respeta el overlay PITR),
-  espera `running`/`healthy` y deja un recibo 0600. Nunca recrea, descarga ni
-  construye; nunca inicia sesiones de WhatsApp (eso es del supervisor de
-  gateways y del channel worker) y nunca toca datos.
-- Un archivo de retención (`hold`) escrito por una ventana de mantenimiento
-  mantiene la plataforma detenida aunque la VM reinicie (`HELD_FOR_MAINTENANCE`).
-- Los servicios ya tienen `restart: unless-stopped`; la unidad cubre los huecos
-  de un reinicio (contenedores creados sin iniciar y el orden de dependencias).
+- Se adopta el arranque durable de Codex que el instalador canónico ya instala
+  al llegar a `OPERATING` (`commerce-runtime-boot.service`,
+  `scripts/runtime_boot_*.py`, commit `9c77939`): tras reiniciar la VM valida
+  la custodia Root (adopción + plan B02 + política), la identidad del host y el
+  inventario exacto, arranca una sola vez los gateways autorizados y espera su
+  salud; los servicios del núcleo vuelven por `restart: unless-stopped`. Nunca
+  inicia sesiones (`sessions_autostart=false`).
+- No se añade otra unidad de arranque: una segunda competiría con esa
+  validación. Por eso cualquier cambio deliberado de contenedores después de
+  la instalación (PITR, variables V7) termina con la readopción Root de §4g;
+  sin ella el arranque, B02 y la siguiente publicación se negarían.
 
 ## 4d. Copia diaria de archivos privados (RNF-03.e)
 
@@ -162,7 +162,8 @@ base son puntos únicos de falla; F1 entrega recuperación medida, no failover.
   medios, ya sellados `*.enc` con la llave de datos) se copian sin descifrar
   con `commerce-files-backup.timer` (diario 08:50 UTC) a la misma cubeta de
   recuperación en otra región, prefijo `private-assets`, con la identidad de
-  la VM (sin llave en disco). Se omite `uploads/` (temporal).
+  la VM (sin llave en disco). Se omiten `uploads/` (temporal) y `number-lab/`
+  (almacenamiento propio del laboratorio, 30 días).
 - Espejo: sube lo nuevo o cambiado (sha256 en metadatos); lo que desaparece
   localmente se marca y se borra de la copia a los 35 días (`grace_days`), así
   el borrado de privacidad alcanza la copia (D-18).
@@ -170,24 +171,24 @@ base son puntos únicos de falla; F1 entrega recuperación medida, no failover.
 - La sesión de WhatsApp (W01) mantiene su copia existente
   (`commerce-waha-backup.timer`).
 
-## 4e. B02 diario después de V7 (decisión conservadora y reversible)
+## 4e. B02 diario continúa después de V7
 
-B02 (volcado cifrado diario + custodia, Cloud Scheduler/Cloud Run Job) valida
-identificadores exactos de contenedor y proyecciones con Pid/StartedAt de la
-topología adoptada. La topología V7 (overlay PITR, arranque durable, reinicios
-por mantenimiento) cambia esos valores por diseño, así que B02 rechazaría cada
-corrida después de un reinicio. Su autorización financiera además termina
-antes del 2026-11-04.
+B02 (volcado cifrado diario + custodia, Cloud Scheduler/Cloud Run Job) sigue
+siendo el respaldo lógico fuera del host y la única fuente de las atestaciones
+de respaldo que exige la autoridad de privacidad (`privacy_job_authority`,
+migraciones 0092/0095). Con el plan v3 su guardia usa la proyección estática
+(versión 2: sin Pid/StartedAt), así que reiniciar contenedores no lo rompe;
+sí lo rompen un contenedor reemplazado o un plan desactualizado, y eso lo
+resuelve la readopción de §4g (actualiza `preserved_runtime` y la identidad
+de PostgreSQL del plan).
 
-Decisión: en la ventana de la Fase C se ejecuta un B02 fresco final (con
-cobertura W01/medios) y su restauración aislada verificada antes del primer
-cambio. Después de instalar V7 y verificar PITR (respaldo completo + WAL +
-restauración de ensayo) y la primera copia de archivos, el Scheduler de B02 se
-**pausa** (no se borra). Reanudarlo es un solo cambio en Google. El Job, la
-imagen, los respaldos B02 y su custodia se conservan; la limpieza de recursos
-de B02 queda para la fecha de vencimiento de su autorización, como ya prevé
-su ADR. Respaldo vigente después de V7: PITR (base), copia de archivos
-privados y W01.
+Decisión: B02 **no se pausa**. En la ventana: un B02 fresco final con su
+restauración aislada antes del primer cambio; después de instalar y readoptar,
+la vinculación Root de B02 se vuelve a aplicar con el hash del plan nuevo
+(`gcp-observe/seal/apply`, como tras cada publicación) y se observa su
+siguiente corrida natural. PITR (WAL continuo), la copia de archivos y W01 se
+suman a B02; no lo sustituyen. La autorización financiera de B02 vence antes
+del 2026-11-04 y su renovación queda como pendiente operativo.
 
 ## 4f. Credenciales de ejecución nuevas (V7)
 
@@ -208,6 +209,37 @@ privados y W01.
   rotan. `set` escribe valores no secretos (orígenes, suscripción de
   ingress). Ningún comando imprime valores; `generate` imprime la versión y
   el sha256 para que el dueño compare.
+
+## 4g. Readopción Root de la ventana y almacenamiento del laboratorio
+
+- **Exportación de módulos retirados dentro del instalador.** En la
+  publicación 68→116, antes de las migraciones y con productores detenidos,
+  el instalador canónico ejecuta `scripts/v7-retirement-export.ts export` con
+  la imagen candidata y `admin.env` en un directorio nuevo 0700 bajo
+  `<private>/v7-retirement-export/` (tarea acotada propia, ≤300 s). `0109` sigue
+  verificando los recibos; si faltan, toda la publicación se revierte en 68.
+- **Almacenamiento del laboratorio.** `automation-worker` monta
+  `<assets>/number-lab` en `/data/laboratory` (lectura/escritura), junto a su
+  `/data/private` de sólo lectura, que no cambia. El instalador crea el
+  directorio una vez (0700, dueño del directorio de activos) y su guardia de
+  frontera acepta exactamente ese montaje añadido una sola vez
+  (`application_boundary_equal`); cualquier otra diferencia se rechaza. La
+  copia diaria de archivos omite `number-lab/`.
+- **Readopción.** `scripts/v7_infra_adoption.py` (Root):
+  1. `capture` antes de cualquier cambio de la ventana: definiciones de
+     contenedores con cada valor de entorno reemplazado por su SHA-256 y cada
+     perfil como llave → SHA-256 (sin secretos).
+  2. Cambios: `v7_runtime_env.py` (variables V7), recreación de los servicios
+     afectados y `v7_pitr.py enable` (que ahora deja
+     `pitr/enable-receipt.json` con contenedor/imagen anterior y nuevo).
+  3. `observe`: acepta sólo variables V7 nuevas o cambiadas en
+     `api/automation/channel/ingress.env` y cargadas por su contenedor
+     recreado; PostgreSQL reemplazado sólo con el recibo PITR, mismo volumen,
+     imagen y comando PITR, montajes y red PITR añadidos; red base más
+     `commerce-os_pitr-edge`. Web, Caddy, portal y gateways intactos.
+  4. `apply <sha256>`: con los cuatro candados, CAS del plan B02 (con
+     historial), la adopción y la política de arranque, con diario.
+  Imprime sólo servicios, nombres de variables y digests.
 
 ## 5. Pendiente de esta ADR (se completa en las siguientes entregas de F1)
 

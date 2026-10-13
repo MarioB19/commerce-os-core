@@ -62,7 +62,8 @@ services:
     environment: {PORT: '3003', DB_POOL_MAX: '5', JOB_SCHEMA: pgboss_automation}
     mem_limit: 768m
     cpus: 0.8
-    volumes: ['${COMMERCE_PRIVATE_ASSETS_DIR}:/data/private:ro']
+    # V7 RF-19: the number laboratory's own sealed files (installer creates <assets>/number-lab, 0700).
+    volumes: ['${COMMERCE_PRIVATE_ASSETS_DIR}:/data/private:ro', '${COMMERCE_PRIVATE_ASSETS_DIR}/number-lab:/data/laboratory']
     depends_on: {postgres: {condition: service_healthy}}
     healthcheck: {test: ['CMD','node','-e',"require('node:http').get('http://127.0.0.1:3003/readyz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"], interval: 10s, timeout: 3s, retries: 6}
   channel-worker:

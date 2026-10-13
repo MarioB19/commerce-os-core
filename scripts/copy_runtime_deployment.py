@@ -296,6 +296,48 @@ def inspect_inventory(rows, *, portal, caddy_id, initial=False):
     return services
 
 
+LAB_MOUNT = '/data/laboratory'
+
+
+def application_boundary_equal(name, old, new):
+    """Static projections of one application service before/after a publication.
+
+    Equal, or V7's single addition (RF-19, docs/adr-v7-f1-infrastructure.md §4c):
+    automation-worker gains a read-write bind of <private assets>/number-lab at
+    /data/laboratory, next to its unchanged read-only /data/private. Only the
+    first V7 publication can add it; afterwards plain equality applies again."""
+    if old['HostConfig'] == new['HostConfig'] and old['Mounts'] == new['Mounts']:
+        return old['NetworkSettings'] == new['NetworkSettings']
+    if name != 'automation-worker' or old['NetworkSettings'] != new['NetworkSettings']:
+        return False
+    if any(m.get('Destination') == LAB_MOUNT for m in old['Mounts']):
+        return False
+    added = [m for m in new['Mounts'] if m not in old['Mounts']]
+    private = [m for m in old['Mounts'] if m.get('Destination') == '/data/private']
+    if not (len(added) == 1 and all(m in new['Mounts'] for m in old['Mounts']) and len(new['Mounts']) == len(old['Mounts'])+1
+            and len(private) == 1 and private[0].get('Type') == 'bind' and private[0].get('RW') is False):
+        return False
+    lab = added[0]
+    if not (lab.get('Type') == 'bind' and lab.get('Destination') == LAB_MOUNT and lab.get('RW') is True
+            and lab.get('Source') == str(PurePosixPath(private[0]['Source'])/'number-lab')):
+        return False
+    rest = lambda value: {k: v for k, v in value.items() if k not in ('Binds', 'Mounts')}
+    if rest(old['HostConfig']) != rest(new['HostConfig']):
+        return False
+    old_binds, new_binds = list(old['HostConfig'].get('Binds') or []), list(new['HostConfig'].get('Binds') or [])
+    old_specs, new_specs = list(old['HostConfig'].get('Mounts') or []), list(new['HostConfig'].get('Mounts') or [])
+    if not (all(b in new_binds for b in old_binds) and all(m in new_specs for m in old_specs)):
+        return False
+    added_binds = [b for b in new_binds if b not in old_binds]
+    added_specs = [m for m in new_specs if m not in old_specs]
+    if len(added_binds) + len(added_specs) != 1:
+        return False
+    if added_binds:
+        return added_binds[0] in (lab['Source']+':'+LAB_MOUNT, lab['Source']+':'+LAB_MOUNT+':rw')
+    spec = added_specs[0]
+    return spec.get('Type') == 'bind' and spec.get('Target') == LAB_MOUNT and spec.get('Source') == lab['Source'] and not spec.get('ReadOnly')
+
+
 def validate_inventory(state, rows):
     validate_state(state)
     services = inspect_inventory(rows, portal=state['portal'], caddy_id=state['service_inventory']['caddy'],
@@ -444,9 +486,7 @@ def validate_publication(previous, candidate, before_rows, after_rows, *,
                 'COPY_RUNTIME_PRESERVED_INFRASTRUCTURE_CHANGED')
     for name in CORE - {'postgres', 'caddy', 'portal'}:
         old, new = static_projection(before[name]), static_projection(after[name])
-        require(old['HostConfig'] == new['HostConfig'] and old['Mounts'] == new['Mounts']
-                and old['NetworkSettings'] == new['NetworkSettings'],
-                'COPY_RUNTIME_APPLICATION_BOUNDARY_CHANGED')
+        require(application_boundary_equal(name, old, new), 'COPY_RUNTIME_APPLICATION_BOUNDARY_CHANGED')
     previous_policy = {key: previous[key] for key in ('policy_version', 'policy_body_sha256')}
     observed_policy = previous_policy if observed_policy is None else observed_policy
     canonical_revisions(previous_policy, observed_policy, [] if revision_receipts is None else revision_receipts)
@@ -1181,6 +1221,54 @@ if(Object.keys(after).length!==profile.total||Object.entries({...plan.baseline,.
     'V7_NAMES', json.dumps(sorted(V7_PROFILE_MIGRATION_NAMES), separators=(',', ':'))).replace('V7_TOTAL', str(V7_PROFILE_MIGRATION_TOTAL))
 
 
+V7_RETIREMENT_EXPORT_DIR = 'v7-retirement-export'
+
+
+def export_retired_modules(server, root, report_dir, metadata, timeout=300):
+    """V7 F8-E: 0109 drops the retired V5 tables only when the latest receipt of
+    scripts/v7-retirement-export.ts matches their rows. Run it here, producers
+    already stopped, with the candidate image and the owner connection, into a
+    new 0700 directory under the private root. The script reads every encrypted
+    file back before recording receipts; nothing is printed but counts."""
+    require(type(timeout) is int and 0 < timeout <= 300, 'COPY_RUNTIME_RETIREMENT_EXPORT_DEADLINE_INVALID')
+    require(re.fullmatch(r'[a-f0-9]{40}', metadata.get('source_sha') or ''), 'COPY_RUNTIME_RETIREMENT_EXPORT_SOURCE_INVALID')
+    base = Path(server.PRIVATE)/V7_RETIREMENT_EXPORT_DIR
+    if not base.exists():
+        base.mkdir(mode=0o700)
+    info = base.lstat()
+    require(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700 and info.st_uid == os.getuid(),
+            'COPY_RUNTIME_RETIREMENT_EXPORT_DIRECTORY_UNSAFE')
+    name = 'export-'+metadata['source_sha'][:12]+'-'+dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    require(not (base/name).exists(), 'COPY_RUNTIME_RETIREMENT_EXPORT_EXISTS')
+    env = native.env_values(native.protected_bytes(server.PRIVATE/'release.env'))
+    args = ['docker', 'run', '--rm', '--user', '0:0', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
+            '--tmpfs', '/tmp:size=64m,noexec,nosuid', '--network', 'commerce-os_core',
+            '--env-file', str(server.PRIVATE/'admin.env'), '-v', str(base)+':/v7-retirement-export',
+            env['COMMERCE_IMAGE'], 'node', '--import', 'tsx', 'scripts/v7-retirement-export.ts', 'export', '/v7-retirement-export/'+name]
+    server.run_deployment_task(root, report_dir, args, 'v7-retirement-export', timeout)
+    require((base/name/'manifest.json').is_file(), 'COPY_RUNTIME_RETIREMENT_EXPORT_UNCONFIRMED')
+    return {'status': 'EXPORTED', 'directory': name}
+
+
+def ensure_lab_storage(server):
+    """V7 RF-19: the laboratory's private files live in <assets>/number-lab,
+    mounted read-write only into automation-worker at /data/laboratory. Created
+    once, owned like the assets directory, 0700; never a symlink."""
+    env = native.env_values(native.protected_bytes(server.PRIVATE/'release.env'))
+    assets = Path(env.get('COMMERCE_PRIVATE_ASSETS_DIR') or '')
+    require(assets.is_absolute() and assets.is_dir() and not assets.is_symlink(), 'COPY_RUNTIME_ASSETS_DIRECTORY_REQUIRED')
+    owner = assets.lstat()
+    lab = assets/'number-lab'
+    if not lab.exists() and not lab.is_symlink():
+        lab.mkdir(mode=0o700)
+        os.chown(lab, owner.st_uid, owner.st_gid)
+        os.chmod(lab, 0o700)
+    info = lab.lstat()
+    require(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700
+            and (info.st_uid, info.st_gid) == (owner.st_uid, owner.st_gid), 'COPY_RUNTIME_LAB_STORAGE_UNSAFE')
+    return str(lab)
+
+
 def apply_reviewed_migrations(server, root, report_dir, metadata, review, timeout=300, *, stage='INITIAL'):
     require(type(timeout) is int and 0 < timeout <= 300, 'COPY_RUNTIME_MIGRATION_DEADLINE_INVALID')
     applied = server.migrations(root); expected = metadata['migration_hashes']
@@ -1188,7 +1276,13 @@ def apply_reviewed_migrations(server, root, report_dir, metadata, review, timeou
     names = reviewed_migration_names(metadata)
     require(review.get('migration_hashes') == {name: expected[name] for name in names},
             'COPY_RUNTIME_REVIEWED_MIGRATION_HASH_CHANGED')
-    if applied == expected: return {'status': 'ALREADY_APPLIED', 'migration_count': len(expected)}
+    lab_storage = ensure_lab_storage(server) if names == V7_PROFILE_MIGRATION_NAMES else None
+    if applied == expected:
+        return {'status': 'ALREADY_APPLIED', 'migration_count': len(expected), **({'lab_storage': 'READY'} if lab_storage else {})}
+    retirement = None
+    if names == V7_PROFILE_MIGRATION_NAMES:
+        # Own bound, before the ≤300 s migration bound; 0109 still verifies it.
+        retirement = export_retired_modules(server, root, report_dir, metadata, 300)
     plan = Path(report_dir)/'migrations.json'
     server._write_report(plan, {'stage': stage, 'baseline': applied, 'additions': review['migration_hashes']})
     env = native.env_values(native.protected_bytes(server.PRIVATE/'release.env'))
@@ -1201,7 +1295,12 @@ def apply_reviewed_migrations(server, root, report_dir, metadata, review, timeou
     require(type(timeout) is int and 0 < timeout <= 300, 'COPY_RUNTIME_MIGRATION_DEADLINE_INVALID')
     server.run_deployment_task(root, report_dir, args, 'copy-migrations', timeout)
     verify_migrations(server.migrations(root), expected, complete=True)
-    return {'status': 'APPLIED_BOUNDED', 'migration_count': len(expected), 'bootstrap_or_import': False}
+    result = {'status': 'APPLIED_BOUNDED', 'migration_count': len(expected), 'bootstrap_or_import': False}
+    if retirement:
+        result['retirement_export'] = retirement
+    if lab_storage:
+        result['lab_storage'] = 'READY'
+    return result
 
 
 def first_start_guard(server, root):
@@ -1387,8 +1486,7 @@ def stage_continuity(before, services, candidate, after_owner, server, private):
                           {name: services[name] for name in preserved})
     for name in set(before['services'])-preserved:
         old, new = static_projection(before['services'][name]), static_projection(services[name])
-        require(old['HostConfig'] == new['HostConfig'] and old['Mounts'] == new['Mounts']
-                and old['NetworkSettings'] == new['NetworkSettings'], 'COPY_RUNTIME_APPLICATION_BOUNDARY_CHANGED')
+        require(application_boundary_equal(name, old, new), 'COPY_RUNTIME_APPLICATION_BOUNDARY_CHANGED')
         if previous.get('runtime_stage') == 'CORE_PREPARED' and candidate['runtime_stage'] == 'OPERATING':
             compare_live_snapshot({name: before['services'][name]}, {name: services[name]})
     require(previous['portal'] == candidate['portal'] and previous['smtp_transition_ref'] == candidate['smtp_transition_ref']
