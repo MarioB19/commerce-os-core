@@ -106,7 +106,8 @@ export function validateResponseModel(model: Model, data: unknown): void {
   if (model.transport === 'transcriptions') return;
   const root = object(data);
   const observed = model.provider === 'google' ? root.modelVersion : root.model;
-  requireAi(typeof observed === 'string' && model.responseModels.includes(observed), 'OUTPUT_REJECTED');
+  requireAi(typeof observed === 'string' && model.responseModels.some(m => m === observed
+    || m.endsWith('*') && observed.startsWith(m.slice(0, -1)) && /^[0-9]{4}-?[0-9]{2}-?[0-9]{2}$|^[0-9]{3,8}$/.test(observed.slice(m.length - 1))), 'OUTPUT_REJECTED');
   const tier = model.provider === 'google' ? object(root.usageMetadata).serviceTier
     : model.provider === 'anthropic' ? object(root.usage).service_tier : root.service_tier;
   requireAi(tier === undefined || tier === (model.provider === 'openai' ? 'default' : 'standard'), 'OUTPUT_REJECTED');

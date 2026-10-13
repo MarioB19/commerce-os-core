@@ -6,6 +6,8 @@ import {VariantError,listProducts,createProduct,editProduct,productDependencies,
  saveVariantSection,reviewVariant,publishVariant,duplicateVariant,setVariantArchived,variantHistory,variantNumbers,variantNumberImpact,
  setVariantNumber,numberVariantsView,numberAssignmentHistory} from '../../../packages/db/src/variant-workspace.js';
 import {adoptLegacyProduct} from '../../../packages/db/src/variant-migration.js';
+import {variantAiStatus,authorizeVariantAi,aiStatusLabel} from '../../../packages/ai-providers/src/variant-ai.js';
+import {AiError} from '../../../packages/ai-providers/src/contracts.js';
 import {variantSellerSchema,variantSaleSchema,type VariantSection} from '../../../packages/contracts/src/variants.js';
 import type {ProfileScope} from '../../../packages/contracts/src/profiles.js';
 
@@ -30,6 +32,7 @@ const messages:Record<string,string>={
  MARKET_OPERATION_CONFLICT:'Esa operación ya se usó con otros datos.',MARKET_OPERATION_BUSY:'La misma operación sigue en curso.',
  CONTINUITY_SCOPE_BUSY:'Otra operación está cambiando este número. Vuelve a intentarlo.',
  HUMAN_ASSIGNMENT_REQUIRED:'Vender una variante en un número se decide en la aplicación con tu sesión.',
+ PROFILE_INTERACTIVE_SESSION_REQUIRED:'Esta confirmación sólo puede hacerse desde la aplicación, con tu sesión.',
 };
 function fail(code:string,statusCode=400):never{throw Object.assign(new Error(code),{code,statusCode,publicMessage:messages[code]});}
 function headers(reply:FastifyReply){reply.header('Cache-Control','no-store').header('Vary','Cookie, Authorization');}
@@ -75,7 +78,25 @@ export async function variantWorkspaceRoutes(app:FastifyInstance,deps?:ProfileRe
  app.get('/v2/variants/:id',async req=>{const {id}=idParam.parse(req.params);return{data:await read(req,'variants:read',({db,environment})=>readVariant(db,environment,id))};});
  app.get('/v2/variants/:id/history',async req=>{const {id}=idParam.parse(req.params);return{data:await read(req,'variants:read',({db,environment})=>variantHistory(db,environment,id))};});
  app.post('/v2/variants/:id/review',{bodyLimit:2048},async req=>{const {id}=idParam.parse(req.params);return{data:await write(req,'variants:write',req.body,({db,environment,actor})=>reviewVariant(db,environment,id,req.body,actor))};});
- app.post('/v2/variants/:id/publish',{bodyLimit:2048},async req=>{const {id}=idParam.parse(req.params);return{data:await write(req,'variants:write',req.body,({db,environment,actor})=>publishVariant(db,environment,id,req.body,actor))};});
+ app.post('/v2/variants/:id/publish',{bodyLimit:2048},async req=>{const {id}=idParam.parse(req.params);return{data:await write(req,'variants:write',req.body,async({db,environment,actor,profile})=>{
+  const result=await publishVariant(db,environment,id,req.body,actor);
+  // The owner's own publication also confirms the variant's AI for the
+  // resolved models (one grant per task); an operator's leaves it pending.
+  const a=profile.authority,ai=result.variant.document.ai;
+  const owner=a.membership.role==='owner'&&a.credential.kind==='session';
+  const authorized=owner?await authorizeVariantAi(db,a,environment,id,ai).catch(e=>{if(e instanceof AiError)return null;throw e;}):null;
+  const status=authorized?.status??await variantAiStatus(db,environment,id,ai);
+  return{...result,ai:status.map(t=>({...t,state_label:aiStatusLabel(t.code)}))};
+ })};});
+ app.get('/v2/variants/:id/ai-status',async req=>{const {id}=idParam.parse(req.params);
+  return{data:await read(req,'variants:read',async({db,environment})=>{const v=await readVariant(db,environment,id);
+   return(await variantAiStatus(db,environment,id,v.document.ai)).map(t=>({...t,state_label:aiStatusLabel(t.code)}));})};});
+ app.post('/v2/variants/:id/ai-authorization',{bodyLimit:256},async req=>{const {id}=idParam.parse(req.params);
+  return{data:await write(req,'integrations:write',{},async({db,environment,profile})=>{
+   if(profile.authority.credential.kind!=='session')fail('PROFILE_INTERACTIVE_SESSION_REQUIRED',403);
+   const v=await readVariant(db,environment,id);const r=await authorizeVariantAi(db,profile.authority,environment,id,v.document.ai);
+   return{minted:r.minted,status:r.status.map(t=>({...t,state_label:aiStatusLabel(t.code)}))};
+  })};});
  app.post('/v2/variants/:id/duplicate',{bodyLimit:4096},async(req,reply)=>{const {id}=idParam.parse(req.params);const data=await write(req,'variants:write',req.body,({db,environment,actor})=>duplicateVariant(db,environment,id,req.body,actor));reply.code(201);return{data};});
  for(const action of ['archive','restore'] as const)app.post(`/v2/variants/:id/${action}`,{bodyLimit:1024},async req=>{const {id}=idParam.parse(req.params);
   return{data:await write(req,'variants:write',req.body,({db,environment,actor})=>setVariantArchived(db,environment,id,req.body,action==='archive',actor))};});

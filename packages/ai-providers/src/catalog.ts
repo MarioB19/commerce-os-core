@@ -11,7 +11,9 @@ export function validateModel(model: Model, now: number): void {
     && model.capabilities.every(c => ['chat', 'vision', 'audio'].includes(c)), 'CAPABILITY');
   requireAi(Array.isArray(model.responseModels) && model.responseModels.length > 0 && model.responseModels.length <= 8
     && new Set(model.responseModels).size === model.responseModels.length
-    && model.responseModels.every(m => typeof m === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(m)), 'CONFIGURATION');
+    // A trailing '*' admits dated snapshots of the same reviewed alias only.
+    && model.responseModels.every(m => typeof m === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,126}\*?$/.test(m)
+      && (!m.endsWith('*') || m === model.model + '-*')), 'CONFIGURATION');
   requireAi(!(model.provider === 'anthropic' && model.capabilities.includes('audio'))
     && !(model.transport === 'responses' && model.capabilities.includes('audio'))
     && !(model.transport === 'transcriptions' && model.capabilities.some(c => c !== 'audio')), 'CAPABILITY');

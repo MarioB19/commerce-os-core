@@ -80,7 +80,8 @@ describe('V7 profile integrations: own AI keys, own Meta token and onboarding',(
  it('starts with nothing configured and hides integrations from read-only members',async()=>{
   const r=await call('GET','/v2/integrations',users.operator,one);expect(r.statusCode).toBe(200);
   const data=r.json().data;expect(data.ai.providers.map((p:any)=>p.state)).toEqual(['MISSING','MISSING','MISSING']);expect(data.meta.state).toBe('MISSING');
-  expect(data.ai.models).toEqual([{provider:'openai',model:'synthetic-verify',capabilities:['chat']}]);
+  // F4 installs the reviewed catalogue (0106) next to this test's synthetic model.
+  expect(data.ai.models).toEqual(expect.arrayContaining([{provider:'openai',model:'synthetic-verify',capabilities:['chat']},{provider:'anthropic',model:'claude-haiku-5-5',capabilities:['chat','vision']}]));
   expect((await call('GET','/v2/integrations',users.viewer,one)).statusCode).toBe(403);
   expect((await call('GET','/v2/onboarding',users.viewer,one)).json().data).toMatchObject({next:'ai',complete:false,steps:{ai:'PENDING',meta:'PENDING',product:'PENDING',number:'PENDING'}});
  });

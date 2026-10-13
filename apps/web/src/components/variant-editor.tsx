@@ -15,7 +15,7 @@ export const variantSectionTabs=[['sale','Venta'],['offer','Oferta y materiales'
 export type VariantTab=typeof variantSectionTabs[number][0];
 const message=errorText;
 interface Material {id:string;version:number;name:string;kind:string;mime_type:string|null;size_bytes:number;status:string;status_label:string;host:string|null;deliverable:boolean;archived:boolean;used_by_variants:number}
-interface SectionProps {variant:VariantView;fence:ProfileFence;manage:boolean;materials:Material[];reloadMaterials:()=>Promise<void>;save:(path:string,value:unknown)=>Promise<boolean>}
+interface SectionProps {variant:VariantView;fence:ProfileFence;manage:boolean;owner:boolean;materials:Material[];reloadMaterials:()=>Promise<void>;save:(path:string,value:unknown)=>Promise<boolean>}
 
 export function VariantEditor({productId,variantId,section,selection,role,state}:{productId:string;variantId:string;section:VariantTab;selection:ProfileFence;role:ProfileRole;state:ProfileState}){
  const manage=role!=='viewer'&&state==='ACTIVE';
@@ -37,7 +37,7 @@ export function VariantEditor({productId,variantId,section,selection,role,state}
  if(variant===null)return <section><a href="/products">← Productos</a><p role="alert">No encontramos esa variante en este perfil.</p></section>;
  if(!variant)return <section aria-busy="true">{error?<p role="alert">{error}</p>:<p role="status">Consultando variante…</p>}</section>;
  const d=variant.document,blocking=variant.missing.filter(m=>m.code!=='publish'),canPublish=manage&&!variant.archived&&!blocking.length&&(variant.unpublished_changes||!variant.published);
- const props:SectionProps={variant,fence:selection,manage:manage&&!variant.archived&&!busy,materials,reloadMaterials,save};
+ const props:SectionProps={variant,fence:selection,manage:manage&&!variant.archived&&!busy,owner:role==='owner'&&state==='ACTIVE',materials,reloadMaterials,save};
  return <section className="variant-editor" aria-labelledby="variant-title">
   <nav aria-label="Ruta" className="variant-breadcrumb"><a href="/products">Productos</a> › <a href={`/products/${productId}`}>{variant.product.name}</a> › <span>{d.name}</span></nav>
   <div className="variant-heading"><h1 id="variant-title">{variant.product.name} · {d.name}</h1>
@@ -93,7 +93,7 @@ function MaterialSelect({materials,value,onChange,accept,label}:{materials:Mater
 }
 
 // ------------------------------------------------------------------ Venta
-function SaleSection({variant,fence,manage,materials,save}:SectionProps){
+function SaleSection({variant,fence,manage,owner,materials,save}:SectionProps){
  const d=variant.document,[sale,setSale]=useState(d.sale),[ai,setAi]=useState(d.ai),[market,setMarket]=useState({name:d.name,locale:d.locale});
  const [aliases,setAliases]=useState(d.sale.aliases.join(', '));
  const [models,setModels]=useState<{provider:string;model:string;capabilities:string[]}[]>([]);
@@ -146,6 +146,7 @@ function SaleSection({variant,fence,manage,materials,save}:SectionProps){
    <p className="variant-hint">Si no eliges uno, se usa el modelo predeterminado del perfil. El alterno sólo se usa para tareas que el principal no puede hacer.</p>
    <Field label="Modelo principal"><select value={ai.primary?`${ai.primary.provider}/${ai.primary.model}`:''} disabled={!manage} onChange={e=>setAi(a=>({...a,primary:pick(e.target.value)}))}><option value="">Predeterminado del perfil</option>{chatModels.map(m=><option key={m.provider+m.model} value={`${m.provider}/${m.model}`}>{m.provider} · {m.model}</option>)}</select></Field>
    <Field label="Modelo alterno (opcional)"><select value={ai.fallback?`${ai.fallback.provider}/${ai.fallback.model}`:''} disabled={!manage} onChange={e=>setAi(a=>({...a,fallback:pick(e.target.value)}))}><option value="">Sin alterno</option>{models.map(m=><option key={'f'+m.provider+m.model} value={`${m.provider}/${m.model}`}>{m.provider} · {m.model} ({m.capabilities.join(', ')})</option>)}</select></Field>
+     <AiStatusPanel fence={fence} variantId={variant.id} version={variant.version} owner={owner}/>
   </details>
   <details className="variant-advanced"><summary>Mercado de la variante</summary>
    <Field label="Nombre de la variante"><input maxLength={160} value={market.name} disabled={!manage} onChange={e=>setMarket(m=>({...m,name:e.target.value}))}/></Field>
@@ -328,5 +329,22 @@ function NumbersSection({variant,fence,manage,onChanged}:SectionProps&{onChanged
    <ul><li>Conversaciones abiertas: {confirm.impact.open_conversations}</li><li>Seguimientos pendientes que se cancelan: {confirm.impact.pending_followups}</li><li>Mensajes aún no enviados que se cancelan: {confirm.impact.unsent_messages}</li></ul>
    <div className="variant-actions"><Dialog.Close asChild><Button variant="secondary">Seguir vendiendo</Button></Dialog.Close><Button variant="destructive" disabled={!!busy} onClick={()=>void sell(confirm.row,false)}>Dejar de vender</Button></div>
   </Dialog.Content></Dialog.Portal></Dialog.Root>}
+ </div>;
+}
+
+interface AiTaskStatus {task:string;label:string;state:'READY'|'NEEDS_OWNER'|'HUMAN_REQUIRED';state_label:string;provider:string|null;model:string|null;selection:string|null;grant_expires_at:string|null}
+/** RF-14/RF-13.d: what the variant's AI uses per task and why it may not run. */
+function AiStatusPanel({fence,variantId,version,owner}:{fence:ProfileFence;variantId:string;version:number;owner:boolean}){
+ const [status,setStatus]=useState<AiTaskStatus[]>(),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+ const load=useCallback(async()=>{try{setStatus(await variantRequest<AiTaskStatus[]>(fence,'GET',`/v2/variants/${variantId}/ai-status`));}catch(e){setError(message(e,'No se pudo consultar la IA.'));}},[fence,variantId]);
+ useEffect(()=>{void load();},[load,version]);
+ async function confirm(){setBusy(true);setError('');try{const r=await variantRequest<{status:AiTaskStatus[]}>(fence,'POST',`/v2/variants/${variantId}/ai-authorization`,{},newOperationKey());setStatus(r.status);}catch(e){setError(message(e,'No se pudo confirmar la IA.'));}finally{setBusy(false);}}
+ if(!status)return error?<p role="alert">{error}</p>:<p role="status">Consultando la IA de la variante…</p>;
+ return <div className="variant-ai-status"><h3>Estado de la IA (variante publicada)</h3>
+  <ul className="variant-list">{status.map(t=><li key={t.task}><strong>{t.label}</strong><span>{t.provider?`${t.provider} · ${t.model}`:'—'}</span><span className={`number-status variant-state-${t.state==='READY'?'ok':'attention'}`}>{t.state==='READY'?'Lista':t.state_label}</span></li>)}</ul>
+  {owner&&status.some(t=>t.state==='NEEDS_OWNER')&&<Button type="button" variant="secondary" disabled={busy} onClick={()=>void confirm()}>{busy?'Confirmando…':'Confirmar la IA de esta variante'}</Button>}
+  {!owner&&status.some(t=>t.state==='NEEDS_OWNER')&&<p className="variant-hint">La persona Dueña debe confirmar la IA de esta variante. Mientras tanto, las conversaciones pasan a atención de una persona.</p>}
+  <p className="variant-hint">Los costos de IA se cobran con la clave de tu negocio y se registran por variante y conversación con el precio vigente.</p>
+  {error&&<p role="alert">{error}</p>}
  </div>;
 }

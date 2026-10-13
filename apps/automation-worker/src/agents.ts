@@ -9,6 +9,10 @@ import {composeSellerContext,deterministicSellerReply,proposalGroundingIssue,sel
 import {loadSellerSnapshot} from '../../../packages/db/src/seller-context.js';
 import {readFile} from 'node:fs/promises';
 import {join} from 'node:path';
+import pg from 'pg';
+import {ProfileSellerAi} from '../../../packages/ai-providers/src/variant-ai.js';
+import {aiCredentialKey} from '../../../packages/ai-providers/src/profile-integrations.js';
+import {AiError} from '../../../packages/ai-providers/src/contracts.js';
 import {query,withTransaction,getRecord,decrypt,pool,readOperationalSettings,stableJson} from '@commerce/db';
 import {readIntegrationSettings,validateIntegrationConfig} from '../../../packages/db/src/integration-settings.js';
 import type {Body,DomainRecord} from '@commerce/contracts';
@@ -17,6 +21,16 @@ import {event,save,create,gated,controls,proposeEffect,proposeEffectOutcome,canc
 import {advanceWorkflow} from './workflows.js';
 import {applyReceiptAnalysis} from './commands.js';
 const deterministic=new DeterministicSalesAi();
+// V7 F4: production seller over the profile's own key (dedicated commerce_ai login).
+let sellerRuntime:ProfileSellerAi|null|undefined;
+export function profileSeller(){
+ if(sellerRuntime!==undefined)return sellerRuntime;
+ const url=process.env.AI_DATABASE_URL;if(!url){sellerRuntime=null;return null;}
+ const aiPool=new pg.Pool({connectionString:url,max:4,connectionTimeoutMillis:5000,idleTimeoutMillis:30000});
+ aiPool.on('connect',client=>{client.query('SET ROLE commerce_ai').catch(()=>{process.stderr.write('ai_runtime_role_not_assumed\n');});});
+ sellerRuntime=new ProfileSellerAi({aiPool,custodyKey:aiCredentialKey()});return sellerRuntime;
+}
+export function setProfileSellerForTests(runtime:ProfileSellerAi|null){sellerRuntime=runtime;}
 const protectedHistoryPurposes=new Set(['collection','followup','remarketing']);
 function sellerHistoryText(message:Body){
  const body=message.body??{};
@@ -89,6 +103,15 @@ async function processAgentsImpl(store:AgentStore,limit:number,override?:SalesAi
      });
     });
     if(nativeAi.invocation.state==='SUCCEEDED')output={proposal:nativeAi.invocation.value};else failure=nativeAi.invocation.code;
+   }else if(snapshot.agent?.body.provider==='profile'&&!override){
+    // V7 F4: the variant's own model, admitted and accounted per call.
+    if(snapshot.conv.environment!=='REAL')throw new Error('SIMULATION_EXTERNAL_AI_DENIED');
+    const variantId=snapshot.conv.body.variant_id;if(typeof variantId!=='string')throw new Error('AI_VARIANT_REQUIRED');
+    const seller=profileSeller();if(!seller)throw new Error('AI_RUNTIME_NOT_CONFIGURED');
+    if((await readOperationalSettings(pool,snapshot.conv.workspace_id,snapshot.conv.environment)).version!==snapshot.operationalRevision)throw new Error('CONFIGURATION_CHANGED');
+    try{const r=await seller.propose({workspaceId:snapshot.conv.workspace_id,variantId,conversationId:snapshot.conv.id,attemptId:snapshot.run.id,instructions:sellerInstructions(snapshot.sellerSnapshot),context:snapshot.context as unknown as Record<string,unknown>});
+     output={proposal:r.proposal,usage:{...r.usage,provider:r.provider,model:r.model,cost_microusd:r.cost_microusd,attempt_id:r.attempt_id}};}
+    catch(error){throw new Error(error instanceof AiError?'AI_'+error.code:'AI_REQUEST_FAILED');}
    }else{const configured=await configuredAi(snapshot.agent,snapshot.conv.workspace_id,snapshot.conv.environment,override);if((await readOperationalSettings(pool,snapshot.conv.workspace_id,snapshot.conv.environment)).version!==snapshot.operationalRevision)throw new Error('CONFIGURATION_CHANGED');output=await configured.provider.propose({...configured.agent,knowledge:'',instructions:sellerInstructions(snapshot.sellerSnapshot)},snapshot.context);}
   }catch(error){failure=error instanceof Error&&/^[A-Z_0-9]+$/.test(error.message)?error.message:'AI_REQUEST_FAILED';}
   const nativeFields=nativeAi?{provider:nativeAi.provider,model:nativeAi.model,lab_ai:{attempt_id:nativeAi.attemptId,execution_environment:nativeAi.executionEnvironment,operation_class:nativeAi.operationClass,
