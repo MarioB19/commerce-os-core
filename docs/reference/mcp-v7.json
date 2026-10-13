@@ -394,18 +394,15 @@
     "validar",
     "publicar",
     "historial",
-    "resultados"
+    "resultados",
+    "ciclos",
+    "previsualizar_reprogramacion",
+    "reprogramar"
    ],
    "audience": "profile",
    "family": "/v2/variants/{id}/remarketing",
    "name": "remarketing_manage",
-   "pending": [
-    "ciclos",
-    "previsualizar_reprogramacion",
-    "reprogramar",
-    "pausar",
-    "reanudar"
-   ],
+   "pending": [],
    "scopes": [
     "remarketing:read",
     "remarketing:write"

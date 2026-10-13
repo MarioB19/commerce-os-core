@@ -318,7 +318,36 @@ function RemarketingSection({variant,fence,manage,materials,save}:SectionProps){
   </>}
   {!policy&&r&&manage&&<div className="variant-actions"><Button>Guardar sin seguimientos</Button></div>}
   {r&&<RemarketingResults variant={variant} fence={fence}/>}
+  {r&&<RemarketingCycles variant={variant} fence={fence} manage={manage}/>}
  </form>;
+}
+/** RF-10.c: open follow-up cycles, the same list and reprogramming the MCP has.
+ * Reprogramming moves only unstarted future reminders to the timing of the
+ * published policy; content and used reminders never change. */
+interface CycleView {id:string;revision:number;status:string;status_label:string;stage_label:string;opened_at:string|null;consumed_attempts:number;max_attempts:number;next_due_at:string|null;conversation_paused:boolean}
+interface ReprogramPreview {cycle_revision:number;preview_hash:string;previewed_at:string;effective_maximum:number;slots:{id:string;position:number;due_at:string;disposition:string}[]}
+const dispositionLabels:Record<string,string>={PRESERVE_CONSUMED:'ya enviado',DISABLED:'inactivo',SKIP_OVERDUE:'vencido, no se envía',QUOTA_BLOCKED:'sin cupo',SCHEDULE:'se programa'};
+function RemarketingCycles({variant,fence,manage}:{variant:VariantView;fence:ProfileFence;manage:boolean}){
+ const [cycles,setCycles]=useState<CycleView[]|null>(null),[error,setError]=useState(''),[preview,setPreview]=useState<{cycle:string;plan:ReprogramPreview}|null>(null),[busy,setBusy]=useState(false),[tick,setTick]=useState(0);
+ useEffect(()=>{const c=new AbortController();
+  variantRequest<{cycles:CycleView[]}>(fence,'GET',`/v2/variants/${variant.id}/remarketing/cycles?status=OPEN`,undefined,undefined,c.signal).then(v=>setCycles(v.cycles)).catch(e=>{if(!c.signal.aborted)setError(message(e,'No se pudieron consultar los seguimientos en curso.'));});
+  return()=>c.abort();},[fence,variant.id,tick]);
+ const ask=async(cycle:string)=>{setBusy(true);setError('');try{setPreview({cycle,plan:await variantRequest<ReprogramPreview>(fence,'POST',`/v2/variants/${variant.id}/remarketing/cycles/${cycle}/reprogram/preview`,{})});}catch(e){setError(message(e,'No se pudo preparar la vista previa.'));}finally{setBusy(false);}};
+ const apply=async()=>{if(!preview)return;setBusy(true);setError('');
+  try{await variantRequest(fence,'POST',`/v2/variants/${variant.id}/remarketing/cycles/${preview.cycle}/reprogram`,{expected_revision:preview.plan.cycle_revision,preview_hash:preview.plan.preview_hash,previewed_at:preview.plan.previewed_at});setPreview(null);setTick(t=>t+1);}
+  catch(e){setError(message(e,'No se pudo reprogramar.'));}finally{setBusy(false);}};
+ const when=(v:string|null)=>v?new Date(v).toLocaleString('es-MX',{dateStyle:'medium',timeStyle:'short'}):'—';
+ return <section className="variant-card remarketing-cycles" aria-label="Seguimientos en curso"><h3>Seguimientos en curso</h3>
+  {error&&<p role="alert">{error}</p>}{!cycles&&!error&&<p role="status">Consultando…</p>}
+  {cycles&&(cycles.length===0?<p className="variant-hint">Nadie está en seguimiento ahora con esta variante.</p>:<table className="cycles-table"><thead><tr><th>Etapa</th><th>Desde</th><th>Usados</th><th>Próximo</th><th></th></tr></thead>
+   <tbody>{cycles.map(c=><tr key={c.id}><td>{c.stage_label}{c.conversation_paused?' · conversación pausada':''}</td><td>{when(c.opened_at)}</td><td>{c.consumed_attempts} de {c.max_attempts}</td><td>{when(c.next_due_at)}</td>
+    <td>{manage&&<Button type="button" variant="ghost" disabled={busy} onClick={()=>void ask(c.id)}>Usar horario publicado</Button>}</td></tr>)}</tbody></table>)}
+  {preview&&<div className="variant-card" role="dialog" aria-label="Vista previa de la reprogramación"><p>Con la política publicada, este seguimiento tendría hasta {preview.plan.effective_maximum} recordatorio{preview.plan.effective_maximum===1?'':'s'}:</p>
+   <ul>{preview.plan.slots.map(s=><li key={s.id}>Seguimiento {s.position}: {dispositionLabels[s.disposition]??s.disposition}{s.disposition==='SCHEDULE'?` · ${when(s.due_at)}`:''}</li>)}</ul>
+   <p className="variant-hint">El contenido no cambia y los ya enviados cuentan. La vista previa vale 5 minutos.</p>
+   <div className="variant-actions"><Button type="button" disabled={busy} onClick={()=>void apply()}>Reprogramar</Button><Button type="button" variant="ghost" onClick={()=>setPreview(null)}>Cancelar</Button></div></div>}
+  <p className="variant-hint">Cada seguimiento conserva la política con la que empezó; publicar otra aplica a los nuevos. Para detener uno, pausa o cierra su conversación.</p>
+ </section>;
 }
 /** RF-10.e: what the follow-ups of this variant did in the last 30 days. */
 interface RemarketingResultsView {entered:number;reached:number;replied:number;recovered_sales:number;opted_out:number;messages:{sent:number;uncertain:number};recovered_revenue:{currency:string;revenue_minor:string;sales:number}[]}

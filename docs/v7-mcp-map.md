@@ -31,7 +31,7 @@ Tratamiento de las 121: 62 sustituidas por una acción V7, 3 pasan a acción hum
 | `offers_manage` | perfil | leer, guardar, validar, publicar, historial |
 | `sales_flows_manage` | perfil | leer, guardar, validar, publicar, historial |
 | `sellers_manage` | perfil | leer, guardar, validar, publicar, historial |
-| `remarketing_manage` | perfil | leer, guardar, validar, publicar, historial, resultados |
+| `remarketing_manage` | perfil | leer, guardar, validar, publicar, historial, resultados, ciclos, previsualizar_reprogramacion, reprogramar |
 | `collections_manage` | perfil | leer, guardar, validar, historial |
 | `receipt_rules_manage` | perfil | guardar_perfil, guardar_variante, leer_perfil, leer_variante, consultar_operacion |
 | `conversations_manage` | perfil | listar, leer, responder, registrar_acuerdo, cerrar, registrar_baja, tomar_control, liberar_control, pausar, reanudar |
@@ -162,9 +162,9 @@ Tratamiento de las 121: 62 sustituidas por una acción V7, 3 pasan a acción hum
 | `provider_diagnostic_profiles` | Capacidades de SearchAPI y R2 | — | Retirado | Diagnósticos de SearchAPI/R2 retirados (RF-13.b). |
 | `provider_diagnostic_reconcile` | Conciliar objeto temporal propio | — | Retirado | Diagnósticos de proveedor retirados. |
 | `provider_diagnostic_verify` | Verificar proveedor específico | — | Retirado | Diagnósticos de proveedor retirados. |
-| `remarketing_cycles_list` | Consultar ciclos de seguimiento | remarketing_manage · resultados | Pendiente | Resultados por variante disponibles; la lista de ciclos sigue pendiente (RF-10.c). |
-| `remarketing_reprogram_apply` | Aplicar reprogramación revisada | remarketing_manage | Pendiente | Reprogramación declarada pendiente (RF-10.c). |
-| `remarketing_reprogram_preview` | Previsualizar reprogramación | remarketing_manage | Pendiente | Reprogramación declarada pendiente (RF-10.c). |
+| `remarketing_cycles_list` | Consultar ciclos de seguimiento | remarketing_manage · ciclos | Sustituido | Ciclos por variante (`GET /v2/variants/{id}/remarketing/cycles`), los mismos que muestra la web. |
+| `remarketing_reprogram_apply` | Aplicar reprogramación revisada | remarketing_manage · reprogramar | Sustituido | Mueve sólo los recordatorios futuros no iniciados al horario publicado; exige la vista previa (5 min). Pausar/reanudar un ciclo es pausar/reanudar su conversación (`conversations_manage`). |
+| `remarketing_reprogram_preview` | Previsualizar reprogramación | remarketing_manage · previsualizar_reprogramacion | Sustituido | Misma vista previa que la web. |
 | `resource_dependencies` | Dependencias antes de eliminar | products_manage · dependencias | Sustituido |  |
 | `results_summary` | Resultados del producto | results_read · resumen | Sustituido |  |
 | `sales_flow_get` | Leer flujo de venta de una oferta | sales_flows_manage · leer | Sustituido |  |

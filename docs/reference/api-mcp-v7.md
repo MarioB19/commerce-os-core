@@ -2,7 +2,7 @@
 
 > Generada por `scripts/api-reference.ts` desde el código (OpenAPI de la app y registro MCP tipado). No se edita a mano: CI falla si difiere del código.
 
-Contenido: `4dd66d2d60dbb9f7` · 180 operaciones HTTP en 158 rutas · 40 herramientas MCP (presupuesto 40).
+Contenido: `f47a684663393b75` · 183 operaciones HTTP en 161 rutas · 40 herramientas MCP (presupuesto 40).
 
 ## Herramientas MCP
 
@@ -29,7 +29,7 @@ Contenido: `4dd66d2d60dbb9f7` · 180 operaciones HTTP en 158 rutas · 40 herrami
 | `orders_manage` | perfil | `/v1/orders` | `orders:read`, `orders:write` | listar, leer | corregir_clasificacion, historial |
 | `receipts_manage` | perfil | `/v2/receipts` | `receipts:read`, `receipts:review` | listar, leer, archivo, revisar | — |
 | `payments_manage` | perfil | `/v2/payments` | `payments:read`, `payments:write`, `payments:export` | opciones, listar, exportar | leer, registrar, conciliar, corregir |
-| `remarketing_manage` | perfil | `/v2/variants/{id}/remarketing` | `remarketing:read`, `remarketing:write` | leer, guardar, validar, publicar, historial, resultados | ciclos, previsualizar_reprogramacion, reprogramar, pausar, reanudar |
+| `remarketing_manage` | perfil | `/v2/variants/{id}/remarketing` | `remarketing:read`, `remarketing:write` | leer, guardar, validar, publicar, historial, resultados, ciclos, previsualizar_reprogramacion, reprogramar | — |
 | `campaigns_read` | perfil | `/v2/campaigns` | `campaigns:read`, `integrations:write` | cuentas, resultados, campanas, anuncios, sincronizar_lectura | portafolios |
 | `results_read` | perfil | `/v2/results` | `results:read` | opciones, resumen | embudo, series, comparar, exportar |
 | `goals_manage` | perfil | `/v2/goals` | `goals:read`, `goals:write` | listar, leer, avance, crear, editar, consultar_operacion | eliminar |
@@ -487,6 +487,9 @@ Contenido: `4dd66d2d60dbb9f7` · 180 operaciones HTTP en 158 rutas · 40 herrami
 | POST | `/v2/variants/{id}/numbers` | autenticado |
 | GET | `/v2/variants/{id}/numbers/{account_id}/impact` | autenticado |
 | POST | `/v2/variants/{id}/publish` | autenticado |
+| GET | `/v2/variants/{id}/remarketing/cycles` | autenticado |
+| POST | `/v2/variants/{id}/remarketing/cycles/{cycle}/reprogram` | autenticado |
+| POST | `/v2/variants/{id}/remarketing/cycles/{cycle}/reprogram/preview` | autenticado |
 | GET | `/v2/variants/{id}/remarketing/results` | autenticado |
 | POST | `/v2/variants/{id}/restore` | autenticado |
 | POST | `/v2/variants/{id}/review` | autenticado |

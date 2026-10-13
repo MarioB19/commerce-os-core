@@ -111,4 +111,34 @@ it('schedules text reminders inside the variant hours and stops them when the cu
  expect(results.entered_by_stage).toEqual({AGREEMENT:2,COLLECTION:0});
  // An earlier period is empty.
  expect(data(await call('GET',`/v2/variants/${v.id}/remarketing/results?from=2020-01-01&to=2020-01-31`))).toMatchObject({entered:0,reached:0,replied:0});
+
+ // RF-10.c: the open cycle is listed and reprogrammed to the published timing
+ // (the open-hours policy) through the same routes the web and the MCP use.
+ const open1=data(await call('GET',`/v2/variants/${v.id}/remarketing/cycles`));
+ // A reply stops pending reminders but keeps the cycle open (it rearms after the seller answers).
+ expect(open1.cycles.map((c:{conversation_id:string})=>c.conversation_id).sort()).toEqual([first.id,second.id].sort());
+ const listed=open1.cycles.find((c:{conversation_id:string})=>c.conversation_id===first.id);
+ expect(listed).toMatchObject({status:'OPEN',stage:'AGREEMENT',stage_label:'Esperando que acepte',consumed_attempts:0,max_attempts:2,conversation_paused:false});
+ expect(JSON.stringify(open1)).not.toMatch(/opaque:rem|identity/);
+ expect(data(await call('GET',`/v2/variants/${v.id}/remarketing/cycles?status=ALL`)).cycles).toHaveLength(2);
+ const plan=data(await call('POST',`/v2/variants/${v.id}/remarketing/cycles/${listed.id}/reprogram/preview`,{}));
+ expect(plan).toMatchObject({cycle_revision:listed.revision,content_changes_applied:false});
+ const currentOffer=await inProfile(async c=>(await c.query("SELECT r.body->'configuration'->'offer'->>'id' AS id FROM market_variants v JOIN market_releases r ON r.id=v.current_release_id WHERE v.workspace_id=$1 AND v.id=$2",[P,v.id])).rows[0].id);
+ const publishedWindow=(await record(currentOffer)).body.sales_flow.remarketing.window;
+ expect(plan.policy_snapshot.window).toEqual(publishedWindow);
+ const stale=await call('POST',`/v2/variants/${v.id}/remarketing/cycles/${listed.id}/reprogram`,{expected_revision:listed.revision,preview_hash:'0'.repeat(64),previewed_at:plan.previewed_at});
+ expect(stale.statusCode).toBe(409);expect(stale.json().error.code).toBe('REMARKETING_PREVIEW_CHANGED');
+ const applied=data(await call('POST',`/v2/variants/${v.id}/remarketing/cycles/${listed.id}/reprogram`,{expected_revision:listed.revision,preview_hash:plan.preview_hash,previewed_at:plan.previewed_at}));
+ expect(applied).toMatchObject({applied:true,cycle_revision:listed.revision+1,external_effects:false});
+ const pending=(await timersOf(first.id)).filter(t=>t.status==='PENDING');
+ expect(pending.length).toBe(applied.scheduled);
+ for(const t of pending){expect(t.payload.reprogrammed).toBe(true);expect(t.payload.window).toEqual(publishedWindow);}
+ // Another variant cannot address this cycle, and a closed one is refused.
+ const other=data(await call('POST','/v2/products',{name:'Otro curso',variant:{name:'México',locale:MX}}),201).variant;
+ expect((await call('POST',`/v2/variants/${other.id}/remarketing/cycles/${listed.id}/reprogram/preview`,{})).statusCode).toBe(404);
+ const secondCycle=open1.cycles.find((c:{conversation_id:string})=>c.conversation_id===second.id);
+ await inProfile(c=>c.query("UPDATE commercial_remarketing_cycles SET status='PAID',closed_at=now(),close_reason='PAYMENT_RECOGNIZED' WHERE workspace_id=$1 AND id=$2",[P,secondCycle.id]));
+ const closed2=data(await call('GET',`/v2/variants/${v.id}/remarketing/cycles?status=CLOSED`)).cycles[0];
+ expect(closed2).toMatchObject({id:secondCycle.id,status:'PAID',status_label:'Pagó'});
+ expect((await call('POST',`/v2/variants/${v.id}/remarketing/cycles/${closed2.id}/reprogram/preview`,{})).json().error.code).toBe('REMARKETING_CYCLE_CLOSED');
 },180000);

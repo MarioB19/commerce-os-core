@@ -42,6 +42,8 @@ function mergeReprogrammedTiming(cycle:Body,target:ReturnType<typeof normalizeRe
   schema_version:target.schema_version,
   policy_id:target.policy_id,
   policy_revision:target.policy_revision,
+  // V7: allowed hours are part of the timing the published policy defines.
+  ...(target.window?{window:target.window}:{}),
   slots:target.slots.map(slot=>{
    const source=sourceSlots.find(candidate=>String(candidate.id)===slot.id);
    if(!source)throw new Error('REMARKETING_SOURCE_SLOT_MISSING');
@@ -50,8 +52,9 @@ function mergeReprogrammedTiming(cycle:Body,target:ReturnType<typeof normalizeRe
  });}catch{throw fail(409,'REMARKETING_SOURCE_CONTENT_REQUIRED','La reprogramación conserva el contenido ya autorizado. Completa los medios y textos del snapshot original o inicia un ciclo nuevo con la oferta publicada.');}
 }
 
-async function preview(req:FastifyRequest,client:QueryExecutor,cycle:Body,offerId:string,previewedAt:string){
- const offer=await scopedRecord(req,'offer',offerId,client);
+export type OfferLoader=(offerId:string)=>Promise<Body>;
+export async function previewCycleReprogram(loadOffer:OfferLoader,client:QueryExecutor,cycle:Body,offerId:string,previewedAt:string){
+ const offer=await loadOffer(offerId);
  if(offer.body.status!=='PUBLISHED'||offer.body.archived_at)throw fail(409,'PUBLISHED_OFFER_REQUIRED','Selecciona una versión publicada y vigente.');
  const conversation=(await client.query("SELECT * FROM records WHERE id=$1 AND workspace_id=$2 AND environment=$3 AND kind='conversation'",[cycle.source_conversation_id,cycle.workspace_id,cycle.environment])).rows[0];
  if(!conversation)throw fail(409,'REMARKETING_CONVERSATION_MISSING');
@@ -85,27 +88,13 @@ async function preview(req:FastifyRequest,client:QueryExecutor,cycle:Body,offerI
  return{cycle_id:cycle.id,cycle_revision:Number(cycle.revision),contact_id:cycle.contact_id,source_conversation_id:cycle.source_conversation_id,source_offer_version_id:cycle.source_offer_version_id,content_source_offer_version_id:cycle.source_offer_version_id,target_timing_offer_version_id:offer.id,stage:cycle.stage,status:cycle.status,anchor_at:new Date(cycle.anchor_at).toISOString(),previewed_at:previewedAt,preview_expires_at:new Date(Date.parse(previewedAt)+5*60_000).toISOString(),preview_hash:hash(stableJson(structural)),current_maximum:Number(cycle.max_attempts),target_maximum:policy.maximum,effective_maximum:Math.max(Number(cycle.consumed_attempts),policy.maximum),consumed_attempts:Number(cycle.consumed_attempts),attempts:sanitize(attempts),slots,policy_snapshot:policy,commercial_delay_changes_channel_permission:false,content_changes_applied:false};
 }
 
-export async function remarketingRoutes(app:FastifyInstance){
-	 app.get('/v1/remarketing-cycles',async req=>{
-	  const p=authorizeCycleRead(req);const query=z.object({contact_id:id.optional(),status:remarketingCycleStatusSchema.optional()}).parse(req.query??{});
-  const rows=(await pool.query(
-   `SELECT c.*,(SELECT COALESCE(jsonb_agg(jsonb_build_object('id',a.id,'slot_id',a.slot_id,'stage',a.stage,'status',a.status,'reserved_at',a.reserved_at,'updated_at',a.updated_at) ORDER BY a.reserved_at),'[]'::jsonb) FROM commercial_remarketing_attempts a WHERE a.cycle_id=c.id) attempts
-    FROM commercial_remarketing_cycles c WHERE c.workspace_id=$1 AND c.environment=$2 AND ($3::uuid IS NULL OR c.contact_id=$3) AND ($4::text IS NULL OR c.status=$4) ORDER BY c.updated_at DESC LIMIT 100`,
-   [p.workspace_id,envOf(req),query.contact_id??null,query.status??null],
-  )).rows.filter(row=>resourcePermitted(p,row.source_offer_version_id));
-  return{data:sanitize(rows),meta:{total:rows.length}};
-	 });
-	 app.post('/v1/remarketing-cycles/:id/reprogram/preview',async req=>{
-	  authorizeCyclePreview(req);const input=remarketingReprogramPreviewInputSchema.parse(parseBody(req)),cycle=await cycleFor(req,pool,id.parse((req.params as Body).id));
-  if(cycle.status!=='OPEN')throw fail(409,'REMARKETING_CYCLE_CLOSED');
-  const previewedAt=new Date().toISOString();return{data:await preview(req,pool,cycle,input.offer_version_id,previewedAt)};
-	 });
-	 app.post('/v1/remarketing-cycles/:id/reprogram',async req=>{
-	  authorizeCycleReprogram(req);const input=remarketingReprogramApplyInputSchema.parse(parseBody(req));const cycleId=id.parse((req.params as Body).id);
-  const result=await mutate(req,'remarketing.reprogram:'+cycleId,async client=>{
-   const cycle=await cycleFor(req,client,cycleId,true);if(cycle.status!=='OPEN')throw fail(409,'REMARKETING_CYCLE_CLOSED');if(Number(cycle.revision)!==input.expected_revision)throw fail(409,'VERSION_CONFLICT');
+
+/** Shared by the V5 route and the V7 variant route (RF-10.c): only timing of
+ * unstarted future slots changes; content, consumed attempts and quota stay. */
+export async function reprogramCycle(client:QueryExecutor,cycle:Body,input:{offer_version_id:string;expected_revision:number;preview_hash:string;previewed_at:string},loadOffer:OfferLoader,record:(type:string,payload:Body)=>Promise<unknown>){
+   if(cycle.status!=='OPEN')throw fail(409,'REMARKETING_CYCLE_CLOSED');if(Number(cycle.revision)!==input.expected_revision)throw fail(409,'VERSION_CONFLICT');
    if(Date.now()-Date.parse(input.previewed_at)>5*60_000||Date.parse(input.previewed_at)>Date.now()+60_000)throw fail(409,'REMARKETING_PREVIEW_EXPIRED','Genera una vista previa nueva.');
-   const plan=await preview(req,client,cycle,input.offer_version_id,input.previewed_at);if(plan.preview_hash!==input.preview_hash)throw fail(409,'REMARKETING_PREVIEW_CHANGED','El ciclo cambió; genera una vista previa nueva.');
+   const plan=await previewCycleReprogram(loadOffer,client,cycle,input.offer_version_id,input.previewed_at);if(plan.preview_hash!==input.preview_hash)throw fail(409,'REMARKETING_PREVIEW_CHANGED','El ciclo cambió; genera una vista previa nueva.');
    const conversation=(await client.query("SELECT * FROM records WHERE id=$1 AND workspace_id=$2 AND environment=$3 AND kind='conversation' FOR UPDATE",[cycle.source_conversation_id,cycle.workspace_id,cycle.environment])).rows[0];if(!conversation)throw fail(409,'REMARKETING_CONVERSATION_MISSING');
    const followup=conversation.body.followup_plan;if(!followup||followup.status!=='SCHEDULED'||followup.cycle_id!==cycle.id)throw fail(409,'REMARKETING_PLAN_INACTIVE');
    await client.query("UPDATE timers SET status='CANCELLED' WHERE workspace_id=$1 AND environment=$2 AND status='PENDING' AND kind='followup' AND payload->>'cycle_id'=$3",[cycle.workspace_id,cycle.environment,cycle.id]);
@@ -121,8 +110,30 @@ export async function remarketingRoutes(app:FastifyInstance){
     [uuid(),cycle.workspace_id,cycle.environment,conversation.id,{...commercial,...slot,...content,...(plan.policy_snapshot.window?{window:plan.policy_snapshot.window}:{}),purpose:'remarketing',plan_key:planKey,touch_index:slot.position,slot_id:slot.id,stage:cycle.stage,cycle_id:cycle.id,workflow_runtime_version:followup.workflow_runtime_version,anchor_at:plan.anchor_at,reprogrammed:true},item.due_at,`remarketing:${cycle.id}:${cycle.stage}:${slot.id}:${nextRevision}`],
    );scheduled+=inserted.rowCount??0;}
    const futureExternalEffectsPossible=cycle.environment==='REAL'&&scheduled>0;
-   await audit(client,req,'remarketing.reprogrammed',cycle.id,{content_offer_version_id:cycle.source_offer_version_id,timing_offer_version_id:input.offer_version_id,content_changes_applied:false,previous_revision:cycle.revision,revision:nextRevision,scheduled,skipped_overdue:skipped,consumed_attempts:cycle.consumed_attempts,external_effects:false,future_external_effects_possible:futureExternalEffectsPossible},cycle.environment);
+   await record('remarketing.reprogrammed',{content_offer_version_id:cycle.source_offer_version_id,timing_offer_version_id:input.offer_version_id,content_changes_applied:false,previous_revision:cycle.revision,revision:nextRevision,scheduled,skipped_overdue:skipped,consumed_attempts:cycle.consumed_attempts,external_effects:false,future_external_effects_possible:futureExternalEffectsPossible});
    return{data:{...plan,cycle_revision:nextRevision,applied:true,scheduled,skipped_overdue:skipped,external_effects:false,future_external_effects_possible:futureExternalEffectsPossible}};
+}
+
+export async function remarketingRoutes(app:FastifyInstance){
+	 app.get('/v1/remarketing-cycles',async req=>{
+	  const p=authorizeCycleRead(req);const query=z.object({contact_id:id.optional(),status:remarketingCycleStatusSchema.optional()}).parse(req.query??{});
+  const rows=(await pool.query(
+   `SELECT c.*,(SELECT COALESCE(jsonb_agg(jsonb_build_object('id',a.id,'slot_id',a.slot_id,'stage',a.stage,'status',a.status,'reserved_at',a.reserved_at,'updated_at',a.updated_at) ORDER BY a.reserved_at),'[]'::jsonb) FROM commercial_remarketing_attempts a WHERE a.cycle_id=c.id) attempts
+    FROM commercial_remarketing_cycles c WHERE c.workspace_id=$1 AND c.environment=$2 AND ($3::uuid IS NULL OR c.contact_id=$3) AND ($4::text IS NULL OR c.status=$4) ORDER BY c.updated_at DESC LIMIT 100`,
+   [p.workspace_id,envOf(req),query.contact_id??null,query.status??null],
+  )).rows.filter(row=>resourcePermitted(p,row.source_offer_version_id));
+  return{data:sanitize(rows),meta:{total:rows.length}};
+	 });
+	 app.post('/v1/remarketing-cycles/:id/reprogram/preview',async req=>{
+	  authorizeCyclePreview(req);const input=remarketingReprogramPreviewInputSchema.parse(parseBody(req)),cycle=await cycleFor(req,pool,id.parse((req.params as Body).id));
+  if(cycle.status!=='OPEN')throw fail(409,'REMARKETING_CYCLE_CLOSED');
+  const previewedAt=new Date().toISOString();return{data:await previewCycleReprogram(offerId=>scopedRecord(req,'offer',offerId,pool),pool,cycle,input.offer_version_id,previewedAt)};
+	 });
+	 app.post('/v1/remarketing-cycles/:id/reprogram',async req=>{
+	  authorizeCycleReprogram(req);const input=remarketingReprogramApplyInputSchema.parse(parseBody(req));const cycleId=id.parse((req.params as Body).id);
+  const result=await mutate(req,'remarketing.reprogram:'+cycleId,async client=>{
+   const cycle=await cycleFor(req,client,cycleId,true);
+   return reprogramCycle(client,cycle,input,offerId=>scopedRecord(req,'offer',offerId,client),(type,payload)=>audit(client,req,type,cycle.id,payload,cycle.environment));
   });return{data:result.data};
  });
 }

@@ -138,6 +138,10 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
  sectionTool('remarketing_manage','Remarketing de la variante','Hasta tres seguimientos (texto, audio o video) para quien no acepta o no paga, con horario permitido en la zona de la variante. Se detienen si la persona compra, responde o pide la baja. Guardar deja un borrador; publicar aplica a conversaciones nuevas.','remarketing',remarketingPolicySchema.nullable(),true,{
   // RF-10.e: what the follow-ups did in a period (cycles, sent, replies, sales and revenue recovered).
   resultados:P('GET',z.object({variantId:z.uuid(),from:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),to:z.string().regex(/^\d{4}-\d{2}-\d{2}$/)}).strict(),i=>'/v2/variants/'+id(i.variantId)+'/remarketing/results?from='+i.from+'&to='+i.to),
+  // RF-10.c: the same cycles and reprogramming the application shows.
+  ciclos:P('GET',z.object({variantId:z.uuid(),status:z.enum(['OPEN','CLOSED','ALL']).optional(),limit:z.number().int().min(1).max(100).optional()}).strict(),i=>'/v2/variants/'+id(i.variantId)+'/remarketing/cycles'+query({...(i.status?{status:i.status}:{}),...(i.limit?{limit:String(i.limit)}:{})})),
+  previsualizar_reprogramacion:P('POST',z.object({variantId:z.uuid(),cycleId:z.uuid()}).strict(),i=>'/v2/variants/'+id(i.variantId)+'/remarketing/cycles/'+id(i.cycleId)+'/reprogram/preview',()=>({}),{read:true}),
+  reprogramar:P('POST',operation.extend({variantId:z.uuid(),cycleId:z.uuid(),expectedRevision:z.number().int().positive(),previewHash:z.string().regex(/^[a-f0-9]{64}$/),previewedAt:z.string().datetime()}).strict(),i=>'/v2/variants/'+id(i.variantId)+'/remarketing/cycles/'+id(i.cycleId)+'/reprogram',i=>({expected_revision:i.expectedRevision,preview_hash:i.previewHash,previewed_at:i.previewedAt})),
  });
  sectionTool('collections_manage','Cobro de la variante','SPEI y/o enlace de pago. Los datos se guardan cifrados y nunca se devuelven completos.','collection',collectionInputSchema,false);
  tool('receipt_rules_manage','Reglas de comprobantes','Consulta o guarda las reglas de validación de comprobantes del perfil o de una variante.',

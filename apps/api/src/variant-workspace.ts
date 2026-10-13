@@ -7,6 +7,9 @@ import {VariantError,listProducts,createProduct,editProduct,productDependencies,
  setVariantNumber,numberVariantsView,numberAssignmentHistory} from '../../../packages/db/src/variant-workspace.js';
 import {adoptLegacyProduct} from '../../../packages/db/src/variant-migration.js';
 import {variantRemarketingResults} from '../../../packages/db/src/remarketing-results.js';
+import {variantRemarketingCycles} from '../../../packages/db/src/remarketing-cycles.js';
+import {previewCycleReprogram,reprogramCycle} from './remarketing.js';
+import {appendEvent} from '../../../packages/db/src/index.js';
 import {variantAiStatus,authorizeVariantAi,aiStatusLabel} from '../../../packages/ai-providers/src/variant-ai.js';
 import {AiError} from '../../../packages/ai-providers/src/contracts.js';
 import {variantSellerSchema,variantSaleSchema,type VariantSection} from '../../../packages/contracts/src/variants.js';
@@ -80,6 +83,32 @@ export async function variantWorkspaceRoutes(app:FastifyInstance,deps?:ProfileRe
  // V7 F7 (RF-10.e): what this variant's follow-ups achieved in a period.
  app.get('/v2/variants/:id/remarketing/results',async req=>{const {id}=idParam.parse(req.params);
   return{data:await read(req,'remarketing:read',({db,environment})=>variantRemarketingResults(db,environment,id,rest(req)))};});
+ // RF-10.c: the cycles this variant's follow-ups opened, for the web and the MCP alike.
+ app.get('/v2/variants/:id/remarketing/cycles',async req=>{const {id}=idParam.parse(req.params);
+  return{data:await read(req,'remarketing:read',({db,environment})=>variantRemarketingCycles(db,environment,id,rest(req)))};});
+ // RF-10.c: move the unstarted future reminders of one open cycle to the
+ // timing of the variant's current published policy (content and used
+ // attempts never change). Preview first; apply needs its hash within 5 min.
+ const cycleParam=z.object({id:z.string().uuid(),cycle:z.string().uuid()}).strict();
+ const reprogramInput=z.object({expected_revision:z.number().int().positive(),preview_hash:z.string().regex(/^[a-f0-9]{64}$/),previewed_at:z.string().datetime()}).strict();
+ async function variantCycle(db:import('../../../packages/db/src/profile-context.js').ProfileExecutor,environment:'REAL'|'SIMULATION',variantId:string,cycleId:string,lock:boolean){
+  const cycle=(await db.query(`SELECT c.* FROM commercial_remarketing_cycles c JOIN records r ON r.id=c.source_conversation_id AND r.workspace_id=c.workspace_id AND r.environment=c.environment AND r.kind='conversation'
+   WHERE c.workspace_id=$1 AND c.environment=$2 AND c.id=$3 AND r.body->>'variant_id'=$4${lock?' FOR UPDATE OF c':''}`,[db.workspaceId,environment,cycleId,variantId])).rows[0];
+  if(!cycle)fail('REMARKETING_CYCLE_NOT_FOUND',404);
+  const offer=(await db.query(`SELECT r.body->'configuration'->'offer'->>'id' AS offer FROM market_variants v JOIN market_releases r ON r.workspace_id=v.workspace_id AND r.environment=v.environment AND r.id=v.current_release_id
+   WHERE v.workspace_id=$1 AND v.environment=$2 AND v.id=$3`,[db.workspaceId,environment,variantId])).rows[0]?.offer;
+  if(!offer)fail('VARIANT_NOT_PUBLISHED',409);
+  const loadOffer=async(offerId:string)=>{const row=(await db.query("SELECT * FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='offer' AND id=$3",[db.workspaceId,environment,offerId])).rows[0];if(!row)fail('REMARKETING_OFFER_NOT_FOUND',409);return row;};
+  return{cycle,offer:String(offer),loadOffer};
+ }
+ app.post('/v2/variants/:id/remarketing/cycles/:cycle/reprogram/preview',{bodyLimit:1024},async req=>{const {id,cycle}=cycleParam.parse(req.params);
+  return{data:await read(req,'remarketing:write',async({db,environment})=>{const c=await variantCycle(db,environment,id,cycle,false);
+   if(c.cycle.status!=='OPEN')fail('REMARKETING_CYCLE_CLOSED',409);
+   return previewCycleReprogram(c.loadOffer,db,c.cycle,c.offer,new Date().toISOString());})};});
+ app.post('/v2/variants/:id/remarketing/cycles/:cycle/reprogram',{bodyLimit:2048},async req=>{const {id,cycle}=cycleParam.parse(req.params);const input=reprogramInput.parse(req.body);
+  return{data:await write(req,'remarketing:write',req.body,async({db,environment,actor,operationId})=>{const c=await variantCycle(db,environment,id,cycle,true);
+   const result=await reprogramCycle(db,c.cycle,{...input,offer_version_id:c.offer},c.loadOffer,(type,payload)=>appendEvent(db,{workspace_id:db.workspaceId,environment,event_type:type,aggregate_id:c.cycle.id,correlation_id:operationId,actor:{type:actor.kind,id:actor.id},payload}));
+   return result.data;})};});
  app.get('/v2/variants/:id/history',async req=>{const {id}=idParam.parse(req.params);return{data:await read(req,'variants:read',({db,environment})=>variantHistory(db,environment,id))};});
  app.post('/v2/variants/:id/review',{bodyLimit:2048},async req=>{const {id}=idParam.parse(req.params);return{data:await write(req,'variants:write',req.body,({db,environment,actor})=>reviewVariant(db,environment,id,req.body,actor))};});
  app.post('/v2/variants/:id/publish',{bodyLimit:2048},async req=>{const {id}=idParam.parse(req.params);return{data:await write(req,'variants:write',req.body,async({db,environment,actor,profile})=>{
