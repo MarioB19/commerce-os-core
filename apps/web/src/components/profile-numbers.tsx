@@ -26,6 +26,7 @@ export function ProfileNumbers({selection,role,state}:{selection:ProfileFence;ro
  const load=useCallback(async(signal?:AbortSignal)=>{try{setData(overviewSchema.parse(await api('/numbers/overview',{signal})));setError('');}catch(e){if(!signal?.aborted)setError(message(e,'No se pudo consultar tus números.'));}},[]);
  useEffect(()=>{const controller=new AbortController();void load(controller.signal);const timer=setInterval(()=>void load(controller.signal),15000);return()=>{controller.abort();clearInterval(timer);};},[load]);
  const full=data?.limit!=null&&data.numbers.length>=data.limit;
+ async function pause(n:Row,paused:boolean){try{await api(`/numbers/${n.id}/pause`,{method:'POST',body:JSON.stringify({paused})});await load();}catch(e){setError(message(e,'No se pudo cambiar la pausa.'));}}
  return <section className="profile-numbers" aria-labelledby="numbers-title">
   <div className="profile-numbers-heading"><h1 id="numbers-title">Números</h1>{manage&&<Button onClick={()=>setAdding(true)} disabled={full}>Agregar número</Button>}</div>
   <NumberAlerts selection={selection} canAcknowledge={manage}/>
@@ -40,6 +41,7 @@ export function ProfileNumbers({selection,role,state}:{selection:ProfileFence;ro
    <p className="profile-number-test">Última prueba: {n.last_test?(n.last_test.ok?'correcta':'con problemas'):'sin probar'}</p>
    {manage&&<div className="profile-number-actions">
     {n.next_action&&['link','qr','unlink'].includes(n.next_action.code)&&<Button variant="secondary" onClick={()=>setLinking(n.id)}>{n.next_action.label}</Button>}
+    {n.state==='CONNECTED'&&<Button variant="secondary" onClick={()=>void pause(n,n.status.code!=='PAUSED_BY_YOU')}>{n.status.code==='PAUSED_BY_YOU'?'Reanudar':'Pausar'}</Button>}
     {!['REMOVING','REMOVED'].includes(n.state)&&<Button variant="secondary" onClick={()=>setRemoving(n)}>Eliminar número</Button>}
    </div>}
   </li>)}</ul>}

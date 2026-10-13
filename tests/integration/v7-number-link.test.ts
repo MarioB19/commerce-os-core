@@ -70,6 +70,11 @@ it('registers with a private phone, links by QR and confirms the line automatica
  expect((await inProfile(workspace,c=>c.query("SELECT count(*)::int n FROM domain_events WHERE aggregate_id=$1 AND event_type='number.link_confirmed'",[created.id]))).rows[0].n).toBe(1);
  const overview=data(await call('GET','/v1/numbers/overview'));
  expect(overview.numbers.find((n:{id:string})=>n.id===created.id)).toMatchObject({status:{code:'READY_TO_ASSIGN',label:'Listo para asignar'},products:[]});
+ // «Pausado por ti» is explicit both ways.
+ expect(data(await call('POST',`/v1/numbers/${created.id}/pause`,{paused:true}))).toMatchObject({paused:true,label:'Pausado por ti'});
+ expect(data(await call('GET','/v1/numbers/overview')).numbers.find((n:{id:string})=>n.id===created.id).status.code).toBe('PAUSED_BY_YOU');
+ expect(data(await call('POST',`/v1/numbers/${created.id}/pause`,{paused:false}))).toMatchObject({paused:false});
+ expect(data(await call('GET','/v1/numbers/overview')).numbers.find((n:{id:string})=>n.id===created.id).status.code).toBe('READY_TO_ASSIGN');
  expect((await inProfile(workspace,c=>c.query('SELECT count(*)::int n FROM outbox WHERE workspace_id=$1',[workspace]))).rows[0].n).toBe(0);
 });
 

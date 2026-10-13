@@ -139,6 +139,8 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
   estado:{schema:numberId,read:true,run:i=>c.v1('GET','/v1/numbers/'+id(i.numberId)+'/link')},
   conectar:{schema:numberId,read:false,run:qr},vincular:{schema:numberId,read:false,run:qr},
   desconectar:{schema:z.object({operationId:z.uuid(),numberId:z.uuid()}).strict(),read:false,destructive:true,run:i=>c.v1('POST','/v1/numbers/'+id(i.numberId)+'/link',{action:'unlink'},i.operationId)},
+  pausar:{schema:z.object({operationId:z.uuid(),numberId:z.uuid()}).strict(),read:false,destructive:true,run:i=>c.v1('POST','/v1/numbers/'+id(i.numberId)+'/pause',{paused:true},i.operationId)},
+  reanudar:{schema:z.object({operationId:z.uuid(),numberId:z.uuid()}).strict(),read:false,run:i=>c.v1('POST','/v1/numbers/'+id(i.numberId)+'/pause',{paused:false},i.operationId)},
  });
  tool('alerts_manage','Avisos del perfil','Avisos abiertos sobre números y envíos, en lenguaje de operación, con el enlace a resolverlos. Acusar recibo no resuelve la causa.',{
   listar:v('GET',z.object({include:z.enum(['open','all']).optional()}).strict(),i=>'/v2/alerts'+query(i))(c.v2),

@@ -167,6 +167,21 @@ export async function numberLinkRoutes(app:FastifyInstance){
   });
   return reply.code(result.status??200).send({data:result.data});
  });
+ // RNF-01.e «Pausado por ti»: an explicit pause of this number only; resuming
+ // is likewise explicit. No protection, release or reconnection lifts it.
+ app.post('/v1/numbers/:id/pause',async req=>{
+  const p=manage(req),id=idOf(req),input=z.object({paused:z.boolean()}).strict().parse(parseBody(req));
+  const result=await mutate(req,'number.pause:'+id,async c=>{
+   const account=await scopedRecord(req,'channel_account',id,c);
+   if(account.body.deleted_at||account.body.removal_requested_at)throw fail(409,'NUMBER_REMOVAL_IN_PROGRESS','Este número se está eliminando.');
+   const row=(await c.query(`INSERT INTO manual_controls(workspace_id,scope_type,scope_id,paused,reason,actor_id) VALUES($1,'channel_account',$2,$3,$4,$5)
+    ON CONFLICT(workspace_id,scope_type,scope_id) DO UPDATE SET paused=EXCLUDED.paused,version=manual_controls.version+1,reason=EXCLUDED.reason,actor_id=EXCLUDED.actor_id RETURNING version,paused`,
+    [account.workspace_id,id,input.paused,input.paused?'Pausado por ti':'Reanudado por ti',p.user.id])).rows[0];
+   await audit(c,req,input.paused?'number.paused':'number.resumed',id,{control_version:row.version,external_effects:0},account.environment);
+   return{data:{id,paused:row.paused,label:row.paused?'Pausado por ti':'Reanudado'}};
+  });
+  return{data:result.data};
+ });
  app.get('/v1/numbers/:id/removal',async req=>{const p=manage(req),id=idOf(req);return{data:await withProfileTransaction(pool,p.workspace_id,async c=>({id,...await removalImpact(c,await scopedRecord(req,'channel_account',id,c))}))};});
  app.post('/v1/numbers/:id/removal',async(req,reply)=>{
   const p=manage(req),id=idOf(req),input=z.object({expected_version:z.number().int().positive(),confirmation:z.literal('REMOVE_NUMBER')}).strict().parse(parseBody(req));
