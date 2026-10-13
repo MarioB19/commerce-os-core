@@ -40,11 +40,16 @@ bucles y paquetes. Quedaban 39 tablas: 8 `intelligence_*`, 27 `creative_*`,
    o cambiara una fila, toda la publicación se revierte y la base sigue en 68
    (probado en `tests/integration/v7-retirement-export.test.ts`). También vale
    exportar sobre 0108 y luego aplicar 0109 con el migrador normal.
-4. **Se conserva:** el libro `platform_retirement_ledger` con los recibos, el
+4. **D-21 (assets útiles):** lectura de producción del 13-oct (sólo GET): los 38
+   materiales REAL son archivos del almacenamiento privado (34) o accesos (4);
+   ninguno vive en R2 (`storage_provider`), así que el retiro no deja entregas
+   sin bytes. Los objetos de R2 y las filas exportadas permiten reimportar si
+   apareciera otro uso.
+5. **Se conserva:** el libro `platform_retirement_ledger` con los recibos, el
    rol `commerce_global_budget_reader` (sin permisos), los objetos de R2 (no se
    borran aquí) y `warmup_simulation_runs`/`number_simulation_groups` (los usa
    el simulador del channel-worker).
-5. **Campañas de mensajes V5.** No hay productor V7 de campañas. Un efecto que
+6. **Campañas de mensajes V5.** No hay productor V7 de campañas. Un efecto que
    aún lleve `campaign_id` se cancela con motivo `V5_CAMPAIGN_RETIRED` antes de
    cualquier envío, y un `campaign_schedule` en cola falla con ese motivo;
    `campaign_cancel` sigue disponible. Nada sale fuera de D-17.
