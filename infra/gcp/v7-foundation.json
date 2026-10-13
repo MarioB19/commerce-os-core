@@ -1,0 +1,165 @@
+{
+  "schema_version": 1,
+  "project": "project-c6f43813-9ac9-47ab-9fe",
+  "project_number": "1065291779811",
+  "region": "us-east1",
+  "billing_account": "01AEED-89539C-8F829E",
+  "service_accounts": {
+    "commerce-v7-vm": {
+      "display_name": "Commerce OS V7 VM runtime",
+      "description": "Identidad de la VM: PITR, Pub/Sub del ingress, versiones de secretos propios."
+    },
+    "commerce-v7-ingress": {
+      "display_name": "Commerce OS V7 ingress relay",
+      "description": "Cloud Run del relay de webhooks: publica en su tema."
+    },
+    "commerce-v7-mail": {
+      "display_name": "Commerce OS V7 mail",
+      "description": "App Engine de correo transaccional: diario y llave."
+    }
+  },
+  "buckets": {
+    "commerce-v7-pitr-1065291779811": {
+      "location": "US-CENTRAL1",
+      "bindings": {
+        "roles/storage.objectAdmin": [
+          "commerce-v7-vm"
+        ]
+      }
+    },
+    "commerce-v7-mail-1065291779811": {
+      "location": "US-EAST1",
+      "bindings": {
+        "roles/storage.objectAdmin": [
+          "commerce-v7-mail"
+        ]
+      }
+    }
+  },
+  "secrets": {
+    "commerce-v7-pitr-cipher": {
+      "bindings": {
+        "roles/secretmanager.secretVersionAdder": [
+          "commerce-v7-vm"
+        ]
+      }
+    },
+    "commerce-v7-mail-key": {
+      "bindings": {
+        "roles/secretmanager.secretVersionAdder": [
+          "commerce-v7-vm"
+        ],
+        "roles/secretmanager.secretAccessor": [
+          "commerce-v7-mail"
+        ]
+      }
+    },
+    "commerce-v7-ingress-relay-token": {
+      "bindings": {
+        "roles/secretmanager.secretVersionAdder": [
+          "commerce-v7-vm"
+        ],
+        "roles/secretmanager.secretAccessor": [
+          "commerce-v7-ingress"
+        ]
+      }
+    }
+  },
+  "topics": {
+    "commerce-v7-ingress": {
+      "bindings": {
+        "roles/pubsub.publisher": [
+          "commerce-v7-ingress"
+        ]
+      }
+    },
+    "commerce-v7-ingress-dlq": {
+      "bindings": {
+        "roles/pubsub.publisher": [
+          "@pubsub-agent"
+        ]
+      }
+    }
+  },
+  "subscriptions": {
+    "commerce-v7-ingress-vm": {
+      "topic": "commerce-v7-ingress",
+      "ack_deadline_seconds": 60,
+      "retention": "604800s",
+      "ordering": true,
+      "dead_letter": {
+        "topic": "commerce-v7-ingress-dlq",
+        "max_delivery_attempts": 10
+      },
+      "retry": {
+        "minimum": "10s",
+        "maximum": "600s"
+      },
+      "bindings": {
+        "roles/pubsub.subscriber": [
+          "commerce-v7-vm",
+          "@pubsub-agent"
+        ]
+      }
+    },
+    "commerce-v7-ingress-dlq-hold": {
+      "topic": "commerce-v7-ingress-dlq",
+      "ack_deadline_seconds": 60,
+      "retention": "604800s",
+      "ordering": false,
+      "bindings": {}
+    }
+  },
+  "artifact_repositories": {
+    "commerce-v7-runtime": {
+      "location": "us-east1",
+      "description": "Imágenes de runtime V7 fuera de la VM (relay de ingress)."
+    }
+  },
+  "budget": {
+    "display_name": "Commerce OS V7 — techo mensual USD 100 (bruto, MXN)",
+    "currency": "MXN",
+    "units": "1781",
+    "nanos": 395000000,
+    "thresholds": [
+      [
+        0.5,
+        "CURRENT_SPEND"
+      ],
+      [
+        0.8,
+        "CURRENT_SPEND"
+      ],
+      [
+        0.9,
+        "CURRENT_SPEND"
+      ],
+      [
+        1.0,
+        "CURRENT_SPEND"
+      ],
+      [
+        1.0,
+        "FORECASTED_SPEND"
+      ]
+    ],
+    "notification_channel": "projects/project-c6f43813-9ac9-47ab-9fe/notificationChannels/14961938110641539884"
+  },
+  "uptime_check": "projects/project-c6f43813-9ac9-47ab-9fe/uptimeCheckConfigs/commerce-os-production-https-readiness--ae-JMgdMoA",
+  "vm": {
+    "zone": "us-east1-d",
+    "name": "commerce-os-test",
+    "service_account": "commerce-v7-vm"
+  },
+  "app_engine": {
+    "location": "us-east1"
+  },
+  "relay": {
+    "service": "commerce-v7-ingress",
+    "service_account": "commerce-v7-ingress",
+    "topic": "commerce-v7-ingress",
+    "secret": "commerce-v7-ingress-relay-token",
+    "max_instances": 2,
+    "memory": "256Mi"
+  }
+}
