@@ -2,7 +2,6 @@ import {test,expect,type Page} from '@playwright/test';
 import {AxeBuilder} from '@axe-core/playwright';
 import {randomBytes,randomUUID} from 'node:crypto';
 import {provisionUser} from '../../apps/api/src/auth.js';
-import {pool} from '../../packages/db/src/index.js';
 
 // V7 F8 (RF-17, RF-16.d, RNF-05): the only web application is V7. Six main
 // sections, the account menu, identity pages, the help and its download, the
@@ -34,7 +33,8 @@ async function axe(page:Page,label:string){
  const r=await new AxeBuilder({page}).withTags(['wcag2a','wcag2aa','wcag21a','wcag21aa']).analyze();
  expect(r.violations.map(v=>({id:v.id,nodes:v.nodes.map(n=>n.target)})),label).toEqual([]);
 }
-test.afterAll(async()=>{await pool.end();});
+// provisionUser uses the shared database pool of the Playwright worker; the
+// worker process ends it on exit (ending it here broke the files that run later).
 
 test('six sections, account menu and every main page: accessible, without errors or overflow',async({page})=>{
  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));

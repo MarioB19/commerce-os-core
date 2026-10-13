@@ -2,7 +2,6 @@ import {test,expect,type Page} from '@playwright/test';
 import {AxeBuilder} from '@axe-core/playwright';
 import {randomBytes,randomUUID} from 'node:crypto';
 import {provisionUser} from '../../apps/api/src/auth.js';
-import {pool} from '../../packages/db/src/index.js';
 
 // V7 F8 (RF-17.e, RF-05/06, RF-08): from an empty product list to a published
 // variant through the application only — product, first market, sale defaults,
@@ -19,12 +18,15 @@ async function signIn(page:Page){
  await expect(page.getByRole('navigation',{name:'Navegación del perfil'}).or(chooser)).toBeVisible();
  if(await chooser.isVisible()){await page.getByLabel('Perfil',{exact:true}).selectOption(profile);await page.getByRole('button',{name:'Cambiar a este perfil'}).click();}
 }
-test.afterAll(async()=>{await pool.end();});
+// provisionUser uses the shared database pool of the Playwright worker; the
+// worker process ends it on exit (ending it here broke the files that run later).
 
 test('creates, completes and publishes a variant from the application',async({page})=>{
  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
  await signIn(page);
  const name='Curso e2e '+randomUUID().slice(0,8),started=Date.now();
+ // Materials belong to the profile; a unique name keeps a reused database unambiguous.
+ const guide='Guía e2e '+randomUUID().slice(0,8);
  await page.goto('/products');await expect(page.getByRole('heading',{level:1,name:'Productos'})).toBeVisible();
  await page.getByRole('button',{name:'Crear producto'}).first().click();
  await page.getByLabel('Nombre del producto').fill(name);
@@ -36,11 +38,11 @@ test('creates, completes and publishes a variant from the application',async({pa
  // Oferta y materiales: a link material, then price and deliverable.
  await sections.getByRole('link',{name:'Oferta y materiales'}).click();
  const materials=page.getByRole('form',{name:'Agregar material'});
- await materials.getByRole('radio',{name:'Enlace'}).check();await materials.getByLabel('Nombre').fill('Guía e2e');await materials.getByLabel('Enlace (https://)').fill('https://example.com/guia-e2e');
+ await materials.getByRole('radio',{name:'Enlace'}).check();await materials.getByLabel('Nombre').fill(guide);await materials.getByLabel('Enlace (https://)').fill('https://example.com/guia-e2e');
  await materials.getByRole('button',{name:'Agregar material'}).click();
- await expect(page.getByRole('list').getByText('Guía e2e')).toBeVisible();
+ await expect(page.getByRole('list').getByText(guide)).toBeVisible();
  await page.getByLabel(/Precio/).fill('97');
- await page.getByLabel('Agregar material entregable').selectOption({label:'Guía e2e'});
+ await page.getByLabel('Agregar material entregable').selectOption({label:guide});
  await page.getByRole('button',{name:'Guardar oferta'}).click();await expect(page.getByRole('status').filter({hasText:'Cambios guardados'})).toBeVisible();
  // Cobro: a payment link; the URL never comes back whole.
  await sections.getByRole('link',{name:'Cobro'}).click();

@@ -24,7 +24,8 @@ async function login(page:Page,p:{email:string;password:string}){const r=await p
 async function selectProfile(page:Page){await page.goto('/home');const chooser=page.getByRole('heading',{name:'Tus perfiles'});await expect(page.getByRole('navigation',{name:'Navegación del perfil'}).or(chooser)).toBeVisible();if(await chooser.isVisible()){await page.getByLabel('Perfil',{exact:true}).selectOption(process.env.WORKSPACE_ID??'local');await page.getByRole('button',{name:'Cambiar a este perfil'}).click();await expect(page.getByRole('navigation',{name:'Navegación del perfil'})).toBeVisible();}}
 async function fillPasswords(page:Page,current:string|undefined,next:string,confirmation=next){if(current)await page.getByLabel('Contraseña actual',{exact:true}).fill(current);await page.getByLabel('Nueva contraseña',{exact:true}).fill(next);await page.getByLabel('Confirmar nueva contraseña',{exact:true}).fill(confirmation);}
 async function axe(page:Page){const r=await new AxeBuilder({page}).analyze();expect(r.violations.map(x=>({id:x.id,nodes:x.nodes.map(n=>n.target)}))).toEqual([]);}
-test.afterAll(async()=>{await pool.end();});
+// The database pool is shared by every spec file of the Playwright worker; the
+// worker process ends it on exit (ending it here broke the files that run later).
 
 test('Mi cuenta: keyboard, validation, current password, renewal and compact/mobile navigation',async({page})=>{
  const p=await synthetic(),next=secret();await login(page,p);await selectProfile(page);

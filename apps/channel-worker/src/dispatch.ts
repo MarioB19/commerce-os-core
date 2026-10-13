@@ -39,11 +39,11 @@ export async function gateDispatch(client:QueryExecutor,effect:Body,owner:string
  if(effect.kind==='warmup')return gateWarmupDispatch(client,effect,owner);
  const account=await getRecord(client,effect.workspace_id,'channel_account',effect.account_id),contact=await getRecord(client,effect.workspace_id,'contact',effect.contact_id),conversation=await getRecord(client,effect.workspace_id,'conversation',effect.conversation_id);
  const deny=(reason:string)=>({allowed:false,reason});if(!account||!contact||!conversation||account.environment!==effect.environment||contact.environment!==effect.environment||conversation.environment!==effect.environment)return deny('RESOURCE_SCOPE_INVALID');
+ if(account.body.deleted_at)return deny('CHANNEL_ACCOUNT_DELETED');
+ if(!effect.payload||typeof effect.payload!=='object'||Array.isArray(effect.payload))return deny('EFFECT_PAYLOAD_INVALID');
  // V7 F8-E: V5 message campaigns were retired with their routes; an effect
  // left from one is cancelled with its reason and never sent (no outbound outside D-17).
  if(effect.payload.campaign_id)return deny('V5_CAMPAIGN_RETIRED');
- if(account.body.deleted_at)return deny('CHANNEL_ACCOUNT_DELETED');
- if(!effect.payload||typeof effect.payload!=='object'||Array.isArray(effect.payload))return deny('EFFECT_PAYLOAD_INVALID');
  let effectAsset:DomainRecord|undefined;
  if(effect.payload.asset_id){effectAsset=await getRecord(client,effect.workspace_id,'asset',effect.payload.asset_id);if(!effectAsset||effectAsset.environment!==effect.environment)return deny('ASSET_SCOPE_INVALID');if(effectAsset.body.delivery_eligible===false||effectAsset.body.usage==='MARKETING_REFERENCE'||effectAsset.body.storage_provider==='r2')return deny('ASSET_NOT_DELIVERY_ELIGIBLE');if(effectAsset.body.product_id&&effectAsset.body.product_id!==conversation.body.product_id)return deny('ASSET_PRODUCT_MISMATCH');}
  const assignmentBlock=await assignmentGate(client,conversation);if(assignmentBlock)return deny(assignmentBlock);

@@ -88,8 +88,11 @@ host o un control de operación del dueño sin equivalente V7 todavía:
   (`assign-pilot-gateway`, `audit-qr-production`, `closure-inventory`,
   `commerce-resilience-readback`, `verify-audit-r4`, `verify-meta-local`,
   `verify-production-qr`, `verify-session-continuity-production`, `rehearse`,
-  `benchmark-numbers-list`, `commerce-client.mjs`). Sus documentos en `docs/`
-  quedan como historia V5.
+  `benchmark-numbers-list`, `commerce-client.mjs`, `import-preschool`,
+  `seed-sales-visual-review`). Sus documentos en `docs/` quedan como historia V5.
+- `scripts/import-mi-ciclo-listo.ts` sólo prepara la revisión del lanzamiento;
+  `--apply` responde `MCL_IMPORT_V5_API_RETIRED` porque el catálogo `/v1` al que
+  publicaba se retiró (la publicación V7 se hace en el editor de variantes).
 - `docs/contracts/numbers-*` describen el servidor MCP de números retirado en
   F8-A; se conservan como historia.
 - El encabezado CSP de Caddy para `/v1/assets/*/content` y la verificación del
