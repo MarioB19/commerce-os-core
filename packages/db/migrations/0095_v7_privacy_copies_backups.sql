@@ -739,3 +739,24 @@ END $$;
 ALTER FUNCTION read_privacy_asset_candidates(uuid,uuid,uuid) OWNER TO commerce_privacy_file_owner;
 REVOKE ALL ON FUNCTION read_privacy_asset_candidates(uuid,uuid,uuid) FROM PUBLIC;
 -- <<< end components/038_private_asset_minimization.sql
+
+-- V7 F2: the sealed-version guard recognizes exactly the closed D18 minimization
+-- transitions that guard_record already admits (asset minimizer and record
+-- eraser), and resolves its helpers schema-qualified: the minimizers run under
+-- SECURITY DEFINER with search_path=pg_catalog, which triggers inherit.
+CREATE OR REPLACE FUNCTION enforce_sealed_versions() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+ IF TG_OP='UPDATE' AND current_user='commerce_privacy_file_owner' THEN
+  IF public.privacy_asset_transition(to_jsonb(OLD),to_jsonb(NEW),'records',TG_OP,current_user)='MINIMIZE' THEN RETURN NEW; END IF;
+ END IF;
+ IF TG_OP='UPDATE' AND current_user='commerce_privacy_record_eraser' THEN
+  IF public.privacy_record_transition(to_jsonb(OLD),to_jsonb(NEW),'records',TG_OP,current_user)='MINIMIZE' THEN RETURN NEW; END IF;
+ END IF;
+ IF OLD.kind='agent' AND NOT (public.catalog_archive_only(OLD.body,NEW.body) OR public.catalog_agent_publish_only(OLD.body,NEW.body)) THEN RAISE EXCEPTION 'IMMUTABLE_VERSION'; END IF;
+ IF OLD.kind='asset' AND OLD.body->>'status'='READY' AND NOT (public.catalog_archive_only(OLD.body,NEW.body) OR (public.retention_context_valid() AND NEW.body->>'status'='RETAINED')) THEN RAISE EXCEPTION 'IMMUTABLE_ASSET'; END IF;
+ RETURN NEW;
+END $$;
+
+CREATE OR REPLACE FUNCTION enforce_agent_version() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+ IF OLD.kind='agent' AND OLD.body->>'status'='PUBLISHED' AND NOT public.catalog_archive_only(OLD.body,NEW.body) THEN RAISE EXCEPTION 'IMMUTABLE_VERSION'; END IF;
+ RETURN NEW;
+END $$;

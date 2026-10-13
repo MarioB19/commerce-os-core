@@ -47,5 +47,5 @@ export async function withPrivacyReferenceFence<T>(pool:Pick<Pool,'connect'>,wor
   await c.query('SET LOCAL ROLE commerce_privacy_fence_worker');await c.query('SELECT privacy_writer_fence_advance($1)',[profile]);
   await c.query('SET LOCAL ROLE commerce_privacy_reference_worker');await c.query('SELECT privacy_reference_fences_assert(),privacy_reference_fence_advance($1)',[references]);
   const committed=await c.query('COMMIT');begun=false;if(committed.command!=='COMMIT')throw Error('PRIVACY_REFERENCE_COMMIT_NOT_CONFIRMED');return result;
- }catch(error){if(begun)await c.query('ROLLBACK').catch(()=>undefined);throw error;}finally{c.release(true);}
+ }catch(error){if(begun)await c.query('ROLLBACK').catch(()=>undefined);throw error;}finally{await c.query('SELECT pg_advisory_unlock_all()').catch(()=>undefined);c.release(true);}
 }

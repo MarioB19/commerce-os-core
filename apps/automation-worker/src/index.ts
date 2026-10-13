@@ -2,6 +2,7 @@ import {processWarmupSimulations} from './warmup-simulation.js';
 import {processIntelligenceQueue} from '../../../packages/intelligence/src/index.js';
 import {collectOperationalAlerts,deliverOperationalAlerts} from './operations-monitor.js';
 import {processWarmup} from './warmup.js';
+import {processProfileQrWarmup} from './profile-warmup.js';
 import {PostgresJobBus,workerService} from '@commerce/jobs';
 import {recoverAutomation,processInbound,processCommands,processSimulationScripts,processNewWorkflows,processTimers,processCampaigns,projectCampaignResults,processAgents,processReceiptAnalyses,materializeInboundMedia,materializeFailedInboundMedia} from './runtime.js';
 import {processInsightJobs,scheduleRecentInsights} from './meta-insights.js';
@@ -19,7 +20,8 @@ const commands=loop('automation_commands',250,()=>processCommands());
 const materialize=loop('automation_results',250,async()=>{await materializeInboundMedia();await materializeFailedInboundMedia();await materializeEffectResults();});
 const workflows=loop('automation_workflows',500,async()=>{await processSimulationScripts();await processNewWorkflows();await processTimers();});
 const campaigns=loop('automation_campaigns',1000,async()=>{await processCampaigns();await projectCampaignResults();});
-const warmup=loop('automation_warmup',30000,()=>processWarmup());
+// LEGACY pools keep their global planner; V7 QR-continuous pools run per profile.
+const warmup=loop('automation_warmup',30000,async()=>{await processWarmup();await processProfileQrWarmup();});
 const warmupSimulation=loop('automation_warmup_simulation',500,()=>processWarmupSimulations());
 const insights=loop('automation_meta_insights',5000,async()=>{await scheduleRecentInsights();await processInsightJobs();});
 const operations=loop('operations_monitor',60000,async()=>{await collectOperationalAlerts();await deliverOperationalAlerts();});

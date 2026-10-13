@@ -12,8 +12,8 @@ const titles:Record<MarketCommand['operation'],string>={
 const reads=new Set(['get','release','reconcile','list']);
 const codes=new Set(['MARKET_INPUT_INVALID','MARKET_AUTHORITY_REQUIRED','MARKET_WRITE_UNCONFIRMED','MARKET_READ_UNCONFIRMED']);
 /** Prepared server: the client owns one fixed profile credential and API origin. */
-export function createMarketVariantsMcp(client:MarketClient){
- const server=new McpServer({name:'commerce-market-variants',version:'7.0.0'},{capabilities:{tools:{}}});
+/** Registers these tools into a composed server (createProfileMcp). */
+export function registerMarketVariantsTools(server:McpServer,client:MarketClient){
  for(const command of marketCommandSchema.options){
   const operation=command.shape.operation.value,readOnly=reads.has(operation);
   const schema=z.object(Object.fromEntries(Object.entries(command.shape).filter(([key])=>key!=='operation'))).strict();
@@ -33,5 +33,5 @@ export function createMarketVariantsMcp(client:MarketClient){
     }
    });
  }
- return server;
 }
+export function createMarketVariantsMcp(client:MarketClient){const server=new McpServer({name:'commerce-market-variants',version:'7.0.0'},{capabilities:{tools:{}}});registerMarketVariantsTools(server,client);return server;}

@@ -1,6 +1,6 @@
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
-import {openMigratedDatabase,isolatedAdminUrl,promotedSource} from '../support/migrated-database.js';
+import {openMigratedDatabase,promotedSource} from '../support/migrated-database.js';
 let closeDatabase:(()=>Promise<void>)|undefined;
 let admin:pg.Pool,sql:string,original:unknown,grants:unknown;
 const device='51000000-0000-4000-8000-000000000001',pairing='52000000-0000-4000-8000-000000000001';
@@ -9,7 +9,7 @@ const rows=async()=>(await admin.query("SELECT 'device' kind,to_jsonb(d) data FR
 const acl=async()=>(await admin.query("SELECT oid::regclass::text relation,relacl::text acl FROM pg_class WHERE oid IN('creative_devices'::regclass,'creative_pairings'::regclass) ORDER BY relation")).rows;
 describe('retired creative credentials remain closed administrative history',()=>{
  beforeAll(async()=>{
-  const database=await openMigratedDatabase('0082');admin=database.pool;closeDatabase=database.close;const url=new URL(database.url);
+  const database=await openMigratedDatabase('0082');admin=database.pool;closeDatabase=database.close;
   sql=await promotedSource('components/020_retired_creative_custody.sql');
   await admin.query("INSERT INTO creative_devices(id,workspace_id,owner_id,name,platform,engine_version,token_hash,project_ids,status,revoked_at) VALUES($1,'synthetic-retired','synthetic-owner','Synthetic retired','darwin-arm64','1.0.0','synthetic-not-a-token','{}','REVOKED',clock_timestamp())",[device]);
   await admin.query("INSERT INTO creative_pairings(id,user_code_hash,poll_secret_hash,name,platform,engine_version,api_version,capabilities,status,workspace_id,token_ciphertext,expires_at) VALUES($1,'synthetic-code','synthetic-poll','Synthetic expired','darwin-arm64','1.0.0',1,'{}','EXPIRED',NULL,'synthetic-opaque-history',clock_timestamp()-interval '1 day')",[pairing]);

@@ -36,5 +36,7 @@ export async function withPrivacyWriterFence<T>(pool:Pick<Pool,'connect'>,worksp
   if(committed.command!=='COMMIT')throw Error('PRIVACY_FENCE_COMMIT_NOT_CONFIRMED');
   return result;
  }catch(error){if(begun)await client.query('ROLLBACK').catch(()=>undefined);throw error;}
- finally{client.release(true);}
+ // Release the session fence lock before destroying the session: its backend
+ // exits asynchronously and a writer must never observe a lingering lock.
+ finally{await client.query('SELECT pg_advisory_unlock_all()').catch(()=>undefined);client.release(true);}
 }

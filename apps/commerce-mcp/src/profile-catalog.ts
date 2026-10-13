@@ -6,8 +6,8 @@ import {ProfileCatalogError,type ProfileCatalogReader} from '../../../packages/c
 import {safeResult} from './server.js';
 
 /** Explicit V2 catalog server. The supplied reader already owns its fixed PAT. */
-export function createProfileCatalogMcp(read:ProfileCatalogReader){
- const server=new McpServer({name:'commerce-profile-catalog',version:'7.0.0'},{capabilities:{tools:{}}});
+/** Registers these tools into a composed server (createProfileMcp). */
+export function registerProfileCatalogTools(server:McpServer,read:ProfileCatalogReader){
  const definitions={
   profile_catalog_list:{operation:'list',title:'Consultar catálogo del perfil',schema:z.object({resource:profileCatalogResourceSchema,...profileCatalogListSchema.shape}).strict()},
   profile_catalog_get:{operation:'get',title:'Consultar recurso del perfil',schema:z.object({resource:profileCatalogResourceSchema,id:z.uuid(),environment:z.enum(['REAL','SIMULATION']).default('REAL')}).strict()},
@@ -18,5 +18,5 @@ export function createProfileCatalogMcp(read:ProfileCatalogReader){
    try{const result=safeResult(await read({...definition.schema.parse(args),operation:definition.operation}));return{content:[{type:'text' as const,text:JSON.stringify(result)}],structuredContent:result};}
    catch(error){const result={code:error instanceof ProfileCatalogError?error.code:'CATALOG_READ_UNCONFIRMED',next:'Consulta nuevamente de forma explícita cuando la identidad y el perfil estén vigentes.'};return{isError:true,content:[{type:'text' as const,text:JSON.stringify(result)}]};}
   });
- return server;
 }
+export function createProfileCatalogMcp(read:ProfileCatalogReader){const server=new McpServer({name:'commerce-profile-catalog',version:'7.0.0'},{capabilities:{tools:{}}});registerProfileCatalogTools(server,read);return server;}

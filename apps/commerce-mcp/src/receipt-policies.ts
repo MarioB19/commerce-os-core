@@ -3,8 +3,8 @@ import {z} from 'zod';
 import {receiptPolicyCommand} from '../../../packages/contracts/src/receipt-policy-client.js';
 import {ReceiptPolicyClientError,type ReceiptPolicyClient} from '../../../packages/commerce-client/src/receipt-policies.js';
 import {safeResult} from './server.js';
-export function createReceiptPolicyMcp(client:ReceiptPolicyClient){
- const server=new McpServer({name:'commerce-receipt-policies',version:'7.0.0'},{capabilities:{tools:{}}});
+/** Registers these tools into a composed server (createProfileMcp). */
+export function registerReceiptPolicyTools(server:McpServer,client:ReceiptPolicyClient){
  for(const command of receiptPolicyCommand.options){
   const operation=command.shape.operation.value,readOnly=!operation.startsWith('save_');
   const schema=z.object(Object.fromEntries(Object.entries(command.shape).filter(([key])=>key!=='operation'))).strict();
@@ -14,5 +14,5 @@ export function createReceiptPolicyMcp(client:ReceiptPolicyClient){
     catch(error){const code=error instanceof ReceiptPolicyClientError?error.code:readOnly?'RECEIPT_POLICY_READ_UNCONFIRMED':'RECEIPT_POLICY_WRITE_UNCONFIRMED';return{isError:true,content:[{type:'text' as const,text:JSON.stringify({code,next:readOnly?'Consulta explícitamente con permiso vigente.':'Consulta receipt_policy_reconcile con el mismo UUID y solicitud original. No reenvíes automáticamente.'})}]};}
    });
  }
- return server;
 }
+export function createReceiptPolicyMcp(client:ReceiptPolicyClient){const server=new McpServer({name:'commerce-receipt-policies',version:'7.0.0'},{capabilities:{tools:{}}});registerReceiptPolicyTools(server,client);return server;}
