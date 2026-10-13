@@ -260,6 +260,8 @@ DECLARE p jsonb:=convert_from(decode('__HEX_PAYLOAD__','hex'),'UTF8')::jsonb;
  source text; actor_type text; idem_actor text; n integer; receipt_id uuid;
 BEGIN
  IF current_user<>'commerce_owner' THEN RAISE EXCEPTION 'ISOLATION_ROOT_DATABASE_OWNER_REQUIRED'; END IF;
+ -- V7: profile tables enforce RLS; bind this transaction to the bound profile.
+ PERFORM pg_catalog.set_config('app.workspace_id',b->>'workspace_id',true),pg_catalog.set_config('app.environment','REAL',true);
  -- Canonical API order: operations/policy before account lifecycle.
  PERFORM pg_advisory_xact_lock_shared(hashtextextended('operations:'||(b->>'workspace_id')||':REAL',0));
  PERFORM pg_advisory_xact_lock(hashtextextended('channel-command:'||(b->>'account_id'),0));

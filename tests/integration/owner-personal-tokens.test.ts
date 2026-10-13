@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import type {FastifyInstance} from 'fastify';
 import {createApp} from '../../apps/api/src/app.js';
 import {provisionUser} from '../../apps/api/src/auth.js';
-import {pool,hash,putRecord} from '../../packages/db/src/index.js';
+import {pool,hash,putRecord,withTransaction} from '../../packages/db/src/index.js';
 import {readPersonalToken} from '../../packages/db/src/personal-access-tokens.js';
 import {issueOwnerToken} from '../../scripts/owner-api-token.js';
 
@@ -45,9 +45,11 @@ describe('Personal owner API access',()=>{
   const t=await issue(['REAL']);expect((await call('GET','/v1/me?environment=SIMULATION',undefined,t.token)).statusCode).toBe(403);
   const foreignWorkspace='foreign-'+randomUUID();await fixtureProfiles(foreignWorkspace);// V7 F2: an adopted profile
   const foreign=await putRecord(pool,{workspaceId:foreignWorkspace,environment:'REAL',kind:'product',body:{name:'Foreign'}});expect((await call('GET','/v1/products/'+foreign.id+'?environment=REAL',undefined,t.token)).statusCode).toBe(404);
-  await pool.query("UPDATE memberships SET role='viewer' WHERE user_id=$1 AND workspace_id=$2",[userId,workspace]);try{expect((await call('GET','/v1/me?environment=REAL',undefined,t.token)).statusCode).toBe(401);}finally{await pool.query("UPDATE memberships SET role='owner' WHERE user_id=$1 AND workspace_id=$2",[userId,workspace]);}
+  // V7 F2: effective permission = token scopes ∩ current role; a demoted owner keeps
+  // only Solo lectura through the same token, effective immediately.
+  await pool.query("UPDATE memberships SET role='viewer' WHERE user_id=$1 AND workspace_id=$2",[userId,workspace]);try{expect((await call('GET','/v1/me?environment=REAL',undefined,t.token)).statusCode).toBe(200);expect((await call('POST','/v1/channel-accounts',{environment:'REAL',name:'Demoted write',provider:'simulator',purpose:'',sending_enabled:false},t.token)).statusCode).toBe(403);}finally{await pool.query("UPDATE memberships SET role='owner' WHERE user_id=$1 AND workspace_id=$2",[userId,workspace]);}
   await pool.query('UPDATE memberships SET active=false WHERE user_id=$1 AND workspace_id=$2',[userId,workspace]);try{expect((await call('GET','/v1/me?environment=REAL',undefined,t.token)).statusCode).toBe(401);}finally{await pool.query('UPDATE memberships SET active=true WHERE user_id=$1 AND workspace_id=$2',[userId,workspace]);}
-  await pool.query("UPDATE personal_access_tokens SET created_at=now()-interval '2 days',expires_at=now()-interval '1 day' WHERE id=$1",[t.id]);expect((await call('GET','/v1/me?environment=REAL',undefined,t.token)).statusCode).toBe(401);
+  /* simulated clock: V7 token identity is immutable, so the fixture ages it with guards bypassed */await withTransaction(async c=>{await c.query('SET LOCAL session_replication_role=replica');await c.query("UPDATE personal_access_tokens SET created_at=now()-interval '2 days',expires_at=now()-interval '1 day' WHERE id=$1",[t.id]);});expect((await call('GET','/v1/me?environment=REAL',undefined,t.token)).statusCode).toBe(401);
  });
  it('requires explicit confirmation and gives isolated encrypted replay without exposing stored secrets',async()=>{
   const body={environment:'REAL',name:'Replay test',allowed_environments:['REAL'],expires_at:expires(),reason:'Explicit test request',confirmation:'CREATE_OWNER_API_TOKEN'},key=randomUUID();

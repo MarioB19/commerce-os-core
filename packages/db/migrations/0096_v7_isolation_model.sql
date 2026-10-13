@@ -99,7 +99,10 @@ BEGIN
    AND (c.relname='profiles' OR EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attname='workspace_id' AND NOT a.attisdropped AND a.attnum>0))
    AND (NOT c.relrowsecurity OR NOT c.relforcerowsecurity OR NOT EXISTS(SELECT 1 FROM pg_policy x WHERE x.polrelid=c.oid AND NOT x.polpermissive
     AND (x.polname='v7_api_profile_guard' OR (x.polroles='{0}'::oid[] AND pg_get_expr(x.polqual,x.polrelid)='false')))))
-  OR EXISTS(SELECT 1 FROM pg_roles WHERE rolname ~ '^commerce_' AND (rolbypassrls OR rolsuper))
+  -- commerce_owner is the installation's bootstrap superuser (POSTGRES_USER of the
+  -- official image) that owns the schema and runs migrations; every runtime role
+  -- and login must stay non-superuser without BYPASSRLS.
+  OR EXISTS(SELECT 1 FROM pg_roles WHERE rolname ~ '^commerce_' AND rolname<>'commerce_owner' AND (rolbypassrls OR rolsuper))
   OR pg_has_role('commerce_api','commerce_worker_global','MEMBER') THEN
   RAISE EXCEPTION 'V7_ISOLATION_MODEL_INCOMPLETE';
  END IF;
