@@ -304,14 +304,15 @@ function RemarketingSection({variant,manage,materials,save}:SectionProps){
    {policy.slots.map((slot,i)=><fieldset key={slot.id} className="variant-card"><legend>Seguimiento {slot.position}</legend>
     <label className="variant-check"><input type="checkbox" checked={slot.enabled} disabled={!manage} onChange={e=>update(i,s=>({...s,enabled:e.target.checked}))}/> Activo</label>
     {slot.position>1&&slot.enabled&&<label className="variant-check"><input type="checkbox" checked={slot.warning_acknowledged===true} disabled={!manage} onChange={e=>update(i,s=>({...s,warning_acknowledged:e.target.checked}))}/> Entiendo que más seguimientos aumentan el riesgo de bloqueo y bajas.</label>}
-    <div className="variant-grid"><Field label="Espera"><input type="number" min={1} value={slot.delay.quantity} disabled={!manage} onChange={e=>update(i,s=>({...s,delay:{...s.delay,quantity:Math.max(1,Number(e.target.value))}}))}/></Field>
+    {!slot.enabled&&<p className="variant-hint">Inactivo · se enviaría {slot.delay.quantity} {({minutes:'minutos',hours:'horas',days:'días'} as const)[slot.delay.unit]} después del último mensaje.</p>}
+    {slot.enabled&&<><div className="variant-grid"><Field label="Espera"><input type="number" min={1} value={slot.delay.quantity} disabled={!manage} onChange={e=>update(i,s=>({...s,delay:{...s.delay,quantity:Math.max(1,Number(e.target.value))}}))}/></Field>
      <Field label="Unidad"><select value={slot.delay.unit} disabled={!manage} onChange={e=>update(i,s=>({...s,delay:{...s.delay,unit:e.target.value as typeof s.delay.unit}}))}><option value="minutes">minutos</option><option value="hours">horas</option><option value="days">días</option></select></Field></div>
     {(['awaiting_agreement','awaiting_payment'] as const).map(key=><div key={key} className="variant-stage"><strong>{stageLabels[key]}</strong>
      <Field label="Formato"><select value={slot.stages[key].medium} disabled={!manage} onChange={e=>{const medium=e.target.value as Medium;stage(i,key,{medium,...(medium==='text'?{asset_id:undefined}:{})});}}>
       <option value="text">Sólo texto</option><option value="audio">Audio y texto</option><option value="video">Video y texto</option></select></Field>
      <Field label="Mensaje"><textarea rows={2} maxLength={12000} value={slot.stages[key].text} disabled={!manage} onChange={e=>stage(i,key,{text:e.target.value})}/></Field>
      {slot.stages[key].medium!=='text'&&<MaterialSelect label={slot.stages[key].medium==='video'?'Video':'Audio'} materials={materials.filter(m=>(m.mime_type??'').startsWith(slot.stages[key].medium+'/'))} value={slot.stages[key].asset_id??''} onChange={id=>stage(i,key,{asset_id:id||undefined})}/>}
-    </div>)}
+    </div>)}</>}
    </fieldset>)}
    {manage&&<div className="variant-actions"><Button>Guardar remarketing</Button><Button type="button" variant="ghost" onClick={()=>setPolicy(null)}>Quitar seguimientos</Button></div>}
   </>}
