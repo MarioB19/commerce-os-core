@@ -73,7 +73,7 @@ const privacyComponentTables=[
 ];
 const privacyReferenceTables=['privacy_reference_epoch','privacy_reference_leases'];
 const cutoverTables=['profile_adoption_quarantine','profile_adoption_receipts','profile_role_adoptions'];
-const platformTables=['platform_admins','platform_operations'];
+const platformTables=['platform_admins','platform_operations','platform_tokens'];
 // V7 F2 profile integrations (0101): reviewed profile and environment guards in
 // the migration; only the API and the closed AI/platform readers reach rows.
 const integrationTables=['ai_profile_preferences','meta_profile_credential_versions','meta_profile_credentials','profile_onboarding'];

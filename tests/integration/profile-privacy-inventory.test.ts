@@ -22,7 +22,7 @@ describe('D18 complete native reference inventory, no erase permission',()=>{
   for(const workspace of [w,other])await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic privacy inventory','UTC',0,0,100)",[workspace]);
   for(const workspace of [w,other]){const c=await admin.connect();try{await c.query('BEGIN');await c.query("SELECT set_config('app.workspace_id',$1,true)",[workspace]);await c.query('SELECT adopt_profile_quota_inventory($1,profile_quota_inventory($1))',[workspace]);await c.query('COMMIT');}finally{c.release();}}
   const catalog=await readProfileCatalog(admin,[]) as PrivacyInventoryCatalog;
-  const plan=buildPrivacyInventoryPlan(catalog,privacyInventoryPolicy(catalog.tables.map(t=>t.name)));expect(plan.relations).toBe(226);
+  const plan=buildPrivacyInventoryPlan(catalog,privacyInventoryPolicy(catalog.tables.map(t=>t.name)));expect(plan.relations).toBe(227);
   await admin.query(plan.prepare_sql);
   const secret=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${secret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;GRANT commerce_privacy_worker TO "${login}"`);
   const u=new URL(url);u.username=login;u.password=secret;worker=new pg.Pool({connectionString:u.toString(),max:2});

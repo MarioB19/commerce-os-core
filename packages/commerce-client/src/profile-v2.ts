@@ -6,11 +6,18 @@ export type ProfileV2Method='GET'|'POST'|'PUT'|'PATCH';
 export type ProfileV2Client=(method:ProfileV2Method,path:string,body?:unknown,signal?:AbortSignal)=>Promise<unknown>;
 const pathPattern=/^\/v2\/[a-z0-9-]+(?:\/[A-Za-z0-9._~%-]+)*(?:\?[A-Za-z0-9._~%&=-]*)?$/;
 export function personalProfileV2(origin:string,token:string,fetcher:typeof fetch=fetch,limit=2*1024*1024):ProfileV2Client{
+ return fixedBearer(origin,token,/^cos_pat_[A-Za-z0-9_-]{43}$/,path=>!path.startsWith('/v2/platform/'),fetcher,limit);
+}
+/** Platform identity (cos_plt_): only /v2/platform routes, never a profile route. */
+export function platformV2(origin:string,token:string,fetcher:typeof fetch=fetch,limit=2*1024*1024):ProfileV2Client{
+ return fixedBearer(origin,token,/^cos_plt_[A-Za-z0-9_-]{43}$/,path=>path.startsWith('/v2/platform/'),fetcher,limit);
+}
+function fixedBearer(origin:string,token:string,tokenPattern:RegExp,allowed:(path:string)=>boolean,fetcher:typeof fetch,limit:number):ProfileV2Client{
  let base:URL;try{base=new URL(origin);}catch{throw new ProfileV2ClientError('PROFILE_AUTHORITY_REQUIRED');}
- if(base.username||base.password||base.pathname!=='/'||base.search||base.hash||!(base.protocol==='https:'||base.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(base.hostname))||!/^cos_pat_[A-Za-z0-9_-]{43}$/.test(token))
+ if(base.username||base.password||base.pathname!=='/'||base.search||base.hash||!(base.protocol==='https:'||base.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(base.hostname))||!tokenPattern.test(token))
   throw new ProfileV2ClientError('PROFILE_AUTHORITY_REQUIRED');
  return async(method,path,body,signal)=>{
-  if(!pathPattern.test(path)||path.includes('..'))throw new ProfileV2ClientError('PROFILE_ROUTE_INVALID');
+  if(!pathPattern.test(path)||path.includes('..')||!allowed(path))throw new ProfileV2ClientError('PROFILE_ROUTE_INVALID');
   const controller=new AbortController(),abort=()=>controller.abort(signal?.reason);if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});
   const timer=setTimeout(()=>controller.abort(),30000),write=method!=='GET';
   try{

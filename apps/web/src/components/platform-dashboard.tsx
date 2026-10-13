@@ -1,6 +1,6 @@
 import {useEffect,useId,useRef,useState,type FormEvent} from 'react';
 import {Button} from './ui/button';
-import {createPlatformProfile,invitePlatformOwner,loadPlatformAccess,loadPlatformProfiles,platformMessage,signalLabels,updatePlatformProfile,type PlatformCapacity,type PlatformLimits,type PlatformProfile} from '../lib/platform-profiles.js';
+import {createPlatformProfile,invitePlatformOwner,issuePlatformToken,loadPlatformAccess,loadPlatformProfiles,loadPlatformTokens,platformMessage,platformScopeLabels,revokePlatformToken,signalLabels,updatePlatformProfile,type PlatformCapacity,type PlatformLimits,type PlatformProfile,type PlatformToken} from '../lib/platform-profiles.js';
 
 const timezones=['America/Mexico_City','America/Monterrey','America/Cancun','America/Tijuana','America/Bogota','America/Lima','America/Santiago','America/Argentina/Buenos_Aires','Europe/Madrid','UTC'];
 const dateTime=new Intl.DateTimeFormat('es-MX',{dateStyle:'medium',timeStyle:'short'});
@@ -51,6 +51,7 @@ export function PlatformDashboard(){
   </ul>
   {capacity&&capacity.profiles.used<capacity.profiles.max&&<CreateProfile onDone={done} freeNumbers={Math.max(0,capacity.numbers.max-capacity.numbers.allocated)}/>}
   {capacity&&capacity.profiles.used>=capacity.profiles.max&&<p>La instalación ya usa sus {capacity.profiles.max} perfiles. Para crear otro hace falta ampliar la capacidad.</p>}
+  <PlatformTokens onDone={done}/>
  </main>;
 }
 function PlatformProfileCard({profile,onDone}:{profile:PlatformProfile;onDone:(message:string)=>void}){
@@ -127,6 +128,29 @@ function CreateProfile({onDone,freeNumbers}:{onDone:(message:string)=>void;freeN
    <p>Quedan {freeNumbers} números sin asignar en la plataforma.</p>
    {submit.error&&<p role="alert">{submit.error}</p>}
    <Button type="submit" disabled={submit.busy}>{submit.busy?'Creando…':'Crear perfil'}</Button>
+  </form>
+ </section>;
+}
+/** RF-02.c: the same actions through MCP with a platform token bound to this
+ * admin. The bearer is shown once; afterwards only its metadata remains. */
+function PlatformTokens({onDone}:{onDone:(message:string)=>void}){
+ const id=useId(),[tokens,setTokens]=useState<PlatformToken[]>(),[name,setName]=useState('MCP de plataforma'),[days,setDays]=useState('30'),[scopes,setScopes]=useState<string[]>(['platform:profiles','platform:capacity']),[secret,setSecret]=useState(''),{busy,error,run}=useSubmit();
+ const reload=()=>loadPlatformTokens().then(setTokens).catch(()=>setTokens([]));
+ useEffect(()=>{void reload();},[]);
+ function create(event:FormEvent){event.preventDefault();setSecret('');const span=Number(days);
+  void run(async()=>{const issued=await issuePlatformToken({name,scopes,expiresAt:new Date(Date.now()+Math.min(90,Math.max(1,span))*86400000).toISOString()});setSecret(issued.token);},()=>{void reload();onDone('Acceso creado. Copia el token ahora: no se volverá a mostrar.');});}
+ return <section className="card" aria-labelledby={id}>
+  <h2 id={id}>Accesos MCP de plataforma</h2>
+  <p>Permiten a un cliente MCP hacer las mismas acciones de esta página con tu cuenta. Caducan en un máximo de 90 días y dejan de funcionar si se revocan.</p>
+  {error&&<p role="alert">{error}</p>}
+  {secret&&<p role="status">Token (sólo se muestra una vez): <code className="platform-secret">{secret}</code></p>}
+  <ul className="platform-tokens">{tokens?.map(t=><li key={t.id}><strong>{t.name}</strong> · {t.scopes.map(s=>platformScopeLabels[s]??s).join(', ')} · {t.revokedAt?'Revocado':'Vence '+dateTime.format(new Date(t.expiresAt))}
+   {!t.revokedAt&&<Button type="button" variant="ghost" disabled={busy} onClick={()=>{void run(()=>revokePlatformToken(t.id),()=>{void reload();onDone('Acceso revocado.');});}}>Revocar</Button>}</li>)}</ul>
+  <form onSubmit={create}>
+   <label>Nombre<input value={name} maxLength={100} required onChange={e=>setName(e.target.value)}/></label>
+   <label>Vigencia en días<input inputMode="numeric" value={days} onChange={e=>setDays(e.target.value)}/></label>
+   <fieldset><legend>Permisos</legend>{Object.entries(platformScopeLabels).map(([scope,label])=><label key={scope}><input type="checkbox" checked={scopes.includes(scope)} onChange={e=>setScopes(e.target.checked?[...scopes,scope]:scopes.filter(s=>s!==scope))}/> {label}</label>)}</fieldset>
+   <Button type="submit" disabled={busy||!scopes.length}>Crear acceso</Button>
   </form>
  </section>;
 }

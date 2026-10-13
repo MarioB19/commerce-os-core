@@ -3,7 +3,7 @@ import pg from 'pg';
 import {afterAll,beforeAll,describe,expect,it,vi} from 'vitest';
 import {requireMigratedProfileSchema,sealFixtureProfiles,asProfileOwner} from '../support/migrated-database.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
-import {createPlatformProfile,invitePlatformOwner,isPlatformAdmin,listPlatformProfiles,readPlatformCapacity,updatePlatformProfile} from '../../packages/db/src/platform-profiles.js';
+import {createPlatformProfile,invitePlatformOwner,isPlatformAdmin,issuePlatformToken,listPlatformProfiles,listPlatformTokens,readPlatformCapacity,resolvePlatformToken,revokePlatformToken,updatePlatformProfile} from '../../packages/db/src/platform-profiles.js';
 import {acceptExistingProfileInvitation,generateInvitationLink} from '../../packages/db/src/profile-invitation-acceptance.js';
 
 // V7 RF-01.5/RF-02 against the migrated schema with a real non-superuser API login.
@@ -93,5 +93,27 @@ describe('platform administration outside every profile',()=>{
   await admin.query('UPDATE platform_admins SET active=false,version=version+1 WHERE user_id=$1',[adminUser]);
   try{await expect(acceptExistingProfileInvitation(api,await session(recipient),link.token,'synthetic-correlation')).rejects.toMatchObject({code:'INVITATION_ISSUER_NO_LONGER_AUTHORIZED'});}
   finally{await admin.query('UPDATE platform_admins SET active=true,version=version+1 WHERE user_id=$1',[adminUser]);}
+ });
+ it('issues a platform token from a session only, stores its hash and stops it on revocation or admin loss',async()=>{
+  const s=await session(adminUser),expiresAt=new Date(Date.now()+86400000).toISOString();
+  const issued=await issuePlatformToken(api,s,{name:'MCP plataforma',scopes:['platform:profiles','platform:capacity'],expiresAt});
+  expect(issued.token).toMatch(/^cos_plt_[A-Za-z0-9_-]{43}$/);
+  const stored=(await admin.query('SELECT token_hash,scopes FROM platform_tokens WHERE id=$1',[issued.id])).rows[0];expect(stored.token_hash).not.toContain(issued.token);expect(stored.scopes).toEqual(['platform:capacity','platform:profiles']);
+  const actor=await resolvePlatformToken(api,issued.token);expect(actor).toMatchObject({userId:adminUser,scopes:['platform:capacity','platform:profiles']});
+  expect((await listPlatformProfiles(api,actor)).some(r=>r.id===existing)).toBe(true);
+  await expect(issuePlatformToken(api,actor,{name:'x',scopes:['platform:audit'],expiresAt})).rejects.toMatchObject({code:'PLATFORM_INTERACTIVE_SESSION_REQUIRED'});
+  await expect(issuePlatformToken(api,await session(plainUser),{name:'x',scopes:['platform:audit'],expiresAt})).rejects.toMatchObject({code:'PLATFORM_ADMIN_REQUIRED'});
+  await expect(issuePlatformToken(api,s,{name:'x',scopes:['platform:audit'],expiresAt:new Date(Date.now()+100*86400000).toISOString()})).rejects.toMatchObject({code:'PLATFORM_TOKEN_INVALID_INPUT'});
+  expect((await listPlatformTokens(api,s)).find(t=>t.id===issued.id)).toMatchObject({name:'MCP plataforma',revokedAt:null});
+  expect(await revokePlatformToken(api,actor,issued.id)).toEqual({id:issued.id,revoked:true,changed:true});
+  expect(await revokePlatformToken(api,s,issued.id)).toEqual({id:issued.id,revoked:true,changed:false});
+  await expect(resolvePlatformToken(api,issued.token)).rejects.toMatchObject({code:'PLATFORM_TOKEN_INVALID',statusCode:401});
+  await expect(listPlatformProfiles(api,actor)).rejects.toMatchObject({code:'PLATFORM_TOKEN_INVALID'});
+  const second=await issuePlatformToken(api,s,{name:'segundo',scopes:['platform:capacity'],expiresAt});
+  await admin.query('UPDATE platform_admins SET active=false WHERE user_id=$1',[adminUser]);
+  try{await expect(resolvePlatformToken(api,second.token)).rejects.toMatchObject({code:'PLATFORM_TOKEN_INVALID'});}
+  finally{await admin.query('UPDATE platform_admins SET active=true WHERE user_id=$1',[adminUser]);}
+  await expect(api.query('SELECT * FROM platform_tokens')).rejects.toMatchObject({code:'42501'});
+  await expect(admin.query('UPDATE platform_tokens SET name=$2 WHERE id=$1',[second.id,'renamed'])).rejects.toThrow('PLATFORM_TOKEN_IMMUTABLE');
  });
 });
