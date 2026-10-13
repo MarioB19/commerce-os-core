@@ -17,15 +17,17 @@ en `apps/ingress` (otro servicio) y no forman parte de este documento.
 | Presupuesto | Criterio | Operaciones |
 |---|---|---|
 | Identidad | `/api/auth/*`, `/v1/me`, `/v2/me*`, `/v2/invitation-acceptance*`, `/v2/invitation-registration` | 9 |
-| Salud y documentación | `/livez`, `/readyz`, `/health/live`, `/health/ready`, `/api/version`, `/v1/openapi.json` | 6 |
+| Salud y documentación | `/livez`, `/readyz`, `/health/live`, `/health/ready`, `/healthz/platform`, `/api/version`, `/v1/openapi.json` | 7 |
 | Archivos (bytes) | `/v2/materials/{id}/content`, `/v2/materials/{id}/parts/{n}`, `/v2/receipts/{id}/document`, `/v2/help/download` | 4 |
 | Webhooks | (en ingress, fuera de este documento) | 0 |
 | **Negocio** | todo lo demás, incluidas las rutas de plataforma y de operación | **160** |
-| Total publicado | | 179 |
+| Total publicado | | 180 |
 
 Antes de F8: 554 operaciones (F0, producción V5: 386; las rutas V7 se sumaron
 a las V5 durante F2–F7). Tras F8-B/C: 457. Tras F8-D: 178 (159 de negocio). Con la
-lectura de Meta por perfil (RF-11, `POST /v2/campaigns/sync`): **179 (160 de negocio)**.
+lectura de Meta por perfil (RF-11, `POST /v2/campaigns/sync`): 179 (160 de negocio).
+Con la salud de plataforma de F1 (`GET /healthz/platform`, sin contenido, para el monitor
+externo): **180 (160 de negocio)**.
 
 ## Lo que queda en `/v1`
 

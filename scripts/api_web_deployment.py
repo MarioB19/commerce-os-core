@@ -20,6 +20,8 @@ FILES = ('release.env', 'api.env', 'ingress.env', 'automation.env', 'channel.env
 LOCKS = ('daily-b02-controller.lock', 'ci-deploy.lock', 'backup-schedule.lock',
          'maintenance-backup.lock')
 TERMINAL = {'SUCCEEDED', 'FAILED', 'FAILED_RECONCILED'}
+# V7 F1 PITR: PostgreSQL may join this egress-only bridge (scripts/v7_pitr.py).
+PITR_NETWORK = 'commerce-os_pitr-edge'
 MAX_PRIVATE = 1024 * 1024
 SOURCE_SHA = 'd36c090161eb7b0af0250cd91d466b38dc810813'
 PORTAL_BASE = Path('/opt/mcl-portal')
@@ -225,7 +227,7 @@ def inventory(command, root, portal=None):
 
 def networks(command, root, services):
     names = set().union(*(set(row['NetworkSettings']['Networks']) for row in services.values()))
-    require(len(names) == 3, 'COPY_NETWORK_SET_INVALID')
+    require(len(names - {PITR_NETWORK}) == 3, 'COPY_NETWORK_SET_INVALID')
     rows = unique_json(command(['docker', 'network', 'inspect', *sorted(names)], root))
     result = {}
     for row in rows:
@@ -248,9 +250,13 @@ def active_proxy_digest(command, root, services):
 
 def topology_guard(command, root, services, network_rows, release):
     core, proxy, edge = 'commerce-os_core', release['COMMERCE_PROXY_NETWORK'], release['COMMERCE_API_EDGE_NETWORK']
-    require(len({core, proxy, edge}) == 3 and set(network_rows) == {core, proxy, edge},
+    pitr = PITR_NETWORK in network_rows
+    require(len({core, proxy, edge}) == 3 and set(network_rows) - {PITR_NETWORK} == {core, proxy, edge},
             'COPY_CLOSED_NETWORK_SET_REQUIRED')
-    expected = {'postgres': {core}, 'web': {proxy}, 'api': {core, proxy, edge}, 'caddy': {proxy, edge}}
+    require(not pitr or (network_rows[PITR_NETWORK]['Internal'] is False and network_rows[PITR_NETWORK]['Driver'] == 'bridge'
+                         and network_rows[PITR_NETWORK]['EnableIPv6'] is False), 'COPY_PITR_NETWORK_UNSAFE')
+    expected = {'postgres': {core} | ({PITR_NETWORK} if pitr else set()), 'web': {proxy},
+                'api': {core, proxy, edge}, 'caddy': {proxy, edge}}
     if 'portal' in services:
         expected['portal'] = {proxy}
     for name, names in expected.items():

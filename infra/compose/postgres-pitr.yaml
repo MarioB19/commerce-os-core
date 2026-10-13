@@ -1,0 +1,37 @@
+# V7 F1 PITR overlay. compose-release.sh adds it, after every other overlay, only
+# when <private>/pitr/enabled exists (written by scripts/v7_pitr.py enable).
+# Same data volume and core network; pgBackRest pushes each WAL segment to GCS in
+# another region through the egress-only pitr network. The cipher pass reaches
+# the container through a root-only env_file and never the rendered command.
+services:
+  postgres:
+    image: ${COMMERCE_PITR_POSTGRES_IMAGE:-commerce-os-postgres:pitr}
+    pull_policy: never
+    env_file:
+      - ${COMMERCE_PITR_DIR:-/opt/commerce-os/private/pitr}/pgbackrest.env
+    volumes:
+      - ${COMMERCE_PITR_DIR:-/opt/commerce-os/private/pitr}/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+      - pitr-spool:/var/spool/pgbackrest
+    command:
+      - postgres
+      - -c
+      - max_connections=80
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - wal_level=replica
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_timeout=60s
+      - -c
+      - archive_command=pgbackrest --stanza=commerce archive-push %p
+    networks:
+      core: {gw_priority: 0}
+      pitr-edge: {gw_priority: 1}
+networks:
+  pitr-edge:
+    external: true
+    name: commerce-os_pitr-edge
+volumes:
+  pitr-spool: {}

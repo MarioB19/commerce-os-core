@@ -8,8 +8,9 @@ import re
 def need(value,code):
     if not value:raise RuntimeError(code)
 
-def configuration(*,bucket,region,primary_region,cluster_id):
+def configuration(*,bucket,region,primary_region,cluster_id,pg_user='commerce_owner',pg_database='commerce'):
     need(type(bucket)is str and re.fullmatch(r'commerce-v7-pitr-[a-z0-9-]{3,40}',bucket),'PITR_BUCKET_INVALID')
+    need(type(pg_user)is str and re.fullmatch('[a-z_][a-z0-9_]{0,62}',pg_user) and type(pg_database)is str and re.fullmatch('[a-z_][a-z0-9_]{0,62}',pg_database),'PITR_DATABASE_IDENTITY_INVALID')
     need(region in {'us-central1','us-east1','us-west1'} and primary_region in {'us-central1','us-east1','us-west1'} and region!=primary_region,'PITR_OTHER_REGION_REQUIRED')
     need(type(cluster_id)is str and re.fullmatch('[1-9][0-9]{10,19}',cluster_id),'PITR_CLUSTER_ID_INVALID')
     # No arbitrary settings or endpoints. A separate private environment supplies
@@ -22,7 +23,7 @@ def configuration(*,bucket,region,primary_region,cluster_id):
         'archive-check=y','archive-copy=y','start-fast=n','log-level-console=warn',
         'log-level-file=off','lock-path=/var/run/pgbackrest','spool-path=/var/spool/pgbackrest',
         '','[commerce]','pg1-path=/var/lib/postgresql/data','pg1-port=5432',
-        'pg1-socket-path=/var/run/postgresql',''])
+        'pg1-socket-path=/var/run/postgresql','pg1-user='+pg_user,'pg1-database='+pg_database,''])
 
 def postgres_settings():
     return {'wal_level':'replica','archive_mode':'on','archive_timeout':'60s',

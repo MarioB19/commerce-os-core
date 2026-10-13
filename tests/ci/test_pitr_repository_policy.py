@@ -5,13 +5,15 @@ class Policy(unittest.TestCase):
  def readback(self):return dict(line.split('=',1)for line in self.config().splitlines()if '='in line)
  def test_other_region_encrypted_time_retention_no_drop_limit(self):
   s=self.config();self.assertIn('repo1-retention-full-type=time\nrepo1-retention-full=7',s);self.assertIn('repo1-gcs-key-type=auto',s);self.assertNotIn('queue-max',s);self.assertNotIn('cipher-pass=',s)
+ def test_production_role_and_database(self):
+  s=self.config();self.assertIn('pg1-user=commerce_owner\npg1-database=commerce',s)
  def test_running_settings_required(self):
   r=m.validate_effective(m.postgres_settings(),self.readback());self.assertFalse(r['restore_verified']);self.assertFalse(r['production_rpo_proven'])
  def test_discard_or_short_retention_not_admitted(self):
   for field,value in [('archive-push-queue-max','1GiB'),('archive-queue-max','0'),('repo1-retention-archive','1'),('repo1-retention-full','6'),('repo1-cipher-pass','synthetic-not-secret')]:
    with self.subTest(field=field),self.assertRaises(RuntimeError):m.validate_effective(m.postgres_settings(),self.readback()|{field:value})
  def test_identity_injection_or_same_region_fail(self):
-  for change in [{'region':'us-east1'},{'bucket':'commerce-v7-pitr-x\nrepo1-cipher-type=none'},{'cluster_id':'../evil'}]:
+  for change in [{'region':'us-east1'},{'bucket':'commerce-v7-pitr-x\nrepo1-cipher-type=none'},{'cluster_id':'../evil'},{'pg_user':'x\nrepo1-cipher-type=none'},{'pg_database':'Commerce'}]:
    with self.assertRaises(RuntimeError):self.config(**change)
  def test_compressed_measurement_cannot_hide_large_wal(self):
   gib=1024**3;r=m.capacity(full_backup_bytes=gib,incremental_bytes_per_day=100,compressed_wal_bytes_per_day=8*gib,auth_backup_bytes=gib,retained_days=7,full_interval_days=1,cross_region_bytes_used=0,monthly_transfer_reserve_bytes=50*gib,storage_reserve_bytes=20*gib)

@@ -524,6 +524,31 @@ class ApiWebGatewayTests(unittest.TestCase):
         with self.assertRaisesRegex(ReleaseError, 'COPY_NETWORK_ISOLATION_CHANGED'):
             guards.topology_guard(lambda *_args: route, Path('/release'), services, rows, env)
 
+    def pitr(self):
+        services, rows, env, route = self.topology()
+        rows[guards.PITR_NETWORK] = {'Internal': False, 'EnableIPv6': False, 'Driver': 'bridge', 'IPAM': {'Config': []}}
+        services['postgres']['NetworkSettings']['Networks'][guards.PITR_NETWORK] = {'GwPriority': 1}
+        return services, rows, env, route
+
+    def test_postgres_may_join_only_the_pitr_egress_network(self):
+        services, rows, env, route = self.pitr()
+        self.assertTrue(guards.topology_guard(lambda *_args: route, Path('/release'), services, rows, env))
+        # Another service on it, an internal or IPv6 PITR network, or an unknown network still stop.
+        services['web']['NetworkSettings']['Networks'][guards.PITR_NETWORK] = {}
+        with self.assertRaisesRegex(ReleaseError, 'COPY_NETWORK_MEMBERSHIP_CHANGED'):
+            guards.topology_guard(lambda *_args: route, Path('/release'), services, rows, env)
+        for field, value in (('Internal', True), ('EnableIPv6', True), ('Driver', 'host')):
+            services, rows, env, route = self.pitr(); rows[guards.PITR_NETWORK][field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(ReleaseError, 'COPY_PITR_NETWORK_UNSAFE'):
+                guards.topology_guard(lambda *_args: route, Path('/release'), services, rows, env)
+        services, rows, env, route = self.pitr(); rows['other'] = rows.pop(guards.PITR_NETWORK)
+        with self.assertRaisesRegex(ReleaseError, 'COPY_CLOSED_NETWORK_SET_REQUIRED'):
+            guards.topology_guard(lambda *_args: route, Path('/release'), services, rows, env)
+        # Membership without the network row is not admitted either.
+        services, rows, env, route = self.pitr(); del rows[guards.PITR_NETWORK]
+        with self.assertRaisesRegex(ReleaseError, 'COPY_NETWORK_MEMBERSHIP_CHANGED'):
+            guards.topology_guard(lambda *_args: route, Path('/release'), services, rows, env)
+
 
 class ApiWebPreservationTests(unittest.TestCase):
     def rows(self):

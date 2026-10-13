@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily incremental PostgreSQL backup (Monday-Saturday 08:20 UTC)
+[Timer]
+OnCalendar=Mon..Sat *-*-* 08:20:00 UTC
+RandomizedDelaySec=300
+Persistent=true
+Unit=commerce-pitr-backup@incr.service
+[Install]
+WantedBy=timers.target

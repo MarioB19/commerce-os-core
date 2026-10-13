@@ -21,7 +21,7 @@ describe('canonical V7 migrated catalog',()=>{
  afterAll(async()=>{await admin?.end();});
  it('keeps the 68 historical migration hashes byte-identical under the V7 chain',async()=>{
   const rows=(await admin.query('SELECT name,sha256 FROM schema_migrations ORDER BY name')).rows as {name:string;sha256:string}[];
-  expect(rows).toHaveLength(110);
+  expect(rows).toHaveLength(111);
   for(const row of rows){const bytes=await readFile(new URL('../../packages/db/migrations/'+row.name,import.meta.url));expect(createHash('sha256').update(bytes).digest('hex')).toBe(row.sha256);}
   expect(rows.filter(r=>r.name<'0069')).toHaveLength(68);
  });
@@ -33,7 +33,7 @@ describe('canonical V7 migrated catalog',()=>{
   expect(catalog.primary_keys!.find(k=>k.schema==='public'&&k.table==='records')?.columns).toEqual(['id']);expect(catalog.primary_keys!.find(k=>k.schema==='commerce_number_lab'&&k.table==='runs')?.columns).toEqual(['workspace_id','id']);
   expect(catalog.foreign_keys.every(f=>f.validated&&Array.isArray(f.columns)&&Array.isArray(f.referenced_columns))).toBe(true);expect(catalog.roles.every(r=>Array.isArray(r.runtime_memberships))).toBe(true);expect(catalog.policies.every(p=>Array.isArray(p.roles))).toBe(true);
   // V7 F8-E: 0109 dropped the 39 retired V5 tables (227 relations through 0108).
-  expect(Object.keys(commerceProfileRowPolicy(catalog).tables)).toHaveLength(188);for(const table of ['creative_budgets','intelligence_searches','mcl_sponsorships'])expect(tables.has(table)).toBe(false);
+  expect(Object.keys(commerceProfileRowPolicy(catalog).tables)).toHaveLength(189);for(const table of ['creative_budgets','intelligence_searches','mcl_sponsorships'])expect(tables.has(table)).toBe(false);
  });
  it('does not fabricate profile adoption, quota allocation, credentials or business grants',async()=>{
   for(const table of ['profiles','ai_credentials','ai_runtime_grants','result_goals','profile_session_context'])expect((await admin.query(`SELECT count(*)::int n FROM ${table}`)).rows[0].n).toBe(0);

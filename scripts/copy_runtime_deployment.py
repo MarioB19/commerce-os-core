@@ -534,7 +534,8 @@ V7_PROFILE_MIGRATION_NAMES = frozenset({
     '0098_v7_composed_foreign_keys.sql', '0099_v7_api_environment_guard.sql',
     '0100_v7_platform_admin.sql', '0101_v7_profile_integrations.sql', '0102_v7_platform_tokens.sql', '0103_v7_capacity_agent_tokens.sql', '0104_v7_number_identity_claims.sql',
     '0105_v7_variant_documents.sql', '0106_v7_ai_price_catalog.sql', '0107_v7_ai_budget_continuity.sql',
-    '0108_v7_number_lab_queue.sql', '0109_v7_retire_modules.sql', '0110_v7_meta_profile_sync.sql'})
+    '0108_v7_number_lab_queue.sql', '0109_v7_retire_modules.sql', '0110_v7_meta_profile_sync.sql',
+    '0111_v7_platform_recovery.sql'})
 V7_PROFILE_MIGRATION_TOTAL = 68 + len(V7_PROFILE_MIGRATION_NAMES)
 
 
@@ -810,7 +811,7 @@ def closed_inventory(command, root, state):
 
 def network_snapshot(command, root, services):
     names = set().union(*(set(row['NetworkSettings']['Networks']) for row in services.values()))
-    require(3 <= len(names) <= 7, 'COPY_RUNTIME_NETWORK_BOUND')
+    require(3 <= len(names) <= 8, 'COPY_RUNTIME_NETWORK_BOUND')
     rows = _parse(command(['docker', 'network', 'inspect', *sorted(names)], root).encode())
     require(type(rows) is list and len(rows) == len(names), 'COPY_RUNTIME_NETWORK_READBACK_INVALID')
     result = {}
@@ -831,9 +832,11 @@ def topology(command, root, services, networks, release):
     require(type(consumer) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', consumer)
             and len({core, proxy, edge, consumer}) == 4, 'COPY_RUNTIME_CONSUMER_EDGE_REQUIRED')
     gateway_names = {'commerce-os_gateway-'+name[-2:] for name in set(services) & GATEWAYS}
-    require(set(networks) == {core, proxy, edge, consumer} | gateway_names,
+    pitr = native.PITR_NETWORK in networks
+    require(set(networks) - {native.PITR_NETWORK} == {core, proxy, edge, consumer} | gateway_names,
             'COPY_RUNTIME_CLOSED_NETWORK_SET_REQUIRED')
-    expected = {'postgres': {core}, 'web': {proxy}, 'api': {core, proxy, edge}, 'caddy': {proxy, edge},
+    expected = {'postgres': {core} | ({native.PITR_NETWORK} if pitr else set()), 'web': {proxy},
+                'api': {core, proxy, edge}, 'caddy': {proxy, edge},
                 'portal': {proxy}, 'ingress': {core, proxy} | gateway_names,
                 'automation-worker': {core, consumer}, 'channel-worker': {core} | gateway_names}
     expected.update({name: {'commerce-os_gateway-'+name[-2:]} for name in set(services) & GATEWAYS})
@@ -841,7 +844,8 @@ def topology(command, root, services, networks, release):
         require(set(services[name]['NetworkSettings']['Networks']) == membership,
                 'COPY_RUNTIME_NETWORK_MEMBERSHIP_CHANGED')
     require(networks[core]['Internal'] is True and networks[proxy]['Internal'] is True
-            and all(networks[name]['Internal'] is False for name in {edge, consumer} | gateway_names)
+            and all(networks[name]['Internal'] is False for name in {edge, consumer} | gateway_names
+                    | ({native.PITR_NETWORK} if pitr else set()))
             and all(row['EnableIPv6'] is False and row['Driver'] == 'bridge' for row in networks.values()),
             'COPY_RUNTIME_NETWORK_ISOLATION_CHANGED')
     for name in {'api', 'ingress', 'automation-worker', 'channel-worker'}:
@@ -850,7 +854,8 @@ def topology(command, root, services, networks, release):
                 'COPY_RUNTIME_FORWARDING_ENABLED')
     # Reuse native kernel routing proof for API while closing its original edge.
     subset = {name: services[name] for name in INITIAL}
-    native.topology_guard(command, root, subset, {name: networks[name] for name in (core, proxy, edge)}, release)
+    native.topology_guard(command, root, subset, {name: networks[name] for name in (core, proxy, edge)
+                                                  + ((native.PITR_NETWORK,) if pitr else ())}, release)
     import ipaddress
     config = networks[consumer]['IPAM']['Config']
     require(len(config) == 1, 'COPY_RUNTIME_CONSUMER_EDGE_IPV4_REQUIRED')

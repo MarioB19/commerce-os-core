@@ -4,6 +4,7 @@ import {runInRequestProfileScope,bindRequestProfileEnvironment,closeRequestProfi
 import {profileRuntimeRoutes} from './profile-runtime.js';
 import {copySourceIsolationRoutes} from './copy-source-isolation.js';
 import {readinessRoutes} from './readiness.js';
+import {platformHealthRoutes} from './platform-health.js';
 import {numbersRoutes} from './numbers.js';
 import {remarketingRoutes} from './remarketing.js';
 import {integrationSettingsRoutes} from './integrations-settings.js';
@@ -45,7 +46,7 @@ app.get('/livez',async()=>({status:'ok',service:'api'}));app.get('/readyz',async
 // the capacity agent and owner operation controls still call (see
 // docs/v7-api-surface.md). Everything else answered by V5 screens and the
 // service-token MCP left with them.
-await retiredRoutes(app);await readinessRoutes(app);await numbersRoutes(app);await remarketingRoutes(app);await accountSecurityRoutes(app);
+await retiredRoutes(app);await readinessRoutes(app);await platformHealthRoutes(app);await numbersRoutes(app);await remarketingRoutes(app);await accountSecurityRoutes(app);
 await salesReadRoutes(app);await salesRoutes(app);await channelSessionRoutes(app);await warmupReviewRoutes(app);await copySourceIsolationRoutes(app);await systemRoutes(app);await operationalSettingsRoutes(app);await integrationSettingsRoutes(app);
 app.get('/v1/openapi.json',async()=>{const spec=app.swagger() as any;const command=spec.paths?.['/v1/conversations/{id}/commands']?.post;
  if(command)command.requestBody={required:true,content:{'application/json':{schema:{type:'object',required:['type'],properties:{type:{type:'string',enum:['close_conversation','send_message','commitment','receipt_received','set_stage','assign','consent','opt_out','approve_step']}}}}}};

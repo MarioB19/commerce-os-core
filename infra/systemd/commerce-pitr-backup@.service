@@ -1,0 +1,17 @@
+[Unit]
+Description=Commerce OS PostgreSQL %i base backup to the PITR repository (pgBackRest, GCS other region)
+After=docker.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/opt/commerce-os/private/pitr/enabled
+ConditionPathExists=/opt/commerce-os/private/pitr/operator.json
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /opt/commerce-os/current/scripts/v7_pitr.py /opt/commerce-os/private/pitr/operator.json backup %i
+TimeoutStartSec=6h
+User=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

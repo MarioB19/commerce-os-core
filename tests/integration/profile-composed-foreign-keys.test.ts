@@ -35,7 +35,8 @@ describe('complete composed V7 FK proposal over the native schema',()=>{
   expect(raw.slice(raw.indexOf('-- Local proposal only'))).toBe(historicalPlan.sql);
   expect(historical.tables.length+historical.non_public_tables!.length).toBe(227);expect(historicalPlan.changes).toHaveLength(145);
   // After 0109 the same proposal minus the keys of the dropped tables (no kept table referenced them).
-  expect(catalog.tables.length+catalog.non_public_tables!.length).toBe(227-V7_RETIRED_TABLES.length);
+  // 0111 adds platform_backup_runs (no foreign keys).
+  expect(catalog.tables.length+catalog.non_public_tables!.length).toBe(227-V7_RETIRED_TABLES.length+1);
   expect(plan.changes.map(c=>c.foreign_key_name)).toEqual(historicalPlan.changes.filter(c=>live(c.original)).map(c=>c.foreign_key_name));
   expect([...historical.foreign_keys].some(k=>!retired.has(k.table)&&retired.has(k.referenced_table))).toBe(false);
   expect(plan.changes.filter(c=>c.original.on_delete==='c').map(c=>c.source_table)).toEqual(['health_observation_index','outbox_gate_schedule']);expect(plan.changes.some(c=>c.source_table.startsWith('commerce_number_lab.'))).toBe(false);
