@@ -118,10 +118,17 @@ describe('Account security through native HTTP endpoints',()=>{
   for(let i=0;i<11;i++){const r=await app.inject(explicitFixtureEnvironment({method:'POST',url:'/api/auth/request-password-reset',headers:{origin},payload:{email:randomUUID()+'@example.invalid'},remoteAddress:'192.0.2.10'}));expect(r.statusCode).toBe(i===10?429:200);}
   expect((await call('/request-password-reset',{email:owner.email,redirectTo:'https://evil.invalid/reset-password'})).statusCode).toBe(400);
  });
- it('keeps configuration owner-only, protected, versioned and without commercial revisions',async()=>{
-  const viewer=await person('viewer');const read=async(p:Person)=>app.inject(explicitFixtureEnvironment({method:'GET',url:'/v1/identity/mail',headers:{cookie:p.cookie,origin}}));
-  expect((await read(viewer)).statusCode).toBe(403);const metadata=(await read(owner)).json().data;expect(metadata.credentials_configured).toBe(false);
-  const bad=await app.inject(explicitFixtureEnvironment({method:'PUT',url:'/v1/identity/mail',headers:{cookie:owner.cookie,origin},payload:{expected_version:metadata.version,enabled:true,config:{...metadata.config,host:'169.254.169.254'}}}));expect(bad.statusCode).toBe(400);
+ it('keeps transactional mail platform-admin only, protected, versioned and without commercial revisions',async()=>{
+  // V7 F8: one installation-wide setting, so a profile owner is not enough.
+  const viewer=await person('viewer');const read=async(p:Person)=>app.inject({method:'GET',url:'/v2/platform/mail',headers:{cookie:p.cookie,origin}});
+  expect((await read(viewer)).statusCode).toBe(403);expect((await read(owner)).statusCode).toBe(403);
+  expect((await app.inject(explicitFixtureEnvironment({method:'GET',url:'/v1/identity/mail',headers:{cookie:owner.cookie,origin}}))).statusCode).toBe(404);
+  await pool.query("INSERT INTO platform_admins(user_id,source) VALUES($1,'INSTALLER') ON CONFLICT DO NOTHING",[owner.id]);
+  try{
+   const metadata=(await read(owner)).json().data;expect(metadata.credentials_configured).toBe(false);
+   const bad=await app.inject({method:'PUT',url:'/v2/platform/mail',headers:{cookie:owner.cookie,origin},payload:{expected_version:metadata.version,enabled:true,config:{...metadata.config,host:'169.254.169.254'}}});expect(bad.statusCode).toBe(400);
+   expect((await app.inject({method:'PUT',url:'/v2/platform/mail',headers:{cookie:owner.cookie,origin:'https://foreign.invalid'},payload:{}})).statusCode).toBe(403);
+  }finally{await pool.query('DELETE FROM platform_admins WHERE user_id=$1',[owner.id]);}
  });
  it('reports unavailable uniformly and persists SMTP retry/abandoned-claim outcomes without secret audit',async()=>{
   await pool.query('UPDATE identity_mail_settings SET enabled=false');const a=await call('/request-password-reset',{email:owner.email}),b=await call('/request-password-reset',{email:'missing@example.invalid'});expect(a.statusCode).toBe(503);expect(a.body).toBe(b.body);await pool.query('UPDATE identity_mail_settings SET enabled=true');
@@ -190,7 +197,9 @@ describe('Account security through native HTTP endpoints',()=>{
    process.env.SMTP_ALLOWED_TARGETS=JSON.stringify([...JSON.parse(process.env.SMTP_ALLOWED_TARGETS!),{host:'smtp.resend.com',port:465,mode:'remote',addresses:['127.0.0.1']}]);
    const changed={expected_version:saved.version,enabled:false,config:{...input.config,host:'smtp.resend.com',port:465,tls:'implicit' as const},username:'resend'};
    await expect(withTransaction(c=>saveMailSetting(c,changed,owner.id,randomUUID()))).rejects.toThrow('SMTP_CREDENTIAL_REPLACEMENT_REQUIRED');
-   const denied=await app.inject(explicitFixtureEnvironment({method:'PUT',url:'/v1/identity/mail',headers:{origin,cookie:owner.cookie},payload:changed}));expect(denied.statusCode).toBe(400);expect(denied.json().error.code).toBe('SMTP_CREDENTIAL_REPLACEMENT_REQUIRED');
+   await pool.query("INSERT INTO platform_admins(user_id,source) VALUES($1,'INSTALLER') ON CONFLICT DO NOTHING",[owner.id]);
+   try{const denied=await app.inject({method:'PUT',url:'/v2/platform/mail',headers:{origin,cookie:owner.cookie},payload:changed});expect(denied.statusCode).toBe(400);expect(denied.json().error.code).toBe('SMTP_CREDENTIAL_REPLACEMENT_REQUIRED');}
+   finally{await pool.query('DELETE FROM platform_admins WHERE user_id=$1',[owner.id]);}
    const updated=await withTransaction(c=>saveMailSetting(c,{...changed,password:secret()},owner.id,randomUUID()));expect(updated.credentials_configured).toBe(true);expect(updated.enabled).toBe(false);
 
   }finally{process.env.SMTP_ALLOWED_TARGETS=oldTargets;await pool.query('UPDATE identity_mail_settings SET version=$1,enabled=$2,config=$3,secret_ciphertext=$4',[previous.version,previous.enabled,previous.config,previous.secret_ciphertext]);}

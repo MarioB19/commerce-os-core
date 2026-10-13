@@ -1,4 +1,5 @@
 import {ProfileSales} from './profile-sales.js';
+import {SalesNav} from './sales-nav.js';
 import {ProductsHome,ProductDetail} from './products-v7.js';
 import {VariantEditor,variantSectionTabs,type VariantTab} from './variant-editor.js';
 import {useEffect,useRef,useState,type ReactNode} from 'react';
@@ -95,6 +96,6 @@ function ProfilePage({path,data}:{path:string;data:ProfileBrowserBootstrap}){
  if(path==='/sales/receipts')return <ReceiptQueue selection={selection} role={profile.role} state={profile.state} timezone={profile.timezone}/>;
  if(['/sales/inbox','/sales/orders'].includes(path))return <ProfileSales key={path} resource={path==='/sales/inbox'?'conversations':'orders'} selection={selection} actorId={data.user.id} role={profile.role} profileState={profile.state} timezone={profile.timezone}/>;
  if(path==='/sales/payments/rules')return <ReceiptPolicies selection={selection} actorId={data.user.id} environment="REAL" role={profile.role} profileState={profile.state} variant={null}/>;
- if(path==='/sales/payments')return <><h1>Pagos</h1><a href="/sales/payments/rules">Reglas de comprobantes</a><PaymentsRegister selection={selection} environment="REAL" timezone={profile.timezone} role={profile.role}/></>;
+ if(path==='/sales/payments')return <><SalesNav current="payments"/><PaymentsRegister selection={selection} environment="REAL" timezone={profile.timezone} role={profile.role}/><p><a href="/sales/payments/rules">Reglas de comprobantes</a></p></>;
  return <section><h1>Inicio · {profile.businessName}</h1><ProfileOnboarding selection={selection} role={profile.role} state={profile.state}/><ProfileHome selection={selection}/><p>Trabajas en {profile.businessName} con el rol {profileRoleLabels[profile.role]}.</p><div className="grid gap-4"><a href="/products">Consultar productos</a><a href="/sales/inbox">Atender conversaciones</a><a href="/sales/payments">Consultar pagos</a><a href="/results">Consultar resultados y metas</a></div></section>;
 }

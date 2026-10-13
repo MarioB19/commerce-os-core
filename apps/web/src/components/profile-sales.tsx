@@ -1,3 +1,4 @@
+import {SalesNav} from './sales-nav.js';
 import {useEffect,useMemo,useRef,useState,type FormEvent} from 'react';
 import type {ProfileRole,ProfileState} from '../../../../packages/contracts/src/profiles.js';
 import type {ProfileSalesRow} from '../../../../packages/contracts/src/profile-sales-consumer.js';
@@ -34,7 +35,7 @@ export function ProfileSales({resource,selection,actorId,role,profileState,timez
  }
  function control(name:'paused'|'takeover',value:boolean){if(row)void submit({operation:'conversation.controls',resource_id:row.id,body:{[name]:value,reason}});}
  function review(event:FormEvent){event.preventDefault();if(!row)return;try{const value=reviewAmount?marketPriceMinor(reviewAmount,currency):undefined;void submit({operation:'receipt.review',resource_id:row.id,body:{decision,reason,expected_version:row.version,...(value===undefined?{}:{amount_minor:value,currency})}});}catch{setFormError('Revisa el importe y la moneda antes de registrar la decisión.');}}
- return <section className="profile-sales"><h1>{labels[resource]}</h1><nav aria-label="Ventas"><a href="/sales/inbox" aria-current={resource==='conversations'?'page':undefined}>Conversaciones</a> · <a href="/sales/orders" aria-current={resource==='orders'?'page':undefined}>Pedidos</a> · <a href="/sales/receipts" aria-current={resource==='receipts'?'page':undefined}>Comprobantes</a> · <a href="/sales/payments">Pagos</a></nav>
+ return <section className="profile-sales"><h1>{labels[resource]}</h1><SalesNav current={resource}/>
   {operation.status!=='IDLE'&&<section aria-label="Seguimiento de la solicitud" className="rounded border p-4 my-4"><p role={operation.status==='UNCERTAIN'||operation.status==='ERROR'?'alert':'status'}>{operation.status==='WORKING'?'Confirmando la solicitud…':operation.message}</p>{operation.pending&&<p>Referencia: <code>{operation.pending.operation_id}</code>. {operation.pending.operation==='receipt.review'?'Comprobante':'Conversación'}: <code>{operation.pending.resource_id}</code>.</p>}
    {(operation.pending||operation.command)&&<Button variant="secondary" disabled={operation.status==='WORKING'} onClick={()=>{void mutation.current?.reconcile();}}>Consultar solicitud</Button>}
    {operation.mayResend&&writable&&<><p>Si recargaste la página, vuelve a abrir el mismo registro y completa exactamente los mismos datos. El contenido del mensaje no se guarda en el navegador.</p></>}

@@ -5,6 +5,8 @@ import {pool,withTransaction} from '../../../packages/db/src/index.js';
 import {identityAudit} from '../../../packages/db/src/identity.js';
 import {createPlatformProfile,invitePlatformOwner,issueCapacityAgentToken,isPlatformAdmin,isPlatformToken,issuePlatformToken,listPlatformProfiles,listPlatformTokens,readPlatformCapacity,resolvePlatformToken,revokePlatformToken,updatePlatformProfile,PlatformError,type PlatformScope,type PlatformSession} from '../../../packages/db/src/platform-profiles.js';
 import {auth,trustedOrigins} from './auth.js';
+import {mailPatchSchema,readMailSetting,mailMetadata,saveMailSetting,diagnoseMail} from './identity-mail.js';
+import {identityLimit} from '../../../packages/db/src/identity.js';
 
 /** V7 RF-01.5/RF-02 platform administration (super-admin). An interactive
  * session or a platform token (cos_plt_, RF-02.c: same actions through MCP);
@@ -94,6 +96,25 @@ export async function platformProfileRoutes(app:FastifyInstance,deps:PlatformRou
   const result=await audited(current,'platform.token.issue',req,db=>issuePlatformToken(db,current,req.body));
   return reply.code(201).send({data:result});
  });
+ // V7 F8: transactional mail (password recovery) is one installation-wide
+ // setting, so it belongs to the platform administration, not to a profile owner.
+ async function mailAdmin(req:FastifyRequest,reply:FastifyReply,mutation:boolean){
+  const current=await session(req,reply,mutation,null,{interactiveOnly:true});
+  if(!await isPlatformAdmin(pool,current))throw new PlatformError('PLATFORM_ADMIN_REQUIRED',403);
+  return current;
+ }
+ app.get('/v2/platform/mail',async(req,reply)=>{await mailAdmin(req,reply,false);return{data:mailMetadata(await readMailSetting())};});
+ app.put('/v2/platform/mail',{bodyLimit:8192},async(req,reply)=>{
+  const current=await mailAdmin(req,reply,true),input=mailPatchSchema.parse(req.body??{});
+  try{return{data:await withTransaction(db=>saveMailSetting(db,input,current.userId,req.id))};}
+  catch(error){if(/SMTP_TARGET_DENIED|SMTP_TLS_REQUIRED|SMTP_LOCAL_TARGET_DENIED|PUBLIC_WEB_ORIGIN_INVALID/.test((error as Error).message))throw new PlatformError('SMTP_CONFIGURATION_DENIED',400);throw error;}
+ });
+ app.post('/v2/platform/mail/diagnose',{bodyLimit:256},async(req,reply)=>{
+  const current=await mailAdmin(req,reply,true);
+  if(!await identityLimit('smtp-diagnose',current.userId,5,60)){reply.header('Retry-After','60');throw new PlatformError('RATE_LIMITED',429);}
+  const result=await diagnoseMail();await identityAudit(pool,'smtp.diagnose',result.code,req.id,undefined,current.userId);return{data:result};
+ });
+ app.get('/v2/platform/mail/jobs',async(req,reply)=>{await mailAdmin(req,reply,false);return{data:(await pool.query('SELECT id,status,attempts,diagnostic_code,created_at,finished_at FROM identity_mail_jobs ORDER BY created_at DESC LIMIT 50')).rows};});
  app.post('/v2/platform/tokens/:id/revoke',{bodyLimit:256},async(req,reply)=>{
   const current=await session(req,reply,true,null),{id}=idParams.parse(req.params);
   return{data:await audited(current,'platform.token.revoke',req,db=>revokePlatformToken(db,current,id))};

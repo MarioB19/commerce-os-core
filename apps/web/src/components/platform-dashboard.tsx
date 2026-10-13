@@ -1,3 +1,4 @@
+import {PlatformMail} from './platform-mail.js';
 import {useEffect,useId,useRef,useState,type FormEvent} from 'react';
 import {Button} from './ui/button';
 import {createPlatformProfile,invitePlatformOwner,issuePlatformToken,loadPlatformAccess,loadPlatformProfiles,loadPlatformTokens,platformMessage,platformScopeLabels,revokePlatformToken,signalLabels,updatePlatformProfile,type PlatformCapacity,type PlatformLimits,type PlatformProfile,type PlatformToken} from '../lib/platform-profiles.js';
@@ -52,6 +53,7 @@ export function PlatformDashboard(){
   {capacity&&capacity.profiles.used<capacity.profiles.max&&<CreateProfile onDone={done} freeNumbers={Math.max(0,capacity.numbers.max-capacity.numbers.allocated)}/>}
   {capacity&&capacity.profiles.used>=capacity.profiles.max&&<p>La instalación ya usa sus {capacity.profiles.max} perfiles. Para crear otro hace falta ampliar la capacidad.</p>}
   <PlatformTokens onDone={done}/>
+  <PlatformMail/>
  </main>;
 }
 function PlatformProfileCard({profile,onDone}:{profile:PlatformProfile;onDone:(message:string)=>void}){

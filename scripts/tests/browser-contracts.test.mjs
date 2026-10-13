@@ -5,10 +5,10 @@ import {browserContracts,runBrowserVerification} from '../browser-contracts.mjs'
 test('every explicit browser contract runs once before mounted Playwright with its filters intact',async()=>{
  const calls=[],args=['tests/e2e/example.spec.ts','--grep','profile'];
  const result=await runBrowserVerification(async(cmd,argv)=>{calls.push([cmd,argv]);return 0;},args);
- assert.equal(browserContracts.length,17);assert.equal(new Set(browserContracts).size,17);
+ assert.equal(browserContracts.length,13);assert.equal(new Set(browserContracts).size,13);
  for(const path of browserContracts)assert.ok((await readFile(new URL('../../'+path,import.meta.url))).length);
- assert.deepEqual(calls.slice(0,17),browserContracts.map(path=>[process.execPath,[path]]));
- assert.deepEqual(calls.slice(17),[['playwright',['test',...args]],['python3',['scripts/sanitize-test-artifacts.py']]]);
+ assert.deepEqual(calls.slice(0,13),browserContracts.map(path=>[process.execPath,[path]]));
+ assert.deepEqual(calls.slice(13),[['playwright',['test',...args]],['python3',['scripts/sanitize-test-artifacts.py']]]);
  assert.deepEqual(result,{code:0,sanitized:0});assert.deepEqual(args,['tests/e2e/example.spec.ts','--grep','profile']);
 });
 test('contract failure remains a failure even if mounted tests and sanitation pass',async()=>{

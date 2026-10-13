@@ -39,7 +39,7 @@ console.log(JSON.stringify({queries,calls,logs,ended,thrown,code,initial}));
             'args': list(args), 'results': list(results), 'throws_at': throws_at,
             'entries': entries if entries is not None else [
                 {'file': 'tests/integration/warmup-runtime.test.ts'},
-                *([] if args else [{'file': 'tests/integration/numbers-mcp-stdio.test.ts'}]),
+                *([] if args else [{'file': 'tests/integration/zz-ordinary.test.ts'}]),
             ],
         }))
         node = shutil.which('node')
@@ -55,7 +55,7 @@ console.log(JSON.stringify({queries,calls,logs,ended,thrown,code,initial}));
         self.assertTrue(result['ended'])
         calls = result['calls']
         self.assertEqual(len(calls), 4)
-        calendar = 'tests/integration/numbers-mcp-stdio.test.ts'
+        calendar = 'tests/integration/zz-ordinary.test.ts'
         self.assertEqual(calls[1]['args'], ['exec', 'vitest', 'run', '--config',
                          'vitest.integration.config.ts', '--exclude', calendar])
         self.assertEqual(calls[3]['args'], ['exec', 'vitest', 'run', '--config',
@@ -102,7 +102,7 @@ console.log(JSON.stringify({queries,calls,logs,ended,thrown,code,initial}));
         self.assertEqual(sum(q.startswith('CREATE') for q in result['queries']), 1)
 
     def test_profile_and_calendar_groups_each_receive_distinct_migrated_database(self):
-        files = ['warmup-runtime', 'profile-session', 'profile-settings', 'numbers-mcp-stdio']
+        files = ['warmup-runtime', 'profile-session', 'profile-settings', 'zz-ordinary']
         result = self.exercise(entries=[{'file': f'tests/integration/{name}.test.ts'} for name in files],
                                results=(0,) * 8)
         self.assertEqual(result['code'], 0)
@@ -116,7 +116,8 @@ console.log(JSON.stringify({queries,calls,logs,ended,thrown,code,initial}));
             self.assertEqual(len(kept), 1)
             selected.extend(kept)
         self.assertEqual(sorted(selected), sorted(files))
-        self.assertEqual(selected[-1], 'numbers-mcp-stdio')
+        # V7 F8: no calendar group; profile transitions run last, each in its own database.
+        self.assertEqual(selected[-2:], ['profile-session', 'profile-settings'])
         self.assertEqual(sum(q.startswith('DROP DATABASE') for q in result['queries']), 4)
 
     def test_invalid_selection_never_connects_or_creates_database(self):

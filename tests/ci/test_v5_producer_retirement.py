@@ -14,11 +14,12 @@ class ProducerRetirementTests(unittest.TestCase):
    self.assertIn('exit 1',value)
    for forbidden in ('push:','pull_request:','schedule:','secrets.','uses:','download-artifact','upload-artifact','pnpm','run-pilot','checkout'):
     self.assertNotIn(forbidden,value)
- def test_exclusive_web_pages_removed_shared_local_factory_retained(self):
+ def test_exclusive_web_pages_removed_and_local_factory_retired_in_v7(self):
   for name in ('studio.tsx','studio-recipe.tsx','studio-voice.tsx','creative-settings.tsx'):
    self.assertFalse((ROOT/'apps/web/src/pages'/name).exists())
-  for path in ('scripts/creative-engine-render.ts','packages/creative-engine/src/index.ts','apps/commerce-worker/src/api.ts','apps/web/src/pages/creative-shared.tsx'):
-   self.assertTrue((ROOT/path).exists(),path)
+  # V7 F8: the local creative factory, its engine and desktop worker were retired too.
+  for path in ('scripts/creative-engine-render.ts','packages/creative-engine','packages/creative-contracts','packages/provider-broker','packages/intelligence','apps/commerce-worker','apps/commerce-desktop','apps/web/src/pages/creative-shared.tsx'):
+   self.assertFalse((ROOT/path).exists(),path)
   # The public contract proves removal/tombstones, not private backup history.
   policy=json.loads((ROOT/'tests/fixtures/public-retirement-policy.json').read_text())
   self.assertEqual(policy['content_profile'],'synthetic-public-v1')
@@ -30,5 +31,5 @@ class ProducerRetirementTests(unittest.TestCase):
  def test_remote_release_excludes_only_explicit_factory_drivers(self):
   for name in package.LOCAL_FACTORY_SCRIPTS:
    self.assertFalse(package.release_source('scripts/'+name))
-  for name in ('v5-token-remote.py','v5_token_transport_config.py','install-vps.sh','restore.mjs','creative-library-backup.mjs','creative-library-restore.mjs','creative-intelligence-pilot.mjs','package-creative-mcp.mjs'):
+  for name in ('v5-token-remote.py','v5_token_transport_config.py','install-vps.sh','restore.mjs'):
    self.assertTrue(package.release_source('scripts/'+name))

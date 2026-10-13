@@ -7,8 +7,8 @@ import type {FastifyInstance,FastifyRequest,FastifyReply} from 'fastify';
 import {pool,withTransaction} from '../../../packages/db/src/index.js';
 import {identityAudit,identityDigest,identityLimit,identityLock,activeMember,invalidateResetLinks} from '../../../packages/db/src/identity.js';
 import {auth,createAuth,trustedOrigins} from './auth.js';
-import {fail,principal,parseBody} from './context.js';
-import {mailReady,publicWebOrigin,mailPatchSchema,readMailSetting,mailMetadata,saveMailSetting,diagnoseMail} from './identity-mail.js';
+import {fail} from './context.js';
+import {mailReady,publicWebOrigin} from './identity-mail.js';
 
 export const recoveryMessage='Si existe una cuenta activa con ese correo, recibirás instrucciones para recuperar el acceso.';
 const password=z.string().min(12).max(128);
@@ -114,9 +114,5 @@ export async function accountAuthHandler(req:FastifyRequest,reply:FastifyReply){
 }
 export async function accountSecurityRoutes(app:FastifyInstance){
  app.route({method:['GET','POST'],url:'/api/auth/*',bodyLimit:8192,handler:accountAuthHandler});
- const owner=(req:FastifyRequest)=>{const p=principal(req);if(p.service||p.role!=='owner')throw fail(403,'OWNER_REQUIRED','Sólo el propietario puede configurar el correo.');return p;};
- app.get('/v1/identity/mail',async req=>{owner(req);return{data:mailMetadata(await readMailSetting())};});
- app.put('/v1/identity/mail',{bodyLimit:8192},async req=>{const p=owner(req),input=mailPatchSchema.parse(parseBody(req));try{return{data:await withTransaction(c=>saveMailSetting(c,input,p.user.id,req.id))};}catch(error){if(/SMTP_TARGET_DENIED|SMTP_TLS_REQUIRED|SMTP_LOCAL_TARGET_DENIED|PUBLIC_WEB_ORIGIN_INVALID/.test((error as Error).message))throw fail(400,'SMTP_CONFIGURATION_DENIED','Revisa el destino permitido por el servidor y el modo TLS.');throw error;}});
- app.post('/v1/identity/mail/diagnose',async(req,reply)=>{const p=owner(req);await limit('smtp-diagnose',p.user.id,5,reply,60);const result=await diagnoseMail();await identityAudit(pool,'smtp.diagnose',result.code,req.id,undefined,p.user.id);return{data:result};});
- app.get('/v1/identity/mail/jobs',async req=>{owner(req);return {data:(await pool.query('SELECT id,status,attempts,diagnostic_code,created_at,finished_at FROM identity_mail_jobs ORDER BY created_at DESC LIMIT 50')).rows};});
+ // V7 F8: transactional mail moved to the platform administration (/v2/platform/mail).
 }

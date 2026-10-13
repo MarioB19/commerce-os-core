@@ -1,3 +1,4 @@
+import {SalesNav} from './sales-nav.js';
 import {useCallback,useEffect,useRef,useState} from 'react';
 import type {ProfileRole,ProfileState} from '../../../../packages/contracts/src/profiles.js';
 import {variantRequest,newOperationKey,formatMoney,errorText,toMinor,fromMinor} from '../lib/variants.js';
@@ -58,7 +59,7 @@ export function ReceiptQueue({selection,role,state,timezone}:{selection:ProfileF
  }
  return <section className="receipt-queue" aria-labelledby="receipt-queue-title">
   <div className="variant-heading"><h1 id="receipt-queue-title">Comprobantes</h1>{page&&<span className={`number-status variant-state-${page.pending?'warn':'ok'}`}>{page.pending?`${page.pending} por revisar`:'Al día'}</span>}</div>
-  <nav aria-label="Ventas" className="receipt-subnav"><a href="/sales/inbox">Conversaciones</a><a href="/sales/orders">Pedidos</a><a href="/sales/receipts" aria-current="page">Comprobantes</a><a href="/sales/payments">Pagos</a></nav>
+  <SalesNav current="receipts"/>
   <div className="receipt-view" role="group" aria-label="Mostrar">
    <button type="button" aria-pressed={view==='pending'} onClick={()=>setView('pending')}>Por revisar</button>
    <button type="button" aria-pressed={view==='all'} onClick={()=>setView('all')}>Todos</button>
