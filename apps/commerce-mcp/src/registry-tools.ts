@@ -140,4 +140,9 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
   conectar:{schema:numberId,read:false,run:qr},vincular:{schema:numberId,read:false,run:qr},
   desconectar:{schema:z.object({operationId:z.uuid(),numberId:z.uuid()}).strict(),read:false,destructive:true,run:i=>c.v1('POST','/v1/numbers/'+id(i.numberId)+'/link',{action:'unlink'},i.operationId)},
  });
+ tool('alerts_manage','Avisos del perfil','Avisos abiertos sobre números y envíos, en lenguaje de operación, con el enlace a resolverlos. Acusar recibo no resuelve la causa.',{
+  listar:v('GET',z.object({include:z.enum(['open','all']).optional()}).strict(),i=>'/v2/alerts'+query(i))(c.v2),
+  leer:{schema:z.object({alertId:z.uuid()}).strict(),read:true,run:async i=>{const r=await c.v2('GET','/v2/alerts?include=all') as {alerts:{id:string}[]};const found=r.alerts.find(a=>a.id===i.alertId.toLowerCase());if(!found)throw Object.assign(new Error('ALERT_NOT_FOUND'),{code:'ALERT_NOT_FOUND'});return found;}},
+  acusar:v('POST',z.object({alertId:z.uuid()}).strict(),i=>'/v2/alerts/'+id(i.alertId)+'/acknowledge',()=>({}))(c.v2),
+ });
 }

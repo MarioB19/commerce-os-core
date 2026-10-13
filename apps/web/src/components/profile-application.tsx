@@ -74,7 +74,7 @@ function ProfilePage({path,data}:{path:string;data:ProfileBrowserBootstrap}){
  if(path==='/products')return <><h1>Productos</h1><ProfileCatalog selection={selection} environment="REAL" variantLinks/></>;
  if(path==='/settings/profile')return <ProfileSettings selection={selection} role={profile.role}/>;
  if(path==='/account/integrations')return <ProfileIntegrations selection={selection} role={profile.role} state={profile.state}/>;
- if(path==='/numbers')return <ProfileNumbers role={profile.role} state={profile.state}/>;
+ if(path==='/numbers')return <ProfileNumbers selection={selection} role={profile.role} state={profile.state}/>;
  if(path==='/settings/employees')return profile.role==='owner'?<><ProfileEmployees selection={selection} role={profile.role} state={profile.state} currentUserId={data.user.id}/><ProfileInvitations selection={selection} role={profile.role} state={profile.state}/></>:<p role="alert">No tienes permiso para gestionar empleados.</p>;
  if(path==='/account/tokens')return profile.role==='owner'?<ProfileTokens selection={selection} role={profile.role} state={profile.state}/>:<p role="alert">No tienes permiso para gestionar accesos MCP.</p>;
  if(path==='/results'||path==='/results/goals')return <Results selection={selection} timezone={profile.timezone} role={profile.role} profileState={profile.state}/>;

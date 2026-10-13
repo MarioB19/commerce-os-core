@@ -1,7 +1,7 @@
 import type {FastifyInstance,FastifyReply,FastifyRequest} from 'fastify';
 import {z} from 'zod';
 import {appendEvent} from '../../../packages/db/src/index.js';
-import {auditCsv,listProfileAudit,ProfileReadError,readProfileHome,readProfileOperation,readProfileUsage} from '../../../packages/db/src/profile-reads.js';
+import {acknowledgeProfileAlert,auditCsv,listProfileAlerts,listProfileAudit,ProfileReadError,readProfileHome,readProfileOperation,readProfileUsage} from '../../../packages/db/src/profile-reads.js';
 import {withProfileRequest,type ProfileRequestDependencies} from './profile-request.js';
 
 /** V7 F2 read families: /v2/home (RF-04), /v2/usage (RF-01.8), /v2/audit
@@ -31,6 +31,17 @@ export async function profileReadRoutes(app:FastifyInstance,deps?:ProfileRequest
   const csv=auditCsv(exported);
   return reply.header('Content-Type','text/csv; charset=utf-8').header('Content-Disposition','attachment; filename="auditoria.csv"').send('﻿'+csv);
  });
+ app.get('/v2/alerts',async(req,reply)=>{headers(reply);
+  const q=z.object({include:z.enum(['open','all']).default('open')}).strict().safeParse(req.query??{});if(!q.success)fail('ALERTS_QUERY_INVALID');
+  return{data:await mapped(()=>withProfileRequest(req,'REAL',{scope:'alerts:read',mutation:false},({db,profile})=>listProfileAlerts(db,profile.authority,{includeResolved:q.data.include==='all'}),deps))};});
+ app.post('/v2/alerts/:id/acknowledge',{bodyLimit:256},async(req,reply)=>{headers(reply);noQuery(req);
+  const id=String((req.params as {id?:unknown}).id??'');
+  return{data:await mapped(()=>withProfileRequest(req,'REAL',{scope:'alerts:write',mutation:true},async({db,profile})=>{
+   const result=await acknowledgeProfileAlert(db,profile.authority,id);
+   await appendEvent(db,{workspace_id:db.workspaceId,environment:'REAL',event_type:'profile.alert.acknowledged',aggregate_id:result.id,correlation_id:req.id,
+    actor:{type:profile.authority.credential.kind==='session'?'human':'personal_api',id:profile.authority.membership.userId},payload:{status:'ACKNOWLEDGED'}});
+   return result;
+  },deps))};});
  app.get('/v2/operations/:id',async(req,reply)=>{headers(reply);noQuery(req);
   const id=String((req.params as {id?:unknown}).id??'');
   return{data:await mapped(()=>withProfileRequest(req,'REAL',{scope:'operations:read',mutation:false},({db,profile})=>readProfileOperation(db,profile.authority,id),deps))};});

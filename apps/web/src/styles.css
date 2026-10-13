@@ -4104,3 +4104,8 @@ input:not([type="checkbox"]):not([type="radio"]),select,textarea{min-height:44px
 .number-qr img{width:min(18rem,70vw);height:auto;image-rendering:pixelated;display:block;margin:0 auto}
 .number-removal-impact{padding-left:1.1rem}
 @media (max-width:640px){.profile-number-title .number-status{margin-left:0}.profile-number-actions>*{flex:1 1 100%}}
+.number-alerts{border:1px solid #f5d38a;background:#fff8e6;border-radius:.75rem;padding:.6rem 1rem}
+.number-alerts h2{font-size:1rem;margin:0 0 .4rem}
+.number-alerts ul{list-style:none;margin:0;padding:0;display:grid;gap:.4rem}
+.number-alerts li{display:flex;gap:.6rem;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.number-alerts li.critical{color:#7f1d1d}

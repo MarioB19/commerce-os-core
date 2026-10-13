@@ -4,6 +4,7 @@ import {z} from 'zod';
 import type {ProfileRole,ProfileState} from '../../../../packages/contracts/src/profiles.js';
 import {numberCountries,type NumberCountry} from '../../../../packages/domain/src/numbers/phone.js';
 import {api,ApiError} from '../lib/api.js';
+import {profileRequest,type ProfileFence} from '../lib/profile-request.js';
 import {Button} from './ui/button';
 
 /** V7 Números (RF-07.a/c/d, RF-17.f, wireframe D): add a number with its
@@ -19,7 +20,7 @@ type Row=z.infer<typeof rowSchema>;type Link=z.infer<typeof linkSchema>;
 const tone=(code:string)=>['SELLING','CONNECTED','READY_TO_ASSIGN','WARMING'].includes(code)?'ok':['NEEDS_QR','PHONE_MISMATCH','NUMBER_UNAVAILABLE','PREPARATION_FAILED','DISCONNECTED'].includes(code)?'attention':'neutral';
 const message=(e:unknown,fallback:string)=>e instanceof ApiError||e instanceof Error?e.message:fallback;
 
-export function ProfileNumbers({role,state}:{role:ProfileRole;state:ProfileState}){
+export function ProfileNumbers({selection,role,state}:{selection:ProfileFence;role:ProfileRole;state:ProfileState}){
  const manage=role!=='viewer'&&state==='ACTIVE';
  const [data,setData]=useState<z.infer<typeof overviewSchema>>(),[error,setError]=useState(''),[adding,setAdding]=useState(false),[linking,setLinking]=useState<string|null>(null),[removing,setRemoving]=useState<Row|null>(null);
  const load=useCallback(async(signal?:AbortSignal)=>{try{setData(overviewSchema.parse(await api('/numbers/overview',{signal})));setError('');}catch(e){if(!signal?.aborted)setError(message(e,'No se pudo consultar tus números.'));}},[]);
@@ -27,6 +28,7 @@ export function ProfileNumbers({role,state}:{role:ProfileRole;state:ProfileState
  const full=data?.limit!=null&&data.numbers.length>=data.limit;
  return <section className="profile-numbers" aria-labelledby="numbers-title">
   <div className="profile-numbers-heading"><h1 id="numbers-title">Números</h1>{manage&&<Button onClick={()=>setAdding(true)} disabled={full}>Agregar número</Button>}</div>
+  <NumberAlerts selection={selection} canAcknowledge={manage}/>
   {full&&<p role="status">Ya usas todos los números de tu plan ({data?.limit}).</p>}
   {error&&<p role="alert">{error}</p>}
   {!data&&!error&&<p role="status">Consultando tus números…</p>}
@@ -111,4 +113,19 @@ function RemoveNumber({number,onClose}:{number:Row;onClose:()=>void}){
   {error&&<p role="alert">{error}</p>}
   <div className="profile-number-actions"><Dialog.Close asChild><Button variant="secondary">Cerrar</Button></Dialog.Close></div>
  </Dialog.Content></Dialog.Portal></Dialog.Root>;
+}
+
+const alertSchema=z.object({alerts:z.array(z.object({id:z.string(),kind:z.string(),label:z.string(),href:z.string(),severity:z.enum(['WARNING','CRITICAL']),number:z.object({id:z.string(),alias:z.string()}).nullable(),createdAt:z.string().nullable(),acknowledgedAt:z.string().nullable()}))});
+/** RF-07.e: open notices about numbers, deduplicated per incident, in operator language. */
+function NumberAlerts({selection,canAcknowledge}:{selection:ProfileFence;canAcknowledge:boolean}){
+ const [alerts,setAlerts]=useState<z.infer<typeof alertSchema>['alerts']>([]),[error,setError]=useState('');
+ const load=useCallback(async(signal?:AbortSignal)=>{try{setAlerts(alertSchema.parse(await profileRequest(selection,'GET','/v2/alerts',undefined,signal)).alerts.filter(a=>a.href==='/numbers'||a.number));setError('');}catch(e){if(!signal?.aborted)setError(message(e,'No se pudieron consultar los avisos.'));}},[selection]);
+ useEffect(()=>{const controller=new AbortController();void load(controller.signal);const timer=setInterval(()=>void load(controller.signal),30000);return()=>{controller.abort();clearInterval(timer);};},[load]);
+ async function acknowledge(id:string){try{await profileRequest(selection,'POST',`/v2/alerts/${id}/acknowledge`,{});await load();}catch(e){setError(message(e,'No se pudo marcar el aviso.'));}}
+ if(error)return <p role="alert">{error}</p>;
+ if(!alerts.length)return null;
+ return <section className="number-alerts" aria-label="Avisos de tus números"><h2>Avisos</h2><ul>{alerts.map(a=><li key={a.id} className={a.severity==='CRITICAL'?'critical':''}>
+  <span>{a.number?<strong>{a.number.alias}: </strong>:null}{a.label}</span>
+  {canAcknowledge&&!a.acknowledgedAt&&<Button variant="secondary" onClick={()=>void acknowledge(a.id)}>Entendido</Button>}
+ </li>)}</ul></section>;
 }

@@ -105,3 +105,42 @@ export async function readProfileOperation(db:ProfileExecutor,authority:ProfileA
  }
  return{operationId:operationId.toLowerCase(),family:null,state:'NOT_FOUND' as const,recordedAt:null,result:null};
 }
+
+/** V7 F3 owner notices (RF-07.e, RNF-02.g, glossary): open alerts of this
+ * profile in operator language, one per incident (the worker deduplicates by
+ * episode). Technical evidence stays in diagnostics; nothing here names a
+ * customer, a phone or a secret. Mail delivery is a separate durable state. */
+export const alertLabels:Record<string,{label:string;href:string}>={
+ SESSION_QR_REQUIRED:{label:'Necesita QR: vuelve a vincular el número',href:'/numbers'},
+ SESSION_AUTH_REVOKED:{label:'La vinculación fue revocada: vuelve a vincular',href:'/numbers'},
+ SESSION_PASSKEY_REQUIRED:{label:'WhatsApp pide una confirmación en el teléfono',href:'/numbers'},
+ SESSION_IDENTITY_CONFLICT:{label:'El teléfono vinculado cambió; revisa el número',href:'/numbers'},
+ SESSION_RECOVERY_EXHAUSTED:{label:'No se pudo reconectar automáticamente',href:'/numbers'},
+ SESSION_OWNER_UNAVAILABLE:{label:'Reconectando el número',href:'/numbers'},
+ SESSION_HEALTH_STALE:{label:'Sin comprobación reciente del número',href:'/numbers'},
+ EFFECT_UNKNOWN:{label:'Entrega por confirmar',href:'/sales/inbox'},
+ BLOCKED_EFFECTS:{label:'Mensajes en espera',href:'/sales/inbox'},
+ RELEASE_RECOVERY_PENDING:{label:'Reanudando tras una actualización',href:'/numbers'},
+ AUTHORIZATION_EXPIRING:{label:'Autorización anterior por vencer',href:'/numbers'},
+ AUTHORIZATION_EXPIRED:{label:'Autorización anterior vencida',href:'/numbers'},
+ REAL_POLICY_FROZEN:{label:'Envíos detenidos por la plataforma',href:'/home'},
+ RELEASE_HOLD_OVERDUE:{label:'Actualización de la plataforma en curso',href:'/home'},
+ CHANNEL_WORKER_UNAVAILABLE:{label:'Servicio de envío no disponible',href:'/home'},
+};
+export async function listProfileAlerts(db:ProfileExecutor,authority:ProfileAuthority,input:{includeResolved?:boolean}={}){
+ await authorize(db,authority,'alerts:read');
+ const rows=(await db.query(`SELECT a.id,a.kind,a.severity,a.status,a.account_id,a.created_at,a.resolved_at,a.acknowledged_at,r.body->>'name' AS alias
+  FROM operational_alerts a LEFT JOIN records r ON r.id=a.account_id AND r.workspace_id=a.workspace_id AND r.kind='channel_account'
+  WHERE a.workspace_id=$1 AND a.environment='REAL' AND ($2::boolean OR a.resolved_at IS NULL) ORDER BY a.resolved_at IS NULL DESC,a.severity='CRITICAL' DESC,a.created_at DESC LIMIT 100`,[db.workspaceId,input.includeResolved===true])).rows;
+ return{alerts:rows.map(row=>{const known=alertLabels[row.kind];return{id:row.id as string,kind:row.kind as string,label:known?.label??'Aviso del sistema',href:known?.href??'/home',
+  severity:row.severity as 'WARNING'|'CRITICAL',number:row.account_id?{id:row.account_id as string,alias:String(row.alias??'Número').replace(/\+?\d[\d ()-]{8,}\d/g,v=>'•••• '+v.replace(/\D/g,'').slice(-4))}:null,
+  createdAt:iso(row.created_at),resolvedAt:iso(row.resolved_at),acknowledgedAt:iso(row.acknowledged_at),notification:row.status==='RESOLVED'?'RESOLVED':['ACCEPTED','RECEIVED'].includes(row.status)?'SENT':row.status==='PENDING'?'PENDING':'UNCONFIRMED'};})};
+}
+export async function acknowledgeProfileAlert(db:ProfileExecutor,authority:ProfileAuthority,alertId:string){
+ const now=new Date((await db.query('SELECT clock_timestamp() AS now')).rows[0].now);
+ authorizeProfileAction(authority,{scope:'alerts:write',workspaceId:db.workspaceId,mutation:true},now);
+ if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(alertId))throw new ProfileReadError('ALERT_NOT_FOUND',404);
+ const row=(await db.query("UPDATE operational_alerts SET acknowledged_at=COALESCE(acknowledged_at,clock_timestamp()),acknowledged_by=COALESCE(acknowledged_by,$3) WHERE id=$1 AND workspace_id=$2 AND environment='REAL' RETURNING id,acknowledged_at",[alertId.toLowerCase(),db.workspaceId,authority.membership.userId])).rows[0];
+ if(!row)throw new ProfileReadError('ALERT_NOT_FOUND',404);
+ return{id:row.id as string,acknowledgedAt:iso(row.acknowledged_at)};
+}

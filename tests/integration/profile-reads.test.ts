@@ -82,4 +82,22 @@ describe('V7 profile reads: home, usage, audit and operations',()=>{
   expect((await get('/v2/operations/'+operationId,users.other,two)).json().data.state).toBe('NOT_FOUND');
   expect((await get('/v2/operations/not-a-uuid',users.owner,one)).statusCode).toBe(400);
  });
+ it('lists open notices in operator language and lets an owner acknowledge without resolving them (V7 F3)',async()=>{
+  const account=(await admin.query("SELECT id FROM records WHERE workspace_id=$1 AND kind='channel_account' AND body->>'status'='DISCONNECTED'",[one])).rows[0].id;
+  await admin.query("UPDATE records SET body=body||'{\"name\":\"Ventas +52 55 1234 5678\"}'::jsonb ,version=version+1 WHERE id=$1",[account]);
+  await admin.query("INSERT INTO operational_alerts(workspace_id,environment,dedupe_key,kind,severity,summary_code,account_id,episode) VALUES($1,'REAL','qr-1','SESSION_QR_REQUIRED','WARNING','SESSION_QR_REQUIRED',$2,'e1')",[one,account]);
+  const listed=await get('/v2/alerts',users.viewer,one);expect(listed.statusCode).toBe(200);
+  const alerts=listed.json().data.alerts as any[],qr=alerts.find(a=>a.kind==='SESSION_QR_REQUIRED');
+  expect(qr).toMatchObject({label:'Necesita QR: vuelve a vincular el número',href:'/numbers',severity:'WARNING',number:{id:account,alias:'Ventas •••• 5678'},acknowledgedAt:null,notification:'PENDING'});
+  expect(alerts.find(a=>a.kind==='NUMBER_DOWN')).toMatchObject({label:'Aviso del sistema',severity:'CRITICAL'});
+  expect(listed.body).not.toContain('1234 5678');
+  const post=(user:string,workspace:string,id:string)=>app.inject({method:'POST',url:`/v2/alerts/${id}/acknowledge`,payload:{},headers:{origin,'x-user':user,'x-commerce-profile-id':workspace,'x-commerce-profile-version':'1'}});
+  expect((await post(users.viewer,one,qr.id)).statusCode).toBe(403);
+  expect((await post(users.other,two,qr.id)).statusCode).toBe(404);
+  const ack=await post(users.owner,one,qr.id);expect(ack.statusCode).toBe(200);expect(ack.json().data.acknowledgedAt).toBeTruthy();
+  const after=(await get('/v2/alerts',users.owner,one)).json().data.alerts.find((a:any)=>a.id===qr.id);
+  expect(after.acknowledgedAt).toBeTruthy();expect(after.resolvedAt).toBeNull();
+  expect((await get('/v2/alerts',users.other,two)).json().data.alerts).toEqual([]);
+  expect((await get('/v2/alerts?include=bad',users.owner,one)).statusCode).toBe(400);
+ });
 });

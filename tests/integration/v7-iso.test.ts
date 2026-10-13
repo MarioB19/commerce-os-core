@@ -63,7 +63,7 @@ describe('V7 ISO: two profiles, three roles, real personal tokens',()=>{
 
  it('lists only the token profile in every V2 read family',async()=>{
   const forbidden=[B,ids.productB,ids.goalB,actors.ownerB!.user];
-  for(const url of ['/v2/profile','/v2/employees','/v2/invitations','/v2/tokens','/v2/integrations','/v2/onboarding','/v2/home','/v2/usage','/v2/audit','/v2/catalog/products','/v2/goals']){
+  for(const url of ['/v2/profile','/v2/employees','/v2/invitations','/v2/tokens','/v2/integrations','/v2/onboarding','/v2/home','/v2/usage','/v2/audit','/v2/catalog/products','/v2/goals','/v2/alerts']){
    const r=await call('ownerA','GET',url);expect(r.statusCode,url).toBe(200);
    for(const value of forbidden)expect(r.body,url).not.toContain(value);
   }
