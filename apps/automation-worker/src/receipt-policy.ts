@@ -6,12 +6,17 @@ import {captureOrderReceiptPolicy,readOrderReceiptPolicy} from '../../../package
 import {readMarketJourney,marketRecordVersionHash} from '../../../packages/db/src/market-variants.js';
 import {evaluateReceiptPolicy,receiptPolicyHash} from '../../../packages/domain/src/sales/receipt-policy.js';
 import {receiptDocumentEvidence} from '../../../packages/contracts/src/receipt-extraction.js';
+import {collectionDestination} from '../../../packages/domain/src/catalog/variant-document.js';
 function need(value:unknown,code:string):asserts value{if(!value)throw Error(code);}
 async function schema(client:QueryExecutor){return(await client.query("SELECT to_regclass('public.market_journey_snapshots') market,to_regclass('public.receipt_order_policy_snapshots') policy")).rows[0];}
 /** Only the transaction that creates a new market order may capture policy. */
 export async function captureNewReceiptPolicy(client:QueryExecutor,conversation:DomainRecord,order:DomainRecord){
  const present=await schema(client);if(!present.market)return null;
- const journey=(await client.query('SELECT journey_id FROM market_journey_snapshots WHERE workspace_id=$1 AND environment=$2 AND journey_id=$3',[conversation.workspace_id,conversation.environment,conversation.id])).rows[0];if(!journey)return null;
+ // A conversation pinned to a variant release binds its own profile first:
+ // journeys are visible only inside that profile's context (V7 F5).
+ const pinned=typeof conversation.body.release_id==='string'||typeof conversation.body.variant_id==='string';
+ const reader=pinned?await recordProfileExecutor(client,conversation.workspace_id,conversation.environment):client;
+ const journey=(await reader.query('SELECT journey_id FROM market_journey_snapshots WHERE workspace_id=$1 AND environment=$2 AND journey_id=$3',[conversation.workspace_id,conversation.environment,conversation.id])).rows[0];if(!journey)return null;
  need(present.policy,'RECEIPT_POLICY_SCHEMA_REQUIRED');const db=await recordProfileExecutor(client,conversation.workspace_id,conversation.environment);
  const source=await readMarketJourney(db,conversation.environment,conversation.id);
  need(order.environment===conversation.environment&&order.workspace_id===conversation.workspace_id&&order.body.conversation_id===conversation.id&&order.body.offer_version_id===source.release.configuration.offer.id&&order.body.payment_profile_version_id===source.release.configuration.collection.id,'RECEIPT_POLICY_ORDER_CHANGED');
@@ -39,7 +44,9 @@ export async function prepareReceiptPolicyAnalysis(client:QueryExecutor,receipt:
  WHERE v.workspace_id=$1 AND v.environment=$2 AND v.kind='bank_profile' AND v.record_id=$3 AND v.version=$4 FOR SHARE OF r`,[receipt.workspace_id,receipt.environment,ref.id,ref.revision])).rows[0];
  need(bank&&marketRecordVersionHash(bank)===ref.sha256&&bank.body.currency===release.locale.currency,'RECEIPT_POLICY_COLLECTION_CHANGED');
  let privateBank:{account_number?:string;holder?:string}={};
- if(bank.body.secret_ciphertext)privateBank=z.object({account_number:z.string().max(500),holder:z.string().max(500),instructions:z.string().optional()}).strict().parse(JSON.parse(decrypt(bank.body.secret_ciphertext)));
+ if(bank.body.secret_ciphertext){const raw=JSON.parse(decrypt(bank.body.secret_ciphertext));
+  // Legacy profiles keep their strict historical shape; V7 collections carry SPEI and/or links.
+  privateBank=bank.body.methods?collectionDestination(bank.body,raw):z.object({account_number:z.string().max(500),holder:z.string().max(500),instructions:z.string().optional()}).strict().parse(raw);}
  const asset=(await db.query("SELECT id,body FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='asset' AND id=$3 FOR SHARE",[receipt.workspace_id,receipt.environment,native.body.asset_id])).rows[0];
  need(asset&&asset.body.status==='READY'&&asset.body.storage_key&&/^[a-f0-9]{64}$/.test(asset.body.sha256),'PROTECTED_RECEIPT_ASSET_REQUIRED');
  await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`receipt-evidence:${receipt.workspace_id}:${receipt.environment}`]);

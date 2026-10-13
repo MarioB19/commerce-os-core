@@ -1,3 +1,4 @@
+import {ensureDefaultReceiptPolicy} from './receipt-policies.js';
 import {randomUUID,createHash} from 'node:crypto';
 import {z} from 'zod';
 import {putRecord,encrypt,decrypt,stableJson,appendEvent} from './index.js';
@@ -95,6 +96,7 @@ export async function listProducts(db:ProfileExecutor,environment:Environment,in
 }
 export async function createProduct(db:ProfileExecutor,environment:Environment,input:unknown,actor:Actor){
  const q=productCreateInputSchema.parse(input);
+ await ensureDefaultReceiptPolicy(db,environment,actor.id);
  // Product quota is enforced by trigger; wait for the global quota turn instead of failing as busy.
  await db.query('SELECT pg_advisory_xact_lock($1)',[QUOTA_LOCK]);
  const product=await putRecord(db,{workspaceId:db.workspaceId,environment,kind:'product',body:{name:q.name,description:q.description,knowledge:[],asset_ids:[],references:[],status:'PUBLISHED',source:'v7_product'}});
@@ -138,6 +140,7 @@ async function insertVariant(db:ProfileExecutor,environment:Environment,familyId
 }
 export async function createVariant(db:ProfileExecutor,environment:Environment,input:unknown,actor:Actor){
  const q=variantCreateInputSchema.parse(input),product=await productRecord(db,environment,q.product_id,true);
+ await ensureDefaultReceiptPolicy(db,environment,actor.id);
  need(!archivedProduct(product.body),'PRODUCT_ARCHIVED');await family(db,environment,product.id);
  const result=await insertVariant(db,environment,product.id,baseVariantDocument({productName:String(product.body.name??'Producto'),name:q.name,locale:q.locale}),actor,null,'DRAFT_CREATED');
  await audit(db,environment,actor,'variant.created',result.id,{product_id:product.id});return result;
@@ -320,7 +323,9 @@ export async function publishVariant(db:ProfileExecutor,environment:Environment,
   ...(o.legacy.receipt_policy_version_id?{receipt_policy_version_id:o.legacy.receipt_policy_version_id}:{}),fulfillment:o.fulfillment,
   positive_payment_unlocks_all:o.positive_payment_unlocks_all,workflow_version_id:flowId,agent_version_id:sellerId,...(salesFlow?{sales_flow:salesFlow}:{}),
   billing_delay_seconds:o.billing_delay_seconds,...(o.tiers.length?{tiers:o.tiers}:{}),...(o.legacy.tier_policy?{tier_policy:o.legacy.tier_policy}:{}),
-  ...(o.legacy.madrina?{madrina:o.legacy.madrina}:{}),product_id:familyId,variant_id:old.id,language,entry_aliases:aliases};
+  ...(o.legacy.madrina?{madrina:o.legacy.madrina}:{}),product_id:familyId,variant_id:old.id,language,entry_aliases:aliases,
+  // RF-09.i: which methods the customer was offered (the register shows the method from this, never a guess).
+  ...(doc.collection.legacy_profile_id?{}:{collection_methods:[...(doc.collection.spei?['spei']:[]),...(doc.collection.links.length?['link']:[])]})};
  try{validateOffer(offerBody);}catch(e){throw new VariantError(e instanceof Error?e.message:'INVALID_OFFER',409);}
  const offerHash=sha(offerBody);let offerId:string;
  if(m.offer?.hash===offerHash)offerId=m.offer.id;

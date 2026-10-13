@@ -1,3 +1,4 @@
+import {ensureDefaultReceiptPolicy} from './receipt-policies.js';
 import {randomUUID,createHash} from 'node:crypto';
 import type {QueryExecutor} from './index.js';
 import {stableJson} from './index.js';
@@ -89,6 +90,9 @@ function migratedDocument(product:Body,offer:Body,seller:Body|undefined,timezone
 /** Creates the variant and, when the mapping is exact, its first release. */
 export async function adoptLegacyProduct(db:ProfileExecutor,environment:Environment,productId:string,actorId:string){
  const existing=(await db.query(`SELECT id FROM market_variants WHERE workspace_id=$1 AND environment=$2 AND family_id=$3 AND document IS NOT NULL ORDER BY created_at LIMIT 1`,[db.workspaceId,environment,productId])).rows[0];
+ // New conversations of a migrated variant create orders that capture the
+ // profile's receipt policy; the default keeps human approval (RF-09.a).
+ await ensureDefaultReceiptPolicy(db,environment,actorId);
  if(existing)return{product_id:productId,variant_id:existing.id as string,already_adopted:true,released:null as string|null,exceptions:[] as string[],assignments_following:0};
  const product=await recordRow(db,db.workspaceId,environment,'product',productId);
  if(!product)throw Object.assign(new Error('PRODUCT_NOT_FOUND'),{statusCode:404});

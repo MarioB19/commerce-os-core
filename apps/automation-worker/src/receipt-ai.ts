@@ -21,7 +21,7 @@ export interface ReceiptMediaBroker {read(document:ReceiptAiDocument,assetVersio
 export interface ReceiptAnalysisRuntime {
  /** Synchronous trusted composition from authenticated frame only. No key or
   * model selector enters from receipt text; native019 revalidates this grant. */
- bind(document:ReceiptAiDocument):PostgresReceiptDocumentAi;
+ bind(document:ReceiptAiDocument):PostgresReceiptDocumentAi|null;
  media:ReceiptMediaBroker;
 }
 const row=async(c:QueryExecutor,workspace:string,environment:string,kind:string,id:string,lock='')=>
@@ -50,8 +50,11 @@ export async function processProfileReceiptAnalyses(runtime:ReceiptAnalysisRunti
    const r=await owned(c,id);if(!['PENDING','AWAITING_POLICY'].includes(r.body.analysis_status))return;
    if(await controls(c,r)){await save(c,r,{...r.body,analysis_dependency:'CONTROLS_CHANGED'});return;}
    if(!runtime){await save(c,r,{...r.body,analysis_status:'HUMAN_REQUIRED',analysis_dependency:'RECEIPT_AI_019_REQUIRED'});return;}
-   if(r.body.analysis_status==='AWAITING_POLICY'){const f=frameSchema.parse(r.body.receipt_ai?.frame);await recheck(c,r,f,'AWAITING_POLICY');const ai=runtime.bind(f.document);need(ai.grantId===r.body.receipt_ai.grantId,'RECEIPT_AI_GRANT_CHANGED');need(typeof r.body.receipt_ai_result==='string'&&r.body.receipt_ai_result.length>0,'RECEIPT_AI_CACHE_REQUIRED');return{frame:f,ai,cached:r.body.receipt_ai_result as string};}
-   const f=await frame(c,r),ai=runtime.bind(f.document),claim={frame:f,frameSha256:digest(f),attemptId:receiptDocumentScope(f.document).attemptId,grantId:ai.grantId};
+   if(r.body.analysis_status==='AWAITING_POLICY'){const f=frameSchema.parse(r.body.receipt_ai?.frame);await recheck(c,r,f,'AWAITING_POLICY');const ai=runtime.bind(f.document);need(ai&&ai.grantId===r.body.receipt_ai.grantId,'RECEIPT_AI_GRANT_CHANGED');need(typeof r.body.receipt_ai_result==='string'&&r.body.receipt_ai_result.length>0,'RECEIPT_AI_CACHE_REQUIRED');return{frame:f,ai,cached:r.body.receipt_ai_result as string};}
+   const f=await frame(c,r),ai=runtime.bind(f.document);
+   // No owner grant for this variant's receipts: a person reviews it (RF-09.f).
+   if(!ai){await save(c,r,{...r.body,analysis_status:'HUMAN_REQUIRED',analysis_dependency:'RECEIPT_AI_GRANT_REQUIRED'});return;}
+   const claim={frame:f,frameSha256:digest(f),attemptId:receiptDocumentScope(f.document).attemptId,grantId:ai.grantId};
    need(!r.body.receipt_ai,'RECEIPT_AI_ALREADY_CLAIMED');await save(c,r,{...r.body,analysis_status:'RUNNING',analysis_dependency:null,receipt_ai:claim});return{frame:f,ai,cached:undefined};
   });
   if(!prepared||!runtime)continue;

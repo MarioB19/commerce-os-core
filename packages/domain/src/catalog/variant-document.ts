@@ -132,6 +132,15 @@ export function guidedSaleWorkflow(input:{name:string;content:NonNullable<Varian
 
 /** Customer-facing payment instructions. SPEI and/or links, in that order. */
 export interface CollectionSecret {spei?:{holder:string;clabe:string};links?:{id:string;url:string}[]}
+/** The destination a receipt is checked against: the SPEI CLABE and holder of
+ * a V7 collection, or the account of a legacy bank profile. A link-only
+ * collection has no bank destination (the policy then decides by its rules). */
+export function collectionDestination(bank:Body,secret:Body|null):{account_number?:string;holder?:string}{
+ if(!secret)return{};
+ if(!bank.methods){const legacy=secret as {account_number?:unknown;holder?:unknown};return{...(typeof legacy.account_number==='string'?{account_number:legacy.account_number}:{}),...(typeof legacy.holder==='string'?{holder:legacy.holder}:{})};}
+ const spei=secret.spei as {clabe?:unknown;holder?:unknown}|undefined;
+ return spei&&typeof spei.clabe==='string'&&typeof spei.holder==='string'?{account_number:spei.clabe,holder:spei.holder}:{};
+}
 export function collectionInstructions(input:{bank:Body;secret:Body|null;price:string|null;currency:string|null}){
  const b=input.bank,s=input.secret;
  if(!s)return null;

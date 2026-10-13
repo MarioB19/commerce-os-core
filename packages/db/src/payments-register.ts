@@ -15,7 +15,10 @@ export const paymentRowsSql=`WITH source AS MATERIALIZED (
   THEN CASE WHEN (r.body->'extraction'->>'amount_minor')::numeric BETWEEN 0 AND 9007199254740991
    THEN ((r.body->'extraction'->>'amount_minor')::numeric)::text END END amount_minor,
  CASE WHEN p.id IS NOT NULL THEN p.currency WHEN r.body->'extraction'->>'currency' ~ '^[A-Z]{3}$' THEN r.body->'extraction'->>'currency' END currency,
- CASE o.body->'offer_snapshot'->>'payment_method' WHEN 'bank_transfer_receipt' THEN 'BANK_TRANSFER' WHEN 'payment_link' THEN 'LINK' ELSE 'UNKNOWN' END method,
+ CASE WHEN o.body->'offer_snapshot'->'collection_methods'='["spei"]'::jsonb THEN 'BANK_TRANSFER'
+  WHEN o.body->'offer_snapshot'->'collection_methods'='["link"]'::jsonb THEN 'LINK'
+  WHEN o.body->'offer_snapshot' ? 'collection_methods' THEN CASE WHEN r.body->'assessment'->'checks' @> '[{"rule":"DESTINATION","state":"PASSED"}]'::jsonb THEN 'BANK_TRANSFER' ELSE 'UNKNOWN' END
+  ELSE CASE o.body->'offer_snapshot'->>'payment_method' WHEN 'bank_transfer_receipt' THEN 'BANK_TRANSFER' WHEN 'payment_link' THEN 'LINK' ELSE 'UNKNOWN' END END method,
  CASE WHEN r.body->>'commercial_classification'='FALSE' THEN 'FALSE'
   WHEN r.body->>'commercial_classification'='TEST' OR o.body->>'commercial_classification'='TEST' OR c.body->>'commercial_classification'='TEST'
     OR c.body->>'is_test'='true' OR c.body ? 'number_flow_test_id' OR c.body ? 'launch_test_id' THEN 'TEST'

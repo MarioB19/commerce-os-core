@@ -2,15 +2,18 @@ import {randomUUID} from 'node:crypto';
 import type {ProfileExecutor} from './profile-context.js';
 import {receiptPolicySchema,receiptPolicyOverrideSchema,resolvedReceiptPolicySchema} from '../../contracts/src/receipt-policy.js';
 import {receiptPolicyId,receiptPolicyQuery,receiptPolicyStored,receiptProfilePolicyWrite,receiptVariantPolicyWrite} from '../../contracts/src/receipt-policy-store.js';
-import {receiptPolicyHash,resolveReceiptPolicy,type ResolvedReceiptPolicy} from '../../domain/src/sales/receipt-policy.js';
+import {createHash} from 'node:crypto';
+import {defaultReceiptPolicy,receiptPolicyHash,resolveReceiptPolicy,type ResolvedReceiptPolicy} from '../../domain/src/sales/receipt-policy.js';
 
 type Environment='REAL'|'SIMULATION';
 export class ReceiptPolicyStoreError extends Error{constructor(readonly code:string,readonly statusCode=409){super(code);}}
 function need(v:unknown,code:string,status=409):asserts v{if(!v)throw new ReceiptPolicyStoreError(code,status);}
-async function context(db:ProfileExecutor,environment:Environment,mutation=false){
+async function context(db:ProfileExecutor,environment:Environment,mutation=false,owner=false){
+ // `owner`: the API role or the schema owner (the reviewed migration); only the
+ // default-policy bootstrap asks for it.
  receiptPolicyQuery.parse({environment});
- const r=(await db.query("SELECT current_user AS role,current_setting('app.workspace_id',true) w,current_setting('app.environment',true) e")).rows[0];
- need(r&&r.w===db.workspaceId&&r.e===environment&&(mutation?r.role==='commerce_api':['commerce_api','commerce_automation'].includes(r.role)),'RECEIPT_POLICY_CONTEXT',403);
+ const r=(await db.query("SELECT current_user AS role,current_setting('app.workspace_id',true) w,current_setting('app.environment',true) e,current_user=pg_get_userbyid(c.relowner) AS owner FROM pg_class c WHERE c.oid='public.receipt_policy_heads'::regclass")).rows[0];
+ need(r&&r.w===db.workspaceId&&r.e===environment&&(owner?(r.owner===true||r.role==='commerce_api'):mutation?r.role==='commerce_api':['commerce_api','commerce_automation'].includes(r.role)),'RECEIPT_POLICY_CONTEXT',403);
 }
 async function lock(db:ProfileExecutor,environment:Environment){
  need((await db.query('SELECT pg_try_advisory_xact_lock(hashtextextended($1,0)) acquired',['receipt-policy:'+db.workspaceId+':'+environment])).rows[0]?.acquired===true,'RECEIPT_POLICY_BUSY');
@@ -32,8 +35,8 @@ export async function readReceiptPolicy(db:ProfileExecutor,environment:Environme
 }
 /** Caller owns the F2 transaction and its final authority check. No config,
  * snapshot or operation becomes durable before that transaction commits. */
-export async function writeReceiptPolicy(db:ProfileExecutor,environment:Environment,variantId:string|null,input:unknown,actorId:string,operationId:string){
- await context(db,environment,true);if(variantId!==null)variantId=receiptPolicyId.parse(variantId);operationId=receiptPolicyId.parse(operationId);
+export async function writeReceiptPolicy(db:ProfileExecutor,environment:Environment,variantId:string|null,input:unknown,actorId:string,operationId:string,options:{bootstrap?:boolean}={}){
+ await context(db,environment,true,options.bootstrap===true);if(variantId!==null)variantId=receiptPolicyId.parse(variantId);operationId=receiptPolicyId.parse(operationId);
  need(typeof actorId==='string'&&actorId.length>0&&actorId.length<=256,'RECEIPT_POLICY_ACTOR',400);
  const parsed=variantId===null?receiptProfilePolicyWrite.parse(input):receiptVariantPolicyWrite.parse(input);
  const body='policy'in parsed?parsed.policy:parsed.override,request={variantId,...parsed},requestHash=receiptPolicyHash(request);
@@ -51,6 +54,21 @@ export async function writeReceiptPolicy(db:ProfileExecutor,environment:Environm
  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,[db.workspaceId,environment,versionId,headId,revision,variantId!==null,body,sha256,actorId]);
  const result=present(db,environment,{variant_id:variantId,id:versionId,revision,sha256,body});
  await db.query('INSERT INTO receipt_policy_operations(workspace_id,environment,actor_id,operation_id,request_hash,result) VALUES($1,$2,$3,$4,$5,$6)',[db.workspaceId,environment,actorId,operationId,requestHash,result]);return result;
+}
+/** V7 (RF-09.a): a profile that sells variants always has an explicit profile
+ * policy, so a new order can capture its rules. The default keeps human
+ * approval. It is an ordinary versioned write (revision 1, CAS, history) with
+ * one deterministic operation per profile and environment, so concurrent or
+ * repeated calls converge and an owner's later edit is never overwritten. The
+ * API role or the schema owner (inside the reviewed variant migration) runs it. */
+export async function ensureDefaultReceiptPolicy(db:ProfileExecutor,environment:Environment,actorId:string){
+ await context(db,environment,true,true);
+ const existing=await current(db,environment,null);if(existing)return existing;
+ const h=createHash('sha256').update('receipt-policy-default:'+db.workspaceId+':'+environment).digest('hex');
+ const operationId=`${h.slice(0,8)}-${h.slice(8,12)}-5${h.slice(13,16)}-${(8+parseInt(h[16]!,16)%4).toString(16)}${h.slice(17,20)}-${h.slice(20,32)}`;
+ const prior=(await db.query('SELECT result FROM receipt_policy_operations WHERE workspace_id=$1 AND environment=$2 AND operation_id=$3',[db.workspaceId,environment,operationId])).rows[0];
+ if(prior)return receiptPolicyStored.parse(prior.result);
+ return writeReceiptPolicy(db,environment,null,{expectedRevision:0,policy:defaultReceiptPolicy()},actorId,operationId,{bootstrap:true});
 }
 export async function readReceiptPolicyOperation(db:ProfileExecutor,environment:Environment,actorId:string,operationId:string){
  await context(db,environment);operationId=receiptPolicyId.parse(operationId);

@@ -10,6 +10,7 @@ const decision=z.object({previous:z.enum(['COMMERCIAL','GENUINE','FALSE','TEST']
 const offer=z.object({
  base_amount_minor:money.optional(),currency:currency.optional(),
  payment_method:z.enum(['bank_transfer_receipt','payment_link']).optional(),
+ collection_methods:z.array(z.enum(['spei','link'])).max(2).optional(),
  positive_payment_unlocks_all:z.boolean().optional(),
  fulfillment:z.array(z.object({asset_id:uuid,release_on:z.enum(['commitment_accepted','receipt_approved','reconciled']),min_amount_minor:money.optional()})).max(1000).optional(),
 });

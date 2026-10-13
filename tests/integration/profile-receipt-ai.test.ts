@@ -156,7 +156,7 @@ describe('receipt019 protected provider orchestration through native worker phas
   const f=await ready();f.runtime.media.read=async()=>{await pause(f,true);return Buffer.from(f.bytes);};await run(f.runtime);expect(providerCalls).toBe(0);expect(await attempt(f)).toMatchObject({state:'REJECTED',charged_microusd:'120',measured_cost_microusd:null});expect((await read(admin,f.receipt.id)).body.analysis_status).toBe('HUMAN_REQUIRED');await pause(f,false);
  });
  it.each(['key','grant','expiry'] as const)('native019 rejects %s changed inside the final commercial callback before POST',async kind=>{
-  const f=await ready(),adapter=await worker(async()=>f.runtime.bind(f.document));let callback=0;
+  const f=await ready(),adapter=(await worker(async()=>f.runtime.bind(f.document)))!;let callback=0;
   try{
    const result=await adapter.invoke(f.document,f.bytes,async()=>{
     callback++;expect(currentProfileExecutor()).toBeUndefined();expect(await attempt(f)).toMatchObject({state:'RESERVED',intent_at:null,charged_microusd:'120'});
@@ -184,7 +184,7 @@ describe('receipt019 protected provider orchestration through native worker phas
   const f=await ready();delete (responseDocument as any).destination;delete (responseDocument as any).beneficiary;delete (responseDocument as any).paid_at;await run(f.runtime);const r=await read(admin,f.receipt.id);expect(r.body.status).toBe('HUMAN_REVIEW');expect(r.body.assessment.reasons).toEqual(expect.arrayContaining(['DESTINATION_UNVERIFIED','BENEFICIARY_UNVERIFIED','DATE_MISSING']));expect(await contributions(f.order.id)).toHaveLength(0);expect(await attempt(f)).toMatchObject({state:'SUCCEEDED',measured_cost_microusd:'5'});
  });
  it('a native settlement ACK loss leaves an uncertain receipt and never repeats the POST',async()=>{
-  const f=await ready();const real=f.runtime.bind;f.runtime.bind=d=>{const a=real(d),verify=a.verifySettlement.bind(a);a.verifySettlement=async(...args)=>{await verify(...args);throw Error('SYNTHETIC_COMMIT_ACK_LOST');};return a;};await run(f.runtime);expect(providerCalls).toBe(1);expect((await attempt(f)).state).toBe('SUCCEEDED');expect((await read(admin,f.receipt.id)).body.analysis_status).toBe('HUMAN_REQUIRED');await run(f.runtime);expect(providerCalls).toBe(1);
+  const f=await ready();const real=f.runtime.bind;f.runtime.bind=d=>{const a=real(d)!,verify=a.verifySettlement.bind(a);a.verifySettlement=async(...args)=>{await verify(...args);throw Error('SYNTHETIC_COMMIT_ACK_LOST');};return a;};await run(f.runtime);expect(providerCalls).toBe(1);expect((await attempt(f)).state).toBe('SUCCEEDED');expect((await read(admin,f.receipt.id)).body.analysis_status).toBe('HUMAN_REQUIRED');await run(f.runtime);expect(providerCalls).toBe(1);
  });
  it('altered cached evidence or a missing encrypted result never falls back to provider',async()=>{
   const f=await ready();postHook=()=>pause(f,true);await run(f.runtime);postHook=undefined;await pause(f,false);await admin.query("UPDATE records SET version=version+1,body=body-'receipt_ai_result' WHERE id=$1",[f.receipt.id]);await expect(run(f.runtime)).rejects.toThrow('RECEIPT_AI_CACHE_REQUIRED');expect(providerCalls).toBe(1);expect(await contributions(f.order.id)).toHaveLength(0);

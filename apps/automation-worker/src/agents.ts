@@ -9,7 +9,6 @@ import {composeSellerContext,deterministicSellerReply,proposalGroundingIssue,sel
 import {loadSellerSnapshot} from '../../../packages/db/src/seller-context.js';
 import {readFile} from 'node:fs/promises';
 import {join} from 'node:path';
-import pg from 'pg';
 import {ProfileSellerAi} from '../../../packages/ai-providers/src/variant-ai.js';
 import {aiCredentialKey} from '../../../packages/ai-providers/src/profile-integrations.js';
 import {AiError} from '../../../packages/ai-providers/src/contracts.js';
@@ -19,15 +18,14 @@ import type {Body,DomainRecord} from '@commerce/contracts';
 import {DeterministicSalesAi,OpenAiSalesProvider,parseProposal,type SalesAiProvider,type AgentConfig} from '../../../packages/domain/src/sales/ai.js';
 import {event,save,create,gated,controls,proposeEffect,proposeEffectOutcome,cancelPending,receiptReviewPending} from './shared.js';
 import {advanceWorkflow} from './workflows.js';
+import {profileAiPool} from './ai-runtime.js';
 import {applyReceiptAnalysis} from './commands.js';
 const deterministic=new DeterministicSalesAi();
 // V7 F4: production seller over the profile's own key (dedicated commerce_ai login).
 let sellerRuntime:ProfileSellerAi|null|undefined;
 export function profileSeller(){
  if(sellerRuntime!==undefined)return sellerRuntime;
- const url=process.env.AI_DATABASE_URL;if(!url){sellerRuntime=null;return null;}
- const aiPool=new pg.Pool({connectionString:url,max:4,connectionTimeoutMillis:5000,idleTimeoutMillis:30000});
- aiPool.on('connect',client=>{client.query('SET ROLE commerce_ai').catch(()=>{process.stderr.write('ai_runtime_role_not_assumed\n');});});
+ const aiPool=profileAiPool();if(!aiPool){sellerRuntime=null;return null;}
  sellerRuntime=new ProfileSellerAi({aiPool,custodyKey:aiCredentialKey()});return sellerRuntime;
 }
 export function setProfileSellerForTests(runtime:ProfileSellerAi|null){sellerRuntime=runtime;}
