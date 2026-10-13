@@ -399,3 +399,45 @@ it('explains before starting what blocks a test or leaves part of it out, with t
  expect(warned.problems).toEqual([expect.objectContaining({code:'LAB_UNPUBLISHED_CHANGES',severity:'WARNING',variant_name:'Diagnóstico · México',fix:{label:'Publicar los cambios',href:`/products/${v.product.id}/variants/${v.id}/sale`}})]);
  expect((await call('operator','GET',`/v2/number-tests/diagnose?account_id=${randomUUID()}`)).statusCode).toBe(404);
 },120000);
+
+it('runs the automatic buyer over every variant of a number and reports one verdict per variant (RF-19.p/h)',async()=>{
+ const link=data(await call('owner','POST','/v2/materials?environment=REAL',{name:'Acceso suite',kind:'link',url:'https://example.com/suite'}),201).id as string;
+ let v=data(await call('owner','POST','/v2/products',{name:'Suite',variant:{name:'México',locale:MX}}),201).variant;
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/offer`,{expected_version:v.version,value:{...v.document.offer,price_minor:4500,fulfillment:[{asset_id:link,release_on:'receipt_approved'}]}}));
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/collection`,{expected_version:v.version,value:{spei:{bank:'Banco sintético',holder:'Titular sintético',clabe:clabe('01218000011835971')},links:[],instructions:''}}));
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/remarketing`,{expected_version:v.version,value:{schema_version:1,policy_id:'remarketing-3-slot',policy_revision:1,window:{start_hour:0,end_hour:24},
+  slots:[1,2,3].map((position,i)=>({id:'slot-'+position,position,enabled:position===1,delay:{quantity:[2,8,24][i],unit:'hours'},stages:{awaiting_agreement:{medium:'text',text:`¿Seguimos? (${position})`},awaiting_payment:{medium:'text',text:`¿Pagas? (${position})`}}}))}}));
+ data(await call('owner','POST',`/v2/variants/${v.id}/publish`,{expected_version:v.version,document_sha256:v.document_sha256}));
+ await withProfileTransaction(pool as never,P,async db=>{await db.query('SET LOCAL ROLE commerce_api');await db.query("SELECT set_config('app.environment','REAL',true)");
+  return writeReceiptPolicy(db,'REAL',v.id,{expectedRevision:0,override:{automaticApproval:true}},ownerId,randomUUID());});
+ const number=await withTransaction(async c=>{await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','REAL',true)",[P]);
+  return(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','channel_account',$2) RETURNING id",[P,{name:'Ventas suite',provider:'waha',gateway_ref:'lab-'+randomUUID(),status:'WORKING',sending_enabled:true,identity_verified:true}])).rows[0].id as string;});
+ data(await call('owner','POST',`/v2/variants/${v.id}/numbers`,{account_id:number,sell:true}));
+ const before=await footprint();
+ // Estimate first: two journeys per variant, each with its own ceiling, paid by the profile's key.
+ const estimate=data(await call('owner','POST','/v2/number-tests/suites/estimate',{account_id:number}));
+ expect(estimate).toMatchObject({currency:'USD',paid_by:'PROFILE_KEY'});
+ expect(estimate.cases.map((c:{journey:string;name:string})=>[c.name,c.journey])).toEqual([['Suite · México','PURCHASE'],['Suite · México','FOLLOWUP']]);
+ expect((await call('owner','POST','/v2/number-tests/suites',{account_id:number,accepted_maximum_microusd:1})).statusCode).toBe(409);
+ const key=randomUUID();
+ const started=data(await call('owner','POST','/v2/number-tests/suites',{account_id:number,accepted_maximum_microusd:estimate.maximum_microusd},key),201);
+ expect(data(await call('owner','POST','/v2/number-tests/suites',{account_id:number,accepted_maximum_microusd:estimate.maximum_microusd},key)).suite_id).toBe(started.suite_id);
+ const today=new Intl.DateTimeFormat('en-CA',{timeZone:MX.timezone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+ visionDocument={is_receipt:true,amount_minor:4500,currency:'MXN',destination_suffix:'0000',bank:'Banco de prueba',reference:'LAB-0001',status:'completed',confidence:0.97,contradictions:[],destination:'012180000000000000',beneficiary:'Negocio de prueba',paid_on:today,concept:'Compra de prueba'};
+ const reads=visionCalls;
+ let report:any;
+ for(let i=0;i<40;i++){await processNumberLabOperations(runtime);report=data(await call('owner','GET',`/v2/number-tests/suites/${started.suite_id}`));if(report.suite.state==='COMPLETED')break;}
+ expect(report.suite.state,JSON.stringify(report.variants)).toBe('COMPLETED');
+ expect(report.variants).toEqual([expect.objectContaining({variant_id:v.id,name:'Suite · México',verdict:'RESPONDE_BIEN',verdict_label:'Responde bien'})]);
+ const [purchase,followup]=[report.variants[0].cases.find((c:{journey:string})=>c.journey==='PURCHASE'),report.variants[0].cases.find((c:{journey:string})=>c.journey==='FOLLOWUP')];
+ expect(purchase.checks.map((c:{name:string;state:string})=>[c.name,c.state]).sort()).toEqual([['collection','PASSED'],['delivery','PASSED'],['exclusion','PASSED'],['offer','PASSED'],['receipt','PASSED'],['route','PASSED']]);
+ expect(followup.checks.find((c:{name:string})=>c.name==='followup')).toMatchObject({state:'PASSED',label:'Da seguimiento si el cliente no responde'});
+ // The synthetic receipt was read once with the profile's key.
+ expect(visionCalls).toBe(reads+1);
+ // Each journey is a normal isolated run: its conversation can be read, not driven by hand.
+ const transcript=data(await call('owner','GET',`/v2/number-tests/${purchase.run_id}`)).conversation.transcript;
+ expect(transcript.some((e:{kind:string;status:string})=>e.kind==='receipt'&&e.status==='APPROVED')).toBe(true);
+ expect((await call('owner','POST',`/v2/number-tests/${purchase.run_id}/actions`,{expected_version:1,action:{type:'continue'}})).statusCode).toBe(409);
+ expect(data(await call('owner','GET',`/v2/number-tests/suites/latest?account_id=${number}`)).suite.suite_id).toBe(started.suite_id);
+ expect(await footprint()).toEqual(before);
+},240000);

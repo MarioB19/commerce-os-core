@@ -4225,6 +4225,9 @@ audio.number-test-media{width:min(100%,280px)}
 .number-test-receipt{display:block;font-size:.85rem;margin-top:.25rem}
 .number-test-diagnosis{border:1px solid var(--ux-border,#d7dbe3);border-radius:8px;padding:.75rem 1rem;margin:.75rem 0}
 .number-test-diagnosis ul{margin:.35rem 0 0;padding-left:1.1rem}
+.number-test-suite{border-top:1px solid var(--ux-border,#d7dbe3);margin-top:1.25rem;padding-top:1rem}
+.number-test-checks{list-style:none;padding-left:.5rem;font-size:.85rem}
+.number-test-checks .check-failed{color:var(--ux-state-danger-fg,#9b1c1c)}
 .number-test-why{font-size:.8rem;margin-top:.25rem;opacity:.85}
 .number-test-why summary{cursor:pointer}
 .number-test-fix{color:var(--ux-state-danger-fg,#9b1c1c)}

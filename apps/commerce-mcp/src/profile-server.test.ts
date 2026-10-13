@@ -218,6 +218,10 @@ describe('V7 F3 number tools',()=>{
    expect(seen[0]!.body).toEqual({mime_type:'image/png',base64:'iVBORw0KGgo='});
    expect(seen[1]).toMatchObject({key:operationId,body:{expected_version:4,action:{type:'receipt'}}});
    seen.length=0;
+   await client.callTool({name:'number_test_manage',arguments:{action:'estimar_suite',accountId}});
+   await client.callTool({name:'number_test_manage',arguments:{action:'ejecutar_suite',operationId,accountId,acceptedMaximumMicrousd:51200}});
+   await client.callTool({name:'number_test_manage',arguments:{action:'informe',accountId}});
+   expect(seen.splice(0,3).map(x=>[x.method,x.url,x.body])).toEqual([['POST','/v2/number-tests/suites/estimate',{account_id:accountId}],['POST','/v2/number-tests/suites',{account_id:accountId,accepted_maximum_microusd:51200}],['GET',`/v2/number-tests/suites/latest?account_id=${accountId}`,undefined]]);
    await client.callTool({name:'number_test_manage',arguments:{action:'exportar',runId}});
    expect(seen.shift()).toMatchObject({method:'GET',url:`/v2/number-tests/${runId}/export`});
    await client.callTool({name:'number_test_manage',arguments:{action:'revisar_comprobante',operationId,runId,expectedVersion:5,receiptId,decision:'REJECTED',reason:'Monto distinto'}});

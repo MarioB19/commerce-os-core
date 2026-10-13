@@ -202,6 +202,11 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
   estimar:{schema:z.object({accountId:z.uuid(),mode:z.enum(['CHAT']).optional()}).strict(),read:true,run:i=>c.variant('POST','/v2/number-tests/estimate',{account_id:i.accountId,mode:i.mode??'CHAT'},crypto.randomUUID())},
   crear:P('POST',operation.extend({accountId:z.uuid(),acceptedMaximumMicrousd:z.number().int().positive()}).strict(),()=>'/v2/number-tests',i=>({account_id:i.accountId,mode:'CHAT',accepted_maximum_microusd:i.acceptedMaximumMicrousd})),
   leer:P('GET',runId,i=>'/v2/number-tests/'+id(i.runId)),
+  // RF-19.p/h: the automatic buyer over every variant of a number: estimate,
+  // start with that ceiling, then read the report (one verdict per variant).
+  estimar_suite:{schema:z.object({accountId:z.uuid()}).strict(),read:true,run:i=>c.variant('POST','/v2/number-tests/suites/estimate',{account_id:i.accountId},crypto.randomUUID())},
+  ejecutar_suite:P('POST',operation.extend({accountId:z.uuid(),acceptedMaximumMicrousd:z.number().int().positive()}).strict(),()=>'/v2/number-tests/suites',i=>({account_id:i.accountId,accepted_maximum_microusd:i.acceptedMaximumMicrousd})),
+  informe:P('GET',z.object({suiteId:z.uuid().optional(),accountId:z.uuid().optional()}).strict().refine(i=>!!i.suiteId!==!!i.accountId,'suiteId o accountId'),i=>i.suiteId?'/v2/number-tests/suites/'+id(i.suiteId):'/v2/number-tests/suites/latest?account_id='+id(i.accountId!)),
   // RF-19.o: the whole test as JSON while it is kept (30 days).
   exportar:P('GET',runId,i=>'/v2/number-tests/'+id(i.runId)+'/export'),
   ultima:P('GET',z.object({accountId:z.uuid().optional()}).strict(),i=>'/v2/number-tests/latest'+(i.accountId?'?account_id='+id(i.accountId):'')),

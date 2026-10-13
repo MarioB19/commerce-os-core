@@ -148,7 +148,8 @@ async function writeReceipt(db:ProfileExecutor,input:Input,c:Captured,outcome:Ou
 }
 /** A pure restriction of the public action vocabulary, not an executor or permission. */
 export function numberLabDriverDependency(action:NumberLabAction,mode:string,attachments=false):string|null{
- if(mode!=='CHAT')return'AUTOMATIC_DRIVER_REQUIRED';
+ // RF-19.p: an AUTOMATIC run takes the same actions, issued by the suite.
+ if(mode!=='CHAT'&&mode!=='AUTOMATIC')return'AUTOMATIC_DRIVER_REQUIRED';
  // RF-19.d: receipts need the laboratory's receipt custody; without it the
  // driver says so instead of fabricating a reading.
  if((action.type==='receipt'||action.type==='review_receipt')&&!attachments)return'LAB_ATTACHMENT_DRIVER_REQUIRED';

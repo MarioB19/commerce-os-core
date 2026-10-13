@@ -2,7 +2,7 @@
 
 > Generada por `scripts/api-reference.ts` desde el código (OpenAPI de la app y registro MCP tipado). No se edita a mano: CI falla si difiere del código.
 
-Contenido: `03c3358565849526` · 189 operaciones HTTP en 166 rutas · 40 herramientas MCP (presupuesto 40).
+Contenido: `c6cddba32e79980a` · 193 operaciones HTTP en 170 rutas · 40 herramientas MCP (presupuesto 40).
 
 ## Herramientas MCP
 
@@ -33,7 +33,7 @@ Contenido: `03c3358565849526` · 189 operaciones HTTP en 166 rutas · 40 herrami
 | `campaigns_read` | perfil | `/v2/campaigns` | `campaigns:read`, `integrations:write` | cuentas, resultados, campanas, anuncios, sincronizar_lectura | portafolios |
 | `results_read` | perfil | `/v2/results` | `results:read` | opciones, resumen | embudo, series, comparar, exportar |
 | `goals_manage` | perfil | `/v2/goals` | `goals:read`, `goals:write` | listar, leer, avance, crear, editar, consultar_operacion | eliminar |
-| `number_test_manage` | perfil | `/v2/number-tests` | `tests:read`, `tests:run` | diagnosticar, estimar, crear, leer, ultima, mensaje, seleccionar, avanzar_reloj, continuar, reiniciar, adjuntar, revisar_comprobante, exportar | ejecutar_suite, informe |
+| `number_test_manage` | perfil | `/v2/number-tests` | `tests:read`, `tests:run` | diagnosticar, estimar, crear, leer, ultima, mensaje, seleccionar, avanzar_reloj, continuar, reiniciar, adjuntar, revisar_comprobante, exportar, estimar_suite, ejecutar_suite, informe | — |
 | `operations_get` | perfil | `/v2/operations` | `operations:read` | leer_resultado | efectos |
 | `alerts_manage` | perfil | `/v2/alerts` | `alerts:read`, `alerts:write` | listar, leer, acusar | configurar_preferencias |
 | `help_read` | perfil | `/v2/help` | `help:read` | guia, descargar | receta, referencia |
@@ -367,6 +367,10 @@ Contenido: `03c3358565849526` · 189 operaciones HTTP en 166 rutas · 40 herrami
 | GET | `/v2/number-tests/diagnose` | autenticado |
 | POST | `/v2/number-tests/estimate` | autenticado |
 | GET | `/v2/number-tests/latest` | autenticado |
+| POST | `/v2/number-tests/suites` | autenticado |
+| GET | `/v2/number-tests/suites/{id}` | autenticado |
+| POST | `/v2/number-tests/suites/estimate` | autenticado |
+| GET | `/v2/number-tests/suites/latest` | autenticado |
 
 ### `/v2/number-variants`
 

@@ -27,7 +27,9 @@ function projection(row:Version):Body{
 }
 /** Read only, inside withProfileRequest(tests:run) and its live executor. No
  * phone, QR status, channel credential or outbound permission is needed. */
-export async function captureNumberLab(db:ProfileExecutor,authority:ProfileAuthority,accountId:string,config:{engineSha256:string;aiConfigurationVersion:number}):Promise<LabCapturedConfiguration>{
+/** config.variantId (RF-19.p): the automatic buyer captures one variant of the
+ * number per journey; its other assignments stay out of that run. */
+export async function captureNumberLab(db:ProfileExecutor,authority:ProfileAuthority,accountId:string,config:{engineSha256:string;aiConfigurationVersion:number;variantId?:string}):Promise<LabCapturedConfiguration>{
  accountId=uuid.parse(accountId);need(/^[a-f0-9]{64}$/.test(config.engineSha256)&&Number.isSafeInteger(config.aiConfigurationVersion)&&config.aiConfigurationVersion>0,'LAB_RUNTIME_CONFIG');
  const now=async()=>new Date((await db.query('SELECT clock_timestamp() AS now')).rows[0].now);
  const started=await now();authorizeProfileAction(authority,{scope:'tests:run',workspaceId:db.workspaceId,mutation:true},started);
@@ -36,7 +38,7 @@ export async function captureNumberLab(db:ProfileExecutor,authority:ProfileAutho
  // is paused/retired. Publication/adoption of a variant remains a separate action.
  const assignments=(await db.query(`SELECT a.*,b.version AS binding_version,b.body AS binding_body FROM commercial_assignments a JOIN records b ON b.workspace_id=a.workspace_id AND b.environment=a.environment AND b.id=a.binding_id AND b.kind='binding' WHERE a.workspace_id=$1 AND a.environment='REAL' AND a.account_id=$2 ORDER BY a.id LIMIT 21 FOR SHARE OF a,b`,[db.workspaceId,accountId])).rows;
  need(assignments.length>0&&assignments.length<=20,'LAB_ASSIGNMENT_COVERAGE');
- const active=assignments.filter(a=>a.state==='ACTIVE'&&Date.parse(a.binding_body.valid_from)<=started.getTime()&&(!a.binding_body.valid_to||Date.parse(a.binding_body.valid_to)>started.getTime()));need(active.length>0,'LAB_ASSIGNMENT_NOT_CURRENT');
+ const active=assignments.filter(a=>a.state==='ACTIVE'&&Date.parse(a.binding_body.valid_from)<=started.getTime()&&(!a.binding_body.valid_to||Date.parse(a.binding_body.valid_to)>started.getTime())&&(config.variantId===undefined||a.variant_id===config.variantId));need(active.length>0,'LAB_ASSIGNMENT_NOT_CURRENT');
  const sources=new Map<string,LabConfigurationRecord>(),candidates:MarketRouteCandidate[]=[],tiers:NumberLabSnapshot['tiers']=[];
  const load=async(kind:string,ref:{id:string;revision:number;sha256:string})=>{
   const k=kind+':'+ref.id+':'+ref.revision,old=sources.get(k);if(old){need(old.ref.sha256===ref.sha256,'LAB_SOURCE_CONFLICT');return old;}

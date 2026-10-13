@@ -479,15 +479,15 @@
     "reiniciar",
     "adjuntar",
     "revisar_comprobante",
-    "exportar"
+    "exportar",
+    "estimar_suite",
+    "ejecutar_suite",
+    "informe"
    ],
    "audience": "profile",
    "family": "/v2/number-tests",
    "name": "number_test_manage",
-   "pending": [
-    "ejecutar_suite",
-    "informe"
-   ],
+   "pending": [],
    "scopes": [
     "tests:read",
     "tests:run"

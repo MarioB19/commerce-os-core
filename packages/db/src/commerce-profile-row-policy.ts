@@ -79,7 +79,7 @@ const platformTables=['platform_admins','platform_operations','platform_tokens']
 // boundary. A catalog through 0108 (or 0109-0110) does not have them yet.
 const addedAfterRetirement=['platform_backup_runs'];
 // V7 RF-19.d: laboratory example receipts (0113), preserved only when present.
-const laboratoryAddedAfterRetirement=['commerce_number_lab.attachments','commerce_number_lab.retention_receipts'];
+const laboratoryAddedAfterRetirement=['commerce_number_lab.attachments','commerce_number_lab.retention_receipts','commerce_number_lab.suites','commerce_number_lab.suite_cases'];
 // V7 F2 profile integrations (0101): reviewed profile and environment guards in
 // the migration; only the API and the closed AI/platform readers reach rows.
 const integrationTables=['ai_profile_preferences','meta_profile_credential_versions','meta_profile_credentials','profile_onboarding'];
@@ -125,7 +125,7 @@ export function commerceProfileRowPolicy(catalog:ProfileCatalog):ProfileRowIsola
  for(const name of privacyReferenceTables){const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_PRIVACY_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Installation-wide privacy reference fence epoch and leases; no tenant business payload and no application role access.'});}
  for(const name of cutoverTables){const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_CUTOVER_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Immutable V7 cutover adoption receipts; written once by the migration owner and closed to application roles.'});}
  for(const name of platformTables){const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_PLATFORM_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Platform administration outside every profile; only the closed platform owner reaches rows, through aggregate-only ports.'});}
- for(const name of laboratoryAddedAfterRetirement){if(!rows.has(name))continue;const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_LAB_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Dedicated021 control of one profile run: sealed example receipts (RF-19.d) and content-free retention receipts (RF-19.o); never a REAL asset.'});}
+ for(const name of laboratoryAddedAfterRetirement){if(!rows.has(name))continue;const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_LAB_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Dedicated021 control of one profile run: sealed example receipts (RF-19.d), content-free retention receipts (RF-19.o) and automatic-buyer suites (RF-19.p); never a REAL asset.'});}
  for(const name of addedAfterRetirement){if(!rows.has(name))continue;const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_PLATFORM_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Platform recovery evidence outside every profile (V7 F1); only the cluster owner writes rows and the API reads a bounded status function.'});}
  for(const name of integrationTables){const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_INTEGRATION_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Profile integration configuration with reviewed profile/environment guards; secrets are ciphertext readable only by their closed runtime role.'});}
  add('profile_cutover_historical_tables',{mode:'preserve',reason:'Global immutable list of historical table names used by the isolation model; no tenant data.'});

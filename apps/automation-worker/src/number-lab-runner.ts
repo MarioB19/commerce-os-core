@@ -2,6 +2,7 @@ import pg from 'pg';
 import type {ProfilePool} from '../../../packages/db/src/profile-context.js';
 import {withProfileTransaction} from '../../../packages/db/src/profile-context.js';
 import {numberLabKeys} from '../../../packages/db/src/number-laboratory.js';
+import {advanceNumberLabSuites} from '../../../packages/db/src/number-lab-suites.js';
 import {createNumberLabMaterialCustody,createNumberLabMaterialReader,createNumberLabReceiptCustody} from '../../../packages/db/src/number-lab-material-custody.js';
 import type {NumberLabEngineIdentity} from '../../../packages/db/src/number-lab-engine-runtime.js';
 import {createNumberLabDriver,type NumberLabDriverSellerConfiguration} from './number-lab-driver.js';
@@ -51,6 +52,9 @@ export const LAB_SELLER_MAXIMUM_MICROUSD=250_000;
  * native state (INTENT/UNKNOWN) for reconciliation, never a blind retry. */
 export async function processNumberLabOperations(runtime:NumberLabRuntime|null,limit=3){
  if(!runtime)return 0;
+ // RF-19.p: the automatic buyer queues the next step of each due journey
+ // first; the queued steps then run below like any other operation.
+ try{await advanceNumberLabSuites(runtime.control,runtime.keys.control,10);}catch(error){process.stderr.write(`number_lab_suites_failed ${code(error)}\n`);if(process.env.LAB_DEBUG)console.error(error);}
  // Discovery crosses profiles only through the SECURITY DEFINER function, which
  // binds each profile itself and returns identifiers, never content.
  let queued:{workspace_id:string;run_id:string;operation_id:string;stage:'EXECUTE'|'RECONCILE'}[]=[];

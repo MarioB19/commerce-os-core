@@ -20,8 +20,8 @@ en `apps/ingress` (otro servicio) y no forman parte de este documento.
 | Salud y documentación | `/livez`, `/readyz`, `/health/live`, `/health/ready`, `/healthz/platform`, `/api/version`, `/v1/openapi.json` | 7 |
 | Archivos (bytes) | `/v2/materials/{id}/content`, `/v2/materials/{id}/parts/{n}`, `/v2/receipts/{id}/document`, `/v2/help/download`, `/v2/number-tests/{id}/materials/{material}`, `/v2/number-tests/{id}/attachments/{attachment}`, `/v2/number-tests/{id}/export` | 7 |
 | Webhooks | (en ingress, fuera de este documento) | 0 |
-| **Negocio** | todo lo demás, incluidas las rutas de plataforma y de operación | **166** |
-| Total publicado | | 189 |
+| **Negocio** | todo lo demás, incluidas las rutas de plataforma y de operación | **170** |
+| Total publicado | | 193 |
 
 Antes de F8: 554 operaciones (F0, producción V5: 386; las rutas V7 se sumaron
 a las V5 durante F2–F7). Tras F8-B/C: 457. Tras F8-D: 178 (159 de negocio). Con la
@@ -32,7 +32,8 @@ listar, previsualizar y reprogramar): 183 (163 de negocio). Con la vista previa 
 de materiales dentro del chat de «Probar número» (RF-19.c, bytes): 184 (163 de negocio). Con los
 comprobantes de ejemplo de la prueba (RF-19.d: subir, listar y ver): 187 (165 de negocio). Con el
 diagnóstico previo con enlaces (RF-19.i, `GET /v2/number-tests/diagnose`): 188 (166 de negocio). Con la
-exportación de una prueba (RF-19.o, archivo): **189 (166 de negocio)**.
+exportación de una prueba (RF-19.o, archivo): 189 (166 de negocio). Con el comprador
+automático y su informe (RF-19.p/h: estimar, iniciar, leer y última): **193 (170 de negocio)**.
 
 ## Referencia generada (RF-16.b)
 

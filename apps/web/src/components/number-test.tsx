@@ -48,6 +48,40 @@ function LabMaterial({runId,entry,selection}:{runId:string;entry:Entry;selection
  return <a className="number-test-material" href={url} target="_blank" rel="noreferrer">📎 {name} · Abrir PDF</a>;
 }
 
+/** V7 RF-19.p/h: the automatic buyer. Every variant the number sells is played
+ * by a customer who buys and one who stops answering; the report gives one
+ * verdict per variant with each step. Estimate first; nothing is sent. */
+interface SuiteReport {suite:{suite_id:string;state:string;state_label:string;created_at:string;maximum_microusd:number};
+ variants:{variant_id:string;name:string;verdict:string;verdict_label:string;cases:{journey:string;journey_label:string;state:string;state_label:string;checks:{name:string;label:string;state:string;detail:string}[]}[]}[];note:string}
+interface SuiteEstimate {maximum_microusd:number;cases:{variant_id:string;name:string;journey:string;maximum_microusd:number}[];note:string}
+const checkMarks:Record<string,string>={PASSED:'✓',FAILED:'✗',UNKNOWN:'?',SKIPPED:'–'};
+function AutomaticSuite({accountId,selection,canRun}:{accountId:string;selection:ProfileFence;canRun:boolean}){
+ const [report,setReport]=useState<SuiteReport|null>(null),[estimate,setEstimate]=useState<SuiteEstimate|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState('');
+ useEffect(()=>{const c=new AbortController();variantRequest<SuiteReport|null>(selection,'GET',`/v2/number-tests/suites/latest?account_id=${accountId}`,undefined,undefined,c.signal).then(setReport).catch(()=>undefined);return()=>c.abort();},[accountId,selection]);
+ useEffect(()=>{if(report?.suite.state!=='RUNNING')return;const id=report.suite.suite_id,c=new AbortController();
+  const t=setInterval(()=>{void variantRequest<SuiteReport>(selection,'GET',`/v2/number-tests/suites/${id}`,undefined,undefined,c.signal).then(setReport).catch(()=>undefined);},2000);return()=>{c.abort();clearInterval(t);};},[report?.suite.state,report?.suite.suite_id,selection]);
+ async function estimateNow(){setBusy(true);setError('');try{setEstimate(await variantRequest<SuiteEstimate>(selection,'POST','/v2/number-tests/suites/estimate',{account_id:accountId}));}catch(e){setError(errorText(e,'No se pudo estimar la prueba automática.'));}finally{setBusy(false);}}
+ async function start(){if(!estimate)return;setBusy(true);setError('');
+  try{const s=await variantRequest<{suite_id:string}>(selection,'POST','/v2/number-tests/suites',{account_id:accountId,accepted_maximum_microusd:estimate.maximum_microusd},newOperationKey());
+   setEstimate(null);setReport(await variantRequest<SuiteReport>(selection,'GET',`/v2/number-tests/suites/${s.suite_id}`));}
+  catch(e){setError(errorText(e,'No se pudo iniciar la prueba automática.'));}finally{setBusy(false);}}
+ return <section className="number-test-suite" aria-labelledby="number-test-suite-title">
+  <h2 id="number-test-suite-title">Prueba automática de todas las variantes</h2>
+  <p className="variant-hint">Un cliente simulado compra (saludo, oferta, cobro, comprobante y entrega) y otro deja de responder (seguimientos), por cada variante del número.</p>
+  {error&&<p role="alert">{error}</p>}
+  {report&&<div className="number-test-report" aria-live="polite">
+   <p><strong>{report.suite.state_label}</strong> · {new Date(report.suite.created_at).toLocaleString('es-MX')}</p>
+   <ul>{report.variants.map(v=><li key={v.variant_id}><strong>{v.name}: {v.verdict_label}</strong>
+    <ul>{v.cases.map(c=><li key={c.journey}>{c.journey_label} · {c.state_label}
+     <ul className="number-test-checks">{c.checks.map(k=><li key={k.name} className={`check-${k.state.toLowerCase()}`}><span aria-hidden="true">{checkMarks[k.state]??''} </span>{k.label}: {k.detail}</li>)}</ul></li>)}</ul></li>)}</ul>
+  </div>}
+  {!estimate?<Button variant="secondary" disabled={!canRun||busy||report?.suite.state==='RUNNING'} onClick={()=>void estimateNow()}>{busy?'Estimando…':report?'Volver a probar todo':'Ver costo y probar todo'}</Button>:<>
+   <p><strong>Costo máximo de IA: {usd(estimate.maximum_microusd)}</strong></p><p className="variant-hint">{estimate.note}</p>
+   <div className="profile-number-actions"><Button disabled={busy} onClick={()=>void start()}>{busy?'Iniciando…':'Aceptar y probar todo'}</Button><Button variant="secondary" disabled={busy} onClick={()=>setEstimate(null)}>Cancelar</Button></div>
+  </>}
+ </section>;
+}
+
 export function NumberTest({accountId,selection,role,state,timezone}:{accountId:string;selection:ProfileFence;role:ProfileRole;state:ProfileState;timezone:string}){
  const canRun=role!=='viewer'&&state==='ACTIVE';
  const [number,setNumber]=useState<NumberRow|null>(null),[view,setView]=useState<View|null>(null),[estimate,setEstimate]=useState<Estimate|null>(null);
@@ -155,5 +189,6 @@ export function NumberTest({accountId,selection,role,state,timezone}:{accountId:
     <ol>{view.operations.map(o=><li key={o.operation_id}>{actionLabel(o.action)} · {o.state_label}{o.result?.reason_label?` — ${o.result.reason_label}`:''}{o.result?.fix&&<> · <a href={o.result.fix.href}>{o.result.fix.label}</a></>}</li>)}</ol>
    </details>}
   </>}
+  {loaded&&<AutomaticSuite accountId={accountId} selection={selection} canRun={canRun}/>}
  </section>;
 }

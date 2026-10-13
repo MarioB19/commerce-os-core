@@ -9,7 +9,10 @@ import {materialBytes} from '../../../packages/db/src/profile-materials.js';
 import {sendPrivateFile} from './file-response.js';
 import {diagnoseNumberTest,duringFix} from './number-test-diagnosis.js';
 import {createHash} from 'node:crypto';
-import {estimateNumberLab,labHash} from '../../../packages/domain/src/laboratory/number-lab.js';
+import {estimateNumberLab,labHash,type LabScenario} from '../../../packages/domain/src/laboratory/number-lab.js';
+import {syntheticReceiptPdf} from '../../../packages/domain/src/laboratory/synthetic-receipt.js';
+import {readSuiteByStart,insertSuite,insertSuiteCase,latestSuiteId,readSuiteReport,suiteDerivedId} from '../../../packages/db/src/number-lab-suites.js';
+import type {SuiteJourney} from '../../../packages/domain/src/laboratory/automatic-buyer.js';
 import {numberLabActionSchema} from '../../../packages/contracts/src/number-laboratory.js';
 import {laboratoryAiConfiguration,laboratoryGrants,type VariantAiSelection} from '../../../packages/ai-providers/src/variant-ai.js';
 import {bindNumberLabReleases} from '../../../packages/ai-providers/src/number-laboratory.js';
@@ -44,9 +47,10 @@ const messages:Record<string,string>={
  LAB_ATTACHMENT_TYPE:'Adjunta una imagen (PNG, JPG o WEBP) o un PDF de comprobante.',LAB_ATTACHMENT_SIZE:'El comprobante debe pesar máximo 4 MB.',
  LAB_ATTACHMENT_LIMIT:'Esta prueba ya tiene 20 comprobantes. Inicia otra.',LAB_ATTACHMENT_NOT_FOUND:'No encontramos ese comprobante en esta prueba.',
  LAB_RUN_EXPIRED:'Esta prueba venció: las pruebas se guardan 30 días. Inicia otra.',
+ LAB_SUITE_NOT_FOUND:'No encontramos esa prueba automática en este perfil.',LAB_AUTOMATIC_RUN:'Esta conversación la maneja la prueba automática.',
  LAB_CATALOG_AMBIGUOUS:'El número tiene asignaciones ambiguas. Revisa sus variantes.',LAB_SOURCE_LIMIT:'La configuración del número es demasiado grande para una prueba.',
 };
-const status:Record<string,number>={LAB_RUN_EXPIRED:410,LAB_NOT_INSTALLED:503,LAB_ACCOUNT_NOT_FOUND:404,LAB_RUN_NOT_FOUND:404,LAB_MATERIAL_NOT_FOUND:404,LAB_ATTACHMENT_NOT_FOUND:404,LAB_ATTACHMENT_TYPE:400,LAB_ATTACHMENT_SIZE:400};
+const status:Record<string,number>={LAB_SUITE_NOT_FOUND:404,LAB_RUN_EXPIRED:410,LAB_NOT_INSTALLED:503,LAB_ACCOUNT_NOT_FOUND:404,LAB_RUN_NOT_FOUND:404,LAB_MATERIAL_NOT_FOUND:404,LAB_ATTACHMENT_NOT_FOUND:404,LAB_ATTACHMENT_TYPE:400,LAB_ATTACHMENT_SIZE:400};
 function fail(code:string,statusCode=409):never{throw Object.assign(new Error(code),{code,statusCode,publicMessage:messages[code]});}
 async function mapped<T>(work:()=>Promise<T>):Promise<T>{
  try{return await work();}catch(error){
@@ -68,11 +72,11 @@ const estimateSchema=z.object({account_id:z.string().uuid(),mode:z.enum(['CHAT',
 const actionSchema=z.object({expected_version:z.number().int().positive(),action:numberLabActionSchema}).strict();
 
 /** Capture, selections and estimate, all from the server's current state. */
-async function prepare(db:ProfileExecutor,authority:ProfileAuthority,accountId:string,mode:'CHAT'|'AUTOMATIC'){
+async function prepare(db:ProfileExecutor,authority:ProfileAuthority,accountId:string,mode:'CHAT'|'AUTOMATIC',only?:{variantId:string;scenarios:LabScenario[]}){
  const engineSha256=process.env.LAB_ENGINE_SHA256;if(!engineSha256||!/^[a-f0-9]{64}$/.test(engineSha256))fail('LAB_NOT_INSTALLED',503);
  const version=Number((await db.query("SELECT version FROM ai_profile_preferences WHERE workspace_id=$1 AND environment='REAL'",[db.workspaceId])).rows[0]?.version??0);
  if(!version)fail('LAB_AI_DEPENDENCY_REQUIRED');
- const captured=await captureNumberLab(db,authority,accountId,{engineSha256,aiConfigurationVersion:version});
+ const captured=await captureNumberLab(db,authority,accountId,{engineSha256,aiConfigurationVersion:version,...(only?{variantId:only.variantId}:{})});
  const selections:Record<string,VariantAiSelection>={},names:Record<string,string>={};
  for(const c of captured.snapshot.candidates){
   const v=await readVariant(db,'REAL',c.release.variant_id).catch(()=>null);
@@ -81,7 +85,7 @@ async function prepare(db:ProfileExecutor,authority:ProfileAuthority,accountId:s
  Object.assign(names,await variantNames(db,captured.snapshot.candidates.map(c=>c.release.variant_id)));
  const ai=await laboratoryAiConfiguration(db,selections);if(!ai.config)fail('LAB_AI_DEPENDENCY_REQUIRED');
  const now=new Date((await db.query('SELECT clock_timestamp() AS now')).rows[0].now).getTime();
- const estimate=estimateNumberLab(captured.snapshot,mode,ai.config,ai.models,now);
+ const estimate=estimateNumberLab(captured.snapshot,mode,ai.config,ai.models,now,only?.scenarios);
  return{captured,estimate,selections,names};
 }
 /** RF-19.d: each variant's receipt rules as they are now, fixed with the test.
@@ -148,6 +152,29 @@ async function view(db:ProfileExecutor,authority:ProfileAuthority,runId:string){
   isolation:{environment:'SIMULATION',whatsapp:false,real_records:false,label:'Prueba aislada: no envía mensajes reales, no registra ventas ni consume la cuota del número.'}};
 }
 
+/** V7 RF-19.p: the automatic buyer's plan for a number. Every variant it sells
+ * gets two journeys, each captured and priced alone (its own isolated run):
+ * a customer who buys and a customer who stops answering. */
+const JOURNEYS:{journey:SuiteJourney;scenario:LabScenario}[]=[{journey:'PURCHASE',scenario:'happy'},{journey:'FOLLOWUP',scenario:'followup'}];
+async function prepareSuite(db:ProfileExecutor,authority:ProfileAuthority,accountId:string){
+ const all=await prepare(db,authority,accountId,'CHAT');
+ const cases=[];
+ for(const c of all.captured.snapshot.candidates)for(const j of JOURNEYS){
+  const p=await prepare(db,authority,accountId,'AUTOMATIC',{variantId:c.release.variant_id,scenarios:[j.scenario]});
+  cases.push({...j,variant_id:c.release.variant_id,release:c.release,prepared:p});
+ }
+ return{cases,names:all.names,selections:all.selections,maximum_microusd:cases.reduce((n,c)=>n+c.prepared.estimate.maximum_microusd,0)};
+}
+function presentSuiteEstimate(p:Awaited<ReturnType<typeof prepareSuite>>){
+ return{currency:'USD' as const,maximum_microusd:p.maximum_microusd,paid_by:'PROFILE_KEY' as const,
+  cases:p.cases.map(c=>({variant_id:c.variant_id,name:p.names[c.variant_id]??'Variante',journey:c.journey,maximum_microusd:c.prepared.estimate.maximum_microusd,maximum_ai_calls:c.prepared.estimate.maximum_ai_calls})),
+  note:'Es un máximo: cada respuesta de la IA y cada lectura de comprobante se cobran a la clave de tu perfil. Nada se envía por WhatsApp ni cuenta como venta.'};
+}
+async function expectsFollowup(db:ProfileExecutor,variantId:string){
+ const v=await readVariant(db,'REAL',variantId).catch(()=>null);const slots=((v?.document as {remarketing?:{slots?:{enabled?:boolean}[]}}|undefined)?.remarketing?.slots)??[];
+ return slots.some(s=>s.enabled);
+}
+const minorDigits=(currency:string)=>{try{return new Intl.NumberFormat('en',{style:'currency',currency}).resolvedOptions().maximumFractionDigits??2;}catch{return 2;}};
 export async function numberTestRoutes(app:FastifyInstance,deps?:ProfileRequestDependencies){
  app.addHook('onRequest',async(req,reply)=>{if(req.url.startsWith('/v2/number-tests'))headers(reply);});
  app.post('/v2/number-tests/estimate',{bodyLimit:1024},async req=>{const q=estimateSchema.parse(req.body);
@@ -166,6 +193,40 @@ export async function numberTestRoutes(app:FastifyInstance,deps?:ProfileRequestD
    return{run,created:run.created};
   },deps));
   reply.code(data.created?201:200);return{data:data.run};});
+ // RF-19.p/h: the automatic buyer. Estimate first; the start accepts that
+ // ceiling and creates one isolated run per variant and journey; the worker
+ // plays each journey and the report gives one verdict per variant.
+ app.post('/v2/number-tests/suites/estimate',{bodyLimit:1024},async req=>{const q=z.object({account_id:z.string().uuid()}).strict().parse(req.body);
+  return{data:await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:run',mutation:true},async({db,profile})=>presentSuiteEstimate(await prepareSuite(db,profile.authority,q.account_id)),deps))};});
+ app.post('/v2/number-tests/suites',{bodyLimit:1024},async(req,reply)=>{const q=z.object({account_id:z.string().uuid(),accepted_maximum_microusd:z.number().int().positive().max(Number.MAX_SAFE_INTEGER)}).strict().parse(req.body),operationId=operationKey(req);
+  const data=await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:run',mutation:true},async({db,profile})=>{
+   const a=profile.authority as ProfileAuthority,key=numberLabKeys().control;
+   const prior=await readSuiteByStart(db,a,operationId);if(prior)return{suite_id:prior,created:false};
+   const p=await prepareSuite(db,a,q.account_id);
+   if(p.maximum_microusd>q.accepted_maximum_microusd)fail('LAB_ESTIMATE_INCREASED');
+   const {missing}=await laboratoryGrants(db,a,p.cases.flatMap(c=>c.prepared.estimate.cases),p.selections);if(missing.length)fail('LAB_AI_GRANT_REQUIRED');
+   const suiteId=suiteDerivedId('suite',db.workspaceId,operationId);
+   await insertSuite(db,a,{id:suiteId,account_id:q.account_id,operation_id:operationId,maximum_microusd:p.maximum_microusd});
+   const policies=await receiptPolicies(db,p.cases.map(c=>c.variant_id));
+   for(const c of p.cases){
+    const runOperation=suiteDerivedId('run',suiteId,c.variant_id,c.journey),captured=c.prepared.captured;
+    const run=await startNumberLab(db,a,{operation_id:runOperation,account_id:q.account_id,snapshot_sha256:labHash(captured.snapshot),estimate_sha256:c.prepared.estimate.sha256,mode:'AUTOMATIC'},captured,c.prepared.estimate,key,{receipt_policies:policies});
+    if(run.created)await bindNumberLabReleases(db,run.run_id,captured.snapshot,c.prepared.estimate);
+    let attachment:string|null=null;
+    if(c.journey==='PURCHASE'){const tz=c.release.locale.timezone,paidOn=new Intl.DateTimeFormat('en-CA',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(run.virtual_now));
+     const pdf=syntheticReceiptPdf({amountMinor:c.release.amount_minor,currency:c.release.locale.currency,minorDigits:minorDigits(c.release.locale.currency),paidOn,reference:'LAB-'+run.run_id.slice(0,8).toUpperCase()});
+     attachment=(await attachNumberLabFile(db,a,run.run_id,{mime_type:'application/pdf',base64:pdf.toString('base64')},key)).attachment_id;}
+    await insertSuiteCase(db,{suite_id:suiteId,run_id:run.run_id,variant_id:c.variant_id,journey:c.journey,expect_followup:c.journey==='FOLLOWUP'&&await expectsFollowup(db,c.variant_id),attachment_id:attachment});
+   }
+   return{suite_id:suiteId,created:true};
+  },deps));
+  reply.code(data.created?201:200);return{data:{suite_id:data.suite_id}};});
+ app.get('/v2/number-tests/suites/latest',async req=>{const q=z.object({account_id:z.string().uuid(),environment:z.literal('REAL').optional()}).strict().parse(req.query??{});
+  return{data:await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:read',mutation:false},async({db,profile})=>{
+   const id=await latestSuiteId(db,profile.authority,q.account_id);return id?readSuiteReport(db,profile.authority,id,ids=>variantNames(db,ids)):null;},deps))};});
+ app.get('/v2/number-tests/suites/:id',async req=>{const {id}=runParam.parse(req.params);
+  return{data:await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:read',mutation:false},async({db,profile})=>{
+   const report=await readSuiteReport(db,profile.authority,id,ids=>variantNames(db,ids));if(!report)fail('LAB_SUITE_NOT_FOUND',404);return report;},deps))};});
  // RF-19.i: before starting, everything that keeps the number from being
  // tested (blocking) or from being tested completely (warning), with links.
  app.get('/v2/number-tests/diagnose',async req=>{const q=z.object({account_id:z.string().uuid(),environment:z.literal('REAL').optional()}).strict().parse(req.query??{});
@@ -222,7 +283,7 @@ export async function numberTestRoutes(app:FastifyInstance,deps?:ProfileRequestD
  });
  app.post('/v2/number-tests/:id/actions',{bodyLimit:16384},async(req,reply)=>{const {id}=runParam.parse(req.params),q=actionSchema.parse(req.body),operationId=operationKey(req);
   const data=await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:run',mutation:true},async({db,profile})=>{
-   await liveRun(db,profile.authority,id);
+   const live=await liveRun(db,profile.authority,id);if(live.mode==='AUTOMATIC')fail('LAB_AUTOMATIC_RUN');
    return enqueueNumberLab(db,profile.authority,id,{operation_id:operationId,expected_version:q.expected_version,action:q.action},numberLabKeys().control);},deps));
   reply.code(202);return{data};});
 }
