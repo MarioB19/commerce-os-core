@@ -98,6 +98,15 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
   restaurar:P('POST',operation.extend({productId:z.uuid(),expectedVersion:z.number().int().positive()}).strict(),i=>'/v2/products/'+id(i.productId)+'/restore',i=>({expected_version:i.expectedVersion})),
   dependencias:P('GET',z.object({productId:z.uuid()}).strict(),i=>'/v2/products/'+id(i.productId)+'/dependencies'),
  });
+ tool('materials_manage','Materiales privados','Archivos y enlaces que reciben tus clientes. Los archivos se suben en partes de 4 MiB (base64), se verifican por tamaño y SHA-256 y se guardan cifrados. Eliminar sólo los oculta de configuraciones nuevas.',{
+  listar:P('GET',z.object({q:z.string().max(160).optional(),include:z.enum(['active','all']).optional()}).strict(),i=>'/v2/materials'+query(i)),
+  leer:P('GET',z.object({materialId:z.uuid()}).strict(),i=>'/v2/materials/'+id(i.materialId)),
+  iniciar_subida:P('POST',operation.extend({kind:z.enum(['file','link']),name:z.string().min(1).max(160),mime_type:z.string().max(80).optional(),size_bytes:z.number().int().positive().optional(),sha256:z.string().regex(/^[a-f0-9]{64}$/).optional(),link:z.string().max(2000).optional()}).strict(),()=>'/v2/materials',({operationId:_,link,...i})=>({...i,...(link?{url:link}:{})})),
+  parte:{schema:z.object({materialId:z.uuid(),part:z.number().int().min(1).max(10),base64:z.string().max(5_600_000)}).strict(),read:false,run:i=>c.variant('PUT','/v2/materials/'+id(i.materialId)+'/parts/'+i.part,{base64:i.base64},crypto.randomUUID())},
+  completar:P('POST',operation.extend({materialId:z.uuid()}).strict(),i=>'/v2/materials/'+id(i.materialId)+'/complete',()=>({})),
+  cancelar:P('POST',operation.extend({materialId:z.uuid()}).strict(),i=>'/v2/materials/'+id(i.materialId)+'/cancel',()=>({}),{destructive:true}),
+  eliminar:P('POST',operation.extend({materialId:z.uuid(),expectedVersion:z.number().int().positive()}).strict(),i=>'/v2/materials/'+id(i.materialId)+'/archive',i=>({expected_version:i.expectedVersion}),{destructive:true}),
+ });
  const section=z.enum(variantSections);
  tool('variants_manage','Variantes de mercado','Cada variante es un mercado del producto (país, moneda, idioma, zona) con cinco secciones. Editar guarda un borrador; publicar aplica a conversaciones nuevas y no asigna números ni envía mensajes.',{
   listar:P('GET',z.object({productId:z.uuid().optional(),include:z.enum(['active','all']).optional()}).strict(),i=>'/v2/variants'+query({product_id:i.productId,include:i.include})),

@@ -1,5 +1,6 @@
 import {ProfileSales} from './profile-sales.js';
-import {ProductVariants} from './product-variants.js';
+import {ProductsHome,ProductDetail} from './products-v7.js';
+import {VariantEditor,variantSectionTabs,type VariantTab} from './variant-editor.js';
 import {useEffect,useRef,useState,type ReactNode} from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import {profileRoleLabels,type ProfileBrowserBootstrap} from '../../../../packages/contracts/src/profiles.js';
@@ -8,7 +9,6 @@ import {ApiError,api,setProfileFence} from '../lib/api.js';
 import {ProfileNumbers} from './profile-numbers.js';
 import {AccountSecurityView} from '../pages/account-security.js';
 import {ProfileSelector} from './profile-selector.js';
-import {ProfileCatalog} from './profile-catalog.js';
 import {ProfileEmployees} from './profile-employees.js';
 import {ProfileInvitations} from './profile-invitations.js';
 import {ProfileTokens} from './profile-tokens.js';
@@ -24,7 +24,10 @@ import {ProfileHome} from './profile-home.js';
 
 /** Closed set: unreviewed V1 pages are never offered by this profile entrypoint. */
 export const profileApplicationPaths=['/','/home','/login','/products','/sales/inbox','/sales/orders','/sales/receipts','/sales/payments','/sales/payments/rules','/results','/results/goals','/settings/profile','/settings/employees','/account/integrations','/numbers','/account/tokens','/account/security'] as const;
-const productVariantPath=/^\/products\/([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/variants$/i;
+const uuidPattern='[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
+const productPath=new RegExp(`^/products/(${uuidPattern})(?:/variants)?$`,'i');
+const variantEditorPath=new RegExp(`^/products/(${uuidPattern})/variants/(${uuidPattern})(?:/(sale|offer|collection|remarketing|numbers))?$`,'i');
+const productVariantPath={test:(path:string)=>productPath.test(path)||variantEditorPath.test(path)};
 /** RF-17.a: at most six destinations, identical on desktop and mobile;
  * configuration lives in the account menu. */
 export const profileSections=[
@@ -69,9 +72,11 @@ export function ProfileApplication({path,login}:{path:string;login:(retry:()=>vo
 function ProfilePage({path,data}:{path:string;data:ProfileBrowserBootstrap}){
  const profile=data.profile.profiles.find(p=>p.id===data.profile.selection.workspaceId&&p.selected)!,selection={workspaceId:profile.id,version:data.profile.selection.version};
  if(path==='/account/security')return <AccountSecurityView user={data.user}/>;
- const productId=productVariantPath.exec(path)?.[1]?.toLowerCase();
- if(productId)return <ProductVariants productId={productId} selection={selection} actorId={data.user.id} role={profile.role} profileState={profile.state}/>;
- if(path==='/products')return <><h1>Productos</h1><ProfileCatalog selection={selection} environment="REAL" variantLinks/></>;
+ const editor=variantEditorPath.exec(path);
+ if(editor)return <VariantEditor key={editor[2]} productId={editor[1]!.toLowerCase()} variantId={editor[2]!.toLowerCase()} section={(variantSectionTabs.some(([k])=>k===editor[3])?editor[3]:'sale') as VariantTab} selection={selection} role={profile.role} state={profile.state}/>;
+ const productId=productPath.exec(path)?.[1]?.toLowerCase();
+ if(productId)return <ProductDetail productId={productId} selection={selection} role={profile.role} state={profile.state}/>;
+ if(path==='/products')return <ProductsHome selection={selection} role={profile.role} state={profile.state}/>;
  if(path==='/settings/profile')return <ProfileSettings selection={selection} role={profile.role}/>;
  if(path==='/account/integrations')return <ProfileIntegrations selection={selection} role={profile.role} state={profile.state}/>;
  if(path==='/numbers')return <ProfileNumbers selection={selection} role={profile.role} state={profile.state}/>;

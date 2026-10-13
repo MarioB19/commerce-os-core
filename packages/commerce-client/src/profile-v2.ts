@@ -30,7 +30,7 @@ export function personalProfileV1(origin:string,token:string,fetcher:typeof fetc
  * caller's operation UUID as Idempotency-Key, so a retried MCP call returns the
  * durable result instead of repeating the change. */
 export type ProfileVariantClient=(method:ProfileV2Method,path:string,body?:unknown,operationId?:string,signal?:AbortSignal)=>Promise<unknown>;
-const variantPattern=/^\/v2\/(products|variants|number-variants|variant-operations|market)(?:\/[A-Za-z0-9._~%-]+)*(?:\?[A-Za-z0-9._~%&=-]*)?$/;
+const variantPattern=/^\/v2\/(products|variants|number-variants|variant-operations|market|materials)(?:\/[A-Za-z0-9._~%-]+)*(?:\?[A-Za-z0-9._~%&=-]*)?$/;
 export function personalVariantClient(origin:string,token:string,fetcher:typeof fetch=fetch,limit=2*1024*1024):ProfileVariantClient{
  return async(method,path,body,operationId,signal)=>{
   if(!variantPattern.test(path)||path.includes('..'))throw new ProfileV2ClientError('PROFILE_ROUTE_INVALID');

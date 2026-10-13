@@ -106,4 +106,33 @@ describe('V7 F3 number tools',()=>{
    expect(seen[1]!.body).toEqual({environment:'REAL',operationId,expectedVersion:1,action:'pause'});
   }finally{await client.close();await server.close();}
  });
+ it('creates products and saves variant sections with the operation UUID as Idempotency-Key',async()=>{
+  const seen:{method:string;url:string;key:string|null;body:unknown}[]=[],operationId='77777777-7777-4777-8777-777777777777',variantId='88888888-8888-4888-8888-888888888888';
+  const {client,server}=await connect(async(input,init)=>{seen.push({method:String(init?.method??'GET'),url:String(input),key:new Headers(init?.headers).get('idempotency-key'),body:init?.body?JSON.parse(String(init.body)):undefined});return json(200,{data:{id:variantId,version:2}});});
+  try{
+   const locale={market:'México',country:'MX',currency:'MXN',language:'es-MX',timezone:'America/Mexico_City'};
+   for(const [name,args] of [['products_manage',{action:'crear',operationId,name:'Curso',variant:{name:'México',locale}}],
+    ['offers_manage',{action:'guardar',operationId,variantId,expectedVersion:1,value:{name:'Curso',price_minor:9700,tiers:[],fulfillment:[],billing_delay_seconds:1800,positive_payment_unlocks_all:false,legacy:{}}}],
+    ['sellers_manage',{action:'leer',variantId}],['variants_manage',{action:'publicar',operationId,variantId,expectedVersion:2,documentSha256:'a'.repeat(64)}],
+    ['materials_manage',{action:'iniciar_subida',operationId,kind:'link',name:'Portal',link:'https://example.com/p'}]] as const){
+    const result=await client.callTool({name,arguments:args as unknown as Record<string,unknown>});expect(JSON.stringify(result),name).not.toContain('UNCONFIRMED');
+   }
+   expect(seen.map(s=>[s.method,s.url.replace('https://commerce.example.test',''),s.key])).toEqual([
+    ['POST','/v2/products',operationId],['PUT',`/v2/variants/${variantId}/offer`,operationId],['GET',`/v2/variants/${variantId}/seller`,null],
+    ['POST',`/v2/variants/${variantId}/publish`,operationId],['POST','/v2/materials',operationId]]);
+   expect(seen[0]!.body).toEqual({name:'Curso',variant:{name:'México',locale}});
+   expect(seen[3]!.body).toEqual({expected_version:2,document_sha256:'a'.repeat(64)});
+   expect(seen[4]!.body).toEqual({kind:'link',name:'Portal',url:'https://example.com/p'});
+  }finally{await client.close();await server.close();}
+ });
+ it('leaves selling a variant in a number to the human, but lets an agent stop it',async()=>{
+  const seen:string[]=[],variantId='88888888-8888-4888-8888-888888888888',numberId='99999999-9999-4999-8999-999999999999',operationId='77777777-7777-4777-8777-777777777777';
+  const {client,server}=await connect(async(input,init)=>{seen.push(String(init?.method??'GET')+' '+String(input));return json(200,{data:{sells:false}});});
+  try{
+   const assign=await client.callTool({name:'number_assignments_manage',arguments:{action:'asignar',variantId,numberId}});
+   expect(JSON.stringify(assign)).toContain('HUMAN_ACTION_REQUIRED');expect(seen).toEqual([]);
+   await client.callTool({name:'number_assignments_manage',arguments:{action:'retirar',operationId,variantId,numberId}});
+   expect(seen).toEqual([`POST https://commerce.example.test/v2/variants/${variantId}/numbers?`.replace('?','')]);
+  }finally{await client.close();await server.close();}
+ });
 });

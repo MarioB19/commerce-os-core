@@ -16,7 +16,7 @@ export const mcpRegistry:readonly McpRegistryEntry[]=Object.freeze([
  tool('products_manage','profile','/v2/products',['products:read','products:write'],['listar','leer','versiones','productos','crear','editar','archivar','restaurar','dependencias']),
  tool('variants_manage','profile','/v2/variants',['variants:read','variants:write'],['listar','leer','adoptar','crear','editar','revisar','duplicar','publicar','version','historial','archivar','restaurar','consultar_operacion']),
  tool('offers_manage','profile','/v2/variants/{id}/offer',['offers:read','offers:write'],['leer','guardar','validar','publicar','historial']),
- tool('materials_manage','profile','/v2/materials',['materials:read','materials:write'],[],['listar','leer','iniciar_subida','parte','completar','cancelar','eliminar']),
+ tool('materials_manage','profile','/v2/materials',['materials:read','materials:write'],['listar','leer','iniciar_subida','parte','completar','cancelar','eliminar']),
  tool('sales_flows_manage','profile','/v2/variants/{id}/sales-flow',['flows:read','flows:write'],['leer','guardar','validar','publicar','historial']),
  tool('sellers_manage','profile','/v2/variants/{id}/seller',['sellers:read','sellers:write'],['leer','guardar','validar','publicar','historial']),
  tool('collections_manage','profile','/v2/variants/{id}/collection',['collections:read','collections:write'],['leer','guardar','validar','historial']),

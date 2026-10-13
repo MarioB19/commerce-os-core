@@ -16,7 +16,10 @@ export function registerManageTool(server:McpServer,name:string,meta:{title:stri
   if(field==='action')throw Error('MCP_ACTION_FIELD_RESERVED');
   if(!type)throw Error('MCP_ACTION_FIELD_UNDEFINED:'+name+'.'+field);
   let signature:string;try{signature=JSON.stringify(z.toJSONSchema(type as z.ZodType,{unrepresentable:'any',io:'input'}));}catch{signature='opaque:'+field+':'+Math.random();}
-  if(!seen.has(field)){seen.set(field,signature);shape[field]=(type as z.ZodType).optional();}
+  // Advertise without defaults: a default from one action must not be injected
+  // into another action's strict input. Each action applies its own defaults.
+  const bare=type instanceof z.ZodDefault?(type as z.ZodDefault<z.ZodType>).unwrap():type as z.ZodType;
+  if(!seen.has(field)){seen.set(field,signature);shape[field]=bare.optional();}
   else if(seen.get(field)!==signature)shape[field]=z.unknown().optional().describe('Depende de la acción elegida.');
  }
  const advertised=z.object({action:z.enum(keys as [string,...string[]]).describe('Acción cerrada de esta herramienta.'),...shape}).strict();

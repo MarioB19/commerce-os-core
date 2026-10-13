@@ -15,7 +15,7 @@ export interface ProductSummary {id:string;version:number;name:string;descriptio
 export interface VariantNumber {account_id:string;name:string;masked:string|null;status:string|null;sells_this:boolean;same_product:{variant_id:string|null;label:string}|null;others:{product:string;variant:string}[]}
 export interface NumberImpact {assignment_id:string;open_conversations:number;pending_followups:number;unsent_messages:number;effect:string}
 export interface HistoryView {events:{version:number;event:string;label:string;section:string|null;actor_id:string;release_id:string|null;at:string}[];releases:{id:string;revision:number;at:string}[]}
-export class VariantApiError extends ApiError{constructor(message:string,status:number,code:string,readonly details?:unknown){super(message,status,code);}}
+export class VariantApiError extends ApiError{constructor(message:string,status:number,code:string,readonly problems?:unknown){super(message,status,code);}}
 
 export function newOperationKey(){return crypto.randomUUID();}
 export async function variantRequest<T>(fence:ProfileFence,method:'GET'|'POST'|'PUT'|'PATCH',path:string,body?:unknown,key?:string,signal?:AbortSignal):Promise<T>{
@@ -73,3 +73,9 @@ export const markets:{label:string;locale:VariantLocale}[]=[
  {label:'Brasil',locale:{market:'Brasil',country:'BR',currency:'BRL',language:'pt-BR',timezone:'America/Sao_Paulo'}},
 ];
 export const languageLabel=(language:string)=>{try{return new Intl.DisplayNames(['es'],{type:'language'}).of(language)??language;}catch{return language;}};
+/** Operator message plus the concrete problems the server listed, if any. */
+export function errorText(e:unknown,fallback:string){
+ if(!(e instanceof Error)||!e.message)return fallback;
+ const problems=e instanceof VariantApiError&&Array.isArray(e.problems)?e.problems.map(p=>typeof p==='string'?p:p&&typeof p==='object'&&'label' in p?String((p as {label:unknown}).label):'').filter(Boolean):[];
+ return problems.length?`${e.message} ${problems.join(' · ')}`:e.message;
+}

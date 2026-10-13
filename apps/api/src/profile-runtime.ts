@@ -19,6 +19,7 @@ import {platformProfileRoutes,type PlatformRouteDependencies} from './platform-p
 import {profileIntegrationRoutes,type IntegrationRouteDependencies} from './profile-integrations.js';
 import {profileReadRoutes} from './profile-reads.js';
 import {variantWorkspaceRoutes} from './variant-workspace.js';
+import {profileMaterialRoutes} from './profile-materials.js';
 
 export interface ProfileRuntimeDependencies {
  request?:ProfileRequestDependencies;
@@ -43,7 +44,7 @@ export async function profileRuntimeRoutes(app:FastifyInstance,deps:ProfileRunti
  await app.register(async integrations=>{await profileIntegrationRoutes(integrations,{...deps.integrations,request:deps.integrations?.request??deps.request});});
  for(const routes of [profileOverviewRoutes,profileSettingsRoutes,profileEmployeeRoutes,
   profileInvitationRoutes,profileTokenRoutes,profileCatalogRoutes,marketVariantRoutes,
-  continuousAuthorizationRoutes,paymentsRegisterRoutes,receiptPolicyRoutes,resultsRoutes,resultGoalRoutes,profileReadRoutes,variantWorkspaceRoutes]){
+  continuousAuthorizationRoutes,paymentsRegisterRoutes,receiptPolicyRoutes,resultsRoutes,resultGoalRoutes,profileReadRoutes,variantWorkspaceRoutes,profileMaterialRoutes]){
   await app.register(async family=>{await routes(family,deps.request);});
  }
 }
