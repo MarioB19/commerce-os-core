@@ -1,9 +1,9 @@
+import {recordProfileExecutor} from './profile-record-context.js';
 import type {CanonicalEvent} from '../../messaging/src/types.js';
 import type {Environment,DomainRecord,Body} from '../../contracts/src/index.js';
 import {canonicalIdentity} from '../../messaging/src/security.js';
 import {isStandard15dPolicy,warmupProfileSchema,type WarmupProfile} from '../../domain/src/warmup/policy.js';
 import {hash,encrypt,decrypt,appendEvent,type QueryExecutor} from './index.js';
-import {currentProfileExecutor} from './profile-query-routing.js';
 import {readCurrentQrContinuity,continuousWarmupAuthorityBlock} from './continuous-warmup.js';
 import {readEffectiveHealthBatch,currentEffectiveSignal,currentRestrictionClear,effectiveHealthBlockers} from './effective-health.js';
 
@@ -37,7 +37,7 @@ export async function commercialWarmupGuard(c:QueryExecutor,account:DomainRecord
  if(state&&account.environment==='REAL'&&account.body.provider==='waha'&&!warmupIdentityMatches(account,state))return 'WARMUP_REGISTERED_IDENTITY_CHANGED';
  if(state?.continuity_mode==='QR_CONTINUOUS'&&['AWAITING_PEER','WARMING','AWAITING_CONTENT'].includes(state.status)
   &&!state.paused&&!state.confirmed_block&&state.enabled&&!state.pool_paused&&!state.breaker_open){
-  const db=currentProfileExecutor(account.workspace_id);if(!db)return 'CONTINUITY_PROFILE_CONTEXT_REQUIRED';
+  const db=await recordProfileExecutor(c,account.workspace_id,account.environment);
   const own=await readCurrentQrContinuity(db,account.environment,account.id);
   if(own&&!own.revokedAt&&!own.humanPaused&&!own.protections.length){
    const now=(await c.query('SELECT clock_timestamp() AS now')).rows[0].now as Date;

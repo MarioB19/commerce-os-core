@@ -4,7 +4,7 @@ import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
-import {requireMigratedProfileSchema,fixtureProfileRow} from '../support/migrated-database.js';
+import {fixtureProfileRow,openMigratedDatabase,isolatedAdminUrl} from '../support/migrated-database.js';
 import {withProfileTransaction,type ProfilePool,type ProfileExecutor} from '../../packages/db/src/profile-context.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {readResultFacts,readResultSpend,observedResultsReport as resultsReport} from '../../packages/db/src/results.js';
@@ -14,11 +14,11 @@ import {resultFiltersSchema} from '../../packages/contracts/src/results.js';
 // V7 F2: an installation admits three profiles and 20 numbers; each fresh
 // fixture profile is sealed and the oldest are disposed to make room.
 const createdProfiles:string[]=[];
-const suffix=randomBytes(8).toString('hex'),login='results_'+suffix;let admin:pg.Pool,api:pg.Pool,scoped:ProfilePool,serial=0;
+const suffix=randomBytes(8).toString('hex'),login='results_'+suffix;let admin:pg.Pool,api:pg.Pool,scoped:ProfilePool,serial=0,closeDatabase:(()=>Promise<void>)|undefined;
 const day='2026-10-10',started='2026-10-10T16:00:00.000Z',response='2026-10-10T16:00:30.000Z',paid='2026-10-10T17:00:00.000Z';
 const query=resultFiltersSchema.parse({from:day,to:day,currency:'MXN'});
 function tx<T>(w:string,work:(db:ProfileExecutor)=>Promise<T>){return withProfileTransaction(scoped,w,work);}
-async function profile(timezone='America/Mexico_City'){return fixtureProfileRow(admin,createdProfiles,'results_'+suffix+'_'+(++serial),{businessName:'Synthetic Results',timezone,numbers:1,products:5,daily:100});}
+async function profile(timezone='America/Mexico_City'){return fixtureProfileRow(admin,createdProfiles,'results_'+suffix+'_'+(++serial),{businessName:'Synthetic Results',timezone,numbers:6,products:20,daily:100});}
 async function rec(w:string,kind:string,body:Record<string,unknown>,environment='REAL'){const id=randomUUID();await admin.query('INSERT INTO records(id,workspace_id,environment,kind,body,created_at) VALUES($1,$2,$3,$4,$5,$6)',[id,w,environment,kind,body,started]);return id;}
 async function journey(w:string,patch:Record<string,unknown>={},environment='REAL'){
  const family=await rec(w,'product',{name:'Synthetic product'},environment),account=await rec(w,'channel_account',{provider:'simulator'},environment),offer=await rec(w,'offer',{currency:'MXN',product_id:family},environment);
@@ -42,7 +42,11 @@ async function report(j:Journey,q=query){return tx(j.w,db=>resultsReport(db,q));
 async function ai(j:Journey,{cost='150',classification='OPERATION',intent=paid,status='SUCCEEDED'}:{cost?:string|null;classification?:string;intent?:string|null;status?:string}={}){await admin.query('INSERT INTO synthetic_result_ai_cost_facts(workspace_id,environment,conversation_id,provider,model,task,operation_class,occurred_at,status,measured_cost_microusd,input_tokens,output_tokens,intent_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,50,20,$11)',[j.w,j.environment,j.conversation,'synthetic','contract-only','seller',classification,paid,status,cost,intent]);}
 describe('scoped SQL results projections against observed evidence',()=>{
  beforeAll(async()=>{
-  const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:5});await requireMigratedProfileSchema(admin);
+  // V7 F2: this projection contract reads the 017 result facts with a synthetic
+  // AI cost view; it runs on a database migrated through 0081 (before the AI
+  // admission migration that installs the real view) instead of applying sources.
+  const database=await openMigratedDatabase('0081');admin=database.pool;closeDatabase=database.close;const url=new URL(database.url);
+  await admin.query("INSERT INTO profile_quota_policy(singleton,max_profiles,max_numbers,daily_conversations,calendar_timezone,adoption_sha256) VALUES(true,3,20,300,'UTC',repeat('a',64))");
   
   await admin.query(`CREATE TABLE synthetic_result_ai_cost_facts(workspace_id text,environment text,conversation_id uuid,variant_id uuid,provider text,model text,task text,operation_class text,occurred_at timestamptz,status text,measured_cost_microusd bigint,input_tokens bigint,output_tokens bigint,cache_read_tokens bigint DEFAULT 0,cache_write_tokens bigint DEFAULT 0,audio_input_tokens bigint DEFAULT 0,intent_at timestamptz);
    CREATE VIEW result_ai_cost_facts WITH(security_invoker=true) AS SELECT * FROM synthetic_result_ai_cost_facts;
@@ -50,7 +54,7 @@ describe('scoped SQL results projections against observed evidence',()=>{
   const secret=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${secret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;GRANT commerce_api TO "${login}"`);
   const native=new URL(url);native.username=login;native.password=secret;api=new pg.Pool({connectionString:native.toString(),max:3});scoped={async connect(){const c=await api.connect();try{await c.query('SET ROLE commerce_api');return{query:c.query.bind(c),release:()=>c.release()};}catch(e){c.release();throw e;}}};
  },60000);
- afterAll(async()=>{await api?.end();if(admin){try{await admin.query(`DROP ROLE IF EXISTS "${login}"`);}finally{await admin.end();}}});
+ afterAll(async()=>{await api?.end();await closeDatabase?.();const parent=new pg.Pool({connectionString:isolatedAdminUrl().toString(),max:1});try{await parent.query(`DROP ROLE IF EXISTS "${login}"`);}finally{await parent.end();}});
  it('projects only independently observed funnel milestones and latency',async()=>{
   const j=await journey(await profile());await effect(j);await effect(j,'collection');await payment(j);await metadata(j.w);const r=await report(j);
   expect(r.summary.funnel.map(s=>s.count)).toEqual(['1','1','1','1','1','1']);expect(r.summary.first_response_ms.value).toBe('30000.000000');expect(r.summary.first_sale_ms.value).toBe('3600000.000000');expect(r.summary.totals.revenue_minor).toBe('10000');

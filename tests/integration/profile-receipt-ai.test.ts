@@ -128,7 +128,7 @@ describe('receipt019 protected provider orchestration through native worker phas
   // Existing commercial tables receive fixture-owned policies only. New market
   // tables use exactly the production-proposed 008 FORCE RLS and grants.
   for(const table of ['records','record_versions','personal_access_tokens'])await admin.query(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;CREATE POLICY market_fixture ON ${table} USING(workspace_id=NULLIF(current_setting('app.workspace_id',true),'')) WITH CHECK(workspace_id=NULLIF(current_setting('app.workspace_id',true),''))`);
-  await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic Market','UTC',1,100,100),($2,'Synthetic Foreign','UTC',1,100,100)",[one,two]);await sealFixtureProfiles(admin,one,two);
+  await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic Market','UTC',10,100,100),($2,'Synthetic Foreign','UTC',10,100,100)",[one,two]);await sealFixtureProfiles(admin,one,two);
   url.username=login;url.password=secret;runtime=new pg.Pool({connectionString:url.toString(),options:'-c role=commerce_api',max:5,connectionTimeoutMillis:5000});
   app=Fastify({logger:false,disableRequestLogging:true});app.setErrorHandler((e:any,_r,reply)=>reply.code(e instanceof ZodError?400:e.statusCode??500).send({error:{code:e.code??'INTERNAL_ERROR'}}));
   await profileIdentityRoutes(app,{origins:[origin],session:nativeSession,list:s=>listProfileChoicesFromSession(runtime,s),select:(s,w,v)=>transaction(c=>selectProfileFromSession(c,s,w,v))});

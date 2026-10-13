@@ -1,7 +1,7 @@
+import {recordProfileExecutor} from '../../../packages/db/src/profile-record-context.js';
 import {withNumberLabEngine,type NumberLabEngineLease} from '../../../packages/db/src/number-lab-engine-runtime.js';
 import type {ProfileQuery} from '../../../packages/db/src/profile-context.js';
 import {bindNumberLabDispatch,type NumberLabDispatch} from './catalog-simulator.js';
-import {currentProfileExecutor} from '../../../packages/db/src/profile-query-routing.js';
 import {readContinuousEffectAuthority} from '../../../packages/db/src/continuous-effect.js';
 import {lockedContinuousWorkerProfile,commercialContinuityAuthorityBlock,continuousInboundRecipient} from '../../../packages/db/src/continuous-commercial.js';
 import {reserveDispatchCapacity} from './dispatch-capacity.js';
@@ -133,7 +133,7 @@ export async function gateDispatch(client:QueryExecutor,effect:Body,owner:string
  else {
   const offer=await getRecord(client,effect.workspace_id,'offer',effect.payload.offer_version_id??'');if(!offer||offer.body.status!=='PUBLISHED')return deny('PUBLISHED_OFFER_REQUIRED');if(effect.payload.workflow_version_id){const workflow=await getRecord(client,effect.workspace_id,'workflow',effect.payload.workflow_version_id);if(!workflow||workflow.body.status!=='PUBLISHED')return deny('PUBLISHED_WORKFLOW_REQUIRED');}
   if(effect.continuous_authorization_id){
-   const db=currentProfileExecutor(effect.workspace_id);if(!db)return deny('CONTINUITY_PROFILE_CONTEXT_REQUIRED');
+   const db=await recordProfileExecutor(client,effect.workspace_id,effect.environment);
    await lockedContinuousWorkerProfile(db);
    const read=await readContinuousEffectAuthority(db,'REAL',effect.id);if(read.state==='EXPIRED')return deny(read.reason);
    const reason=commercialContinuityAuthorityBlock(read.authorization,effect.workspace_id,'REAL',{

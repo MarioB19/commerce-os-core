@@ -1,3 +1,4 @@
+import {recordProfileExecutor} from '../../../packages/db/src/profile-record-context.js';
 import {bindLegacyWarmupEffectOrigins,legacyPoolAuthorities,type LegacyQrAuthority} from '../../../packages/db/src/legacy-qr-warmup.js';
 import {readCurrentQrContinuity,continuousWarmupAuthorityBlock} from '../../../packages/db/src/continuous-warmup.js';
 import {enrollQrWarmupProfile} from '../../../packages/db/src/qr-warmup.js';
@@ -222,7 +223,7 @@ export async function planWarmupPool(c:QueryExecutor,pool:Body,now=new Date()){
 async function runWindow(pool:Body,kind:'daily'|'health'|'reconcile',window:string,now:Date,work:(c:QueryExecutor,p:Body)=>Promise<unknown>){
  const claimed=await withTransaction(async c=>(await c.query(`INSERT INTO warmup_schedule_runs(pool_id,kind,window_key,lease_until,started_at) VALUES($1,$2,$3,$4,$5) ON CONFLICT(pool_id,kind,window_key) DO UPDATE SET status='RUNNING',lease_until=EXCLUDED.lease_until,started_at=EXCLUDED.started_at,finished_at=NULL WHERE warmup_schedule_runs.status<>'COMPLETED' AND warmup_schedule_runs.lease_until<$5 RETURNING pool_id`,[pool.id,kind,window,new Date(now.getTime()+300000),now])).rowCount!>0);
  if(!claimed)return;
- try{const result=await withTransaction(async c=>{if(pool.program_id)await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`program:${pool.program_id}`]);await poolLock(c,pool.id);const current=(await c.query('SELECT * FROM warmup_pools WHERE id=$1 FOR UPDATE',[pool.id])).rows[0];return work(c,current);});await query("UPDATE warmup_schedule_runs SET status='COMPLETED',finished_at=$4,result=$5 WHERE pool_id=$1 AND kind=$2 AND window_key=$3",[pool.id,kind,window,now,result??{}]);}
+ try{const result=await withTransaction(async c=>{if(pool.program_id)await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`program:${pool.program_id}`]);await poolLock(c,pool.id);const current=(await c.query('SELECT * FROM warmup_pools WHERE id=$1 FOR UPDATE',[pool.id])).rows[0];/* V7 F2: one pool window is one profile's work */return work(await recordProfileExecutor(c,pool.workspace_id,pool.environment),current);});await query("UPDATE warmup_schedule_runs SET status='COMPLETED',finished_at=$4,result=$5 WHERE pool_id=$1 AND kind=$2 AND window_key=$3",[pool.id,kind,window,now,result??{}]);}
  catch(error){await query("UPDATE warmup_schedule_runs SET status='FAILED',finished_at=$4,result=$5 WHERE pool_id=$1 AND kind=$2 AND window_key=$3",[pool.id,kind,window,now,{error:error instanceof Error&&/^[A-Z_]+$/.test(error.message)?error.message:'WARMUP_COORDINATOR_FAILED'}]);throw error;}
 }
 export async function processWarmup(at=new Date()){

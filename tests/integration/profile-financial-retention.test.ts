@@ -53,6 +53,9 @@ async function reconcile(j:Journey,o:Body,amount=100){
 describe('032 native financial minimization custody',()=>{
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:4});await requireMigratedProfileSchema(admin);
+  // Explicit fixture-only authority; product 032 (0093) grants no runtime execution.
+  for(const fn of ['capture_financial_retention(uuid,integer)','verify_financial_retention(uuid)','confirm_financial_minimization(uuid)','correct_retained_financial_classification(uuid)'])for(const role of ['commerce_results','commerce_automation','commerce_api'])expect((await admin.query('SELECT has_function_privilege($1,$2,$3) allowed',[role,fn,'EXECUTE'])).rows[0].allowed).toBe(false);
+  await admin.query('GRANT EXECUTE ON FUNCTION capture_financial_retention(uuid,integer),verify_financial_retention(uuid),confirm_financial_minimization(uuid) TO commerce_results;GRANT EXECUTE ON FUNCTION correct_retained_financial_classification(uuid) TO commerce_automation');
   
   for(const[name,role]of [[login,'commerce_results'],[apiLogin,'commerce_api'],[automationLogin,'commerce_automation']]){
    const secret=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${name}" LOGIN PASSWORD '${secret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;GRANT ${role} TO "${name}"`);const native=new URL(url);native.username=name;native.password=secret;const pool=new pg.Pool({connectionString:native.toString(),max:3});

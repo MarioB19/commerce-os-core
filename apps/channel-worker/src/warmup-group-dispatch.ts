@@ -1,4 +1,4 @@
-import {currentProfileExecutor} from '../../../packages/db/src/profile-query-routing.js';
+import {recordProfileExecutor} from '../../../packages/db/src/profile-record-context.js';
 import {validateLegacyWarmupEffectOrigins} from '../../../packages/db/src/legacy-qr-warmup.js';
 import {getRecord,decrypt,hash,stableJson,readOperationalSettings,pool,withTransaction,type QueryExecutor} from '@commerce/db';
 import {readEffectiveHealthBatch,currentEffectiveSignal,currentRestrictionClear,effectiveHealthBlockers} from '../../../packages/db/src/effective-health.js';
@@ -63,7 +63,7 @@ export async function gateGroupDispatch(c:QueryExecutor,effect:Body,owner:string
  const policy=await readOperationalSettings(c,effect.workspace_id,effect.environment,{lock:'share'});if(effect.environment==='REAL'&&(policy.body.dispatch_frozen||!policy.body.allow_real_operations||!policy.body.real_sends_enabled))return deny('REAL_OPERATION_NOT_ENABLED');
  let bound=false,temporalExpiresAt:Date|null=null;
  if((await c.query("SELECT to_regclass('public.warmup_effect_origins') AS present")).rows[0]?.present){
-  const db=currentProfileExecutor(effect.workspace_id);if(!db)return deny('CONTINUITY_PROFILE_CONTEXT_REQUIRED');
+  const db=await recordProfileExecutor(c,effect.workspace_id,effect.environment);
   const result=await validateLegacyWarmupEffectOrigins(db,{environment:effect.environment,effectId:effect.id,senderId:effect.account_id,accountIds:ids,poolId:turn.pool_id,profileId:turn.profile_id,contentId:turn.content_id,policyVersion:profile.policy_version,purpose:turn.purpose,groupId:group.id,groupVersion:group.version,configurationVersion:policy.version});
   if(result.kind==='BLOCKED')return deny(result.reason);bound=result.kind==='BOUND';if(result.kind==='BOUND')temporalExpiresAt=result.temporalExpiresAt;
  }

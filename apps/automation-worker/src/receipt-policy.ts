@@ -1,7 +1,7 @@
+import {recordProfileExecutor} from '../../../packages/db/src/profile-record-context.js';
 import {z} from 'zod';
 import {decrypt,encrypt,type QueryExecutor} from '@commerce/db';
 import type {DomainRecord} from '@commerce/contracts';
-import {currentProfileExecutor} from '../../../packages/db/src/profile-query-routing.js';
 import {captureOrderReceiptPolicy,readOrderReceiptPolicy} from '../../../packages/db/src/receipt-policies.js';
 import {readMarketJourney,marketRecordVersionHash} from '../../../packages/db/src/market-variants.js';
 import {evaluateReceiptPolicy,receiptPolicyHash} from '../../../packages/domain/src/sales/receipt-policy.js';
@@ -12,7 +12,7 @@ async function schema(client:QueryExecutor){return(await client.query("SELECT to
 export async function captureNewReceiptPolicy(client:QueryExecutor,conversation:DomainRecord,order:DomainRecord){
  const present=await schema(client);if(!present.market)return null;
  const journey=(await client.query('SELECT journey_id FROM market_journey_snapshots WHERE workspace_id=$1 AND environment=$2 AND journey_id=$3',[conversation.workspace_id,conversation.environment,conversation.id])).rows[0];if(!journey)return null;
- need(present.policy,'RECEIPT_POLICY_SCHEMA_REQUIRED');const db=currentProfileExecutor(conversation.workspace_id);need(db,'RECEIPT_POLICY_PROFILE_CONTEXT_REQUIRED');
+ need(present.policy,'RECEIPT_POLICY_SCHEMA_REQUIRED');const db=await recordProfileExecutor(client,conversation.workspace_id,conversation.environment);
  const source=await readMarketJourney(db,conversation.environment,conversation.id);
  need(order.environment===conversation.environment&&order.workspace_id===conversation.workspace_id&&order.body.conversation_id===conversation.id&&order.body.offer_version_id===source.release.configuration.offer.id&&order.body.payment_profile_version_id===source.release.configuration.collection.id,'RECEIPT_POLICY_ORDER_CHANGED');
  return captureOrderReceiptPolicy(db,order.environment,order.id);
@@ -25,7 +25,7 @@ export async function prepareReceiptPolicyAnalysis(client:QueryExecutor,receipt:
  if(!present.policy){need(!order.body.receipt_policy_snapshot_sha256,'RECEIPT_POLICY_SCHEMA_REQUIRED');return null;}
  const exists=(await client.query('SELECT order_id FROM receipt_order_policy_snapshots WHERE workspace_id=$1 AND environment=$2 AND order_id=$3',[receipt.workspace_id,receipt.environment,order.id])).rows[0];
  if(!exists){need(!order.body.receipt_policy_snapshot_sha256,'RECEIPT_POLICY_SNAPSHOT_REQUIRED');return null;}
- const db=currentProfileExecutor(receipt.workspace_id);need(db,'RECEIPT_POLICY_PROFILE_CONTEXT_REQUIRED');const policy=await readOrderReceiptPolicy(db,receipt.environment,order.id);need(policy,'RECEIPT_POLICY_SNAPSHOT_REQUIRED');
+ const db=await recordProfileExecutor(client,receipt.workspace_id,receipt.environment);const policy=await readOrderReceiptPolicy(db,receipt.environment,order.id);need(policy,'RECEIPT_POLICY_SNAPSHOT_REQUIRED');
  need(!order.body.receipt_policy_snapshot_sha256||order.body.receipt_policy_snapshot_sha256===policy.sha256,'RECEIPT_POLICY_SNAPSHOT_CHANGED');
  const native=(await db.query("SELECT * FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='receipt' AND id=$3 FOR UPDATE",[receipt.workspace_id,receipt.environment,receipt.id])).rows[0] as DomainRecord|undefined;
  need(native&&native.version===receipt.version&&native.body.order_id===order.id&&native.body.conversation_id===order.body.conversation_id,'RECEIPT_POLICY_RECEIPT_CHANGED');

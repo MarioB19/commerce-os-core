@@ -35,7 +35,7 @@ REVOKE ALL ON FUNCTION public.v7_worker_session_without_context() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.v7_worker_session_without_context() TO PUBLIC;
 
 DO $isolation$
-DECLARE t record; p record; r record; scope_column text; ctx text; worker text; was_enabled boolean; historical boolean;
+DECLARE t record; p record; r record; scope_column text; ctx text; worker text; was_enabled boolean; historical boolean; closed boolean;
 BEGIN
  IF current_user<>'commerce_owner' AND NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname=current_user AND rolsuper) THEN RAISE EXCEPTION 'PROFILE_MIGRATION_OWNER_REQUIRED'; END IF;
  FOR t IN SELECT c.oid,c.relname,c.relrowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
@@ -43,6 +43,15 @@ BEGIN
    WHERE a.attrelid=c.oid AND a.attname='workspace_id' AND NOT a.attisdropped AND a.attnum>0))
   ORDER BY c.relname LOOP
   EXECUTE format('LOCK TABLE public.%I IN ACCESS EXCLUSIVE MODE',t.relname);
+  -- A table already closed to every role by a forced RESTRICTIVE false policy
+  -- (retired creative custody, 020) stays exactly as reviewed: no policy is
+  -- added or widened, so no worker or API path can reopen it.
+  closed:=EXISTS(SELECT 1 FROM pg_policy x WHERE x.polrelid=t.oid AND NOT x.polpermissive AND x.polroles='{0}'::oid[]
+   AND pg_get_expr(x.polqual,x.polrelid)='false' AND COALESCE(pg_get_expr(x.polwithcheck,x.polrelid),'false')='false');
+  IF closed THEN
+   IF NOT t.relrowsecurity OR NOT (SELECT relforcerowsecurity FROM pg_class WHERE oid=t.oid) THEN RAISE EXCEPTION 'V7_CLOSED_TABLE_NOT_FORCED: %',t.relname; END IF;
+   CONTINUE;
+  END IF;
   scope_column:=CASE WHEN t.relname='profiles' THEN 'id' ELSE 'workspace_id' END;
   ctx:=format('%I=NULLIF(current_setting(''app.workspace_id'',true),'''')',scope_column);
   worker:=format('(NULLIF(current_setting(''app.workspace_id'',true),'''') IS NULL OR %I=current_setting(''app.workspace_id'',true))',scope_column);
@@ -84,7 +93,8 @@ BEGIN
  -- Postconditions of the model.
  IF EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN('r','p')
    AND (c.relname='profiles' OR EXISTS(SELECT 1 FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attname='workspace_id' AND NOT a.attisdropped AND a.attnum>0))
-   AND (NOT c.relrowsecurity OR NOT c.relforcerowsecurity OR NOT EXISTS(SELECT 1 FROM pg_policy x WHERE x.polrelid=c.oid AND x.polname='v7_api_profile_guard' AND NOT x.polpermissive)))
+   AND (NOT c.relrowsecurity OR NOT c.relforcerowsecurity OR NOT EXISTS(SELECT 1 FROM pg_policy x WHERE x.polrelid=c.oid AND NOT x.polpermissive
+    AND (x.polname='v7_api_profile_guard' OR (x.polroles='{0}'::oid[] AND pg_get_expr(x.polqual,x.polrelid)='false')))))
   OR EXISTS(SELECT 1 FROM pg_roles WHERE rolname ~ '^commerce_' AND (rolbypassrls OR rolsuper))
   OR pg_has_role('commerce_api','commerce_worker_global','MEMBER') THEN
   RAISE EXCEPTION 'V7_ISOLATION_MODEL_INCOMPLETE';

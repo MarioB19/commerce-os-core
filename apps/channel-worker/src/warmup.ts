@@ -1,5 +1,5 @@
+import {recordProfileExecutor} from '../../../packages/db/src/profile-record-context.js';
 import {validateLegacyWarmupEffectOrigins} from '../../../packages/db/src/legacy-qr-warmup.js';
-import {currentProfileExecutor} from '../../../packages/db/src/profile-query-routing.js';
 import {readContinuousEffectAuthority} from '../../../packages/db/src/continuous-effect.js';
 import {readCurrentQrContinuity,continuousWarmupAuthorityBlock} from '../../../packages/db/src/continuous-warmup.js';
 import {preparationGate} from '../../../packages/db/src/preparation.js';
@@ -65,7 +65,7 @@ export async function gateWarmupDispatch(c:QueryExecutor,effect:Body,owner:strin
  if(effect.environment==='REAL'&&(policy.body.dispatch_frozen||!policy.body.real_sends_enabled||!policy.body.allow_real_operations))return deny('REAL_OPERATION_NOT_ENABLED');
  let legacyBound=false,legacyDeadline:Date|null=null;
  if(continuous){
-  const db=currentProfileExecutor(effect.workspace_id);if(!db)return deny('CONTINUITY_PROFILE_CONTEXT_REQUIRED');
+  const db=await recordProfileExecutor(c,effect.workspace_id,effect.environment);
   const read=await readContinuousEffectAuthority(db,effect.environment,effect.id);if(read.state==='EXPIRED')return deny(read.reason);
   const own=await readCurrentQrContinuity(db,effect.environment,account.id),other=await readCurrentQrContinuity(db,effect.environment,peer.id);
   if(!own||own.id!==read.authorization.id)return deny('CONTINUITY_QR_ORIGIN_CHANGED');
@@ -81,7 +81,7 @@ export async function gateWarmupDispatch(c:QueryExecutor,effect:Body,owner:strin
  }else{
   let bound=false;
   if((await c.query("SELECT to_regclass('public.warmup_effect_origins') AS present")).rows[0]?.present){
-   const db=currentProfileExecutor(effect.workspace_id);if(!db)return deny('CONTINUITY_PROFILE_CONTEXT_REQUIRED');
+   const db=await recordProfileExecutor(c,effect.workspace_id,effect.environment);
    const authority=await validateLegacyWarmupEffectOrigins(db,{environment:effect.environment,effectId:effect.id,senderId:account.id,
     accountIds:ids,poolId:turn.pool_id,profileId:turn.profile_id,contentId:turn.content_id,policyVersion:profile.policy_version,
     purpose:turn.purpose,groupId:null,groupVersion:null,configurationVersion:policy.version});
