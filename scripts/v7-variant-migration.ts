@@ -1,4 +1,4 @@
-/** V7 cutover (RF-05.e, RF-08.d, ADR-V7-14): every existing product becomes a
+/** V7 cutover (RF-05.e, RF-08.d, ADR-V7-05, ADR-V7-06): every existing product becomes a
  * parent with one Mexico variant whose first release pins exactly what it sells
  * today. Run with the migration owner connection (admin.env) after the V7
  * migrations and before the continuity adoption, inside the installation window.

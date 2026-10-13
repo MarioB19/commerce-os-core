@@ -1,4 +1,4 @@
--- V7 F4 (RF-05, RF-06, RF-08, ADR-V7-14): the operator edits one variant document
+-- V7 F4 (RF-05, RF-06, RF-08, ADR-V7-05, ADR-V7-06): the operator edits one variant document
 -- per market; publishing materializes immutable offer/flow/seller/collection
 -- records for the existing engine and pins them in a market release. A number
 -- assignment may follow a variant: new conversations use its current release,

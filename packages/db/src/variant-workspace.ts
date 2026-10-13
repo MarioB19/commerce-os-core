@@ -16,7 +16,7 @@ import type {Body} from '../../contracts/src/index.js';
 import {issueCommercialContinuity,applyContinuousHumanCommand} from './continuous-authorization.js';
 import type {ProfileAuthority} from '../../domain/src/core/profile-authorization.js';
 
-/** V7 F4 variant workspace (ADR-V7-14). Every function runs inside the caller's
+/** V7 F4 variant workspace (ADR-V7-05, ADR-V7-06). Every function runs inside the caller's
  * authorized profile transaction (withProfileRequest); nothing here selects a
  * profile, sends a message or grants commercial authority by itself. */
 export type Environment='REAL'|'SIMULATION';
