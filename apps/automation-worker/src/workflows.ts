@@ -1,7 +1,9 @@
+import {recordProfileExecutor} from '../../../packages/db/src/profile-record-context.js';
 import {withNumberLabEngine,type NumberLabEngineLease} from '../../../packages/db/src/number-lab-engine-runtime.js';
 import {captureNewReceiptPolicy} from './receipt-policy.js';
 import {acceptsAgreement} from '../../../packages/domain/src/sales/agreement.js';
 import {collectionInstructions,plainPrice} from '../../../packages/domain/src/catalog/variant-document.js';
+import {nextRemarketingTime,insideRemarketingWindow} from '../../../packages/domain/src/sales/remarketing.js';
 import {launchTestOrderFields,activeLaunchTest,approvedBenefitTotal,lockLaunchTestOrderCreation,reconcileNumberFlowTestClassification,assertNumberFlowTestOrder,approvedNumberFlowTestPayment} from '../../../packages/db/src/launch-test-scope.js';
 import {classifyEducation,collectionStopReason} from '../../../packages/domain/src/sales/education.js';
 import {armConfirmedWait,armFollowups,collectionEligibility,remarketingEligibility} from './workflow-timing.js';
@@ -204,6 +206,7 @@ const workflowStore:WorkflowStore={query,transaction:work=>withTransaction(work)
 async function confirmedSchedules(store:WorkflowStore,limit:number){
  const rows=(await store.query(`SELECT * FROM records WHERE kind='conversation' AND (body->'flow_state' ? 'pending_anchor' OR body->'followup_plan'->>'status'='AWAITING_COLLECTION_ACK') ORDER BY updated_at LIMIT $1`,[limit])).rows;
  for(const row of rows)await store.transaction(async client=>{await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[row.id]);let conversation=await getRecord(client,row.workspace_id,'conversation',row.id);if(!conversation)return;
+  await recordProfileExecutor(client,conversation.workspace_id,conversation.environment as 'REAL'|'SIMULATION');
   const state:FlowState=structuredClone(conversation.body.flow_state);if(state&&await armConfirmedWait(client,conversation,state))conversation=await save(client,conversation,{...conversation.body,flow_state:state});await armFollowups(client,conversation);
  });return rows.length;
 }
@@ -212,6 +215,13 @@ async function dispatchFollowup(client:QueryExecutor,conversation:DomainRecord,t
  const stage=timer.payload.stage==='AGREEMENT'?'AGREEMENT':'COLLECTION';
  const isRemarketing=!!timer.payload.cycle_id;
  const now=await nowFor(client,conversation),lastInbound=new Date(conversation.body.last_inbound_at??0).getTime();
+ // RF-10.d: outside the variant's allowed hours a reminder waits for the next
+ // allowed moment (all guards are re-checked then); it is never sent early.
+ if(isRemarketing&&timer.payload.window&&!insideRemarketingWindow(now,timer.payload.window)){
+  const next=nextRemarketingTime(now,timer.payload.window).toISOString();
+  await client.query(`UPDATE timers SET due_at=$2 WHERE id=$1 AND status='PENDING'`,[timer.id,next]);
+  await event(client,conversation,'remarketing.rescheduled_to_window',{slot_id:timer.payload.slot_id??timer.payload.id,stage,due_at:next},timer.id);return;
+ }
  const outsideWindow=!Number.isFinite(lastInbound)||lastInbound>now.getTime()||now.getTime()-lastInbound>=24*3600_000;
  const parsedTemplate=isRemarketing&&outsideWindow?remarketingTransportTemplateSchema.safeParse(timer.payload.template):undefined;
  const templateAccount=parsedTemplate?.success?await getRecord(client,conversation.workspace_id,'channel_account',conversation.body.account_id):undefined;
@@ -249,18 +259,22 @@ async function dispatchFollowup(client:QueryExecutor,conversation:DomainRecord,t
  const bankSecret=bank?.body.secret_ciphertext?JSON.parse(decrypt(bank.body.secret_ciphertext)):undefined;
  const bankText=(bank&&bankSecret&&collectionInstructions({bank:bank.body,secret:bankSecret,price:null,currency:null}))??'SIMULACIÓN: instrucciones bancarias de prueba; no efectuar transferencias.';
  const payload={purpose:isRemarketing?'remarketing':'followup',followup_touch:index,remarketing_attempt_id:attempt?.id,remarketing_cycle_id:timer.payload.cycle_id,remarketing_cycle_revision:cycleRevision,remarketing_slot_id:timer.payload.slot_id,remarketing_stage:timer.payload.stage,followup_plan_key:plan.key,workflow_runtime_version:plan.workflow_runtime_version,workflow_node_id:timer.payload.id};
- const medium=isRemarketing&&timer.payload.medium==='video'?'video':'audio';
+ const medium=isRemarketing&&timer.payload.medium==='video'?'video':isRemarketing&&timer.payload.medium==='text'?'text':'audio';
  const expiresAt=new Date(lastInbound+24*3600_000).toISOString();
  const prior=(await client.query('SELECT not_before,expires_at FROM outbox WHERE workspace_id=$1 AND logical_key=$2',[conversation.workspace_id,`${timer.logical_key}:${template?'template':medium}`])).rows[0];
  const notBefore=prior?new Date(prior.not_before).toISOString():now.toISOString();
+ const textOnly=medium==='text'&&!template;
  const firstResult=template
   ?await proposeEffectOutcome(client,conversation,{...payload,kind:'template',template,asset_id:timer.payload.asset_id,text:String(timer.payload.text),template_provider_evidence_id:templateEvidence?.id,template_header_kind:'video',template_body_text_sha256:templateBodyTextSha256,remarketing_template_medium:medium},`${timer.logical_key}:template`,{notBefore})
-  :await proposeEffectOutcome(client,conversation,{...payload,kind:medium,asset_id:timer.payload.asset_id},`${timer.logical_key}:${medium}`,{notBefore,expiresAt:prior?new Date(prior.expires_at).toISOString():expiresAt});
+  :textOnly
+   // A text-only reminder is one message (bank details rendered as in collection).
+   ?await proposeEffectOutcome(client,conversation,{...payload,kind:'text',text:renderMessage(String(timer.payload.text),{bank_instructions:bankText}),payment_profile_version_id:bank?.id},`${timer.logical_key}:text`,{notBefore,expiresAt:prior?new Date(prior.expires_at).toISOString():expiresAt})
+   :await proposeEffectOutcome(client,conversation,{...payload,kind:medium,asset_id:timer.payload.asset_id},`${timer.logical_key}:${medium}`,{notBefore,expiresAt:prior?new Date(prior.expires_at).toISOString():expiresAt});
  if(firstResult.state==='BLOCKED')return;const first=firstResult.effect;
- if(!template){const second=await proposeEffectOutcome(client,conversation,{...payload,kind:'text',text:renderMessage(String(timer.payload.text),{bank_instructions:bankText}),payment_profile_version_id:bank?.id},`${timer.logical_key}:text`,{predecessorId:first.id,notBefore:new Date(first.not_before).toISOString(),expiresAt:new Date(first.expires_at).toISOString()});if(second.state==='BLOCKED')return;}
+ if(!template&&!textOnly){const second=await proposeEffectOutcome(client,conversation,{...payload,kind:'text',text:renderMessage(String(timer.payload.text),{bank_instructions:bankText}),payment_profile_version_id:bank?.id},`${timer.logical_key}:text`,{predecessorId:first.id,notBefore:new Date(first.not_before).toISOString(),expiresAt:new Date(first.expires_at).toISOString()});if(second.state==='BLOCKED')return;}
  await client.query(`UPDATE timers SET status=$2 WHERE id=$1`,[timer.id,first?'FIRED':'CANCELLED']);
  if(attempt)await setRemarketingAttemptStatus(client,{attemptId:attempt.id,workspaceId:conversation.workspace_id,environment:conversation.environment},first?'PROPOSED':'CANCELLED',{effect_id:first?.id??null});
- if(first)await event(client,conversation,isRemarketing?'remarketing.proposed':'followup.proposed',{touch_id:timer.payload.id,slot_id:timer.payload.slot_id??null,touch_index:index,effect_id:first.id,media_effect_id:template?null:first.id,template_effect_id:template?first.id:null,transport:template?'APPROVED_TEMPLATE':'CURRENT_WINDOW',anchor_at:timer.payload.anchor_at},timer.id);
+ if(first)await event(client,conversation,isRemarketing?'remarketing.proposed':'followup.proposed',{touch_id:timer.payload.id,slot_id:timer.payload.slot_id??null,touch_index:index,effect_id:first.id,media_effect_id:template||textOnly?null:first.id,template_effect_id:template?first.id:null,transport:template?'APPROVED_TEMPLATE':'CURRENT_WINDOW',anchor_at:timer.payload.anchor_at},timer.id);
 }
 async function timers(store:WorkflowStore,limit:number){
  await confirmedSchedules(store,limit*4);
@@ -274,6 +288,7 @@ async function timers(store:WorkflowStore,limit:number){
   await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[candidate.conversation_id]);
   const timer=(await client.query(`SELECT * FROM timers WHERE id=$1 AND status='PENDING' FOR UPDATE`,[row.id])).rows[0];if(!timer)return;
   const conversation=await getRecord(client,timer.workspace_id,'conversation',timer.conversation_id);if(!conversation||conversation.environment!==timer.environment)return;
+  await recordProfileExecutor(client,conversation.workspace_id,conversation.environment as 'REAL'|'SIMULATION');
   if(new Date(timer.due_at)>await nowFor(client,conversation))return;
   if(timer.kind==='followup'&&timer.payload.plan_key){await dispatchFollowup(client,conversation,timer);return;}
   if(timer.payload.purpose==='collection'){const reason=await collectionEligibility(client,conversation);if(reason){await client.query(`UPDATE timers SET status='CANCELLED' WHERE id=$1`,[timer.id]);await event(client,conversation,'workflow.collection_wait_cancelled',{reason,node_id:timer.payload.node_id},timer.id);return;}}

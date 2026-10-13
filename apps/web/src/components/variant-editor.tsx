@@ -279,21 +279,38 @@ function CollectionSection({variant,manage,save}:SectionProps){
 function RemarketingSection({variant,manage,materials,save}:SectionProps){
  const r=variant.document.remarketing,[policy,setPolicy]=useState(r);
  useEffect(()=>setPolicy(r),[variant.version]);
- const base=()=>({schema_version:1 as const,policy_id:'remarketing-3-slot' as const,policy_revision:1,slots:[1,2,3].map((position,i)=>({id:'slot-'+position,position:position as 1|2|3,enabled:false,delay:{quantity:[2,8,24][i]!,unit:'hours' as const},stages:{awaiting_agreement:{medium:'audio' as const,text:''},awaiting_payment:{medium:'audio' as const,text:''}}}))});
+ const base=()=>({schema_version:1 as const,policy_id:'remarketing-3-slot' as const,policy_revision:1,window:{start_hour:9,end_hour:21},
+  slots:[1,2,3].map((position,i)=>({id:'slot-'+position,position:position as 1|2|3,enabled:position===1,delay:{quantity:[2,8,24][i]!,unit:'hours' as const},
+   stages:{awaiting_agreement:{medium:'text' as const,text:''},awaiting_payment:{medium:'text' as const,text:''}}}))});
  const stageLabels={awaiting_agreement:'Si aún no acepta el acuerdo',awaiting_payment:'Si aún no paga'} as const;
- type Slot=NonNullable<typeof policy>['slots'][number];
+ type Policy=NonNullable<typeof policy>;type Slot=Policy['slots'][number];type Medium=Slot['stages']['awaiting_agreement']['medium'];
  const update=(i:number,patch:(s:Slot)=>Slot)=>setPolicy(p=>p&&{...p,slots:p.slots.map((s,j)=>j===i?patch(s):s) as typeof p.slots});
+ const stage=(i:number,key:'awaiting_agreement'|'awaiting_payment',patch:Partial<Slot['stages']['awaiting_agreement']>)=>update(i,s=>({...s,stages:{...s.stages,[key]:{...s.stages[key],...patch}}}));
+ const hours=Array.from({length:25},(_,h)=>h),label=(h:number)=>`${String(h).padStart(2,'0')}:00`;
+ const active=policy?policy.slots.filter(s=>s.enabled).length:0;
  return <form onSubmit={e=>{e.preventDefault();void save('remarketing',policy);}} className="variant-form" aria-label="Remarketing">
-  <p className="variant-hint">Seguimientos a personas que aún no compraron. Se detienen si compra, pide la baja, se alcanza el límite o pausas la venta. Zona: {variant.document.locale.timezone}.</p>
+  <p className="variant-hint">Seguimientos a personas que aún no compraron. Se detienen si compra, responde, pide la baja, se alcanza el máximo o pausas la venta.</p>
   {!policy?<>{manage&&<Button type="button" variant="secondary" onClick={()=>setPolicy(base())}>Configurar seguimientos</Button>}<p>Sin seguimientos configurados.</p></>:<>
+   <fieldset className="variant-card"><legend>Horario permitido</legend>
+    <div className="variant-grid">
+     <Field label="Desde"><select value={policy.window?.start_hour??''} disabled={!manage} onChange={e=>setPolicy(p=>p&&{...p,window:e.target.value===''?undefined:{start_hour:Number(e.target.value),end_hour:Math.max(Number(e.target.value)+1,p.window?.end_hour??21)}})}>
+      <option value="">Cualquier hora</option>{hours.slice(0,24).map(h=><option key={h} value={h}>{label(h)}</option>)}</select></Field>
+     {policy.window&&<Field label="Hasta"><select value={policy.window.end_hour} disabled={!manage} onChange={e=>setPolicy(p=>p&&p.window?{...p,window:{...p.window,end_hour:Number(e.target.value)}}:p)}>
+      {hours.slice(policy.window.start_hour+1).map(h=><option key={h} value={h}>{label(h)}</option>)}</select></Field>}
+    </div>
+    <p className="variant-hint">Hora de {variant.document.locale.market} ({variant.document.locale.timezone}). Un seguimiento que cae fuera de este horario espera al siguiente momento permitido.</p>
+   </fieldset>
+   <p className="variant-hint">Máximo por persona: {active} seguimiento{active===1?'':'s'} en total, entre ambas etapas.</p>
    {policy.slots.map((slot,i)=><fieldset key={slot.id} className="variant-card"><legend>Seguimiento {slot.position}</legend>
     <label className="variant-check"><input type="checkbox" checked={slot.enabled} disabled={!manage} onChange={e=>update(i,s=>({...s,enabled:e.target.checked}))}/> Activo</label>
     {slot.position>1&&slot.enabled&&<label className="variant-check"><input type="checkbox" checked={slot.warning_acknowledged===true} disabled={!manage} onChange={e=>update(i,s=>({...s,warning_acknowledged:e.target.checked}))}/> Entiendo que más seguimientos aumentan el riesgo de bloqueo y bajas.</label>}
     <div className="variant-grid"><Field label="Espera"><input type="number" min={1} value={slot.delay.quantity} disabled={!manage} onChange={e=>update(i,s=>({...s,delay:{...s.delay,quantity:Math.max(1,Number(e.target.value))}}))}/></Field>
      <Field label="Unidad"><select value={slot.delay.unit} disabled={!manage} onChange={e=>update(i,s=>({...s,delay:{...s.delay,unit:e.target.value as typeof s.delay.unit}}))}><option value="minutes">minutos</option><option value="hours">horas</option><option value="days">días</option></select></Field></div>
-    {(['awaiting_agreement','awaiting_payment'] as const).map(stage=><div key={stage} className="variant-stage"><strong>{stageLabels[stage]}</strong>
-     <Field label="Mensaje"><textarea rows={2} maxLength={12000} value={slot.stages[stage].text} disabled={!manage} onChange={e=>update(i,s=>({...s,stages:{...s.stages,[stage]:{...s.stages[stage],text:e.target.value}}}))}/></Field>
-     <MaterialSelect label="Audio o video" materials={materials.filter(m=>/^(audio|video)\//.test(m.mime_type??''))} value={slot.stages[stage].asset_id??''} onChange={id=>update(i,s=>({...s,stages:{...s.stages,[stage]:{...s.stages[stage],asset_id:id||undefined,medium:(materials.find(m=>m.id===id)?.mime_type??'').startsWith('video/')?'video':'audio'}}}))}/>
+    {(['awaiting_agreement','awaiting_payment'] as const).map(key=><div key={key} className="variant-stage"><strong>{stageLabels[key]}</strong>
+     <Field label="Formato"><select value={slot.stages[key].medium} disabled={!manage} onChange={e=>{const medium=e.target.value as Medium;stage(i,key,{medium,...(medium==='text'?{asset_id:undefined}:{})});}}>
+      <option value="text">Sólo texto</option><option value="audio">Audio y texto</option><option value="video">Video y texto</option></select></Field>
+     <Field label="Mensaje"><textarea rows={2} maxLength={12000} value={slot.stages[key].text} disabled={!manage} onChange={e=>stage(i,key,{text:e.target.value})}/></Field>
+     {slot.stages[key].medium!=='text'&&<MaterialSelect label={slot.stages[key].medium==='video'?'Video':'Audio'} materials={materials.filter(m=>(m.mime_type??'').startsWith(slot.stages[key].medium+'/'))} value={slot.stages[key].asset_id??''} onChange={id=>stage(i,key,{asset_id:id||undefined})}/>}
     </div>)}
    </fieldset>)}
    {manage&&<div className="variant-actions"><Button>Guardar remarketing</Button><Button type="button" variant="ghost" onClick={()=>setPolicy(null)}>Quitar seguimientos</Button></div>}

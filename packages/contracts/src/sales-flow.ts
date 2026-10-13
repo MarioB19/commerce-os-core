@@ -111,7 +111,8 @@ export const remarketingTransportTemplateSchema=z.object({
 }).strict();
 
 export const remarketingStageContentSchema=z.object({
- medium:z.enum(['audio','video']),
+ // V7 F5 (RF-10.b): a reminder may be text only; audio/video still need their asset.
+ medium:z.enum(['audio','video','text']),
  asset_id:recordId.optional(),
  text:z.string().trim().max(12000).default(''),
  template:remarketingTransportTemplateSchema.optional(),
@@ -133,11 +134,19 @@ function durationSeconds(duration:z.infer<typeof remarketingDurationSchema>):num
  return duration.quantity*{minutes:60,hours:3600,days:86400}[duration.unit];
 }
 
+/** V7 F5 (RF-10.d): local hours in which reminders may be sent, in the
+ * variant's time zone (filled from the variant at publication). */
+export const remarketingWindowSchema=z.object({
+ start_hour:z.number().int().min(0).max(23),
+ end_hour:z.number().int().min(1).max(24),
+ timezone:z.string().min(1).max(64).regex(/^[A-Za-z_]+(?:\/[A-Za-z0-9_+-]+)*$/).optional(),
+}).strict().refine(w=>w.start_hour<w.end_hour,'La hora de inicio debe ser anterior a la de fin.');
 export const remarketingPolicySchema=z.object({
  schema_version:z.literal(1),
  policy_id:z.literal('remarketing-3-slot'),
  policy_revision:z.number().int().positive(),
  slots:z.array(remarketingSlotSchema).length(3),
+ window:remarketingWindowSchema.optional(),
 }).strict().superRefine((policy,ctx)=>{
  const ids=new Set<string>();
  let previous=0;
@@ -147,7 +156,7 @@ export const remarketingPolicySchema=z.object({
   ids.add(slot.id);
   if(slot.enabled&&slot.position>1&&slot.warning_acknowledged!==true)ctx.addIssue({code:'custom',path:['slots',index,'warning_acknowledged'],message:'Confirma la advertencia antes de activar un segundo o tercer recordatorio.'});
   if(slot.enabled)for(const stage of ['awaiting_agreement','awaiting_payment'] as const){
-   if(!slot.stages[stage].asset_id)ctx.addIssue({code:'custom',path:['slots',index,'stages',stage,'asset_id'],message:'El recordatorio activo necesita un audio o video.'});
+   if(slot.stages[stage].medium!=='text'&&!slot.stages[stage].asset_id)ctx.addIssue({code:'custom',path:['slots',index,'stages',stage,'asset_id'],message:'El recordatorio activo necesita un audio o video.'});
    if(!slot.stages[stage].text.trim())ctx.addIssue({code:'custom',path:['slots',index,'stages',stage,'text'],message:'El recordatorio activo necesita un texto.'});
   }
   const seconds=durationSeconds(slot.delay);
@@ -161,6 +170,7 @@ export type RemarketingTransportTemplate=z.infer<typeof remarketingTransportTemp
 export type RemarketingStageContent=z.infer<typeof remarketingStageContentSchema>;
 export type RemarketingSlot=z.infer<typeof remarketingSlotSchema>;
 export type RemarketingPolicy=z.infer<typeof remarketingPolicySchema>;
+export type RemarketingWindow=z.infer<typeof remarketingWindowSchema>;
 
 /**
  * Human-editable copy and media for the fixed ten-step recipe. Delivery

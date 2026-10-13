@@ -1,3 +1,4 @@
+import {nextRemarketingTime} from '../../../packages/domain/src/sales/remarketing.js';
 import {buyerExcluded,cancelPendingRemarketingForContact,getRecord,openRemarketingCycle,uuid,type QueryExecutor,type RemarketingStage} from '@commerce/db';
 import type {Body,DomainRecord} from '@commerce/contracts';
 import type {FlowState} from '../../../packages/domain/src/sales/workflow.js';
@@ -82,10 +83,12 @@ export async function armFollowups(client:QueryExecutor,conversation:DomainRecor
   touches=(snapshot.slots??[]).filter((slot:Body)=>slot.enabled&&!consumed.has(String(slot.id))).map((slot:Body)=>({...slot,...slot.stages?.[plan.stage],after_seconds:slot.after_seconds??slot.delay_seconds}));
   await cancelPendingRemarketingForContact(client,conversation,`REMARKETING_${stage}_REPROGRAMMED`);
  }
+ // RF-10.d: reminders land only inside the variant's allowed local hours.
+ const window=plan.policy_snapshot?((cycle?.policy_snapshot??plan.policy_snapshot) as Body).window:undefined;
  for(const [index,touch] of touches.entries()){
-  const due=new Date(new Date(anchor.at).getTime()+touch.after_seconds*1000).toISOString();
+  const due=nextRemarketingTime(new Date(new Date(anchor.at).getTime()+touch.after_seconds*1000),window).toISOString();
   const timerId=uuid();
-  await client.query(`INSERT INTO timers(id,workspace_id,environment,conversation_id,kind,payload,due_at,logical_key) VALUES($1,$2,$3,$4,'followup',$5,$6,$7) ON CONFLICT(workspace_id,logical_key) DO NOTHING`,[timerId,conversation.workspace_id,conversation.environment,conversation.id,{...await commercialContext(client,conversation),...touch,purpose:plan.policy_snapshot?'remarketing':'followup',plan_key:plan.key,touch_index:Number(touch.position??index+1),slot_id:touch.id,stage,cycle_id:cycle?.id??null,workflow_runtime_version:plan.workflow_runtime_version,anchor_at:anchor.at,anchor_effect_ids:anchor.effect_ids},due,cycle?`remarketing:${cycle.id}:${stage}:${touch.id}:${cycle.revision}`:`${plan.key}:${touch.id}:${plan.anchor_effect_id??'initial'}`]);
+  await client.query(`INSERT INTO timers(id,workspace_id,environment,conversation_id,kind,payload,due_at,logical_key) VALUES($1,$2,$3,$4,'followup',$5,$6,$7) ON CONFLICT(workspace_id,logical_key) DO NOTHING`,[timerId,conversation.workspace_id,conversation.environment,conversation.id,{...await commercialContext(client,conversation),...touch,...(window?{window}:{}),purpose:plan.policy_snapshot?'remarketing':'followup',plan_key:plan.key,touch_index:Number(touch.position??index+1),slot_id:touch.id,stage,cycle_id:cycle?.id??null,workflow_runtime_version:plan.workflow_runtime_version,anchor_at:anchor.at,anchor_effect_ids:anchor.effect_ids},due,cycle?`remarketing:${cycle.id}:${stage}:${touch.id}:${cycle.revision}`:`${plan.key}:${touch.id}:${plan.anchor_effect_id??'initial'}`]);
  }
  await event(client,conversation,plan.policy_snapshot?'remarketing.plan_scheduled':'followup.plan_scheduled',{plan_key:plan.key,cycle_id:cycle?.id??null,stage:plan.stage??null,touches:touches.map((t:Body)=>({id:t.id,after_seconds:t.after_seconds})),anchor_at:anchor.at,anchor_effect_ids:anchor.effect_ids});
  return save(client,conversation,{...conversation.body,followup_plan:{...plan,status:touches.length?'SCHEDULED':'DISABLED',cycle_id:cycle?.id??null,anchor_at:anchor.at,anchor_effect_ids:anchor.effect_ids,resume_after_customer_reply:false}});

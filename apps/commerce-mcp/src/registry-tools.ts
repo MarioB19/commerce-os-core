@@ -1,3 +1,4 @@
+import {remarketingPolicySchema} from '../../../packages/contracts/src/sales-flow.js';
 import type {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {z} from 'zod';
 import {continuityRequestSchema} from '../../../packages/contracts/src/continuous-consumer.js';
@@ -135,6 +136,7 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
  sectionTool('offers_manage','Oferta y materiales de la variante','Precio, tiers y qué recibe el cliente y cuándo. Guardar deja un borrador; publicar aplica a conversaciones nuevas.','offer',variantOfferSchema,true);
  sectionTool('sales_flows_manage','Flujo de venta de la variante','Flujo base (venta por conversación o guiado) con sus mensajes en lenguaje de operación.','sales-flow',z.record(z.string(),z.unknown()),true);
  sectionTool('sellers_manage','Vendedor de la variante','Nombre, instrucciones, conocimiento y límites del vendedor; el idioma es el de la variante.','seller',variantSellerSchema,true);
+ sectionTool('remarketing_manage','Remarketing de la variante','Hasta tres seguimientos (texto, audio o video) para quien no acepta o no paga, con horario permitido en la zona de la variante. Se detienen si la persona compra, responde o pide la baja. Guardar deja un borrador; publicar aplica a conversaciones nuevas.','remarketing',remarketingPolicySchema.nullable(),true);
  sectionTool('collections_manage','Cobro de la variante','SPEI y/o enlace de pago. Los datos se guardan cifrados y nunca se devuelven completos.','collection',collectionInputSchema,false);
  tool('receipt_rules_manage','Reglas de comprobantes','Consulta o guarda las reglas de validación de comprobantes del perfil o de una variante.',
   fromUnion(receiptPolicyCommand,{get_profile:'leer_perfil',get_variant:'leer_variante',save_profile:'guardar_perfil',save_variant:'guardar_variante',reconcile:'consultar_operacion'},op=>op.startsWith('get')||op==='reconcile',i=>c.receiptPolicies(i)));

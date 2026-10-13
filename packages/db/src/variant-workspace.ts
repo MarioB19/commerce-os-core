@@ -317,7 +317,9 @@ export async function publishVariant(db:ProfileExecutor,environment:Environment,
  }
  // Offer: the hub the engine reads (price, delivery, sale copy, reminders, links).
  const aliases=doc.sale.aliases.length?doc.sale.aliases:[productName];
- const salesFlow=doc.sale.guided||doc.remarketing?{entry_aliases:aliases,recipe:guidedRecipeDefinition(),remarketing:doc.remarketing??disabledRemarketingPolicy(),...(doc.sale.guided?{content:doc.sale.guided}:{})}:undefined;
+ // RF-10.d: the allowed hours are read in this variant's time zone.
+ const remarketing=doc.remarketing?{...doc.remarketing,...(doc.remarketing.window?{window:{...doc.remarketing.window,timezone:doc.locale.timezone}}:{})}:null;
+ const salesFlow=doc.sale.guided||remarketing?{entry_aliases:aliases,recipe:guidedRecipeDefinition(),remarketing:remarketing??disabledRemarketingPolicy(),...(doc.sale.guided?{content:doc.sale.guided}:{})}:undefined;
  const o=doc.offer;
  const offerBody:Body={name:o.name,currency,base_amount_minor:o.price_minor,payment_method:'bank_transfer_receipt',payment_profile_version_id:collectionId,
   ...(o.legacy.receipt_policy_version_id?{receipt_policy_version_id:o.legacy.receipt_policy_version_id}:{}),fulfillment:o.fulfillment,
