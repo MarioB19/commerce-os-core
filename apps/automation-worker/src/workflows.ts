@@ -1,6 +1,7 @@
 import {withNumberLabEngine,type NumberLabEngineLease} from '../../../packages/db/src/number-lab-engine-runtime.js';
 import {captureNewReceiptPolicy} from './receipt-policy.js';
 import {acceptsAgreement} from '../../../packages/domain/src/sales/agreement.js';
+import {collectionInstructions,plainPrice} from '../../../packages/domain/src/catalog/variant-document.js';
 import {launchTestOrderFields,activeLaunchTest,approvedBenefitTotal,lockLaunchTestOrderCreation,reconcileNumberFlowTestClassification,assertNumberFlowTestOrder,approvedNumberFlowTestPayment} from '../../../packages/db/src/launch-test-scope.js';
 import {classifyEducation,collectionStopReason} from '../../../packages/domain/src/sales/education.js';
 import {armConfirmedWait,armFollowups,collectionEligibility,remarketingEligibility} from './workflow-timing.js';
@@ -153,7 +154,7 @@ export async function advanceWorkflow(client:QueryExecutor,original:DomainRecord
   state.status='RUNNING';delete state.waiting_for;delete state.waiting_node_id;delete state.wake_at;
  }
  const order=await ensureOrder(client,conversation);if(order?.body.launch_test_role==='beneficiary')return save(client,conversation,{...conversation.body,launch_test_role:'beneficiary',payment_obligation:false,ai_pending:false,flow_state:{...state,status:'FINISHED'}});const offer=order?.body.offer_snapshot??{};const product=offer.product_id?await getRecord(client,conversation.workspace_id,'product',offer.product_id):undefined;const contact=await getRecord(client,conversation.workspace_id,'contact',conversation.body.contact_id);
- const variables={product_name:product?.body.name??'Producto',offer_name:offer.name??product?.body.name??'Oferta',price:(Number(offer.base_amount_minor??0)/100).toFixed(2),currency:offer.currency??'',contact_name:contact?.body.name??'Contacto'};
+ const variables={product_name:product?.body.name??'Producto',offer_name:offer.name??product?.body.name??'Oferta',price:plainPrice(Number(offer.base_amount_minor??0),offer.currency??'MXN'),currency:offer.currency??'',contact_name:contact?.body.name??'Contacto'};
  for(let batch=0;batch<25&&state.status==='RUNNING';batch++){
   if(++state.steps>(def.flow.max_steps??100)){state.status='FAILED';await event(client,conversation,'workflow.limit_reached',{limit:def.flow.max_steps??100});break;}
   const node=def.flow.nodes.find(n=>n.id===state.node_id);if(!node){state.status='FAILED';break;}
@@ -176,7 +177,7 @@ export async function advanceWorkflow(client:QueryExecutor,original:DomainRecord
    case'bank_instructions':{
      const bankId=offer.payment_profile_version_id;const bank=bankId?await getRecord(client,conversation.workspace_id,'bank_profile',bankId):undefined;
      if(!bank&&conversation.environment==='REAL'){state.status='HUMAN_REVIEW';await event(client,conversation,'bank.configuration_required',{});next=node.id;}
-     else{const sensitive=bank?.body.secret_ciphertext?JSON.parse(decrypt(bank.body.secret_ciphertext)):null;const text=sensitive?`${bank!.body.bank} · ${sensitive.holder}\n${sensitive.account_number}\n${sensitive.instructions??''}\n${variables.price} ${variables.currency}`:'SIMULACIÓN: instrucciones bancarias de prueba; no efectuar transferencias.';const proposed=await proposeEffectOutcome(client,conversation,{kind:'text',purpose:'collection',workflow_node_id:node.id,workflow_runtime_version:def.versionId,...(node.config.recipe_step!==undefined?{workflow_recipe_step:Number(node.config.recipe_step),workflow_recipe_id:node.config.recipe_id}:{}),text:node.config.text?renderMessage(String(node.config.text),{...variables,bank_instructions:text}):text,payment_profile_version_id:bank?.id},nodeKey);if(proposed.state==='BLOCKED')return defer(proposed.reason);}break;
+     else{const sensitive=bank?.body.secret_ciphertext?JSON.parse(decrypt(bank.body.secret_ciphertext)):null;const text=(bank&&collectionInstructions({bank:bank.body,secret:sensitive,price:variables.price,currency:variables.currency}))??'SIMULACIÓN: instrucciones bancarias de prueba; no efectuar transferencias.';const proposed=await proposeEffectOutcome(client,conversation,{kind:'text',purpose:'collection',workflow_node_id:node.id,workflow_runtime_version:def.versionId,...(node.config.recipe_step!==undefined?{workflow_recipe_step:Number(node.config.recipe_step),workflow_recipe_id:node.config.recipe_id}:{}),text:node.config.text?renderMessage(String(node.config.text),{...variables,bank_instructions:text}):text,payment_profile_version_id:bank?.id},nodeKey);if(proposed.state==='BLOCKED')return defer(proposed.reason);}break;
    }
    case'receipt':if(order?.body.receipt_status!=='APPROVED'){state.status='WAITING';state.waiting_for='receipt_approved';if(offerRemarketingPolicy(offer))conversation=await prepareRemarketingPlan(client,conversation,def,offer,'awaiting_payment',node.id);else if(node.config.followups&&!conversation.body.followup_plan){conversation=await save(client,conversation,{...conversation.body,followup_plan:{...structuredClone(node.config.followups),key:`followup:${conversation.id}:${def.versionId}:${node.id}`,workflow_runtime_version:def.versionId,status:'AWAITING_COLLECTION_ACK'}});conversation=await armFollowups(client,conversation);}}break;
    case'reconcile':if(order?.body.sale_definition!=='receipt_sales_v1'&&order?.body.reconciliation_status!=='RECONCILED'){state.status='WAITING';state.waiting_for='reconciled';}break;
@@ -246,7 +247,7 @@ async function dispatchFollowup(client:QueryExecutor,conversation:DomainRecord,t
   attempt=reservation.attempt;cycleRevision=Number(reservation.cycle?.revision);
  }
  const bankSecret=bank?.body.secret_ciphertext?JSON.parse(decrypt(bank.body.secret_ciphertext)):undefined;
- const bankText=bankSecret?`${bank!.body.bank} · ${bankSecret.holder}\n${bankSecret.account_number}\n${bankSecret.instructions??''}`:'SIMULACIÓN: instrucciones bancarias de prueba; no efectuar transferencias.';
+ const bankText=(bank&&bankSecret&&collectionInstructions({bank:bank.body,secret:bankSecret,price:null,currency:null}))??'SIMULACIÓN: instrucciones bancarias de prueba; no efectuar transferencias.';
  const payload={purpose:isRemarketing?'remarketing':'followup',followup_touch:index,remarketing_attempt_id:attempt?.id,remarketing_cycle_id:timer.payload.cycle_id,remarketing_cycle_revision:cycleRevision,remarketing_slot_id:timer.payload.slot_id,remarketing_stage:timer.payload.stage,followup_plan_key:plan.key,workflow_runtime_version:plan.workflow_runtime_version,workflow_node_id:timer.payload.id};
  const medium=isRemarketing&&timer.payload.medium==='video'?'video':'audio';
  const expiresAt=new Date(lastInbound+24*3600_000).toISOString();

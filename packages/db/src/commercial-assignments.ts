@@ -1,8 +1,9 @@
 import {getRecord,listRecords,hash,stableJson,type QueryExecutor} from './index.js';
 import type {Body,DomainRecord,Environment} from '../../contracts/src/index.js';
 import {matchAssignedProductAliases} from '../../domain/src/sales/product-routing.js';
+import {recordProfileExecutor} from './profile-record-context.js';
 export const channelIdentityHash=(account:DomainRecord)=>hash(stableJson({provider:account.body.provider,gateway_ref:account.body.gateway_ref??null,identity_fingerprint:account.body.identity_fingerprint??null}));
-export interface CommercialAssignment {id:string;workspace_id:string;environment:Environment;account_id:string;product_id:string;binding_id:string;revision:number;state:string;authorization_id:string|null;authorization_expires_at?:string;authorization_revoked_at?:string;authorization_scope?:Body;body:Body}
+export interface CommercialAssignment {id:string;workspace_id:string;environment:Environment;account_id:string;product_id:string;binding_id:string;revision:number;state:string;authorization_id:string|null;variant_id?:string|null;authorization_expires_at?:string;authorization_revoked_at?:string;authorization_scope?:Body;body:Body}
 export interface LegacyCommercialBinding {id:string;account_id:string;product_id:string;body:Body;created_at:string;updated_at:string}
 export interface AccountCommercialAssignmentSnapshot {observed_at:string;has_canonical:boolean;canonical:CommercialAssignment[];current:CommercialAssignment[];legacy?:LegacyCommercialBinding}
 export interface CommercialAssignmentSnapshot {observed_at:string;canonical:CommercialAssignment[];current:CommercialAssignment[];legacy:LegacyCommercialBinding[];byAccount:Map<string,AccountCommercialAssignmentSnapshot>}
@@ -101,8 +102,16 @@ export async function resolveCommercialRoute(c:QueryExecutor,account:DomainRecor
  const current=assignments.filter(a=>activeAt(a,input.providerAt));
  const products=new Map((await listRecords(c,account.workspace_id,'product',account.environment)).map(product=>[product.id,product]));
  const offers=new Map((await listRecords(c,account.workspace_id,'offer',account.environment)).map(offer=>[offer.id,offer]));
+ // V7 F4: an assignment following a variant routes with its current release's offer.
+ const following=current.filter(a=>a.variant_id);
+ const releaseOffers=new Map<string,string>();
+ if(following.length){
+  const scoped=await recordProfileExecutor(c,account.workspace_id,account.environment);
+  for(const row of (await scoped.query(`SELECT v.id,r.body->'configuration'->'offer'->>'id' AS offer_id FROM market_variants v JOIN market_releases r ON r.workspace_id=v.workspace_id AND r.environment=v.environment AND r.id=v.current_release_id
+   WHERE v.workspace_id=$1 AND v.environment=$2 AND v.id=ANY($3::uuid[])`,[account.workspace_id,account.environment,following.map(a=>a.variant_id)])).rows)releaseOffers.set(row.id,row.offer_id);
+ }
  const routeAliases=current.map(assignment=>{
-  const product=products.get(assignment.product_id),offer=offers.get(assignment.body.offer_version_id);
+  const product=products.get(assignment.product_id),offer=offers.get((assignment.variant_id&&releaseOffers.get(assignment.variant_id))||assignment.body.offer_version_id);
   const configured=[
    ...(assignment.body.entry_rules??[]).filter((rule:Body)=>rule.kind==='keyword').map((rule:Body)=>rule.value),
    ...(Array.isArray(assignment.body.aliases)?assignment.body.aliases:[]),

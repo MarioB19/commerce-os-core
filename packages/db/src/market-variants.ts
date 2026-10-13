@@ -44,7 +44,7 @@ function view(row:VariantRow){return{id:row.id,family_id:row.family_id,version:r
 async function variant(db:ProfileExecutor,environment:MarketEnvironment,id:string,lock=false){
  scope(db,environment);id=uuid.parse(id);
  const row=(await db.query<VariantRow>(`SELECT id,family_id,version,draft,current_release_id,source_release_id,release_revision
- FROM market_variants WHERE workspace_id=$1 AND environment=$2 AND id=$3`+(lock?' FOR UPDATE':''),[db.workspaceId,environment,id])).rows[0];
+ FROM market_variants WHERE workspace_id=$1 AND environment=$2 AND id=$3 AND document IS NULL`+(lock?' FOR UPDATE':''),[db.workspaceId,environment,id])).rows[0];
  need(row,'MARKET_NOT_FOUND',404);return row;
 }
 async function event(db:ProfileExecutor,environment:MarketEnvironment,row:VariantRow,actorId:string,kind:string,releaseId:string|null=null){
@@ -73,7 +73,7 @@ export async function listMarketVariants(db:ProfileExecutor,input:unknown){
  const q=marketVariantListSchema.parse(input);scope(db,q.environment);
  need((await db.query('SELECT id FROM market_families WHERE workspace_id=$1 AND environment=$2 AND id=$3',[db.workspaceId,q.environment,q.family_id])).rows.length===1,'MARKET_NOT_FOUND',404);
  const rows=(await db.query<VariantRow>(`SELECT id,family_id,version,draft,current_release_id,source_release_id,release_revision
- FROM market_variants WHERE workspace_id=$1 AND environment=$2 AND family_id=$3 AND ($4::uuid IS NULL OR id>$4)
+ FROM market_variants WHERE workspace_id=$1 AND environment=$2 AND family_id=$3 AND document IS NULL AND ($4::uuid IS NULL OR id>$4)
  ORDER BY id LIMIT $5`,[db.workspaceId,q.environment,q.family_id,q.after??null,q.limit+1])).rows;
  const data=rows.slice(0,q.limit).map(view);return{data,meta:{has_more:rows.length>q.limit,next:rows.length>q.limit?data.at(-1)!.id:null}};
 }
@@ -98,7 +98,7 @@ async function configurationRecord(db:ProfileExecutor,environment:MarketEnvironm
  WHERE v.workspace_id=$1 AND v.environment=$2 AND v.kind=$3 AND v.record_id=$4 AND v.version=$5 FOR SHARE OF r`,[db.workspaceId,environment,kind,ref.id,ref.revision])).rows[0];
  need(row&&marketRecordVersionHash(row)===ref.sha256,'MARKET_CONFIGURATION_CHANGED');return row.body;
 }
-async function validateConfiguration(db:ProfileExecutor,environment:MarketEnvironment,familyId:string,fields:ReturnType<typeof marketDraftFieldsSchema.parse>){
+export async function validateMarketConfiguration(db:ProfileExecutor,environment:MarketEnvironment,familyId:string,fields:ReturnType<typeof marketDraftFieldsSchema.parse>){
  const c=fields.configuration;
  const offer=await configurationRecord(db,environment,'offer',c.offer);
  const flow=await configurationRecord(db,environment,'workflow',c.flow);
@@ -117,7 +117,7 @@ async function validateConfiguration(db:ProfileExecutor,environment:MarketEnviro
 export async function publishMarketRelease(db:ProfileExecutor,environment:MarketEnvironment,id:string,input:unknown,actorId:string){
  id=uuid.parse(id);const q=marketPublishSchema.parse(input),old=await variant(db,environment,id,true);
  need(old.version===q.expected_version&&marketDraftHash(old.draft)===q.draft_sha256,'MARKET_VERSION_CONFLICT');
- const fields=marketDraftFieldsSchema.parse(old.draft);await validateConfiguration(db,environment,old.family_id,fields);
+ const fields=marketDraftFieldsSchema.parse(old.draft);await validateMarketConfiguration(db,environment,old.family_id,fields);
  const release=marketReleaseSchema.parse({id:randomUUID(),scope:scope(db,environment),family_id:old.family_id,variant_id:id,revision:old.release_revision+1,...fields});
  const digest=marketReleaseHash(release);
  await db.query(`INSERT INTO market_releases(workspace_id,environment,id,variant_id,revision,body,sha256) VALUES($1,$2,$3,$4,$5,$6,$7)`,[db.workspaceId,environment,release.id,id,release.revision,release,digest]);

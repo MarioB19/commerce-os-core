@@ -532,7 +532,8 @@ V7_PROFILE_MIGRATION_NAMES = frozenset({
     '0093_v7_commercial_resolution_financial_retention.sql', '0094_v7_record_minimization.sql',
     '0095_v7_privacy_copies_backups.sql', '0096_v7_isolation_model.sql', '0097_v7_service_token_profile_binding.sql',
     '0098_v7_composed_foreign_keys.sql', '0099_v7_api_environment_guard.sql',
-    '0100_v7_platform_admin.sql', '0101_v7_profile_integrations.sql', '0102_v7_platform_tokens.sql', '0103_v7_capacity_agent_tokens.sql', '0104_v7_number_identity_claims.sql'})
+    '0100_v7_platform_admin.sql', '0101_v7_profile_integrations.sql', '0102_v7_platform_tokens.sql', '0103_v7_capacity_agent_tokens.sql', '0104_v7_number_identity_claims.sql',
+    '0105_v7_variant_documents.sql'})
 V7_PROFILE_MIGRATION_TOTAL = 68 + len(V7_PROFILE_MIGRATION_NAMES)
 
 

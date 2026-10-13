@@ -26,6 +26,19 @@ export function personalProfileV1(origin:string,token:string,fetcher:typeof fetc
   return client(method,path+'?environment=REAL',body,signal);
  };
 }
+/** V7 F4: products and variants for the same personal token. Writes carry the
+ * caller's operation UUID as Idempotency-Key, so a retried MCP call returns the
+ * durable result instead of repeating the change. */
+export type ProfileVariantClient=(method:ProfileV2Method,path:string,body?:unknown,operationId?:string,signal?:AbortSignal)=>Promise<unknown>;
+const variantPattern=/^\/v2\/(products|variants|number-variants|variant-operations|market)(?:\/[A-Za-z0-9._~%-]+)*(?:\?[A-Za-z0-9._~%&=-]*)?$/;
+export function personalVariantClient(origin:string,token:string,fetcher:typeof fetch=fetch,limit=2*1024*1024):ProfileVariantClient{
+ return async(method,path,body,operationId,signal)=>{
+  if(!variantPattern.test(path)||path.includes('..'))throw new ProfileV2ClientError('PROFILE_ROUTE_INVALID');
+  if(method!=='GET'&&!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(operationId??''))throw new ProfileV2ClientError('OPERATION_ID_REQUIRED');
+  const client=fixedBearer(origin,token,/^cos_pat_[A-Za-z0-9_-]{43}$/,()=>true,fetcher,limit,variantPattern,method==='GET'?{}:{'idempotency-key':operationId!.toLowerCase()});
+  return client(method,path,body,signal);
+ };
+}
 function fixedBearer(origin:string,token:string,tokenPattern:RegExp,allowed:(path:string)=>boolean,fetcher:typeof fetch,limit:number,pattern=pathPattern,extra:Record<string,string>={}):ProfileV2Client{
  let base:URL;try{base=new URL(origin);}catch{throw new ProfileV2ClientError('PROFILE_AUTHORITY_REQUIRED');}
  if(base.username||base.password||base.pathname!=='/'||base.search||base.hash||!(base.protocol==='https:'||base.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(base.hostname))||!tokenPattern.test(token))

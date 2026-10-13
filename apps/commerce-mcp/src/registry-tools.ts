@@ -1,7 +1,7 @@
 import type {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {z} from 'zod';
 import {continuityRequestSchema} from '../../../packages/contracts/src/continuous-consumer.js';
-import {marketCommandSchema} from '../../../packages/contracts/src/market-variant-client.js';
+import {variantSellerSchema,variantOfferSchema,collectionInputSchema,variantLocaleSchema,variantSections} from '../../../packages/contracts/src/variants.js';
 import {paymentsCommandSchema} from '../../../packages/contracts/src/payments-client.js';
 import {profileCatalogResourceSchema} from '../../../packages/contracts/src/profile-catalog-consumer.js';
 import {profileCatalogListSchema,profileCatalogVersionsQuerySchema} from '../../../packages/contracts/src/profile-catalog.js';
@@ -11,16 +11,15 @@ import {profileEmployeeInputSchema,profileRoleSchema,profileSettingsInputSchema}
 import {receiptPolicyCommand} from '../../../packages/contracts/src/receipt-policy-client.js';
 import {resultsCommandSchema} from '../../../packages/contracts/src/results-client.js';
 import type {ContinuityClient} from '../../../packages/commerce-client/src/continuous-authorization.js';
-import type {MarketClient} from '../../../packages/commerce-client/src/market-variants.js';
 import type {PaymentsClient} from '../../../packages/commerce-client/src/payments.js';
 import type {ProfileCatalogReader} from '../../../packages/commerce-client/src/profile-catalog.js';
-import type {ProfileV1Client,ProfileV2Client} from '../../../packages/commerce-client/src/profile-v2.js';
+import type {ProfileV1Client,ProfileV2Client,ProfileVariantClient} from '../../../packages/commerce-client/src/profile-v2.js';
 import {numberCountries,type NumberCountry} from '../../../packages/domain/src/numbers/phone.js';
 import type {ReceiptPolicyClient} from '../../../packages/commerce-client/src/receipt-policies.js';
 import type {ResultsClient} from '../../../packages/commerce-client/src/results.js';
 import {humanAction,registerManageTool,type ManageAction} from './manage-tool.js';
 
-export interface ProfileRegistryClients {v2:ProfileV2Client;v1:ProfileV1Client;catalog:ProfileCatalogReader;variants:MarketClient;continuity:ContinuityClient;payments:PaymentsClient;receiptPolicies:ReceiptPolicyClient;results:ResultsClient}
+export interface ProfileRegistryClients {v2:ProfileV2Client;v1:ProfileV1Client;catalog:ProfileCatalogReader;variant:ProfileVariantClient;continuity:ContinuityClient;payments:PaymentsClient;receiptPolicies:ReceiptPolicyClient;results:ResultsClient}
 const id=(v:string)=>encodeURIComponent(v);
 const query=(values:Record<string,unknown>)=>{const q=new URLSearchParams();for(const[k,v]of Object.entries(values))if(v!==undefined&&v!==null)q.set(k,String(v));const s=q.toString();return s?'?'+s:'';};
 function failure(action:string,error:unknown,input:unknown){
@@ -84,13 +83,50 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
   desactivar:v('POST',z.object({provider:z.enum(['openai','anthropic','google','meta']),expectedRevision:z.number().int().positive()}).strict(),i=>i.provider==='meta'?'/v2/integrations/meta/state':'/v2/integrations/ai/'+i.provider+'/state',i=>({expectedRevision:i.expectedRevision,enabled:false}),{destructive:true})(c.v2),
   eliminar:v('POST',z.object({provider:z.enum(['openai','anthropic','google','meta']),expectedRevision:z.number().int().positive()}).strict(),i=>i.provider==='meta'?'/v2/integrations/meta/state':'/v2/integrations/ai/'+i.provider+'/state',i=>({expectedRevision:i.expectedRevision,enabled:false}),{destructive:true})(c.v2),
  });
- tool('products_manage','Productos del perfil','Consulta productos, ofertas y recursos del catálogo con sus versiones.',{
+ const operation=z.object({operationId:z.uuid()});
+ const variantId=z.object({variantId:z.uuid()}).strict();
+ const P=(method:'GET'|'POST'|'PUT'|'PATCH',schema:z.ZodObject<any>,path:(i:any)=>string,body?:(i:any)=>unknown,options:{read?:boolean;destructive?:boolean}={}):ManageAction=>({schema,read:options.read??method==='GET',destructive:options.destructive,
+  run:i=>c.variant(method,path(i),body?body(i):undefined,method==='GET'?undefined:i.operationId)});
+ tool('products_manage','Productos del perfil','Productos padre con sus variantes por mercado: consultar, crear (con su primera variante), editar, archivar o restaurar. Crear no asigna números ni envía mensajes.',{
   listar:{schema:z.object({resource:profileCatalogResourceSchema,...profileCatalogListSchema.shape}).strict(),read:true,run:i=>c.catalog({...i,operation:'list'})},
   leer:{schema:z.object({resource:profileCatalogResourceSchema,id:z.uuid(),...environment.shape}).strict(),read:true,run:i=>c.catalog({...i,operation:'get'})},
   versiones:{schema:z.object({resource:profileCatalogResourceSchema,id:z.uuid(),...profileCatalogVersionsQuerySchema.shape}).strict(),read:true,run:i=>c.catalog({...i,operation:'versions'})},
+  productos:P('GET',z.object({include:z.enum(['active','all']).optional(),q:z.string().max(160).optional()}).strict(),i=>'/v2/products'+query(i)),
+  crear:P('POST',operation.extend({name:z.string().min(1).max(160),description:z.string().max(4000).optional(),variant:z.object({name:z.string().min(1).max(160),locale:variantLocaleSchema}).strict()}).strict(),()=>'/v2/products',({operationId:_,...i})=>i),
+  editar:P('PATCH',operation.extend({productId:z.uuid(),expectedVersion:z.number().int().positive(),name:z.string().min(1).max(160),description:z.string().max(4000)}).strict(),i=>'/v2/products/'+id(i.productId),i=>({expected_version:i.expectedVersion,name:i.name,description:i.description})),
+  archivar:P('POST',operation.extend({productId:z.uuid(),expectedVersion:z.number().int().positive()}).strict(),i=>'/v2/products/'+id(i.productId)+'/archive',i=>({expected_version:i.expectedVersion}),{destructive:true}),
+  restaurar:P('POST',operation.extend({productId:z.uuid(),expectedVersion:z.number().int().positive()}).strict(),i=>'/v2/products/'+id(i.productId)+'/restore',i=>({expected_version:i.expectedVersion})),
+  dependencias:P('GET',z.object({productId:z.uuid()}).strict(),i=>'/v2/products/'+id(i.productId)+'/dependencies'),
  });
- tool('variants_manage','Variantes de mercado','Crea, edita, duplica y publica variantes con revisión explícita. Publicar no activa números ni envía mensajes.',
-  fromUnion(marketCommandSchema,{list:'listar',get:'leer',adopt:'adoptar',create:'crear',replace:'editar',copy:'duplicar',publish:'publicar',release:'version',reconcile:'consultar_operacion'},op=>['list','get','release','reconcile'].includes(op),i=>c.variants(i)));
+ const section=z.enum(variantSections);
+ tool('variants_manage','Variantes de mercado','Cada variante es un mercado del producto (país, moneda, idioma, zona) con cinco secciones. Editar guarda un borrador; publicar aplica a conversaciones nuevas y no asigna números ni envía mensajes.',{
+  listar:P('GET',z.object({productId:z.uuid().optional(),include:z.enum(['active','all']).optional()}).strict(),i=>'/v2/variants'+query({product_id:i.productId,include:i.include})),
+  leer:P('GET',variantId,i=>'/v2/variants/'+id(i.variantId)),
+  adoptar:P('POST',operation.extend({productId:z.uuid()}).strict(),i=>'/v2/products/'+id(i.productId)+'/adopt',()=>({})),
+  crear:P('POST',operation.extend({productId:z.uuid(),name:z.string().min(1).max(160),locale:variantLocaleSchema}).strict(),()=>'/v2/variants',i=>({product_id:i.productId,name:i.name,locale:i.locale})),
+  editar:P('PUT',operation.extend({variantId:z.uuid(),section,expectedVersion:z.number().int().positive(),value:z.unknown()}).strict(),i=>'/v2/variants/'+id(i.variantId)+'/'+(i.section==='locale'?'market':i.section),i=>({expected_version:i.expectedVersion,value:i.value})),
+  revisar:P('POST',operation.extend({variantId:z.uuid(),expectedVersion:z.number().int().positive(),reviewed:z.array(z.enum(['language','price_currency','collection','flow_seller','remarketing','materials'])).min(1).max(6)}).strict(),i=>'/v2/variants/'+id(i.variantId)+'/review',i=>({expected_version:i.expectedVersion,reviewed:i.reviewed})),
+  duplicar:P('POST',operation.extend({variantId:z.uuid(),name:z.string().min(1).max(160),locale:variantLocaleSchema}).strict(),i=>'/v2/variants/'+id(i.variantId)+'/duplicate',i=>({name:i.name,locale:i.locale})),
+  publicar:P('POST',operation.extend({variantId:z.uuid(),expectedVersion:z.number().int().positive(),documentSha256:z.string().regex(/^[a-f0-9]{64}$/)}).strict(),i=>'/v2/variants/'+id(i.variantId)+'/publish',i=>({expected_version:i.expectedVersion,document_sha256:i.documentSha256})),
+  version:P('GET',z.object({releaseId:z.uuid()}).strict(),i=>'/v2/market/releases/'+id(i.releaseId)+'?environment=REAL'),
+  historial:P('GET',variantId,i=>'/v2/variants/'+id(i.variantId)+'/history'),
+  archivar:P('POST',operation.extend({variantId:z.uuid(),expectedVersion:z.number().int().positive()}).strict(),i=>'/v2/variants/'+id(i.variantId)+'/archive',i=>({expected_version:i.expectedVersion}),{destructive:true}),
+  restaurar:P('POST',operation.extend({variantId:z.uuid(),expectedVersion:z.number().int().positive()}).strict(),i=>'/v2/variants/'+id(i.variantId)+'/restore',i=>({expected_version:i.expectedVersion})),
+  consultar_operacion:P('GET',z.object({operationId:z.uuid()}).strict(),i=>'/v2/variant-operations/'+id(i.operationId)),
+ });
+ // One tool per variant section (Inventario V7): read, save, check what is
+ // missing, publish the variant, history. Same service as the application.
+ const sectionTool=(name:string,title:string,description:string,path:string,value:z.ZodType,publish:boolean)=>tool(name,title,description,{
+  leer:P('GET',variantId,i=>'/v2/variants/'+id(i.variantId)+'/'+path),
+  guardar:P('PUT',operation.extend({variantId:z.uuid(),expectedVersion:z.number().int().positive(),value}).strict(),i=>'/v2/variants/'+id(i.variantId)+'/'+path,i=>({expected_version:i.expectedVersion,value:i.value})),
+  validar:{schema:variantId,read:true,run:async i=>{const v=await c.variant('GET','/v2/variants/'+id(i.variantId)) as {state:string;state_label:string;missing:unknown[];unpublished_changes:boolean};return{state:v.state,state_label:v.state_label,missing:v.missing,unpublished_changes:v.unpublished_changes};}},
+  ...(publish?{publicar:P('POST',operation.extend({variantId:z.uuid(),expectedVersion:z.number().int().positive(),documentSha256:z.string().regex(/^[a-f0-9]{64}$/)}).strict(),i=>'/v2/variants/'+id(i.variantId)+'/publish',i=>({expected_version:i.expectedVersion,document_sha256:i.documentSha256}))}:{}),
+  historial:P('GET',variantId,i=>'/v2/variants/'+id(i.variantId)+'/history'),
+ });
+ sectionTool('offers_manage','Oferta y materiales de la variante','Precio, tiers y qué recibe el cliente y cuándo. Guardar deja un borrador; publicar aplica a conversaciones nuevas.','offer',variantOfferSchema,true);
+ sectionTool('sales_flows_manage','Flujo de venta de la variante','Flujo base (venta por conversación o guiado) con sus mensajes en lenguaje de operación.','sales-flow',z.record(z.string(),z.unknown()),true);
+ sectionTool('sellers_manage','Vendedor de la variante','Nombre, instrucciones, conocimiento y límites del vendedor; el idioma es el de la variante.','seller',variantSellerSchema,true);
+ sectionTool('collections_manage','Cobro de la variante','SPEI y/o enlace de pago. Los datos se guardan cifrados y nunca se devuelven completos.','collection',collectionInputSchema,false);
  tool('receipt_rules_manage','Reglas de comprobantes','Consulta o guarda las reglas de validación de comprobantes del perfil o de una variante.',
   fromUnion(receiptPolicyCommand,{get_profile:'leer_perfil',get_variant:'leer_variante',save_profile:'guardar_perfil',save_variant:'guardar_variante',reconcile:'consultar_operacion'},op=>op.startsWith('get')||op==='reconcile',i=>c.receiptPolicies(i)));
  tool('payments_manage','Pagos','Consulta y exporta el registro de pagos con los mismos filtros de la aplicación; no aprueba pagos.',
@@ -117,9 +153,14 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
  const command=continuityRequestSchema.options.find(o=>(o.shape.operation as z.ZodLiteral<string>).value==='command')!;
  const {operation:_operation,action:_action,...commandShape}=command.shape as Record<string,z.ZodType>;
  const human=(action:'pause'|'resume'|'revoke'):ManageAction=>({schema:z.object(commandShape).strict(),read:false,destructive:action!=='resume',run:i=>c.continuity({...i,operation:'command',action})});
- tool('number_assignments_manage','Autorizaciones de venta de números','Autorizaciones permanentes de los números asignados: consultar, autorizar, pausar, reanudar o revocar. No envía mensajes.',{
+ tool('number_assignments_manage','Números que venden cada variante','Autorizaciones permanentes de los números asignados y la relación número↔variante. Asignar un número exige a la persona en la aplicación; retirar se puede hacer aquí. No envía mensajes.',{
   ...fromUnion(continuityRequestSchema,{list:'autorizaciones',get:'autorizacion',receipt:'consultar_operacion',issue:'autorizar'},op=>['list','get','receipt'].includes(op),i=>c.continuity(i)),
   pausar:human('pause'),reanudar:human('resume'),revocar:human('revoke'),
+  asignar:{schema:z.object({variantId:z.uuid(),numberId:z.uuid()}).strict(),read:false,run:humanAction('/products','Vender una variante en un número es una decisión humana en la aplicación (Productos → variante → Números).')},
+  retirar:P('POST',operation.extend({variantId:z.uuid(),numberId:z.uuid()}).strict(),i=>'/v2/variants/'+id(i.variantId)+'/numbers',i=>({account_id:i.numberId,sell:false}),{destructive:true}),
+  impacto:P('GET',z.object({variantId:z.uuid(),numberId:z.uuid()}).strict(),i=>'/v2/variants/'+id(i.variantId)+'/numbers/'+id(i.numberId)+'/impact'),
+  historial:P('GET',z.object({numberId:z.uuid()}).strict(),i=>'/v2/number-variants/'+id(i.numberId)+'/history'),
+  vista_inversa:P('GET',z.object({offerId:z.uuid().optional()}).strict(),i=>'/v2/number-variants'+query({offer_id:i.offerId})),
  });
 
  // V7 F3 (RF-07, wireframe D): the number journey. The QR is shown only in the
