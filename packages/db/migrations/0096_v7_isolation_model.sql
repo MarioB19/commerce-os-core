@@ -80,9 +80,9 @@ BEGIN
   IF NOT was_enabled AND NOT EXISTS(SELECT 1 FROM pg_policy x WHERE x.polrelid=t.oid AND x.polpermissive AND 'commerce_api'::regrole=ANY(x.polroles)) THEN
    EXECUTE format('CREATE POLICY v7_api_profile ON public.%I AS PERMISSIVE TO commerce_api USING(%s) WITH CHECK(%s)',t.relname,ctx,ctx);
   END IF;
-  -- A historical table that already had reviewed RLS (integration_secrets:
-  -- field visibility per runtime role) keeps exactly its role policies.
-  IF historical AND NOT was_enabled THEN
+  -- integration_secrets already had reviewed RLS before V7 (field visibility
+  -- per runtime role, 0018): it keeps exactly its role policies.
+  IF historical AND t.relname<>'integration_secrets' THEN
    EXECUTE format('CREATE POLICY v7_worker_global ON public.%I AS PERMISSIVE TO commerce_worker_global USING(%s) WITH CHECK(%s)',t.relname,worker,worker);
    -- Reviewed V7 restrictive policies on historical tables keep binding every
    -- role inside a context; only a worker transaction without any profile
@@ -160,6 +160,11 @@ BEGIN
  -- or isolation receipt of the explicit effect/account record it processes;
  -- with any context, the exact workspace/environment is still required.
  INSERT INTO pg_temp.v7_bind_patches VALUES
+ -- An effect or pool without a temporal authorization has none to read
+ -- (historical contract): no row, never a context error.
+ ('public.read_locked_operation_authorization(uuid,text,text)',
+  ' IF authorization_id IS NULL OR workspace IS NULL',
+  ' IF authorization_id IS NULL THEN RETURN; END IF;'||chr(10)||'  IF workspace IS NULL'),
  ('public.read_locked_operation_authorization(uuid,text,text)',
   '   OR current_setting(''app.workspace_id'',true) IS DISTINCT FROM workspace OR current_setting(''app.environment'',true) IS DISTINCT FROM env THEN RAISE EXCEPTION ''PROFILE_READER_CONTEXT_REQUIRED'';',
   '   OR (NOT public.v7_worker_session_without_context() AND (current_setting(''app.workspace_id'',true) IS DISTINCT FROM workspace OR current_setting(''app.environment'',true) IS DISTINCT FROM env)) THEN RAISE EXCEPTION ''PROFILE_READER_CONTEXT_REQUIRED'';'),

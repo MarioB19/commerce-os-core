@@ -1,3 +1,4 @@
+import {bindProfileEnvironment} from '../../packages/db/src/profile-environment.js';
 /** Real PostgreSQL tests over synthetic local records. No channel/QR/provider
  * observation is asserted by this fixture, and no production schema is changed. */
 import {readFile} from 'node:fs/promises';
@@ -45,7 +46,9 @@ let admin:pg.Pool,app:FastifyInstance|undefined,address:string,cookie:string;
 const origin='http://localhost:5173';
 const pools=new Map<Role,pg.Pool>(),scoped=new Map<Role,ProfilePool>(),logins:string[]=[];
 let session:{id:string;userId:string};
-function tx<T>(role:Role,work:(db:ProfileExecutor)=>Promise<T>,scope=workspace){return withProfileTransaction(scoped.get(role)!,scope,work);}
+// V7 F2: environment-bound tables (custody, privileged readers, privacy guards)
+// need the transaction's environment as production workers bind it (REAL here).
+function tx<T>(role:Role,work:(db:ProfileExecutor)=>Promise<T>,scope=workspace,environment:'REAL'|'SIMULATION'='REAL'){return withProfileTransaction(scoped.get(role)!,scope,async db=>{await bindProfileEnvironment(db,environment);return work(db);});}
 function human<T>(work:(db:ProfileExecutor,p:SessionProfile)=>Promise<T>){
  return withProfileSessionTransaction(scoped.get('commerce_api')!,session,{workspaceId:workspace,version:1},{scope:'assignments:write',mutation:true},work);
 }
@@ -443,7 +446,8 @@ describe('F3 continuity persistence, real restricted PostgreSQL and synthetic so
  });
  it('new REAL proposals reject absent or foreign ALS and suspended profiles while retaining paused intent',async()=>{
   const f=await commercialReady();
-  await expect(tx('commerce_automation',db=>proposeEffect(db,f.conversation,{kind:'text'},randomUUID()))).rejects.toThrow('CONTINUITY_PROFILE_CONTEXT_REQUIRED');
+  // V7 F2: without ALS the producer binds the explicit conversation's own profile; it never selects another.
+  expect(await tx('commerce_automation',db=>proposeEffect(db,f.conversation,{kind:'text'},randomUUID()))).toMatchObject({continuous_authorization_id:f.state.id});
   await expect(tx('commerce_automation',db=>withProfileQueryRouting(db,()=>proposeEffect(db,f.conversation,{kind:'text'},randomUUID())),foreign)).rejects.toThrow(/PROFILE_QUERY_CONTEXT_MISMATCH/);
   await asProfileOwner(admin,workspace,c=>c.query("UPDATE profiles SET state='SUSPENDED' WHERE id=$1",[workspace]));try{await expect(f.propose()).rejects.toThrow('CONTINUITY_PROFILE_SUSPENDED');}finally{await asProfileOwner(admin,workspace,c=>c.query("UPDATE profiles SET state='ACTIVE' WHERE id=$1",[workspace]));}
   await humanCommand(f.state,'pause');expect(await f.propose()).toMatchObject({status:'BLOCKED',continuous_authorization_id:f.state.id,result:{reason:'CONTINUITY_HUMAN_PAUSED'}});

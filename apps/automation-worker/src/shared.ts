@@ -26,6 +26,8 @@ export async function proposeEffect(...args:Parameters<typeof proposeEffectOutco
  const result=await proposeEffectOutcome(...args);return result.state==='BLOCKED'?undefined:result.effect;
 }
 export async function proposeEffectOutcome(client:QueryExecutor,conversation:DomainRecord,payload:Body,key:string,options:{authorizationId?:string;notBefore?:string;expiresAt?:string;predecessorId?:string;actorKind?:string;campaignId?:string}={}):Promise<EffectProposalOutcome>{
+  // An established profile scope must be the conversation's own (fails closed on mismatch).
+  currentProfileExecutor(conversation.workspace_id);
   // Callers use a transaction; this also serializes campaigns and concurrent proposals.
   await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[conversation.id]);
   const order=(await client.query("SELECT id FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='order' AND body->>'conversation_id'=$3 LIMIT 1",[conversation.workspace_id,conversation.environment,conversation.id])).rows[0];
