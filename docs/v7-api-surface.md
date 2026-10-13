@@ -29,6 +29,13 @@ lectura de Meta por perfil (RF-11, `POST /v2/campaigns/sync`): 179 (160 de negoc
 Con la salud de plataforma de F1 (`GET /healthz/platform`, sin contenido, para el monitor
 externo): **180 (160 de negocio)**.
 
+## Referencia generada (RF-16.b)
+
+`scripts/api-reference.ts write` genera `docs/reference/openapi-v7.json`,
+`docs/reference/mcp-v7.json` y `docs/reference/api-mcp-v7.md` desde la app y el
+registro MCP; `tests/unit/api-reference.test.ts` falla si el código y la
+referencia difieren (incluida una ruptura intencional en fixture).
+
 ## Lo que queda en `/v1`
 
 Sólo lo que llama la aplicación V7, el MCP V7, el agente de capacidad del

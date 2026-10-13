@@ -1,0 +1,722 @@
+{
+ "budget": 40,
+ "tools": [
+  {
+   "actions": [
+    "actual",
+    "listar",
+    "cambiar"
+   ],
+   "audience": "profile",
+   "family": "/v2/profile",
+   "name": "profile_context",
+   "pending": [],
+   "scopes": [
+    "profiles:read"
+   ]
+  },
+  {
+   "actions": [
+    "resumen"
+   ],
+   "audience": "profile",
+   "family": "/v2/home",
+   "name": "home_get",
+   "pending": [],
+   "scopes": [
+    "home:read"
+   ]
+  },
+  {
+   "actions": [
+    "listar",
+    "invitaciones",
+    "invitar",
+    "cancelar_invitacion",
+    "cambiar_rol",
+    "desactivar",
+    "consultar_operacion"
+   ],
+   "audience": "profile",
+   "family": "/v2/employees",
+   "name": "employees_manage",
+   "pending": [
+    "reenviar_invitacion"
+   ],
+   "scopes": [
+    "employees:read",
+    "employees:write"
+   ]
+  },
+  {
+   "actions": [
+    "listar",
+    "guardar",
+    "validar",
+    "rotar",
+    "preferencias",
+    "activar",
+    "desactivar",
+    "eliminar"
+   ],
+   "audience": "profile",
+   "family": "/v2/integrations",
+   "name": "integrations_manage",
+   "pending": [],
+   "scopes": [
+    "integrations:read",
+    "integrations:write"
+   ]
+  },
+  {
+   "actions": [
+    "listar",
+    "crear",
+    "revocar",
+    "consultar_operacion"
+   ],
+   "audience": "profile",
+   "family": "/v2/tokens",
+   "name": "api_tokens_manage",
+   "pending": [],
+   "scopes": [
+    "tokens:read",
+    "tokens:write"
+   ]
+  },
+  {
+   "actions": [
+    "listar",
+    "leer",
+    "crear",
+    "editar",
+    "archivar",
+    "restaurar",
+    "dependencias"
+   ],
+   "audience": "profile",
+   "family": "/v2/products",
+   "name": "products_manage",
+   "pending": [],
+   "scopes": [
+    "products:read",
+    "products:write"
+   ]
+  },
+  {
+   "actions": [
+    "listar",
+    "leer",
+    "adoptar",
+    "crear",
+    "editar",
+    "revisar",
+    "duplicar",
+    "publicar",
+    "version",
+    "historial",
+    "archivar",
+    "restaurar",
+    "consultar_operacion"
+   ],
+   "audience": "profile",
+   "family": "/v2/variants",
+   "name": "variants_manage",
+   "pending": [],
+   "scopes": [
+    "variants:read",
+    "variants:write"
+   ]
+  },
+  {
+   "actions": [
+    "leer",
+    "guardar",
+    "validar",
+    "publicar",
+    "historial"
+   ],
+   "audience": "profile",
+   "family": "/v2/variants/{id}/offer",
+   "name": "offers_manage",
+   "pending": [],
+   "scopes": [
+    "offers:read",
+    "offers:write"
+   ]
+  },
+  {
+   "actions": [
+    "listar",
+    "leer",
+    "iniciar_subida",
+    "parte",
+    "completar",
+    "cancelar",
+    "eliminar"
+   ],
+   "audience": "profile",
+   "family": "/v2/materials",
+   "name": "materials_manage",
+   "pending": [],
+   "scopes": [
+    "materials:read",
+    "materials:write"
+   ]
+  },
+  {
+   "actions": [
+    "leer",
+    "guardar",
+    "validar",
+    "publicar",
+    "historial"
+   ],
+   "audience": "profile",
+   "family": "/v2/variants/{id}/sales-flow",
+   "name": "sales_flows_manage",
+   "pending": [],
+   "scopes": [
+    "flows:read",
+    "flows:write"
+   ]
+  },
+  {
+   "actions": [
+    "leer",
+    "guardar",
+    "validar",
+    "publicar",
+    "historial"
+   ],
+   "audience": "profile",
+   "family": "/v2/variants/{id}/seller",
+   "name": "sellers_manage",
+   "pending": [],
+   "scopes": [
+    "sellers:read",
+    "sellers:write"
+   ]
+  },
+  {
+   "actions": [
+    "leer",
+    "guardar",
+    "validar",
+    "historial"
+   ],
+   "audience": "profile",
+   "family": "/v2/variants/{id}/collection",
+   "name": "collections_manage",
+   "pending": [],
+   "scopes": [
+    "collections:read",
+    "collections:write"
+   ]
+  },
+  {
+   "actions": [
+    "leer_perfil",
+    "leer_variante",
+    "guardar_perfil",
+    "guardar_variante",
+    "consultar_operacion"
+   ],
+   "audience": "profile",
+   "family": "/v2/payments/policies",
+   "name": "receipt_rules_manage",
+   "pending": [],
+   "scopes": [
+    "receipt-rules:read",
+    "receipt-rules:write"
+   ]
+  },
+  {
+   "actions": [
+    "listar",
+    "leer",
+    "crear",
+    "impacto_eliminar",
+    "eliminar"
+   ],
+   "audience": "profile",
+   "family": "/v1/numbers",
+   "name": "numbers_manage",
+   "pending": [
+    "editar"
+   ],
+   "scopes": [
+    "numbers:read",
+    "numbers:write"
+   ]
+  },
+  {
+   "actions": [
+    "estado",
+    "conectar",
+    "vincular",
+    "desconectar",
+    "pausar",
+    "reanudar"
+   ],
+   "audience": "profile",
+   "family": "/v1/numbers/{id}/link",
+   "name": "number_connection_manage",
+   "pending": [],
+   "scopes": [
+    "numbers:read",
+    "numbers:connect"
+   ]
+  },
+  {
+   "actions": [
+    "autorizaciones",
+    "autorizacion",
+    "autorizar",
+    "pausar",
+    "reanudar",
+    "revocar",
+    "consultar_operacion",
+    "asignar",
+    "retirar",
+    "impacto",
+    "historial",
+    "vista_inversa"
+   ],
+   "audience": "profile",
+   "family": "/v2/continuity",
+   "name": "number_assignments_manage",
+   "pending": [],
+   "scopes": [
+    "assignments:read",
+    "assignments:write"
+   ]
+  },
+  {
+   "actions": [
+    "progreso",
+    "pausar",
+    "reanudar",
+    "evidencia"
+   ],
+   "audience": "profile",
+   "family": "/v2/continuity/warmup",
+   "name": "warmup_manage",
+   "pending": [],
+   "scopes": [
+    "warmup:read",
+    "warmup:write"
+   ]
+  },
+  {
+   "actions": [
+    "listar",
+    "leer",
+    "responder",
+    "registrar_acuerdo",
+    "cerrar",
+    "registrar_baja",
+    "tomar_control",
+    "liberar_control",
+    "pausar",
+    "reanudar"
+   ],
+   "audience": "profile",
+   "family": "/v1/conversations",
+   "name": "conversations_manage",
+   "pending": [
+    "asignar_persona",
+    "elegir_variante"
+   ],
+   "scopes": [
+    "conversations:read",
+    "conversations:write"
+   ]
+  },
+  {
+   "actions": [
+    "listar",
+    "leer"
+   ],
+   "audience": "profile",
+   "family": "/v1/orders",
+   "name": "orders_manage",
+   "pending": [
+    "corregir_clasificacion",
+    "historial"
+   ],
+   "scopes": [
+    "orders:read",
+    "orders:write"
+   ]
+  },
+  {
+   "actions": [
+    "listar",
+    "leer",
+    "archivo",
+    "revisar"
+   ],
+   "audience": "profile",
+   "family": "/v2/receipts",
+   "name": "receipts_manage",
+   "pending": [],
+   "scopes": [
+    "receipts:read",
+    "receipts:review"
+   ]
+  },
+  {
+   "actions": [
+    "opciones",
+    "listar",
+    "exportar"
+   ],
+   "audience": "profile",
+   "family": "/v2/payments",
+   "name": "payments_manage",
+   "pending": [
+    "leer",
+    "registrar",
+    "conciliar",
+    "corregir"
+   ],
+   "scopes": [
+    "payments:read",
+    "payments:write",
+    "payments:export"
+   ]
+  },
+  {
+   "actions": [
+    "leer",
+    "guardar",
+    "validar",
+    "publicar",
+    "historial",
+    "resultados"
+   ],
+   "audience": "profile",
+   "family": "/v2/variants/{id}/remarketing",
+   "name": "remarketing_manage",
+   "pending": [
+    "ciclos",
+    "previsualizar_reprogramacion",
+    "reprogramar",
+    "pausar",
+    "reanudar"
+   ],
+   "scopes": [
+    "remarketing:read",
+    "remarketing:write"
+   ]
+  },
+  {
+   "actions": [
+    "cuentas",
+    "resultados",
+    "campanas",
+    "anuncios",
+    "sincronizar_lectura"
+   ],
+   "audience": "profile",
+   "family": "/v2/campaigns",
+   "name": "campaigns_read",
+   "pending": [
+    "portafolios"
+   ],
+   "scopes": [
+    "campaigns:read",
+    "integrations:write"
+   ]
+  },
+  {
+   "actions": [
+    "opciones",
+    "resumen"
+   ],
+   "audience": "profile",
+   "family": "/v2/results",
+   "name": "results_read",
+   "pending": [
+    "embudo",
+    "series",
+    "comparar",
+    "exportar"
+   ],
+   "scopes": [
+    "results:read"
+   ]
+  },
+  {
+   "actions": [
+    "listar",
+    "leer",
+    "avance",
+    "crear",
+    "editar",
+    "consultar_operacion"
+   ],
+   "audience": "profile",
+   "family": "/v2/goals",
+   "name": "goals_manage",
+   "pending": [
+    "eliminar"
+   ],
+   "scopes": [
+    "goals:read",
+    "goals:write"
+   ]
+  },
+  {
+   "actions": [
+    "estimar",
+    "crear",
+    "leer",
+    "ultima",
+    "mensaje",
+    "seleccionar",
+    "avanzar_reloj",
+    "continuar",
+    "reiniciar"
+   ],
+   "audience": "profile",
+   "family": "/v2/number-tests",
+   "name": "number_test_manage",
+   "pending": [
+    "adjuntar",
+    "ejecutar_suite",
+    "informe"
+   ],
+   "scopes": [
+    "tests:read",
+    "tests:run"
+   ]
+  },
+  {
+   "actions": [
+    "leer_resultado"
+   ],
+   "audience": "profile",
+   "family": "/v2/operations",
+   "name": "operations_get",
+   "pending": [
+    "efectos"
+   ],
+   "scopes": [
+    "operations:read"
+   ]
+  },
+  {
+   "actions": [
+    "listar",
+    "leer",
+    "acusar"
+   ],
+   "audience": "profile",
+   "family": "/v2/alerts",
+   "name": "alerts_manage",
+   "pending": [
+    "configurar_preferencias"
+   ],
+   "scopes": [
+    "alerts:read",
+    "alerts:write"
+   ]
+  },
+  {
+   "actions": [
+    "guia",
+    "descargar"
+   ],
+   "audience": "profile",
+   "family": "/v2/help",
+   "name": "help_read",
+   "pending": [
+    "receta",
+    "referencia"
+   ],
+   "scopes": [
+    "help:read"
+   ]
+  },
+  {
+   "actions": [
+    "listar",
+    "exportar"
+   ],
+   "audience": "profile",
+   "family": "/v2/audit",
+   "name": "audit_read",
+   "pending": [],
+   "scopes": [
+    "audit:read",
+    "audit:export"
+   ]
+  },
+  {
+   "actions": [],
+   "audience": "profile",
+   "family": "/v2/privacy",
+   "name": "privacy_manage",
+   "pending": [
+    "retencion",
+    "guardar_retencion",
+    "exportar_contacto",
+    "borrar_contacto",
+    "leer_resultado"
+   ],
+   "scopes": [
+    "privacy:read",
+    "privacy:write"
+   ]
+  },
+  {
+   "actions": [
+    "leer",
+    "editar",
+    "onboarding",
+    "actualizar_onboarding"
+   ],
+   "audience": "profile",
+   "family": "/v2/profile",
+   "name": "profile_settings_manage",
+   "pending": [
+    "pausar_operacion",
+    "reanudar_operacion"
+   ],
+   "scopes": [
+    "profile:read",
+    "profile:write"
+   ]
+  },
+  {
+   "actions": [
+    "conversaciones",
+    "numeros",
+    "almacenamiento",
+    "costo_ia",
+    "cuotas"
+   ],
+   "audience": "profile",
+   "family": "/v2/usage",
+   "name": "usage_read",
+   "pending": [],
+   "scopes": [
+    "usage:read"
+   ]
+  },
+  {
+   "actions": [],
+   "audience": "profile",
+   "family": "/v2/me/security",
+   "name": "account_security_manage",
+   "pending": [
+    "leer",
+    "sesiones",
+    "revocar_sesion",
+    "solicitar_cambio_seguro"
+   ],
+   "scopes": [
+    "account:read",
+    "account:write"
+   ]
+  },
+  {
+   "actions": [
+    "listar",
+    "crear",
+    "invitar_dueno",
+    "suspender",
+    "reactivar",
+    "limites"
+   ],
+   "audience": "platform",
+   "family": "/v2/platform/profiles",
+   "name": "admin_profiles_manage",
+   "pending": [
+    "exportar",
+    "eliminar"
+   ],
+   "scopes": [
+    "platform:profiles"
+   ]
+  },
+  {
+   "actions": [
+    "leer"
+   ],
+   "audience": "platform",
+   "family": "/v2/platform/capacity",
+   "name": "admin_capacity_manage",
+   "pending": [
+    "previsualizar",
+    "aplicar",
+    "drenar",
+    "conciliar"
+   ],
+   "scopes": [
+    "platform:capacity"
+   ]
+  },
+  {
+   "actions": [],
+   "audience": "platform",
+   "family": "/v2/platform/health",
+   "name": "admin_services_read",
+   "pending": [
+    "salud",
+    "slo",
+    "incidentes",
+    "colas",
+    "backups"
+   ],
+   "scopes": [
+    "platform:health"
+   ]
+  },
+  {
+   "actions": [],
+   "audience": "platform",
+   "family": "/v2/platform/recovery",
+   "name": "admin_recovery_manage",
+   "pending": [
+    "previsualizar",
+    "conciliar",
+    "restaurar",
+    "leer_resultado"
+   ],
+   "scopes": [
+    "platform:recovery"
+   ]
+  },
+  {
+   "actions": [],
+   "audience": "platform",
+   "family": "/v2/platform/releases",
+   "name": "admin_releases_read",
+   "pending": [
+    "actual",
+    "historial",
+    "verificaciones"
+   ],
+   "scopes": [
+    "platform:releases"
+   ]
+  },
+  {
+   "actions": [],
+   "audience": "platform",
+   "family": "/v2/platform/audit",
+   "name": "admin_audit_read",
+   "pending": [
+    "listar",
+    "exportar",
+    "costos"
+   ],
+   "scopes": [
+    "platform:audit"
+   ]
+  }
+ ]
+}
