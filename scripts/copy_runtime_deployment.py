@@ -517,7 +517,7 @@ import signal
 
 MIGRATION_NAMES = frozenset({'0066_pending_channel_cancellation.sql', '0067_copy_source_isolation.sql'})
 OPERATING_MIGRATION_NAMES = frozenset({'0068_operational_metric_writer.sql'})
-# V7 profile cutover: the exact reviewed 68→109 set, applied as one bounded
+# V7 profile cutover: the exact reviewed 68→110 set, applied as one bounded
 # OPERATING publication (docs/adr-v7-isolation-model.md). Names are fixed here;
 # hashes come from the private review and must equal the candidate's files.
 V7_PROFILE_MIGRATION_NAMES = frozenset({
@@ -534,7 +534,7 @@ V7_PROFILE_MIGRATION_NAMES = frozenset({
     '0098_v7_composed_foreign_keys.sql', '0099_v7_api_environment_guard.sql',
     '0100_v7_platform_admin.sql', '0101_v7_profile_integrations.sql', '0102_v7_platform_tokens.sql', '0103_v7_capacity_agent_tokens.sql', '0104_v7_number_identity_claims.sql',
     '0105_v7_variant_documents.sql', '0106_v7_ai_price_catalog.sql', '0107_v7_ai_budget_continuity.sql',
-    '0108_v7_number_lab_queue.sql', '0109_v7_retire_modules.sql'})
+    '0108_v7_number_lab_queue.sql', '0109_v7_retire_modules.sql', '0110_v7_meta_profile_sync.sql'})
 V7_PROFILE_MIGRATION_TOTAL = 68 + len(V7_PROFILE_MIGRATION_NAMES)
 
 
@@ -553,7 +553,7 @@ def reviewed_migration_names(metadata):
 
 def migration_stage_guard(applied, metadata, *, initial=False, stage=None):
     """Only the reviewed 65→67 cold copy, the 67→68 OPERATING correction or
-    the 68→109 OPERATING V7 profile cutover. 0109 retires the V5 modules only
+    the 68→110 OPERATING V7 profile cutover. 0109 retires the V5 modules only
     after scripts/v7-retirement-export.ts recorded their export (otherwise the
     whole transaction aborts and the database stays at 68)."""
     names = reviewed_migration_names(metadata); expected = metadata['migration_hashes']

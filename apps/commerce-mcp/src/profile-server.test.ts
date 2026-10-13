@@ -186,7 +186,8 @@ describe('V7 F3 number tools',()=>{
    const md=await client.callTool({name:'help_read',arguments:{action:'descargar'}});expect(JSON.stringify(md.structuredContent)).toContain('Empieza a vender');
    const camp=await client.callTool({name:'campaigns_read',arguments:{action:'campanas',from:'2026-10-01',to:'2026-10-12'}});expect(JSON.stringify(camp.structuredContent)).toContain('"name":"C"');
    await client.callTool({name:'remarketing_manage',arguments:{action:'resultados',variantId,from:'2026-10-01',to:'2026-10-12'}});
-   expect(seen).toEqual(['GET /v2/help?section=empezar','GET /v2/campaigns?from=2026-10-01&to=2026-10-12',`GET /v2/variants/${variantId}/remarketing/results?from=2026-10-01&to=2026-10-12`]);
+   const sync=await client.callTool({name:'campaigns_read',arguments:{action:'sincronizar_lectura',operationId:'66666666-6666-4666-8666-666666666666'}});expect(sync.isError).toBeFalsy();
+   expect(seen).toEqual(['GET /v2/help?section=empezar','GET /v2/campaigns?from=2026-10-01&to=2026-10-12',`GET /v2/variants/${variantId}/remarketing/results?from=2026-10-01&to=2026-10-12`,'POST /v2/campaigns/sync']);
   }finally{await client.close();await server.close();}
  });
  it('tests a number by task: estimate first, start with the accepted ceiling, then queued actions (MCP-EMU)',async()=>{

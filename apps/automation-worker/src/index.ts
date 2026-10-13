@@ -4,6 +4,7 @@ import {processProfileQrWarmup} from './profile-warmup.js';
 import {PostgresJobBus,workerService} from '@commerce/jobs';
 import {recoverAutomation,processInbound,processCommands,processNewWorkflows,processTimers,processAgents,processReceiptAnalyses,materializeInboundMedia,materializeFailedInboundMedia} from './runtime.js';
 import {processInsightJobs,scheduleRecentInsights} from './meta-insights.js';
+import {processMetaProfileSync} from './meta-profile-sync.js';
 import {materializeEffectResults} from './effect-results.js';
 import {processVariantReceipts} from './variant-receipts.js';
 import {numberLabRuntimeFromEnv,processNumberLabOperations} from './number-lab-runner.js';
@@ -22,7 +23,7 @@ const materialize=loop('automation_results',250,async()=>{await materializeInbou
 const workflows=loop('automation_workflows',500,async()=>{await processNewWorkflows();await processTimers();});
 // LEGACY pools keep their global planner; V7 QR-continuous pools run per profile.
 const warmup=loop('automation_warmup',30000,async()=>{await processWarmup();await processProfileQrWarmup();});
-const insights=loop('automation_meta_insights',5000,async()=>{await scheduleRecentInsights();await processInsightJobs();});
+const insights=loop('automation_meta_insights',5000,async()=>{await scheduleRecentInsights();await processInsightJobs();await processMetaProfileSync();});
 const operations=loop('operations_monitor',60000,async()=>{await collectOperationalAlerts();await deliverOperationalAlerts();});
 const agents=loop('automation_agents',500,()=>processAgents());
 const receipts=loop('automation_receipts',500,()=>processReceiptAnalyses());

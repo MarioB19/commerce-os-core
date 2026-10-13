@@ -38,7 +38,7 @@ Tratamiento de las 121: 62 sustituidas por una acción V7, 3 pasan a acción hum
 | `orders_manage` | perfil | listar, leer |
 | `receipts_manage` | perfil | listar, leer, archivo, revisar |
 | `number_test_manage` | perfil | estimar, crear, leer, ultima, mensaje, seleccionar, avanzar_reloj, continuar, reiniciar |
-| `campaigns_read` | perfil | cuentas, resultados, campanas, anuncios |
+| `campaigns_read` | perfil | cuentas, resultados, campanas, anuncios, sincronizar_lectura |
 | `payments_manage` | perfil | opciones, listar, exportar |
 | `results_read` | perfil | opciones, resumen |
 | `goals_manage` | perfil | listar, leer, avance, crear, editar, consultar_operacion |

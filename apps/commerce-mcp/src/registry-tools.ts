@@ -209,11 +209,13 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
  // V7 F7 (RF-11, RF-09.k): read only; spend, conversations and the sales they brought.
  const period=z.object({from:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),to:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),currency:z.string().regex(/^[A-Z]{3}$/).optional()}).strict();
  const campaigns=(pick:(v:any)=>unknown):ManageAction=>({schema:period,read:true,run:async i=>{const raw=await c.variant('GET','/v2/campaigns?from='+i.from+'&to='+i.to+(i.currency?'&currency='+i.currency:'')) as any;const v=raw&&typeof raw==='object'&&'data' in raw?raw.data:raw;return pick(v);}});
- tool('campaigns_read','Campañas (sólo lectura)','Gasto, conversaciones, ventas e ingresos atribuidos por campaña y anuncio, cruzados con la hoja de pagos. Sólo lee: no crea, pausa ni cambia presupuesto.',{
+ tool('campaigns_read','Campañas (sólo lectura)','Gasto, conversaciones, ventas e ingresos atribuidos por campaña y anuncio, cruzados con la hoja de pagos. Sólo lee: no crea, pausa ni cambia presupuesto; sincronizar_lectura pide una lectura nueva a Meta.',{
   cuentas:campaigns(v=>({connected:v.connected,accounts:v.accounts})),
   resultados:campaigns(v=>({connected:v.connected,summary:v.report?.summary??null,quality:v.report?.quality??null})),
   campanas:campaigns(v=>({connected:v.connected,campaigns:v.report?.groups.campaigns??[]})),
   anuncios:campaigns(v=>({connected:v.connected,ads:v.report?.groups.ads??[]})),
+  // Asks for a fresh GET-only read with the profile's own token (owner, integrations:write).
+  sincronizar_lectura:{schema:z.object({operationId:z.uuid()}).strict(),read:false,run:i=>c.variant('POST','/v2/campaigns/sync',{},i.operationId)},
  });
  tool('payments_manage','Pagos','Consulta y exporta el registro de pagos con los mismos filtros de la aplicación; no aprueba pagos.',
   fromUnion(paymentsCommandSchema,{options:'opciones',list:'listar',export:'exportar'},()=>true,async i=>{const r=await c.payments(i);if(r.operation!=='export')return r;const {bytes,...meta}=r;return{...meta,bytesBase64:Buffer.from(bytes).toString('base64')};}));

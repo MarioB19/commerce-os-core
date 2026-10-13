@@ -20,11 +20,12 @@ en `apps/ingress` (otro servicio) y no forman parte de este documento.
 | Salud y documentación | `/livez`, `/readyz`, `/health/live`, `/health/ready`, `/api/version`, `/v1/openapi.json` | 6 |
 | Archivos (bytes) | `/v2/materials/{id}/content`, `/v2/materials/{id}/parts/{n}`, `/v2/receipts/{id}/document`, `/v2/help/download` | 4 |
 | Webhooks | (en ingress, fuera de este documento) | 0 |
-| **Negocio** | todo lo demás, incluidas las rutas de plataforma y de operación | **159** |
-| Total publicado | | 178 |
+| **Negocio** | todo lo demás, incluidas las rutas de plataforma y de operación | **160** |
+| Total publicado | | 179 |
 
 Antes de F8: 554 operaciones (F0, producción V5: 386; las rutas V7 se sumaron
-a las V5 durante F2–F7). Tras F8-B/C: 457. Tras F8-D: **178 (159 de negocio)**.
+a las V5 durante F2–F7). Tras F8-B/C: 457. Tras F8-D: 178 (159 de negocio). Con la
+lectura de Meta por perfil (RF-11, `POST /v2/campaigns/sync`): **179 (160 de negocio)**.
 
 ## Lo que queda en `/v1`
 
@@ -67,7 +68,7 @@ host o un control de operación del dueño sin equivalente V7 todavía:
 | Administración de números V5 (alta con dispositivo, edición, lote, identidad, acceso al enlace, programas, biblioteca, grupos, política, simulador, operaciones) | Recorrido V7 de Números (arriba); la lectura de operaciones queda en `/v2/operations/{id}` |
 | Calentamiento V5 (pools, perfiles, contenido, simulación, backfill, preflight) | Calentamiento automático por número (`warmup_manage`) |
 | Canales V5 (alta, edición, borrado, setup, activación, comandos, salud, recepción, uso del primario) | Vincular/desvincular/pausar/eliminar en Números; recuperación del dueño (arriba) |
-| Meta V5, insights, impuestos estimados, productos de campaña | `/v2/integrations/meta`, `/v2/campaigns` (ver pendiente RF-11) |
+| Meta V5, insights, impuestos estimados, productos de campaña | `/v2/integrations/meta`, `/v2/campaigns` y `POST /v2/campaigns/sync` (lectura con el token del perfil, RF-11) |
 | Reportes, costos, importaciones y backfill de ventas | `/v2/results`, `/v2/usage`, registro de pagos |
 | Usuarios V5, tokens personales `/v1`, creación de tokens de servicio | `/v2/employees`, `/v2/invitations`, `/v2/tokens`, `/v2/platform/capacity/agent-tokens` |
 | Comandos genéricos, eventos, temporizadores, bandeja de salida (aprobar/editar/cancelar) | `/v2/operations/{id}`; envíos humanos por `conversations_manage` |
