@@ -92,4 +92,18 @@ describe('V7 F3 number tools',()=>{
    expect(JSON.stringify(result)).toContain('HUMAN_ACTION_REQUIRED');expect(JSON.stringify(result)).toContain('/numbers');expect(calls).toBe(0);
   }finally{await client.close();await server.close();}
  });
+ it('pauses warm-up through the human command on the current QR grant, never a raw state write',async()=>{
+  const numberId='33333333-3333-4333-8333-333333333333',grantId='44444444-4444-4444-8444-444444444444',operationId='55555555-5555-4555-8555-555555555555';
+  const grant={id:grantId,workspaceId:'w1',environment:'REAL',accountId:numberId,source:{kind:'VERIFIED_QR_CONNECTION',connectionId:'66666666-6666-4666-8666-666666666666',identityFingerprint:'a'.repeat(64)},
+   createdBy:'channel',createdAt:'2026-10-13T06:00:00.000Z',version:1,humanPaused:false,revokedAt:null,protections:[]};
+  const seen:{method:string;url:string;body:unknown}[]=[];
+  const {client,server}=await connect(async(input,init)=>{const url=String(input);seen.push({method:String(init?.method??'GET'),url,body:init?.body?JSON.parse(String(init.body)):undefined});
+   return url.includes('/commands')?json(200,{data:{...grant,version:2,humanPaused:true}}):json(200,{data:[grant],nextAfterId:null});});
+  try{
+   const result=await client.callTool({name:'warmup_manage',arguments:{action:'pausar',operationId,numberId}});
+   expect(JSON.stringify(result)).not.toContain('UNCONFIRMED');
+   expect(seen.map(s=>[s.method,s.url.replace(/\?.*$/,'')])).toEqual([['GET','https://commerce.example.test/v2/continuity/warmup'],['POST',`https://commerce.example.test/v2/continuity/warmup/${grantId}/commands`]]);
+   expect(seen[1]!.body).toEqual({environment:'REAL',operationId,expectedVersion:1,action:'pause'});
+  }finally{await client.close();await server.close();}
+ });
 });

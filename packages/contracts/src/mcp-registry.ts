@@ -24,7 +24,7 @@ export const mcpRegistry:readonly McpRegistryEntry[]=Object.freeze([
  tool('numbers_manage','profile','/v1/numbers',['numbers:read','numbers:write'],['listar','leer','crear','impacto_eliminar','eliminar'],['editar']),
  tool('number_connection_manage','profile','/v1/numbers/{id}/link',['numbers:read','numbers:connect'],['estado','conectar','vincular','desconectar','pausar','reanudar']),
  tool('number_assignments_manage','profile','/v2/continuity',['assignments:read','assignments:write'],['autorizaciones','autorizacion','autorizar','pausar','reanudar','revocar','consultar_operacion'],['asignar','retirar','impacto','historial']),
- tool('warmup_manage','profile','/v2/numbers/{id}/warmup',['warmup:read','warmup:write'],[],['progreso','pausar','reanudar','evidencia']),
+ tool('warmup_manage','profile','/v2/continuity/warmup',['warmup:read','warmup:write'],['progreso','pausar','reanudar','evidencia']),
  tool('conversations_manage','profile','/v2/conversations',['conversations:read','conversations:write'],[],['listar','leer','asignar_persona','tomar_control','liberar_control','responder','registrar_baja','elegir_variante']),
  tool('orders_manage','profile','/v2/orders',['orders:read','orders:write'],[],['listar','leer','corregir_clasificacion','historial']),
  tool('receipts_manage','profile','/v2/receipts',['receipts:read','receipts:review'],[],['listar','leer','archivo','revisar']),

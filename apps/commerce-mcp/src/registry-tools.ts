@@ -147,4 +147,18 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
   leer:{schema:z.object({alertId:z.uuid()}).strict(),read:true,run:async i=>{const r=await c.v2('GET','/v2/alerts?include=all') as {alerts:{id:string}[]};const found=r.alerts.find(a=>a.id===i.alertId.toLowerCase());if(!found)throw Object.assign(new Error('ALERT_NOT_FOUND'),{code:'ALERT_NOT_FOUND'});return found;}},
   acusar:v('POST',z.object({alertId:z.uuid()}).strict(),i=>'/v2/alerts/'+id(i.alertId)+'/acknowledge',()=>({}))(c.v2),
  });
+ // D-17: connecting by QR authorizes same-profile warm-up permanently. Pausing
+ // or resuming it is a human command on that grant; a pause is never lifted
+ // automatically. Progress needs evidence of days, never elapsed time alone.
+ const warmupCommand=(action:'pause'|'resume'):ManageAction=>({schema:z.object({operationId:z.uuid(),numberId:z.uuid()}).strict(),read:false,destructive:action==='pause',run:async i=>{
+  const listed=await c.continuity({operation:'list',purpose:'warmup',environment:'REAL',accountId:i.numberId,limit:20}) as {data:{id:string;version:number;revokedAt:string|null;createdAt:string}[]};
+  const grant=[...listed.data].filter(g=>!g.revokedAt).sort((a,b)=>b.createdAt.localeCompare(a.createdAt))[0];
+  if(!grant)throw Object.assign(new Error('WARMUP_NOT_AUTHORIZED'),{code:'WARMUP_NOT_AUTHORIZED'});
+  return c.continuity({operation:'command',purpose:'warmup',id:grant.id,environment:'REAL',operationId:i.operationId,expectedVersion:grant.version,action});
+ }});
+ tool('warmup_manage','Calentamiento del número','Progreso del calentamiento automático con su evidencia, y pausa o reanudación explícitas. Sólo entre números propios del mismo perfil; nunca contacta clientes.',{
+  progreso:{schema:numberId,read:true,run:i=>c.v1('GET','/v1/numbers/'+id(i.numberId)+'/preparation')},
+  evidencia:{schema:numberId,read:true,run:i=>c.v1('GET','/v1/numbers/'+id(i.numberId)+'/episodes')},
+  pausar:warmupCommand('pause'),reanudar:warmupCommand('resume'),
+ });
 }
