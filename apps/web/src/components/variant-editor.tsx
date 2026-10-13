@@ -319,13 +319,13 @@ function NumbersSection({variant,fence,manage,onChanged}:SectionProps&{onChanged
   {rows&&!rows.length&&<p>Aún no tienes números. <a href="/numbers">Agrega uno en Números</a>.</p>}
   {rows&&rows.length>0&&<table className="variant-table"><thead><tr><th scope="col">Número</th><th scope="col">Otras variantes que vende</th><th scope="col">Vender esta variante</th></tr></thead>
    <tbody>{rows.map(r=><tr key={r.account_id}><td data-label="Número">{r.name}{r.masked&&<small className="variant-hint"> · {r.masked}</small>}</td>
-    <td data-label="Otras variantes">{[...r.others.map(o=>`${o.product} · ${o.variant}`),...(r.same_product?[`${variant.product.name} · ${r.same_product.label}`]:[])].join(' · ')||'—'}</td>
+    <td data-label="Otras variantes"><Sells items={[...r.others.map(o=>`${o.product} · ${o.variant}`),...(r.same_product?[`${variant.product.name} · ${r.same_product.label}`]:[])]}/></td>
     <td data-label="Vender esta variante">{r.sells_this?<span className="variant-toggle"><strong>Sí</strong>{manage&&<Button size="sm" variant="secondary" disabled={!!busy} onClick={()=>void askRemove(r)}>Dejar de vender</Button>}</span>
      :r.same_product?.variant_id?<span className="variant-hint">Vende otra variante de este producto. Quítala primero.</span>
      :<span className="variant-toggle"><span>No</span>{manage&&variant.published&&<Button size="sm" disabled={!!busy} onClick={()=>void sell(r,true)}>{busy===r.account_id?'Asignando…':r.same_product?'Vender esta variante (reemplaza la configuración anterior)':'Vender en este número'}</Button>}</span>}</td></tr>)}</tbody></table>}
   <p className="variant-hint">Asignar es permanente: el número vende esta variante hasta que lo quites o lo pauses. Las pausas, bajas y protecciones siempre se respetan.</p>
   <details className="variant-advanced" onToggle={e=>{if((e.target as HTMLDetailsElement).open&&!inverse)variantRequest<NonNullable<typeof inverse>>(fence,'GET','/v2/number-variants').then(setInverse).catch(()=>undefined);}}><summary>Vista inversa: número → variantes</summary>
-   {!inverse?<p role="status">Consultando…</p>:<ul className="variant-list">{inverse.map(n=><li key={n.account_id}><strong>{n.name}</strong>: {n.sells.length?n.sells.map(s=>`${s.product} · ${s.variant}`).join(' · '):'sin variantes'}</li>)}</ul>}
+   {!inverse?<p role="status">Consultando…</p>:<ul className="variant-list">{inverse.map(n=><li key={n.account_id}><strong>{n.name}</strong> <Sells items={n.sells.map(s=>`${s.product} · ${s.variant}`)} empty="sin variantes"/></li>)}</ul>}
   </details>
   {confirm&&<Dialog.Root open onOpenChange={o=>{if(!o)setConfirm(null);}}><Dialog.Portal><Dialog.Overlay className="profile-switch-overlay"/><Dialog.Content className="profile-switch-dialog variant-dialog">
    <Dialog.Title>Dejar de vender en {confirm.row.name}</Dialog.Title>
@@ -352,3 +352,5 @@ function AiStatusPanel({fence,variantId,version,owner}:{fence:ProfileFence;varia
   {error&&<p role="alert">{error}</p>}
  </div>;
 }
+/** Each product · variant pair is one item, so long lists stay readable. */
+function Sells({items,empty='—'}:{items:string[];empty?:string}){return items.length?<ul className="variant-sells">{items.map((item,i)=><li key={i}>{item}</li>)}</ul>:<span>{empty}</span>;}

@@ -4176,3 +4176,5 @@ input:not([type="checkbox"]):not([type="radio"]),select,textarea{min-height:44px
  .variant-table td[data-label]::before{content:attr(data-label) ': ';font-weight:600}
 }
 .variant-feedback:focus{outline:none}
+.variant-sells{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:.3rem}
+.variant-sells li{background:#eef1f7;border-radius:999px;padding:.1rem .55rem;font-size:.85rem}
