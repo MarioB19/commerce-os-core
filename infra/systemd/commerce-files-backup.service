@@ -1,0 +1,16 @@
+[Unit]
+Description=Commerce OS V7 private assets copy to the recovery bucket (sealed files, VM identity)
+After=docker.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/opt/commerce-os/private/files-backup/operator.json
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /opt/commerce-os/current/scripts/v7_files_backup.py sync /opt/commerce-os/private/files-backup/operator.json
+TimeoutStartSec=3h
+User=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

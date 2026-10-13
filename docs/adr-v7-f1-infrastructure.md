@@ -118,8 +118,10 @@ base son puntos únicos de falla; F1 entrega recuperación medida, no failover.
   presupuesto mensual, reclamo, un POST, cierre). Una respuesta perdida queda
   `UNCERTAIN` y nunca se reenvía. Aceptación del API no es recepción: se
   verifica en un buzón controlado.
-- **Pendiente:** avisos de número al dueño por correo (RF-07.e) con su propia
-  plantilla y reserva; hoy el aviso existe en la app y el MCP.
+- **Avisos al dueño (RF-07.e, migración 0116):** cada incidente de número
+  abierto y su recuperación generan un trabajo propio (`owner-alert-v1`,
+  versión 1 = abierto, 2 = resuelto) con la misma reserva, cuotas y
+  presupuesto que las invitaciones; el aviso en la app y el MCP no cambia.
 
 ## 4b. Retención de «Probar número» (RF-19.o, D-18)
 
@@ -140,7 +142,74 @@ base son puntos únicos de falla; F1 entrega recuperación medida, no failover.
   base principal, servicio del trabajador y carpeta del laboratorio dentro del
   contenedor) se escribe en la ventana de la Fase C.
 
+## 4c. Arranque durable (RNF-03.c)
+
+- `commerce-boot.service` (Root, `WantedBy=multi-user.target`, después de
+  Docker) ejecuta `scripts/v7_boot.py run /opt/commerce-os/private/boot/operator.json`.
+- Sólo hace `compose-release.sh <release.env> up -d --no-recreate --no-build
+  --pull never <servicios>` con la release instalada (respeta el overlay PITR),
+  espera `running`/`healthy` y deja un recibo 0600. Nunca recrea, descarga ni
+  construye; nunca inicia sesiones de WhatsApp (eso es del supervisor de
+  gateways y del channel worker) y nunca toca datos.
+- Un archivo de retención (`hold`) escrito por una ventana de mantenimiento
+  mantiene la plataforma detenida aunque la VM reinicie (`HELD_FOR_MAINTENANCE`).
+- Los servicios ya tienen `restart: unless-stopped`; la unidad cubre los huecos
+  de un reinicio (contenedores creados sin iniciar y el orden de dependencias).
+
+## 4d. Copia diaria de archivos privados (RNF-03.e)
+
+- PITR cubre la base. Los archivos privados (materiales, comprobantes y
+  medios, ya sellados `*.enc` con la llave de datos) se copian sin descifrar
+  con `commerce-files-backup.timer` (diario 08:50 UTC) a la misma cubeta de
+  recuperación en otra región, prefijo `private-assets`, con la identidad de
+  la VM (sin llave en disco). Se omite `uploads/` (temporal).
+- Espejo: sube lo nuevo o cambiado (sha256 en metadatos); lo que desaparece
+  localmente se marca y se borra de la copia a los 35 días (`grace_days`), así
+  el borrado de privacidad alcanza la copia (D-18).
+- `restore <config> <carpeta-vacía>` verifica sha y tamaño de cada archivo.
+- La sesión de WhatsApp (W01) mantiene su copia existente
+  (`commerce-waha-backup.timer`).
+
+## 4e. B02 diario después de V7 (decisión conservadora y reversible)
+
+B02 (volcado cifrado diario + custodia, Cloud Scheduler/Cloud Run Job) valida
+identificadores exactos de contenedor y proyecciones con Pid/StartedAt de la
+topología adoptada. La topología V7 (overlay PITR, arranque durable, reinicios
+por mantenimiento) cambia esos valores por diseño, así que B02 rechazaría cada
+corrida después de un reinicio. Su autorización financiera además termina
+antes del 2026-11-04.
+
+Decisión: en la ventana de la Fase C se ejecuta un B02 fresco final (con
+cobertura W01/medios) y su restauración aislada verificada antes del primer
+cambio. Después de instalar V7 y verificar PITR (respaldo completo + WAL +
+restauración de ensayo) y la primera copia de archivos, el Scheduler de B02 se
+**pausa** (no se borra). Reanudarlo es un solo cambio en Google. El Job, la
+imagen, los respaldos B02 y su custodia se conservan; la limpieza de recursos
+de B02 queda para la fecha de vencimiento de su autorización, como ya prevé
+su ADR. Respaldo vigente después de V7: PITR (base), copia de archivos
+privados y W01.
+
+## 4f. Credenciales de ejecución nuevas (V7)
+
+- `scripts/v7_runtime_env.py logins <config>` crea una vez, por rol revisado,
+  un LOGIN propio sin privilegios (`commerce_ai_v7_login` → `commerce_ai`,
+  `commerce_results_v7_login` → `commerce_results`, ambos NOINHERIT con
+  `SET ROLE` al conectar; `commerce_mail_v7_login` hereda
+  `commerce_mail_dispatch`) y escribe `AI_DATABASE_URL`,
+  `RESULTS_DATABASE_URL` y `MAIL_DISPATCH_DATABASE_URL` sólo en los `.env`
+  de los servicios que los usan (0600, copia previa con fecha). Un login ya
+  configurado se conserva; no hay rotación silenciosa.
+- `merge` copia sólo las llaves `LAB_*` que escribe el instalador del
+  laboratorio; `generate` crea en la VM la llave de sobres del correo
+  (`MAIL_ENVELOPE_KEY`, 32 bytes) y el token del relay (dentro de
+  `INGRESS_RELAY_URL`), primero los custodia como versión nueva de Secret
+  Manager (la cuenta de la VM sólo puede añadir versiones, nunca leerlas; App
+  Engine y Cloud Run leen la suya) y luego los escribe; si ya existen no se
+  rotan. `set` escribe valores no secretos (orígenes, suscripción de
+  ingress). Ningún comando imprime valores; `generate` imprime la versión y
+  el sha256 para que el dueño compare.
+
 ## 5. Pendiente de esta ADR (se completa en las siguientes entregas de F1)
 
-Identidad de la VM, recursos GCP declarativos, presupuesto, arranque durable y
-orquestación de la ventana (Fase C).
+Identidad de la VM, recursos GCP declarativos, presupuesto y orquestación de
+la ventana (Fase C, `docs/v7-fase-c-runbook.md`).
