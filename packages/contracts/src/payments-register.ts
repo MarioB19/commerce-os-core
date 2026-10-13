@@ -17,7 +17,7 @@ export const paymentOptionQuerySchema=paymentFilterSchema.safeExtend({kind:z.enu
 export const paymentOptionResponseSchema=z.object({workspaceId:profileIdSchema,kind:paymentOptionQuerySchema.shape.kind,data:z.array(z.object({id:z.string().min(1).max(256),label:z.string().min(1).max(240)}).strict()).max(50),next:z.string().min(1).max(256).nullable()}).strict();
 export const paymentExportQuerySchema=paymentFilterSchema.safeExtend({format:z.enum(['csv','xlsx'])});
 export const paymentRowSchema=z.object({receiptId:id,receiptVersion:z.number().int().positive(),contributionId:id.nullable(),orderId:id.nullable(),conversationId:id.nullable(),
- occurredAt:z.iso.datetime(),familyId:id.nullable(),familyName:text.nullable(),variantId:id.nullable(),market:text.nullable(),
+ occurredAt:z.iso.datetime(),familyId:id.nullable(),familyName:text.nullable(),variantId:id.nullable(),variantName:text.nullable().default(null),market:text.nullable(),
  amountMinor:minor.nullable(),currency:z.string().regex(/^[A-Z]{3}$/).nullable(),method:z.enum(['BANK_TRANSFER','LINK','UNKNOWN']),status:z.enum(paymentStatuses),
  accountId:id.nullable(),accountMasked:z.string().regex(/^••••[0-9]{4}$/).nullable(),contactMasked:z.string().regex(/^••••[0-9]{4}$/).nullable(),
  campaignId:z.string().regex(/^[0-9]{1,40}$/).nullable(),adId:z.string().regex(/^[0-9]{1,40}$/).nullable(),

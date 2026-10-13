@@ -10,6 +10,7 @@ export const paymentRowsSql=`WITH source AS MATERIALIZED (
  CASE WHEN c.body->>'privacy_erased'='true' THEN (fc.grain->'dimensions'->>'family_id')::uuid ELSE family.id END AS family_id,left(family.body->>'name',200) family_name,
  CASE WHEN c.body->>'privacy_erased'='true' THEN fc.grain->'dimensions'->>'variant_id' ELSE s.body->'release'->>'variant_id' END AS variant_id,
  left(CASE WHEN c.body->>'privacy_erased'='true' THEN fc.grain->'dimensions'->>'market' ELSE s.body->'release'->'locale'->>'market' END,200) AS market,
+ left(mv.document->>'name',200) AS variant_name,
  CASE WHEN p.id IS NOT NULL THEN p.amount_minor::text
   WHEN r.body->'extraction'->>'amount_minor' ~ '^[0-9]{1,16}$'
   THEN CASE WHEN (r.body->'extraction'->>'amount_minor')::numeric BETWEEN 0 AND 9007199254740991
@@ -36,6 +37,7 @@ export const paymentRowsSql=`WITH source AS MATERIALIZED (
  LEFT JOIN records c ON c.id::text=o.body->>'conversation_id' AND c.workspace_id=r.workspace_id AND c.environment=r.environment AND c.kind='conversation'
  LEFT JOIN result_financial_context fc ON fc.journey_id=c.id AND fc.workspace_id=r.workspace_id AND fc.environment=r.environment AND c.body->>'privacy_erased'='true'
  LEFT JOIN market_journey_snapshots s ON s.journey_id=c.id AND s.workspace_id=r.workspace_id AND s.environment=r.environment AND c.body->>'privacy_erased' IS DISTINCT FROM 'true'
+ LEFT JOIN market_variants mv ON mv.workspace_id=r.workspace_id AND mv.environment=r.environment AND mv.id::text=CASE WHEN c.body->>'privacy_erased'='true' THEN fc.grain->'dimensions'->>'variant_id' ELSE s.body->'release'->>'variant_id' END
  LEFT JOIN records family ON family.id::text=CASE WHEN c.body->>'privacy_erased'='true' THEN fc.grain->'dimensions'->>'family_id' ELSE coalesce(s.body->'release'->>'family_id',o.body->>'product_id') END AND family.workspace_id=r.workspace_id AND family.environment=r.environment AND family.kind='product'
  LEFT JOIN records account ON account.id::text=c.body->>'account_id' AND account.workspace_id=r.workspace_id AND account.environment=r.environment AND account.kind='channel_account' AND c.body->>'privacy_erased' IS DISTINCT FROM 'true'
  LEFT JOIN records contact ON contact.id::text=c.body->>'contact_id' AND contact.workspace_id=r.workspace_id AND contact.environment=r.environment AND contact.kind='contact' AND c.body->>'privacy_erased' IS DISTINCT FROM 'true'
@@ -59,7 +61,7 @@ export const paymentRowsSql=`WITH source AS MATERIALIZED (
 const sorts={date:'occurred_at',amount:'amount_minor::numeric',status:'status'} as const;
 
 function row(r:any){return {receiptId:r.receipt_id,receiptVersion:r.receipt_version,contributionId:r.contribution_id,orderId:r.order_id,conversationId:r.conversation_id,
- occurredAt:new Date(r.occurred_at).toISOString(),familyId:r.family_id,familyName:r.family_name,variantId:r.variant_id,market:r.market,
+ occurredAt:new Date(r.occurred_at).toISOString(),familyId:r.family_id,familyName:r.family_name,variantId:r.variant_id,variantName:r.variant_name??null,market:r.market,
  amountMinor:r.amount_minor,currency:r.currency,method:r.method,status:r.status,accountId:r.account_id,accountMasked:r.account_masked,contactMasked:r.contact_masked,
  campaignId:r.campaign_id,adId:r.ad_id,assetId:r.asset_id,recognizedRevenueMinor:r.recognized_revenue_minor,duplicate:r.duplicate};}
 
@@ -90,7 +92,7 @@ export async function paymentOptions(db:ProfileExecutor,input:unknown){
  requireProfileId(db.workspaceId);const context=(await db.query("SELECT current_user AS role,current_setting('app.workspace_id',true) AS workspace")).rows[0];
  if(context?.role!=='commerce_api'||context.workspace!==db.workspaceId)throw Error('PAYMENTS_PROFILE_CONTEXT_REQUIRED');
  await bindProfileEnvironment(db,q.environment);
- const fields={family:['family_id::text','family_name'],variant:['variant_id',"coalesce(market,'Sin mercado')||' · '||left(variant_id,8)"],market:['market','market'],account:['account_id::text',"coalesce(account_masked,'Número sin identificación')"],campaign:['campaign_id',"'Campaña '||campaign_id"],ad:['ad_id',"'Anuncio '||ad_id"]} as const;
+ const fields={family:['family_id::text','family_name'],variant:['variant_id',"coalesce(variant_name,market,'Sin mercado')||coalesce(' · '||family_name,'')"],market:['market','market'],account:['account_id::text',"coalesce(account_masked,'Número sin identificación')"],campaign:['campaign_id',"'Campaña '||campaign_id"],ad:['ad_id',"'Anuncio '||ad_id"]} as const;
  const [id,label]=fields[kind],rows=(await db.query(paymentRowsSql+`,choices AS(SELECT DISTINCT ${id} id,${label} label FROM filtered)
  SELECT id,min(label) label FROM choices WHERE id IS NOT NULL AND label IS NOT NULL AND ($12::text IS NULL OR id>$12) GROUP BY id ORDER BY id LIMIT $13`,
  [db.workspaceId,q.environment,q.from,q.to,q.status??null,q.currency??null,q.familyId??null,q.variantId??null,q.accountId??null,q.campaignId??null,q.q??null,after??null,limit+1,q.adId??null,q.market??null])).rows;

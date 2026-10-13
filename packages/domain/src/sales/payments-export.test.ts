@@ -5,7 +5,7 @@ import {paymentsCsv,paymentsXlsx,paymentExportRows,csvCell} from './payments-exp
 
 const id=(n:number)=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
 function sample():PaymentRegister{return{workspaceId:'one',filters:paymentFilterSchema.parse({from:'2026-10-01',to:'2026-10-31'}),rows:[{receiptId:id(1),receiptVersion:3,contributionId:id(2),orderId:id(3),conversationId:id(4),occurredAt:'2026-10-12T00:00:00.000Z',
- familyId:id(5),familyName:'Producto sintético',variantId:id(6),market:'México',amountMinor:'9007199254740991',currency:'MXN',method:'BANK_TRANSFER',status:'APPROVED',
+ familyId:id(5),familyName:'Producto sintético',variantId:id(6),variantName:'México',market:'México',amountMinor:'9007199254740991',currency:'MXN',method:'BANK_TRANSFER',status:'APPROVED',
  accountId:id(7),accountMasked:'••••0001',contactMasked:'••••0002',campaignId:'100',adId:'101',assetId:id(8),recognizedRevenueMinor:'9007199254740991',duplicate:false}],
  total:1,totals:[{currency:'MXN',approvedRevenueMinor:'18014398509481982',approvedPayments:2}],timezone:'America/Mexico_City',observedAt:'2026-10-12T01:00:00.000Z',limit:50,offset:0};}
 function python(script:string,input:Buffer){const result=spawnSync('python3',['-c',script],{input,encoding:'utf8',maxBuffer:2*1024*1024,timeout:10000});expect(result.status,result.stderr).toBe(0);return JSON.parse(result.stdout);}
@@ -40,7 +40,7 @@ print(json.dumps({'names':z.namelist(),'rows':rows,'all_xml_valid':all(E.fromstr
   expect(result.rows).toEqual(paymentExportRows(data));expect(result.rows[1][1]).toBe(data.rows[0].familyName);
  });
  it('retains unknowns and contains no signed evidence URL or invented market',()=>{
-  const data=sample();Object.assign(data.rows[0],{assetId:null,conversationId:null,variantId:null,market:null,amountMinor:null,currency:null,method:'UNKNOWN',accountMasked:null,contactMasked:null});
+  const data=sample();Object.assign(data.rows[0],{assetId:null,conversationId:null,variantId:null,variantName:null,market:null,amountMinor:null,currency:null,method:'UNKNOWN',accountMasked:null,contactMasked:null});
   const rows=paymentExportRows(data);expect(rows[1].slice(2,7)).toEqual(Array(5).fill('Sin dato'));expect(rows[1][12]).toBe('Sin dato');expect(rows[1][13]).toBe('Sin dato');
   expect(paymentsCsv(data).toString()).not.toMatch(/signature|storage_key|access_token/);
  });

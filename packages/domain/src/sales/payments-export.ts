@@ -7,9 +7,9 @@ const headers=['Fecha UTC','Producto padre','Variante','País / mercado','Import
 export function paymentExportRows(value:PaymentRegister):string[][]{
  const data=paymentRegisterSchema.parse(value);
  if(data.offset!==0||data.rows.length!==data.total)throw new Error('PAYMENTS_EXPORT_INCOMPLETE');
- return[headers,...data.rows.map(r=>[r.occurredAt,r.familyName??noData,r.variantId??noData,r.market??noData,r.amountMinor??noData,r.currency??noData,
+ return[headers,...data.rows.map(r=>[r.occurredAt,r.familyName??noData,r.variantName??r.variantId??noData,r.market??noData,r.amountMinor??noData,r.currency??noData,
   r.method==='BANK_TRANSFER'?'Transferencia':r.method==='LINK'?'Link':noData,paymentLabels[r.status],r.accountMasked??noData,r.campaignId??noData,r.adId??noData,r.contactMasked??noData,
-  r.assetId?`/v1/receipts/${r.receiptId}/access`:noData,r.conversationId?`/v1/conversations/${r.conversationId}`:noData,r.recognizedRevenueMinor]),[],
+  r.assetId?`/sales/receipts?receipt=${r.receiptId}`:noData,r.conversationId?`/sales/inbox?conversation=${r.conversationId}`:noData,r.recognizedRevenueMinor]),[],
   ['Totales del filtro','Moneda','Ingreso aprobado (unidades menores)','Pagos aprobados'],...data.totals.map(t=>['Total',t.currency,t.approvedRevenueMinor,String(t.approvedPayments)]),[],
   ['Observado UTC',data.observedAt],['Zona del filtro',data.timezone],['Comprobantes',String(data.total)]];
 }

@@ -15,6 +15,7 @@ import {processVariantReceipts,privateReceiptMedia} from '../../apps/automation-
 import {saveAiPreferences,saveAiKey,verifyAiKey,aiCredentialKey} from '../../packages/ai-providers/src/profile-integrations.js';
 import {withProfileTransaction} from '../../packages/db/src/profile-context.js';
 import {readReceiptPolicy,writeReceiptPolicy} from '../../packages/db/src/receipt-policies.js';
+import {listPayments} from '../../packages/db/src/payments-register.js';
 import type {ProfileAuthority} from '../../packages/domain/src/core/profile-authorization.js';
 import type {DomainRecord} from '../../packages/contracts/src/index.js';
 import {fixtureProfiles} from '../support/profile-fixture.js';
@@ -175,6 +176,14 @@ it('sells a variant from the first message to the delivered material',async()=>{
  expect((await record(first.receipt)).body).toMatchObject({status:'APPROVED',extraction:{amount_minor:9700,source:'human_observation'}});
  expect(await delivered(first.conversation.id)).toBe(1);
  expect(data(await call('owner','GET','/v2/receipts')).pending).toBe(1);
+ // RF-09.i: the register shows each approved payment once, with its variant and method.
+ const day=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Mexico_City'}).format(new Date());
+ const register=await asApi(db=>listPayments(db,{environment:'REAL',from:day,to:day,limit:50}));
+ const approved=register.rows.filter(r=>r.status==='APPROVED');
+ expect(approved.map(r=>r.receiptId).sort()).toEqual([first.receipt,second.receipt,third.receipt].sort());
+ expect(approved.every(r=>r.variantId===v.id&&r.variantName==='México'&&r.familyName==='Curso'&&r.method==='BANK_TRANSFER'&&r.amountMinor==='9700'&&r.currency==='MXN')).toBe(true);
+ expect(register.rows.find(r=>r.receiptId===fourth.receipt)).toMatchObject({status:'REVIEW',recognizedRevenueMinor:'0'});
+ expect(register.totals).toEqual([{currency:'MXN',approvedRevenueMinor:'29100',approvedPayments:3}]);
  // The second order keeps the policy it captured (human approval).
  const snapshots=await inProfile(async c=>(await c.query('SELECT order_id,body FROM receipt_order_policy_snapshots WHERE workspace_id=$1 ORDER BY created_at',[P])).rows);
  expect(snapshots.find(s=>s.order_id===second.order.id)!.body.policy.automaticApproval).toBe(false);
