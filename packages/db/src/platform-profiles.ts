@@ -109,3 +109,11 @@ export async function revokePlatformToken(db:QueryExecutor,current:PlatformSessi
  const s=session(current),tokenId=z.uuid().parse(id);
  return z.object({id:z.uuid(),revoked:z.literal(true),changed:z.boolean()}).strict().parse(await port(async()=>(await db.query('SELECT platform_revoke_token($1,$2,$3) AS r',[s.id,s.userId,tokenId])).rows[0]?.r));
 }
+/** RF-07.f supervisor credential: platform:capacity only, one profile, REAL, 15 minutes. */
+export async function issueCapacityAgentToken(db:QueryExecutor,current:PlatformSession,workspaceId:string){
+ const s=session(current),id=profileIdSchema.parse(workspaceId);
+ if(s.id.startsWith('platform-token:')&&!current.scopes?.includes('platform:capacity'))throw new PlatformError('PLATFORM_SCOPE_REQUIRED',403);
+ const token='cos_cap_'+randomBytes(32).toString('base64url'),tokenId=uuid(),expiresAt=new Date(Date.now()+14*60000).toISOString();
+ const result=z.object({id:z.uuid(),workspaceId:profileIdSchema,expiresAt:z.coerce.date()}).strict().parse(await port(async()=>(await db.query('SELECT platform_issue_capacity_agent_token($1,$2,$3,$4,$5,$6) AS r',[s.id,s.userId,id,tokenId,tokenHash(token),expiresAt])).rows[0]?.r));
+ return{token,id:result.id,workspaceId:result.workspaceId,expiresAt:result.expiresAt.toISOString()};
+}

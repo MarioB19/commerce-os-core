@@ -3,7 +3,7 @@ import type {FastifyInstance,FastifyReply,FastifyRequest} from 'fastify';
 import {z} from 'zod';
 import {pool,withTransaction} from '../../../packages/db/src/index.js';
 import {identityAudit} from '../../../packages/db/src/identity.js';
-import {createPlatformProfile,invitePlatformOwner,isPlatformAdmin,isPlatformToken,issuePlatformToken,listPlatformProfiles,listPlatformTokens,readPlatformCapacity,resolvePlatformToken,revokePlatformToken,updatePlatformProfile,PlatformError,type PlatformScope,type PlatformSession} from '../../../packages/db/src/platform-profiles.js';
+import {createPlatformProfile,invitePlatformOwner,issueCapacityAgentToken,isPlatformAdmin,isPlatformToken,issuePlatformToken,listPlatformProfiles,listPlatformTokens,readPlatformCapacity,resolvePlatformToken,revokePlatformToken,updatePlatformProfile,PlatformError,type PlatformScope,type PlatformSession} from '../../../packages/db/src/platform-profiles.js';
 import {auth,trustedOrigins} from './auth.js';
 
 /** V7 RF-01.5/RF-02 platform administration (super-admin). An interactive
@@ -78,6 +78,11 @@ export async function platformProfileRoutes(app:FastifyInstance,deps:PlatformRou
   const current=await session(req,reply,true,'platform:profiles'),{id}=idParams.parse(req.params);
   const result=await audited(current,'platform.profile.invite_owner',req,db=>invitePlatformOwner(db,current,id,req.body));
   return reply.code(result.replayed?200:202).send({data:result});
+ });
+ app.post('/v2/platform/capacity/agent-tokens',{bodyLimit:512},async(req,reply)=>{
+  const current=await session(req,reply,true,'platform:capacity'),{workspaceId}=z.object({workspaceId:z.string().min(1).max(256)}).strict().parse(req.body);
+  const result=await audited(current,'platform.capacity.agent_token',req,db=>issueCapacityAgentToken(db,current,workspaceId));
+  return reply.code(201).send({data:result});
  });
  app.get('/v2/platform/tokens',async(req,reply)=>{
   if(Object.keys(req.query??{}).length)throw new PlatformError('PLATFORM_QUERY_NOT_ALLOWED',400);

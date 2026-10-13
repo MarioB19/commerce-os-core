@@ -133,3 +133,17 @@ it('requires retirement and fresh drain evidence before releasing a simulated re
  expect(data(await sim('GET','/v1/number-operations/'+replacement.operation_id)).state).toBe('SUCCEEDED');
  expect((await pool.query('SELECT body FROM records WHERE id=$1',[created.id])).rows[0].body.deleted_at).toBeTruthy();
 });
+
+it('allocates physical slot numbers globally: a profile never previews a number another profile holds (V7 F3)',async()=>{
+ const other='capacity-foreign-'+randomUUID();await fixtureProfiles(workspace,other);
+ const n=await freePhysicalSlot();
+ const foreign=(await pool.query("INSERT INTO number_capacity_slots(workspace_id,environment,slot,gateway_ref) VALUES($1,'REAL',$2,$3) RETURNING id",[other,n,'waha-'+String(n).padStart(2,'0')])).rows[0];
+ try{
+  const own=(await pool.query("SELECT count(*)::int n FROM number_capacity_slots WHERE workspace_id=$1 AND environment='REAL'",[workspace])).rows[0].n;
+  const preview=data(await call('POST','/v1/number-capacity',{action:'preview',count:own+1,reason:'Global allocation fixture'}));
+  expect(preview.slot_numbers).toHaveLength(own+1);
+  expect(preview.slot_numbers).not.toContain(n);
+  expect(preview.legacy_host_conflict).toBe(false);
+  expect((await pool.query("SELECT count(*)::int n FROM number_capacity_slots WHERE workspace_id=$1",[other])).rows[0].n).toBe(1);
+ }finally{await pool.query('DELETE FROM number_capacity_slots WHERE id=$1',[foreign.id]);}
+});

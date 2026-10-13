@@ -3,8 +3,9 @@ import pg from 'pg';
 import {afterAll,beforeAll,describe,expect,it,vi} from 'vitest';
 import {requireMigratedProfileSchema,sealFixtureProfiles,asProfileOwner} from '../support/migrated-database.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
-import {createPlatformProfile,invitePlatformOwner,isPlatformAdmin,issuePlatformToken,listPlatformProfiles,listPlatformTokens,readPlatformCapacity,resolvePlatformToken,revokePlatformToken,updatePlatformProfile} from '../../packages/db/src/platform-profiles.js';
+import {createPlatformProfile,invitePlatformOwner,isPlatformAdmin,issueCapacityAgentToken,issuePlatformToken,listPlatformProfiles,listPlatformTokens,readPlatformCapacity,resolvePlatformToken,revokePlatformToken,updatePlatformProfile} from '../../packages/db/src/platform-profiles.js';
 import {acceptExistingProfileInvitation,generateInvitationLink} from '../../packages/db/src/profile-invitation-acceptance.js';
+import {resolveServiceProfile} from '../../packages/db/src/profile-service-token.js';
 
 // V7 RF-01.5/RF-02 against the migrated schema with a real non-superuser API login.
 const suffix=randomBytes(8).toString('hex'),login='platform_api_'+suffix,adminUser='platform_admin_'+suffix,plainUser='platform_plain_'+suffix,existing='platform_existing_'+suffix;
@@ -115,5 +116,19 @@ describe('platform administration outside every profile',()=>{
   finally{await admin.query('UPDATE platform_admins SET active=true WHERE user_id=$1',[adminUser]);}
   await expect(api.query('SELECT * FROM platform_tokens')).rejects.toMatchObject({code:'42501'});
   await expect(admin.query('UPDATE platform_tokens SET name=$2 WHERE id=$1',[second.id,'renamed'])).rejects.toThrow('PLATFORM_TOKEN_IMMUTABLE');
+ });
+ it('issues short-lived capacity agent tokens bound to one profile for the gateway supervisor',async()=>{
+  const s=await session(adminUser),issued=await issueCapacityAgentToken(api,s,existing);
+  expect(issued.token).toMatch(/^cos_cap_[A-Za-z0-9_-]{43}$/);expect(Date.parse(issued.expiresAt)-Date.now()).toBeLessThanOrEqual(15*60000);
+  const agent=await resolveServiceProfile(api,issued.token);
+  expect(agent).toMatchObject({kind:'service',profile:{id:existing},allowedEnvironments:['REAL'],resourceIds:null});
+  expect([...agent.scopes].sort()).toEqual(['channels:capacity','channels:capacity:agent','channels:read','integrations:read','integrations:write']);
+  await expect(issueCapacityAgentToken(api,await session(plainUser),existing)).rejects.toMatchObject({code:'PLATFORM_ADMIN_REQUIRED'});
+  await expect(issueCapacityAgentToken(api,s,'missing-'+suffix)).rejects.toMatchObject({code:'PLATFORM_PROFILE_NOT_FOUND'});
+  const withoutScope=await issuePlatformToken(api,s,{name:'perfiles',scopes:['platform:profiles'],expiresAt:new Date(Date.now()+86400000).toISOString()});
+  await expect(issueCapacityAgentToken(api,await resolvePlatformToken(api,withoutScope.token),existing)).rejects.toMatchObject({code:'PLATFORM_SCOPE_REQUIRED'});
+  for(let i=0;i<4;i++)await issueCapacityAgentToken(api,s,existing);
+  await expect(issueCapacityAgentToken(api,s,existing)).rejects.toMatchObject({code:'PLATFORM_TOKEN_LIMIT'});
+  await expect(admin.query("INSERT INTO service_tokens(id,workspace_id,actor_id,name,token_hash,scopes,expires_at) VALUES(gen_random_uuid(),$1,'x','x',repeat('c',64),'[]',clock_timestamp()+interval '1 day')",[existing])).resolves.toBeTruthy();
  });
 });
