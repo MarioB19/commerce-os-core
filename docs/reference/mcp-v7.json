@@ -478,7 +478,8 @@
     "continuar",
     "reiniciar",
     "adjuntar",
-    "revisar_comprobante"
+    "revisar_comprobante",
+    "exportar"
    ],
    "audience": "profile",
    "family": "/v2/number-tests",

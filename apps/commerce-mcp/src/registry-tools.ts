@@ -202,6 +202,8 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
   estimar:{schema:z.object({accountId:z.uuid(),mode:z.enum(['CHAT']).optional()}).strict(),read:true,run:i=>c.variant('POST','/v2/number-tests/estimate',{account_id:i.accountId,mode:i.mode??'CHAT'},crypto.randomUUID())},
   crear:P('POST',operation.extend({accountId:z.uuid(),acceptedMaximumMicrousd:z.number().int().positive()}).strict(),()=>'/v2/number-tests',i=>({account_id:i.accountId,mode:'CHAT',accepted_maximum_microusd:i.acceptedMaximumMicrousd})),
   leer:P('GET',runId,i=>'/v2/number-tests/'+id(i.runId)),
+  // RF-19.o: the whole test as JSON while it is kept (30 days).
+  exportar:P('GET',runId,i=>'/v2/number-tests/'+id(i.runId)+'/export'),
   ultima:P('GET',z.object({accountId:z.uuid().optional()}).strict(),i=>'/v2/number-tests/latest'+(i.accountId?'?account_id='+id(i.accountId):'')),
   mensaje:step(i=>({type:'message',text:i.text}),{text:z.string().trim().min(1).max(4096)}),
   seleccionar:step(i=>({type:'select_variant',variant_id:i.variantId,origin:i.entry??'EXPLICIT'}),{variantId:z.uuid(),entry:z.enum(['EXPLICIT','ADVERTISEMENT']).optional()}),

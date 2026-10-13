@@ -32,3 +32,24 @@ DO $$ DECLARE n text;condition text;BEGIN
   EXECUTE format('CREATE POLICY lab_transport_empty_restrictive ON public.%I AS RESTRICTIVE TO commerce_lab_engine USING(false) WITH CHECK(false)',n);
  END LOOP;
 END $$;
+
+-- V7 RF-19.o (D-18): when a test's 30 days end, the platform maintenance
+-- (superuser only; no grant) removes everything the run left in this engine:
+-- every scoped row of its workspace and its execution/driver receipts.
+CREATE FUNCTION commerce_number_lab_engine.purge_run(p_run uuid) RETURNS integer LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+DECLARE t record;w text:='number-lab:'||p_run::text;n integer:=0;c integer;
+BEGIN
+ IF NOT (SELECT rolsuper FROM pg_roles WHERE rolname=current_user) THEN RAISE EXCEPTION 'LAB_RETENTION_SUPERUSER_REQUIRED'; END IF;
+ IF p_run IS NULL THEN RAISE EXCEPTION 'LAB_RETENTION_RUN_REQUIRED'; END IF;
+ IF EXISTS(SELECT 1 FROM commerce_number_lab_engine.executions e WHERE e.run_id=p_run AND e.expires_at>clock_timestamp()) THEN RAISE EXCEPTION 'LAB_RETENTION_RUN_NOT_EXPIRED'; END IF;
+ PERFORM set_config('session_replication_role','replica',true);
+ FOR t IN SELECT c.table_name FROM information_schema.columns c JOIN information_schema.tables x ON x.table_schema=c.table_schema AND x.table_name=c.table_name AND x.table_type='BASE TABLE'
+   WHERE c.table_schema='public' AND c.column_name='workspace_id' ORDER BY c.table_name LOOP
+  EXECUTE format('DELETE FROM public.%I WHERE workspace_id::text=$1',t.table_name) USING w;GET DIAGNOSTICS c=ROW_COUNT;n:=n+c;
+ END LOOP;
+ DELETE FROM commerce_number_lab_engine.driver_receipts WHERE run_id=p_run;GET DIAGNOSTICS c=ROW_COUNT;n:=n+c;
+ DELETE FROM commerce_number_lab_engine.materializations WHERE run_id=p_run;GET DIAGNOSTICS c=ROW_COUNT;n:=n+c;
+ DELETE FROM commerce_number_lab_engine.executions WHERE run_id=p_run;GET DIAGNOSTICS c=ROW_COUNT;n:=n+c;
+ RETURN n;
+END $$;
+REVOKE ALL ON FUNCTION commerce_number_lab_engine.purge_run(uuid) FROM PUBLIC;

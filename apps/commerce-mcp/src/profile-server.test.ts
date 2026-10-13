@@ -218,6 +218,8 @@ describe('V7 F3 number tools',()=>{
    expect(seen[0]!.body).toEqual({mime_type:'image/png',base64:'iVBORw0KGgo='});
    expect(seen[1]).toMatchObject({key:operationId,body:{expected_version:4,action:{type:'receipt'}}});
    seen.length=0;
+   await client.callTool({name:'number_test_manage',arguments:{action:'exportar',runId}});
+   expect(seen.shift()).toMatchObject({method:'GET',url:`/v2/number-tests/${runId}/export`});
    await client.callTool({name:'number_test_manage',arguments:{action:'revisar_comprobante',operationId,runId,expectedVersion:5,receiptId,decision:'REJECTED',reason:'Monto distinto'}});
    expect(seen[0]).toMatchObject({method:'POST',url:`/v2/number-tests/${runId}/actions`,body:{expected_version:5,action:{type:'review_receipt',receipt_id:receiptId,decision:'REJECTED',reason:'Monto distinto'}}});
   }finally{await client.close();await server.close();}

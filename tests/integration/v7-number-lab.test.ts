@@ -339,6 +339,41 @@ it('reads an example receipt with the profile key and decides it with the rules 
  expect(attempts).toEqual([{task:'laboratory.vision',state:'SUCCEEDED'},{task:'laboratory.vision',state:'SUCCEEDED'}]);
  // Another run's attachment is not served.
  expect((await call('owner','GET',`/v2/number-tests/${randomUUID()}/attachments/${right.attachment_id}?environment=REAL`)).statusCode).toBe(404);
+
+ // RF-19.o: the whole test exports as JSON while it is kept (no receipt bytes,
+ // no payment data, no secrets).
+ const exported=await call('operator','GET',`/v2/number-tests/${run.run_id}/export?environment=REAL`);
+ expect(exported.statusCode,exported.body).toBe(200);expect(String(exported.headers['content-disposition'])).toContain(`prueba-${run.run_id}.json`);
+ const doc=JSON.parse(exported.body);
+ expect(doc).toMatchObject({schema_version:1,kind:'commerce-os.number-test',retention:{days:30},run:{run_id:run.run_id}});
+ expect(doc.conversation.transcript.filter((e:{kind:string})=>e.kind==='receipt')).toHaveLength(2);
+ expect(doc.attachments.map((a:{attachment_id:string})=>a.attachment_id)).toEqual([wrong.attachment_id,right.attachment_id]);
+ expect(exported.body).not.toContain('01218000011835971');expect(exported.body).not.toContain('base64');expect(exported.body).not.toContain('sk-ant');
+ // After 30 days the platform maintenance (cluster owner) shreds the content:
+ // the engine rows and receipts go, AI accounting stays.
+ const admin=new pg.Client({connectionString:process.env.DATABASE_URL});await admin.connect();
+ const engineUrl=new URL(process.env.DATABASE_URL!);engineUrl.pathname='/'+engineDatabase;const engine=new pg.Client({connectionString:engineUrl.toString()});await engine.connect();
+ try{
+  await admin.query('BEGIN');await admin.query("SET LOCAL session_replication_role=replica");
+  await admin.query("UPDATE commerce_number_lab.runs SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1",[run.run_id]);await admin.query('COMMIT');
+  await engine.query('BEGIN');await engine.query("SET LOCAL session_replication_role=replica");
+  await engine.query("UPDATE commerce_number_lab_engine.executions SET created_at=clock_timestamp()-interval '2 days',expires_at=clock_timestamp()-interval '1 second' WHERE run_id=$1",[run.run_id]);await engine.query('COMMIT');
+  const shredded=(await admin.query('SELECT run_id::text,operations,attachment_keys FROM commerce_number_lab.purge_expired_runs(10)')).rows;
+  expect(shredded).toEqual([{run_id:run.run_id,operations:expect.any(Number),attachment_keys:[wrong.attachment_id+'-'+wrong.sha256,right.attachment_id+'-'+right.sha256].sort()}]);
+  expect((await admin.query('SELECT count(*)::int n FROM commerce_number_lab.purge_expired_runs(10)')).rows[0].n).toBe(0);
+  const removed=(await engine.query('SELECT commerce_number_lab_engine.purge_run($1::uuid) n',[run.run_id])).rows[0].n;expect(removed).toBeGreaterThan(10);
+  expect((await engine.query("SELECT count(*)::int n FROM records WHERE workspace_id=$1",['number-lab:'+run.run_id])).rows[0].n).toBe(0);
+  expect((await admin.query('SELECT count(*)::int n FROM commerce_number_lab.attachments WHERE run_id=$1',[run.run_id])).rows[0].n).toBe(0);
+  // An application role cannot run the purge.
+  await admin.query('BEGIN');await admin.query('SET LOCAL ROLE commerce_api');
+  await expect(admin.query('SELECT * FROM commerce_number_lab.purge_expired_runs(1)')).rejects.toThrow(/permission denied/);await admin.query('ROLLBACK');
+  expect((await withTransaction(async c=>(await c.query("SELECT count(*)::int n FROM ai_attempts WHERE workspace_id=$1 AND task='laboratory.vision'",[P])).rows[0].n))).toBe(2);
+ }finally{await admin.end();await engine.end();}
+ const gone=data(await call('operator','GET',`/v2/number-tests/${run.run_id}`));
+ expect(gone).toMatchObject({expired:true,run:{state_label:'Vencida'},conversation:{transcript:[],next_step:{action:'restart'}}});
+ expect((await call('operator','GET',`/v2/number-tests/${run.run_id}/export?environment=REAL`)).statusCode).toBe(410);
+ expect((await call('operator','GET',`/v2/number-tests/${run.run_id}/attachments/${right.attachment_id}?environment=REAL`)).statusCode).toBe(410);
+ expect(data(await call('operator','GET',`/v2/number-tests/latest?account_id=${number}`))).toBeNull();
 },240000);
 
 it('explains before starting what blocks a test or leaves part of it out, with the screen that fixes it (RF-19.i)',async()=>{

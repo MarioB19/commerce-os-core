@@ -43,9 +43,10 @@ const messages:Record<string,string>={
  LAB_MATERIAL_NOT_FOUND:'Ese material no forma parte de esta prueba.',LAB_MATERIAL_CHANGED:'El material cambió después de iniciar la prueba. Inicia otra para verlo.',
  LAB_ATTACHMENT_TYPE:'Adjunta una imagen (PNG, JPG o WEBP) o un PDF de comprobante.',LAB_ATTACHMENT_SIZE:'El comprobante debe pesar máximo 4 MB.',
  LAB_ATTACHMENT_LIMIT:'Esta prueba ya tiene 20 comprobantes. Inicia otra.',LAB_ATTACHMENT_NOT_FOUND:'No encontramos ese comprobante en esta prueba.',
+ LAB_RUN_EXPIRED:'Esta prueba venció: las pruebas se guardan 30 días. Inicia otra.',
  LAB_CATALOG_AMBIGUOUS:'El número tiene asignaciones ambiguas. Revisa sus variantes.',LAB_SOURCE_LIMIT:'La configuración del número es demasiado grande para una prueba.',
 };
-const status:Record<string,number>={LAB_NOT_INSTALLED:503,LAB_ACCOUNT_NOT_FOUND:404,LAB_RUN_NOT_FOUND:404,LAB_MATERIAL_NOT_FOUND:404,LAB_ATTACHMENT_NOT_FOUND:404,LAB_ATTACHMENT_TYPE:400,LAB_ATTACHMENT_SIZE:400};
+const status:Record<string,number>={LAB_RUN_EXPIRED:410,LAB_NOT_INSTALLED:503,LAB_ACCOUNT_NOT_FOUND:404,LAB_RUN_NOT_FOUND:404,LAB_MATERIAL_NOT_FOUND:404,LAB_ATTACHMENT_NOT_FOUND:404,LAB_ATTACHMENT_TYPE:400,LAB_ATTACHMENT_SIZE:400};
 function fail(code:string,statusCode=409):never{throw Object.assign(new Error(code),{code,statusCode,publicMessage:messages[code]});}
 async function mapped<T>(work:()=>Promise<T>):Promise<T>{
  try{return await work();}catch(error){
@@ -56,6 +57,9 @@ async function mapped<T>(work:()=>Promise<T>):Promise<T>{
   throw error;
  }
 }
+/** RF-19.o: a run past its 30 days keeps only content-free history. */
+const expired=(run:{expires_at:string})=>Date.parse(run.expires_at)<=Date.now();
+async function liveRun(db:ProfileExecutor,authority:ProfileAuthority,id:string){const run=await readNumberLab(db,authority,id);if(!run)fail('LAB_RUN_NOT_FOUND',404);if(expired(run))fail('LAB_RUN_EXPIRED',410);return run;}
 function headers(reply:FastifyReply){reply.header('Cache-Control','no-store').header('Vary','Cookie, Authorization');}
 const operationKey=(req:FastifyRequest)=>z.string().uuid().parse(req.headers['idempotency-key']);
 const runParam=z.object({id:z.string().uuid()}).strict();
@@ -120,6 +124,9 @@ function nextStep(flow:{status:string|null;waiting_for:string|null;ai_status:str
 /** Run, operations and the conversation as the last settled operation saw it. */
 async function view(db:ProfileExecutor,authority:ProfileAuthority,runId:string){
  const key=numberLabKeys().control,run=await readNumberLab(db,authority,runId);if(!run)fail('LAB_RUN_NOT_FOUND',404);
+ if(expired(run))return{run:{...run,state_label:'Vencida'},expired:true,captured:null,variants:[],selected_variant_id:null,operations:[],pending:false,
+  conversation:{transcript:[],timers:[],waiting_for:null,next_step:{action:'restart',label:'Esta prueba venció: las pruebas se guardan 30 días. Inicia otra.'}},
+  isolation:{environment:'SIMULATION',whatsapp:false,real_records:false,label:'Prueba aislada: no envía mensajes reales, no registra ventas ni consume la cuota del número.'}};
  const scope=await numberLabRunScope(db,authority,runId,key),operations=await listNumberLabOperations(db,authority,runId,key);
  const names=await variantNames(db,scope?.variants.map(v=>v.variant_id)??[]);
  type Result={variant_id?:string|null;conversation_id?:string|null;state?:string;reason?:string|null;transcript?:unknown[];timers?:unknown[];flow?:{status:string|null;waiting_for:string|null;ai_status:string|null};ai_result?:{human_review?:boolean;dependency?:string|null}|undefined;transport_result?:unknown;receipt_result?:{dependency?:string|null}|undefined};
@@ -175,7 +182,7 @@ export async function numberTestRoutes(app:FastifyInstance,deps?:ProfileRequestD
  // the REAL material still holds exactly the captured bytes (else 409).
  app.get('/v2/number-tests/:id/materials/:material',async(req,reply)=>{const {id,material}=z.object({id:z.string().uuid(),material:z.string().uuid()}).strict().parse(req.params);
   const file=await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:read',mutation:false},async({db,profile})=>{
-   if(!await readNumberLab(db,profile.authority,id))fail('LAB_RUN_NOT_FOUND',404);
+   await liveRun(db,profile.authority,id);
    const captured=await numberLabRunMaterial(db,profile.authority,id,material,numberLabKeys().control);if(!captured)fail('LAB_MATERIAL_NOT_FOUND',404);
    const current=await materialBytes(db,'REAL',captured.source_id).catch(()=>fail('LAB_MATERIAL_CHANGED'));
    if(current.bytes.length!==captured.size_bytes||createHash('sha256').update(current.bytes).digest('hex')!==captured.sha256)fail('LAB_MATERIAL_CHANGED');
@@ -188,22 +195,34 @@ export async function numberTestRoutes(app:FastifyInstance,deps?:ProfileRequestD
  app.post('/v2/number-tests/:id/attachments',{bodyLimit:Math.ceil(NUMBER_LAB_ATTACHMENT_MAX*4/3)+4096},async(req,reply)=>{const {id}=runParam.parse(req.params);
   const q=z.object({mime_type:z.enum(['image/png','image/jpeg','image/webp','application/pdf']),base64:z.string().min(4).max(Math.ceil(NUMBER_LAB_ATTACHMENT_MAX*4/3)+4).regex(/^[A-Za-z0-9+/]+={0,2}$/)}).strict().parse(req.body);
   const data=await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:run',mutation:true},async({db,profile})=>{
-   if(!await readNumberLab(db,profile.authority,id))fail('LAB_RUN_NOT_FOUND',404);
+   await liveRun(db,profile.authority,id);
    return attachNumberLabFile(db,profile.authority,id,q,numberLabKeys().control);},deps));
   reply.code(data.created?201:200);const {created:_created,...out}=data;return{data:out};});
  app.get('/v2/number-tests/:id/attachments',async req=>{const {id}=runParam.parse(req.params);
   return{data:await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:read',mutation:false},async({db,profile})=>{
-   if(!await readNumberLab(db,profile.authority,id))fail('LAB_RUN_NOT_FOUND',404);return listNumberLabAttachments(db,profile.authority,id);},deps))};});
+   await liveRun(db,profile.authority,id);return listNumberLabAttachments(db,profile.authority,id);},deps))};});
  app.get('/v2/number-tests/:id/attachments/:attachment',async(req,reply)=>{const {id,attachment}=attachmentParam.parse(req.params);
   const file=await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:read',mutation:false},async({db,profile})=>{
-   if(!await readNumberLab(db,profile.authority,id))fail('LAB_RUN_NOT_FOUND',404);
+   await liveRun(db,profile.authority,id);
    const found=await readNumberLabAttachment(db,id,attachment,numberLabKeys().control);if(!found)fail('LAB_ATTACHMENT_NOT_FOUND',404);
    return{bytes:found.bytes,mime:found.mime_type,name:'comprobante-de-prueba'};},deps));
   return sendPrivateFile(req,reply,file);
  });
+ // RF-19.o: the whole test (capture, actions, conversation and receipts'
+ // metadata) as a JSON file, while it is kept (30 days). Never secrets,
+ // payment data, other profiles or the receipts' bytes.
+ app.get('/v2/number-tests/:id/export',async(req,reply)=>{const {id}=runParam.parse(req.params);
+  const document=await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:read',mutation:false},async({db,profile})=>{
+   await liveRun(db,profile.authority,id);const v=await view(db,profile.authority,id),attachments=await listNumberLabAttachments(db,profile.authority,id);
+   return{schema_version:1,kind:'commerce-os.number-test',exported_at:new Date().toISOString(),retention:{kept_until:v.run.expires_at,days:30},
+    run:v.run,captured:v.captured,variants:v.variants,selected_variant_id:v.selected_variant_id,operations:v.operations,
+    conversation:{transcript:v.conversation.transcript,timers:v.conversation.timers},attachments,isolation:v.isolation};},deps));
+  reply.header('Content-Disposition',`attachment; filename="prueba-${id}.json"`).type('application/json; charset=utf-8');
+  return JSON.stringify(document,null,1);
+ });
  app.post('/v2/number-tests/:id/actions',{bodyLimit:16384},async(req,reply)=>{const {id}=runParam.parse(req.params),q=actionSchema.parse(req.body),operationId=operationKey(req);
   const data=await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:run',mutation:true},async({db,profile})=>{
-   if(!await readNumberLab(db,profile.authority,id))fail('LAB_RUN_NOT_FOUND',404);
+   await liveRun(db,profile.authority,id);
    return enqueueNumberLab(db,profile.authority,id,{operation_id:operationId,expected_version:q.expected_version,action:q.action},numberLabKeys().control);},deps));
   reply.code(202);return{data};});
 }

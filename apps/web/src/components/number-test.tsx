@@ -11,7 +11,7 @@ import {Button} from './ui/button.js';
 interface Estimate {mode:'CHAT'|'AUTOMATIC';maximum_microusd:number;maximum_ai_calls:number;valid_until:string;captured_at:string;note:string;
  variants:{variant_id:string;name:string;provider:string;model:string;cases:number;maximum_microusd:number}[]}
 interface Entry {at:string;from:'customer'|'business';kind:string;text:string|null;material:string|null;status:string|null;purpose:string|null;material_id?:string|null;mime?:string|null;attachment_id?:string|null;receipt_id?:string|null;explanation?:string|null;variant_name?:string|null}
-interface View {run:{run_id:string;account_id:string;state:string;state_label:string;version:number;virtual_now:string;created_at:string;expires_at:string};
+interface View {expired?:boolean;run:{run_id:string;account_id:string;state:string;state_label:string;version:number;virtual_now:string;created_at:string;expires_at:string};
  captured:{captured_at:string;estimate:{maximum_microusd:number;maximum_ai_calls:number}}|null;
  variants:{variant_id:string;name:string;revision:number;amount_minor:number;currency:string}[];selected_variant_id:string|null;
  operations:{operation_id:string;state:string;state_label:string;created_at:string;action:{type:string;hours?:number;text?:string};result:{state:string|null;reason:string|null;reason_label:string|null;fix?:Fix|null}|null}[];
@@ -75,6 +75,11 @@ export function NumberTest({accountId,selection,role,state,timezone}:{accountId:
  async function act(action:Record<string,unknown>){if(!view)return;setBusy(true);setError('');
   try{await variantRequest(selection,'POST',`/v2/number-tests/${view.run.run_id}/actions`,{expected_version:view.run.version,action},newOperationKey());await readRun(view.run.run_id);}
   catch(e){setError(errorText(e,'No se pudo aplicar la acción.'));await readRun(view.run.run_id).catch(()=>undefined);}finally{setBusy(false);}}
+ // RF-19.o: the whole test as a JSON file (kept 30 days), read with the profile fence.
+ async function exportRun(){if(!view)return;setError('');
+  try{const r=await fetch(`/v2/number-tests/${view.run.run_id}/export?environment=REAL`,{credentials:'include',cache:'no-store',redirect:'error',headers:{'X-Commerce-Profile-Id':selection.workspaceId,'X-Commerce-Profile-Version':String(selection.version)}});
+   if(!r.ok)throw Error('export');const url=URL.createObjectURL(await r.blob());const a=document.createElement('a');a.href=url;a.download=`prueba-${view.run.run_id}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+  catch{setError('No se pudo exportar la prueba.');}}
  // RF-19.d: the customer sends a receipt (image or PDF ≤4 MB), as on WhatsApp.
  async function attach(file:File){if(!view)return;
   if(!ATTACHMENT_TYPES.includes(file.type)){setError('Adjunta una imagen (PNG, JPG o WEBP) o un PDF.');return;}
@@ -110,6 +115,7 @@ export function NumberTest({accountId,selection,role,state,timezone}:{accountId:
    {view&&<p><button type="button" className="link-button" onClick={()=>{setFresh(false);setEstimate(null);}}>Volver a la última prueba</button></p>}
   </section>}
   {view&&!fresh&&<>
+   {view.expired&&<p role="status">Esta prueba venció: las pruebas se guardan 30 días. Pulsa Reiniciar para probar de nuevo.</p>}
    <p className="variant-hint">Configuración fijada: {clock(view.captured?.captured_at??view.run.created_at,timezone)} · Reloj de la prueba: {clock(view.run.virtual_now,timezone)}<br/>Si cambias la variante, pulsa Reiniciar para probar lo actual.</p>
    <ol ref={log} className="number-test-chat" aria-label="Conversación de prueba" aria-live="polite">
     {view.conversation.transcript.length===0&&<li className="number-test-empty">Escribe como si fueras un cliente.</li>}
@@ -143,6 +149,7 @@ export function NumberTest({accountId,selection,role,state,timezone}:{accountId:
     {next?.action==='continue'&&<Button disabled={blocked} onClick={()=>void act({type:'continue'})}>Continuar</Button>}
     {[2,8,24].map(h=><Button key={h} variant="secondary" disabled={blocked||view.conversation.transcript.length===0} onClick={()=>void act({type:'advance',hours:h})}>Adelantar {h} h</Button>)}
     <Button variant="secondary" disabled={!canRun||busy} onClick={()=>{setFresh(true);setEstimate(null);}}>Reiniciar</Button>
+    {!view.expired&&<Button variant="secondary" disabled={busy} onClick={()=>void exportRun()}>Exportar</Button>}
    </div>
    {view.operations.length>0&&<details className="number-test-history"><summary>Historial de la prueba ({view.operations.length})</summary>
     <ol>{view.operations.map(o=><li key={o.operation_id}>{actionLabel(o.action)} · {o.state_label}{o.result?.reason_label?` — ${o.result.reason_label}`:''}{o.result?.fix&&<> · <a href={o.result.fix.href}>{o.result.fix.label}</a></>}</li>)}</ol>

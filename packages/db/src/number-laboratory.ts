@@ -71,7 +71,7 @@ export async function listNumberLabOperations(db:ProfileExecutor,a:ProfileAuthor
  return rows.map(o=>({...presentOperation(o,key),action:numberLabOperationSchema.shape.action.parse(openLabValue({workspaceId:String(o.workspace_id),runId:String(o.run_id),purpose:'action',operationId:String(o.id)},o.action_ciphertext,key))}));}
 /** The newest run of the profile, optionally of one number (RF-19.n «última prueba»). */
 export async function latestNumberLab(db:ProfileExecutor,a:ProfileAuthority,accountId:string|null){await authorize(db,a,false);need(accountId===null||uuid.test(accountId),'LAB_ACCOUNT_ID');
- const r=(await db.query('SELECT * FROM commerce_number_lab.runs WHERE workspace_id=$1 AND ($2::uuid IS NULL OR source_account_id=$2::uuid) ORDER BY created_at DESC,id LIMIT 1',[db.workspaceId,accountId])).rows[0];await authorize(db,a,false);return r?presentLabRun(r):null;}
+ const r=(await db.query('SELECT * FROM commerce_number_lab.runs WHERE workspace_id=$1 AND ($2::uuid IS NULL OR source_account_id=$2::uuid) AND expires_at>clock_timestamp() ORDER BY created_at DESC,id LIMIT 1',[db.workspaceId,accountId])).rows[0];await authorize(db,a,false);return r?presentLabRun(r):null;}
 /** Variants and releases the run was captured with (never the live catalogue). */
 export async function numberLabRunScope(db:ProfileExecutor,a:ProfileAuthority,runId:string,key:Uint8Array){await authorize(db,a,false);need(uuid.test(runId),'LAB_RUN_ID');
  const r=(await db.query('SELECT snapshot_ciphertext,snapshot_sha256 FROM commerce_number_lab.runs WHERE workspace_id=$1 AND id=$2',[db.workspaceId,runId])).rows[0];if(!r)return null;

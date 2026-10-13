@@ -121,6 +121,25 @@ base son puntos únicos de falla; F1 entrega recuperación medida, no failover.
 - **Pendiente:** avisos de número al dueño por correo (RF-07.e) con su propia
   plantilla y reserva; hoy el aviso existe en la app y el MCP.
 
+## 4b. Retención de «Probar número» (RF-19.o, D-18)
+
+- Una prueba se guarda 30 días (`runs.expires_at`). Mientras tanto se exporta
+  como JSON (`GET /v2/number-tests/:id/export`, MCP `exportar`).
+- `commerce-lab-retention.timer` (diario 09:10 UTC) ejecuta como Root
+  `scripts/v7_lab_retention.py run /opt/commerce-os/private/lab-retention/operator.json`:
+  1. `commerce_number_lab.purge_expired_runs()` (sólo superusuario, migración
+     `0114`) reemplaza captura, acciones y resultados por cifrado ilegible y
+     borra los comprobantes; deja un recibo por prueba. Corridas, operaciones y
+     ligas de IA quedan sin contenido porque la contabilidad de IA las
+     referencia.
+  2. `commerce_number_lab_engine.purge_run()` borra todo lo de la prueba en la
+     base del laboratorio.
+  3. Borra los archivos de comprobante en la custodia del laboratorio.
+  Cada paso es idempotente y se reanuda desde el recibo.
+- La configuración (`compose`, `workdir`, servicio de Postgres, usuario dueño,
+  base principal, servicio del trabajador y carpeta del laboratorio dentro del
+  contenedor) se escribe en la ventana de la Fase C.
+
 ## 5. Pendiente de esta ADR (se completa en las siguientes entregas de F1)
 
 Identidad de la VM, recursos GCP declarativos, presupuesto, arranque durable y
