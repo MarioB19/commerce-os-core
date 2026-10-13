@@ -211,3 +211,70 @@ it('accepts a lifecycle-equal health read only when it carries the post-command 
  await recordHealth(a,()=>provider,{owner_id:owner,generation:acquired.generation!});
  expect((await pool.query("SELECT count(*)::int n FROM records WHERE workspace_id=$1 AND kind='health_signal' AND body->>'account_id'=$2 AND body->>'dimension'='session'",[workspace,a.id])).rows[0].n).toBe(1);
 });
+
+// V7 F3 (ADR-V7-03, D-17, RNF-01.d/f): a live permanent continuity grant resumes
+// the account's own ownership after a reconnection, a takeover or a release; a
+// human pause, a revoked grant or another identity's grant never does.
+async function qrGrant(a:DomainRecord,fingerprint:string,options:{humanPaused?:boolean;revoked?:boolean}={}){
+ const connection=randomUUID(),id=randomUUID(),createdAt=new Date().toISOString();
+ await withTransaction(async c=>{
+  await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','REAL',true)",[workspace]);
+  await c.query("INSERT INTO commands(id,workspace_id,environment,kind,resource_id,actor_id,payload,status,idempotency_key,created_at) VALUES($1::uuid,$2,'REAL','channel_command',$3,'synthetic','{\"type\":\"connect\"}','APPLIED',$1::uuid::text,clock_timestamp()-interval '2 minutes')",[connection,workspace,a.id]);
+  // Synthetic source evidence the grant validates (a verified connection of
+  // this identity); the session's own expected identity is restored after.
+  const before=(await c.query('SELECT expected_identity_fingerprint FROM channel_sessions WHERE account_id=$1',[a.id])).rows[0].expected_identity_fingerprint;
+  await c.query("UPDATE channel_sessions SET observed_state='CONNECTED',auth_state='VERIFIED',expected_identity_fingerprint=$2,provider_observed_at=clock_timestamp()-interval '90 seconds',health_expires_at=clock_timestamp()+interval '5 minutes' WHERE account_id=$1",[a.id,fingerprint]);
+  const state={id,workspaceId:workspace,environment:'REAL',accountId:a.id,source:{kind:'VERIFIED_QR_CONNECTION',connectionId:connection,identityFingerprint:fingerprint},
+   createdBy:'synthetic',createdAt,version:1,humanPaused:false,revokedAt:null,protections:[]};
+  await c.query('INSERT INTO continuous_authorizations(id,workspace_id,environment,account_id,qr_command_id,source_hash,version,state) VALUES($1,$2,$3,$4,$5,$6,1,$7)',[id,workspace,'REAL',a.id,connection,randomBytes(32).toString('hex'),state]);
+  await c.query("INSERT INTO continuous_authorization_events(workspace_id,environment,authorization_id,version,operation_id,event,state) VALUES($1,'REAL',$2,1,$3,$4,$5)",[workspace,id,randomUUID(),{type:'CREATED',actorId:'synthetic',source:state.source,at:createdAt},state]);
+  await c.query('UPDATE channel_sessions SET expected_identity_fingerprint=$2 WHERE account_id=$1',[a.id,before]);
+  if(options.humanPaused||options.revoked){
+   const next={...state,version:2,...(options.humanPaused?{humanPaused:true}:{}),...(options.revoked?{revokedAt:new Date().toISOString()}:{})};
+   await c.query('UPDATE continuous_authorizations SET version=2,state=$2 WHERE id=$1',[id,next]);
+   await c.query("INSERT INTO continuous_authorization_events(workspace_id,environment,authorization_id,version,operation_id,event,state) VALUES($1,'REAL',$2,2,$3,$4,$5)",[workspace,id,randomUUID(),{type:options.revoked?'REVOKED':'HUMAN_PAUSED',actorId:'synthetic',at:new Date().toISOString()},next]);
+  }
+ });
+}
+async function openRealPolicy(){const current=await readOperationalSettings(pool,workspace,'REAL');await withTransaction(c=>writeOperationalSettings(c,workspace,'REAL',current.version,{...current.body,dispatch_frozen:false,real_sends_enabled:true,allow_real_operations:true},'synthetic-v7-continuity'));}
+const continuityProvider=(fingerprint:string)=>{const provider=new SimulatorProvider();provider.health=async()=>{const at=new Date(Date.now()-1000);return[...signals('WORKING',fingerprint,at),{dimension:'restriction',status:'OK',value:{latest_read:{timelock:true,capping:true}},source:'provider_read',scope:'account',availability:'supported',observedAt:at.toISOString(),expiresAt:new Date(at.getTime()+60000).toISOString()}];};return provider;};
+async function frozenConnected(fingerprint:string,release=false){
+ const a=await account(),owner='v7-continuity-'+randomUUID(),fence=await acquireOwnership(a,owner);expect(fence.acquired).toBe(true);
+ await pool.query('UPDATE channel_sessions SET expected_identity_fingerprint=$2 WHERE account_id=$1',[a.id,fingerprint]);
+ await pool.query('UPDATE session_ownership SET frozen=true,release_frozen=$2 WHERE account_id=$1',[a.id,release]);
+ return{a,owner,fence};
+}
+const ownershipOf=async(a:DomainRecord)=>(await pool.query('SELECT frozen,release_frozen FROM session_ownership WHERE account_id=$1',[a.id])).rows[0];
+it('V7: the current verified QR grant resumes a reconnected account automatically; paused, revoked or foreign-identity grants never do',async()=>{
+ await openRealPolicy();
+ const fingerprint='b'.repeat(64),provider=continuityProvider(fingerprint);
+ const live=await frozenConnected(fingerprint);await qrGrant(live.a,fingerprint);
+ const paused=await frozenConnected(fingerprint);await qrGrant(paused.a,fingerprint,{humanPaused:true});
+ const revoked=await frozenConnected(fingerprint);await qrGrant(revoked.a,fingerprint,{revoked:true});
+ const foreign=await frozenConnected(fingerprint);await qrGrant(foreign.a,'c'.repeat(64));
+ const none=await frozenConnected(fingerprint);
+ for(const item of [live,paused,revoked,foreign,none])await recordHealth(item.a,()=>provider);
+ expect(await ownershipOf(live.a)).toEqual({frozen:false,release_frozen:false});
+ for(const item of [paused,revoked,foreign,none])expect(await ownershipOf(item.a)).toEqual({frozen:true,release_frozen:false});
+ expect((await pool.query("SELECT payload->>'authority' authority FROM domain_events WHERE aggregate_id=$1 AND event_type='channel.continuity_resumed'",[live.a.id])).rows).toEqual([{authority:'V7_CONTINUITY'}]);
+ // A manual pause of the number is never lifted by a grant.
+ const manual=await frozenConnected(fingerprint);await qrGrant(manual.a,fingerprint);
+ await pool.query("INSERT INTO manual_controls(workspace_id,scope_type,scope_id,paused,reason,actor_id) VALUES($1,'channel_account',$2,true,'Pausado por ti','synthetic')",[workspace,manual.a.id]);
+ await recordHealth(manual.a,()=>provider);expect((await ownershipOf(manual.a)).frozen).toBe(true);
+ expect((await pool.query('SELECT count(*)::int n FROM outbox WHERE workspace_id=$1',[workspace])).rows[0].n).toBe(0);
+});
+it('V7: a release-frozen account resumes through its permanent grant without a legacy expiring authorization',async()=>{
+ await openRealPolicy();
+ const fingerprint='d'.repeat(64),provider=continuityProvider(fingerprint);
+ const held=await frozenConnected(fingerprint,true);await qrGrant(held.a,fingerprint);
+ const legacyOnly=await frozenConnected(fingerprint,true);
+ for(const item of [held,legacyOnly])await recordHealth(item.a,()=>provider,{owner_id:item.owner,generation:item.fence.generation!});
+ expect(await ownershipOf(held.a)).toEqual({frozen:false,release_frozen:false});
+ expect(await ownershipOf(legacyOnly.a)).toEqual({frozen:true,release_frozen:true});
+ expect((await pool.query("SELECT count(*)::int n FROM domain_events WHERE aggregate_id=$1 AND event_type='channel.release_recovered'",[held.a.id])).rows[0].n).toBe(1);
+ // A release hold still wins over any grant.
+ const during=await frozenConnected(fingerprint,true);await qrGrant(during.a,fingerprint);
+ await pool.query("UPDATE operational_settings SET release_hold=true,release_hold_at=now() WHERE workspace_id=$1 AND environment='REAL'",[workspace]);
+ try{await recordHealth(during.a,()=>provider,{owner_id:during.owner,generation:during.fence.generation!}).catch(()=>undefined);expect((await ownershipOf(during.a)).frozen).toBe(true);}
+ finally{await pool.query("UPDATE operational_settings SET release_hold=false WHERE workspace_id=$1 AND environment='REAL'",[workspace]);}
+});
