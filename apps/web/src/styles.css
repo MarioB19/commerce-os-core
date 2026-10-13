@@ -4178,3 +4178,30 @@ input:not([type="checkbox"]):not([type="radio"]),select,textarea{min-height:44px
 .variant-feedback:focus{outline:none}
 .variant-sells{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:.3rem}
 .variant-sells li{background:#eef1f7;border-radius:999px;padding:.1rem .55rem;font-size:.85rem}
+/* V7 F5 receipt queue */
+.receipt-queue{display:grid;gap:1rem;max-width:72rem}
+.receipt-subnav{display:flex;flex-wrap:wrap;gap:1rem;font-size:.95rem}
+.receipt-subnav a[aria-current=page]{font-weight:600;text-decoration:underline}
+.receipt-view{display:inline-flex;gap:.25rem;background:#eef1f7;border-radius:.6rem;padding:.25rem;justify-self:start}
+.receipt-view button{border:0;background:transparent;padding:.4rem .9rem;border-radius:.45rem;font:inherit;cursor:pointer}
+.receipt-view button[aria-pressed=true]{background:#fff;font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.receipt-layout{display:grid;gap:1.25rem;grid-template-columns:minmax(16rem,22rem) 1fr;align-items:start}
+.receipt-list ul{list-style:none;margin:0;padding:0;display:grid;gap:.5rem}
+.receipt-card{display:grid;gap:.2rem;width:100%;text-align:left;border:1px solid #d9dee8;border-radius:.6rem;background:#fff;padding:.7rem .8rem;font:inherit;cursor:pointer}
+.receipt-card[aria-pressed=true]{border-color:#2f5bd3;box-shadow:0 0 0 2px rgba(47,91,211,.2)}
+.receipt-card .number-status{justify-self:start}
+.receipt-meta{color:#5f6778;font-size:.85rem}
+.receipt-reason{font-size:.85rem;color:#8a4b00}
+.receipt-detail{display:grid;gap:.8rem;border:1px solid #d9dee8;border-radius:.8rem;background:#fff;padding:1rem}
+.receipt-detail h2{margin:0;font-size:1.2rem}
+.receipt-actions{display:flex;flex-wrap:wrap;gap:.6rem}
+.receipt-file img{max-width:100%;max-height:28rem;border:1px solid #e3e7ef;border-radius:.4rem;object-fit:contain;background:#f6f7fa}
+.receipt-facts{display:grid;grid-template-columns:repeat(auto-fill,minmax(12rem,1fr));gap:.5rem 1rem;margin:0}
+.receipt-facts div{display:grid}.receipt-facts dt{color:#5f6778;font-size:.8rem}.receipt-facts dd{margin:0}
+.receipt-checks{margin:.4rem 0;padding-left:1.1rem;display:grid;gap:.2rem}
+.receipt-checks li[data-state=FAILED]{color:#a12a2a}.receipt-checks li[data-state=UNKNOWN]{color:#8a4b00}
+@media (max-width:760px){.receipt-layout{grid-template-columns:1fr}.receipt-detail{order:-1}}
+.profile-home-pending a{font-weight:600}
+.receipt-amount{display:grid;gap:.2rem;font-size:.85rem;color:#5f6778}
+.receipt-amount input{width:9rem;padding:.45rem .6rem;border:1px solid #c9d0dc;border-radius:.45rem;font:inherit;color:#1c2333}
+.receipt-actions{align-items:end}

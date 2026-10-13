@@ -20,6 +20,7 @@ import {profileIntegrationRoutes,type IntegrationRouteDependencies} from './prof
 import {profileReadRoutes} from './profile-reads.js';
 import {variantWorkspaceRoutes} from './variant-workspace.js';
 import {profileMaterialRoutes} from './profile-materials.js';
+import {receiptQueueRoutes} from './receipt-queue.js';
 
 export interface ProfileRuntimeDependencies {
  request?:ProfileRequestDependencies;
@@ -44,7 +45,7 @@ export async function profileRuntimeRoutes(app:FastifyInstance,deps:ProfileRunti
  await app.register(async integrations=>{await profileIntegrationRoutes(integrations,{...deps.integrations,request:deps.integrations?.request??deps.request});});
  for(const routes of [profileOverviewRoutes,profileSettingsRoutes,profileEmployeeRoutes,
   profileInvitationRoutes,profileTokenRoutes,profileCatalogRoutes,marketVariantRoutes,
-  continuousAuthorizationRoutes,paymentsRegisterRoutes,receiptPolicyRoutes,resultsRoutes,resultGoalRoutes,profileReadRoutes,variantWorkspaceRoutes,profileMaterialRoutes]){
+  continuousAuthorizationRoutes,paymentsRegisterRoutes,receiptPolicyRoutes,resultsRoutes,resultGoalRoutes,profileReadRoutes,variantWorkspaceRoutes,profileMaterialRoutes,receiptQueueRoutes]){
   await app.register(async family=>{await routes(family,deps.request);});
  }
 }

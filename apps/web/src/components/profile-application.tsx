@@ -21,6 +21,7 @@ import {loadPlatformAccess} from '../lib/platform-profiles.js';
 import {ProfileIntegrations} from './profile-integrations.js';
 import {ProfileOnboarding} from './profile-onboarding.js';
 import {ProfileHome} from './profile-home.js';
+import {ReceiptQueue} from './receipt-queue.js';
 
 /** Closed set: unreviewed V1 pages are never offered by this profile entrypoint. */
 export const profileApplicationPaths=['/','/home','/login','/products','/sales/inbox','/sales/orders','/sales/receipts','/sales/payments','/sales/payments/rules','/results','/results/goals','/settings/profile','/settings/employees','/account/integrations','/numbers','/account/tokens','/account/security'] as const;
@@ -83,7 +84,8 @@ function ProfilePage({path,data}:{path:string;data:ProfileBrowserBootstrap}){
  if(path==='/settings/employees')return profile.role==='owner'?<><ProfileEmployees selection={selection} role={profile.role} state={profile.state} currentUserId={data.user.id}/><ProfileInvitations selection={selection} role={profile.role} state={profile.state}/></>:<p role="alert">No tienes permiso para gestionar empleados.</p>;
  if(path==='/account/tokens')return profile.role==='owner'?<ProfileTokens selection={selection} role={profile.role} state={profile.state}/>:<p role="alert">No tienes permiso para gestionar accesos MCP.</p>;
  if(path==='/results'||path==='/results/goals')return <Results selection={selection} timezone={profile.timezone} role={profile.role} profileState={profile.state}/>;
- if(['/sales/inbox','/sales/orders','/sales/receipts'].includes(path))return <ProfileSales key={path} resource={path==='/sales/inbox'?'conversations':path==='/sales/orders'?'orders':'receipts'} selection={selection} actorId={data.user.id} role={profile.role} profileState={profile.state} timezone={profile.timezone}/>;
+ if(path==='/sales/receipts')return <ReceiptQueue selection={selection} role={profile.role} state={profile.state} timezone={profile.timezone}/>;
+ if(['/sales/inbox','/sales/orders'].includes(path))return <ProfileSales key={path} resource={path==='/sales/inbox'?'conversations':'orders'} selection={selection} actorId={data.user.id} role={profile.role} profileState={profile.state} timezone={profile.timezone}/>;
  if(path==='/sales/payments/rules')return <ReceiptPolicies selection={selection} actorId={data.user.id} environment="REAL" role={profile.role} profileState={profile.state} variant={null}/>;
  if(path==='/sales/payments')return <><h1>Pagos</h1><a href="/sales/payments/rules">Reglas de comprobantes</a><PaymentsRegister selection={selection} environment="REAL" timezone={profile.timezone} role={profile.role}/></>;
  return <section><h1>Inicio · {profile.businessName}</h1><ProfileOnboarding selection={selection} role={profile.role} state={profile.state}/><ProfileHome selection={selection}/><p>Trabajas en {profile.businessName} con el rol {profileRoleLabels[profile.role]}.</p><div className="grid gap-4"><a href="/products">Consultar productos</a><a href="/sales/inbox">Atender conversaciones</a><a href="/sales/payments">Consultar pagos</a><a href="/results">Consultar resultados y metas</a></div></section>;

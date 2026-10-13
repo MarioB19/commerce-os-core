@@ -1,3 +1,4 @@
+import {pendingReceiptCount} from './receipt-queue.js';
 import type {ProfileExecutor} from './profile-context.js';
 import {authorizeProfileAction,type ProfileAuthority} from '../../domain/src/core/profile-authorization.js';
 import type {ProfileScope} from '../../contracts/src/profiles.js';
@@ -31,9 +32,10 @@ export async function readProfileHome(db:ProfileExecutor,authority:ProfileAuthor
   SELECT (SELECT count(*) FROM records r,day WHERE r.workspace_id=$1 AND r.environment='REAL' AND r.kind='conversation' AND r.created_at>=day.start) AS conversations,
    (SELECT count(*) FROM records r,day WHERE r.workspace_id=$1 AND r.environment='REAL' AND r.kind='order' AND r.created_at>=day.start) AS orders,
    (SELECT count(*) FROM records r,day WHERE r.workspace_id=$1 AND r.environment='REAL' AND r.kind='receipt' AND r.body->>'status'='APPROVED' AND r.updated_at>=day.start) AS approved,
-   (SELECT count(*) FROM records r WHERE r.workspace_id=$1 AND r.environment='REAL' AND r.kind='receipt' AND COALESCE(r.body->>'status','') NOT IN('APPROVED','REJECTED')) AS to_review,
    (SELECT count(*) FROM operational_alerts o WHERE o.workspace_id=$1 AND o.environment='REAL' AND o.status<>'RESOLVED') AS alerts,
    (SELECT count(*) FROM operational_alerts o WHERE o.workspace_id=$1 AND o.environment='REAL' AND o.status<>'RESOLVED' AND o.severity='CRITICAL') AS critical`,[db.workspaceId,tz])).rows[0];
+ // RF-04.b: the same count the receipt queue shows (tests and false receipts are not pending).
+ today.to_review=await pendingReceiptCount(db,'REAL');
  const onboarding=await readOnboarding(db,authority).catch(()=>null);
  const next=onboarding&&!onboarding.complete&&!onboarding.dismissed?{kind:'ONBOARDING' as const,step:onboarding.next}
   :n(today.to_review)>0?{kind:'REVIEW_RECEIPTS' as const,count:n(today.to_review)}

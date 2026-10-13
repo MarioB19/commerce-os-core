@@ -138,6 +138,17 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
  sectionTool('collections_manage','Cobro de la variante','SPEI y/o enlace de pago. Los datos se guardan cifrados y nunca se devuelven completos.','collection',collectionInputSchema,false);
  tool('receipt_rules_manage','Reglas de comprobantes','Consulta o guarda las reglas de validación de comprobantes del perfil o de una variante.',
   fromUnion(receiptPolicyCommand,{get_profile:'leer_perfil',get_variant:'leer_variante',save_profile:'guardar_perfil',save_variant:'guardar_variante',reconcile:'consultar_operacion'},op=>op.startsWith('get')||op==='reconcile',i=>c.receiptPolicies(i)));
+ const receiptId=z.object({receiptId:z.uuid()}).strict();
+ tool('receipts_manage','Comprobantes','Cola de comprobantes: primero los que esperan una decisión. Cada uno trae su resultado (Aprobado, Por revisar, Rechazado, Prueba o Falso) y la regla que lo decidió. Revisar aprueba o rechaza uno; el archivo se abre en la aplicación.',{
+  listar:P('GET',z.object({view:z.enum(['pending','all']).optional(),limit:z.number().int().min(1).max(100).optional(),offset:z.number().int().min(0).optional()}).strict(),i=>'/v2/receipts'+query(i)),
+  leer:P('GET',receiptId,i=>'/v2/receipts/'+id(i.receiptId)),
+  // The image or PDF of a customer's payment stays in the app (never in an AI context).
+  archivo:{schema:receiptId,read:true,run:async i=>{const raw=await c.variant('GET','/v2/receipts/'+id(i.receiptId)) as Record<string,unknown>;
+   const r=(raw&&typeof raw==='object'&&'data' in raw?raw.data:raw) as {has_document?:boolean;mime_type?:string|null}|undefined;
+   return{data:{available:r?.has_document===true,mime_type:r?.mime_type??null,open_in_app:'/sales/receipts?receipt='+id(i.receiptId)}};}},
+  revisar:P('POST',operation.extend({receiptId:z.uuid(),decision:z.enum(['APPROVED','REJECTED']),expectedVersion:z.number().int().positive(),reason:z.string().max(300).optional()}).strict(),
+   i=>'/v2/receipts/'+id(i.receiptId)+'/decision',i=>({decision:i.decision,expected_version:i.expectedVersion,...(i.reason?{reason:i.reason}:{})})),
+ });
  tool('payments_manage','Pagos','Consulta y exporta el registro de pagos con los mismos filtros de la aplicación; no aprueba pagos.',
   fromUnion(paymentsCommandSchema,{options:'opciones',list:'listar',export:'exportar'},()=>true,async i=>{const r=await c.payments(i);if(r.operation!=='export')return r;const {bytes,...meta}=r;return{...meta,bytesBase64:Buffer.from(bytes).toString('base64')};}));
  tool('results_read','Resultados','Resultados del perfil sin mezclar monedas; sin datos no equivale a cero.',

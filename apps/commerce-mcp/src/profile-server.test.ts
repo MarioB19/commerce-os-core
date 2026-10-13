@@ -135,4 +135,18 @@ describe('V7 F3 number tools',()=>{
    expect(seen).toEqual([`POST https://commerce.example.test/v2/variants/${variantId}/numbers?`.replace('?','')]);
   }finally{await client.close();await server.close();}
  });
+ it('works the receipt queue: lists, reads, decides with the operation as key and keeps the file in the app',async()=>{
+  const seen:{method:string;url:string;key:string|null;body:unknown}[]=[],receiptId='66666666-6666-4666-8666-666666666666',operationId='77777777-7777-4777-8777-777777777777';
+  const {client,server}=await connect(async(input,init)=>{seen.push({method:String(init?.method??'GET'),url:String(input).replace('https://commerce.example.test',''),key:new Headers(init?.headers).get('idempotency-key'),body:init?.body?JSON.parse(String(init.body)):undefined});
+   return json(init?.method==='POST'?202:200,{data:{id:receiptId,has_document:true,mime_type:'image/png',rows:[],command_id:operationId}});});
+  try{
+   await client.callTool({name:'receipts_manage',arguments:{action:'listar',view:'pending'}});
+   await client.callTool({name:'receipts_manage',arguments:{action:'leer',receiptId}});
+   const file=await client.callTool({name:'receipts_manage',arguments:{action:'archivo',receiptId}});
+   expect(file.structuredContent).toEqual({data:{available:true,mime_type:'image/png',open_in_app:'/sales/receipts?receipt='+receiptId}});
+   await client.callTool({name:'receipts_manage',arguments:{action:'revisar',operationId,receiptId,decision:'APPROVED',expectedVersion:3}});
+   expect(seen.map(x=>[x.method,x.url,x.key])).toEqual([['GET','/v2/receipts?view=pending',null],['GET',`/v2/receipts/${receiptId}`,null],['GET',`/v2/receipts/${receiptId}`,null],['POST',`/v2/receipts/${receiptId}/decision`,operationId]]);
+   expect(seen[3]!.body).toEqual({decision:'APPROVED',expected_version:3});
+  }finally{await client.close();await server.close();}
+ });
 });

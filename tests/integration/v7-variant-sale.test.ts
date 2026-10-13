@@ -31,7 +31,7 @@ const P='variant-sale-'+randomUUID();
 const origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0]!;
 const withRole=roleExecutor(pool),aiKey=aiCredentialKey();
 let app:Awaited<ReturnType<typeof createApp>>,aiPool:pg.Pool,automation:pg.Pool,api:pg.Pool,root='',ownerId='';const cookies:Record<string,string>={};
-const call=(who:string,method:string,path:string,body?:unknown)=>app.inject({method:method as 'GET',url:path+(path.includes('?')?'&':'?')+'environment=REAL',payload:body as object,headers:{origin,cookie:cookies[who]!,'idempotency-key':randomUUID()}});
+const call=(who:string,method:string,path:string,body?:unknown,key=randomUUID())=>app.inject({method:method as 'GET',url:path+(path.includes('?')?'&':'?')+'environment=REAL',payload:body as object,headers:{origin,cookie:cookies[who]!,'idempotency-key':key}});
 const data=(r:{statusCode:number;body:string;json():any},status=200)=>{expect(r.statusCode,r.body).toBe(status);return r.json().data;};
 async function inProfile<T>(work:(c:pg.PoolClient)=>Promise<T>){
  const c=await pool.connect();
@@ -53,7 +53,7 @@ const fakeAnthropic:typeof fetch=async(_input,init)=>{
   usage:{input_tokens:1500,output_tokens:120,service_tier:'standard'}}),{status:200,headers:{'content-type':'application/json'}});
 };
 beforeAll(async()=>{
- root=await mkdtemp(join(tmpdir(),'v7-sale-'));await mkdir(join(root,'assets'));
+ root=await mkdtemp(join(tmpdir(),'v7-sale-'));await mkdir(join(root,'assets'));process.env.PRIVATE_STORAGE_DIR=root;
  await fixtureProfiles({id:P,numbers:5});app=await createApp();ownerId=(await login('owner','owner')).id;await login('operator','operator');
  aiPool=new pg.Pool({connectionString:process.env.DATABASE_URL,max:3});aiPool.on('connect',c=>{void c.query('SET ROLE commerce_ai');});
  automation=new pg.Pool({connectionString:process.env.DATABASE_URL,max:3});automation.on('connect',c=>{void c.query('SET ROLE commerce_automation');});
@@ -92,7 +92,7 @@ async function customerPays(number:DomainRecord,identity:string,image:Buffer){
  await writeFile(join(root,'assets',`${key}.enc`),encrypt(image.toString('base64')));
  const asset=await inProfile(async c=>(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','asset',$2) RETURNING id",[P,{name:'Comprobante',kind:'file',status:'READY',storage_key:key,sha256:sha,mime_type:'image/png',size_bytes:image.length}])).rows[0].id as string);
  const result=await worker(c=>applyCommand(c,{id:randomUUID(),workspace_id:P,environment:'REAL',kind:'conversation_command',resource_id:conversation.id,payload:{type:'receipt_received',asset_id:asset}} as never)) as {receipt_id:string};
- return{conversation,order,receipt:result.receipt_id};
+ return{conversation,order,receipt:result.receipt_id,imageSha:sha};
 }
 const analyze=()=>processVariantReceipts(3,{workers:createProfileWorkerRuntime(automation as never,'commerce_automation','REAL'),aiPool,custodyKey:aiKey,fetcher:fakeAnthropic,media:privateReceiptMedia(root)});
 
@@ -127,10 +127,27 @@ it('sells a variant from the first message to the delivered material',async()=>{
  expect(JSON.stringify(reviewed.body)).not.toContain(ACCOUNT);expect(JSON.stringify(reviewed.body)).not.toContain(HOLDER);
  const attempt=await inProfile(async c=>(await c.query("SELECT variant_id,conversation_id,state FROM ai_attempts WHERE workspace_id=$1 AND task='receipt.document'",[P])).rows);
  expect(attempt).toEqual([{variant_id:v.id,conversation_id:second.conversation.id,state:'SUCCEEDED'}]);
- // One decision by the owner approves it and delivers the material.
- const decided=await call('owner','POST',`/v1/receipts/${second.receipt}/review`,{decision:'APPROVED',reason:'Comprobante revisado',expected_version:reviewed.version});
+ // The queue (RF-17.g): pending first, oldest first, each with its result and rule.
+ const queue=data(await call('operator','GET','/v2/receipts'));
+ expect(queue.pending).toBe(2);expect(queue.rows.map((r:{id:string})=>r.id)).toEqual([first.receipt,second.receipt]);
+ expect(queue.rows[0]).toMatchObject({result:'REVIEW',result_label:'Por revisar',reason:'RECEIPT_AI_GRANT_REQUIRED',product:'Curso',variant:'México',expected_minor:9700,currency:'MXN',has_document:true});
+ expect(queue.rows[1]).toMatchObject({reason:'HUMAN_APPROVAL_REQUIRED',reason_label:'Tus reglas piden que una persona lo apruebe',observed_minor:9700,decision_pending:false});
+ const detail=data(await call('operator','GET',`/v2/receipts/${second.receipt}`));
+ expect(detail.checks.find((c:{rule:string})=>c.rule==='AMOUNT')).toMatchObject({label:'Monto',state:'PASSED',state_label:'Cumple'});
+ expect(detail.checks.find((c:{rule:string})=>c.rule==='DESTINATION')).toMatchObject({state:'PASSED'});
+ expect(detail.extraction).toMatchObject({bank:'Banco sintético',destination_suffix:ACCOUNT.slice(-4)});
+ expect(JSON.stringify(detail)).not.toContain(ACCOUNT);expect(JSON.stringify(detail)).not.toContain(HOLDER);
+ const document=await call('operator','GET',`/v2/receipts/${second.receipt}/document`);
+ expect(document.statusCode).toBe(200);expect(document.headers['content-type']).toBe('image/png');expect(document.headers['cache-control']).toBe('private, no-store');
+ expect(createHash('sha256').update(document.rawPayload).digest('hex')).toBe(second.imageSha);
+ // One click approves it; the same request again is the same decision.
+ const key=randomUUID(),decided=await call('operator','POST',`/v2/receipts/${second.receipt}/decision`,{decision:'APPROVED',expected_version:detail.version},key);
  expect(decided.statusCode,decided.body).toBe(202);
+ expect(data(await call('operator','POST',`/v2/receipts/${second.receipt}/decision`,{decision:'APPROVED',expected_version:detail.version},key),202).command_id).toBe(decided.json().data.command_id);
+ expect((await call('owner','POST',`/v2/receipts/${second.receipt}/decision`,{decision:'REJECTED',expected_version:detail.version})).json().error.code).toBe('RECEIPT_DECISION_PENDING');
+ expect(data(await call('operator','GET',`/v2/receipts/${second.receipt}`)).decision_pending).toBe(true);
  await withRole('commerce_automation',()=>processCommands(10));
+ expect((await call('owner','POST',`/v2/receipts/${second.receipt}/decision`,{decision:'REJECTED',expected_version:(await record(second.receipt)).version})).json().error.code).toBe('RECEIPT_ALREADY_DECIDED');
  expect((await record(second.receipt)).body.status).toBe('APPROVED');
  expect((await record(second.order.id)).body).toMatchObject({receipt_status:'APPROVED'});
  const delivered=async(conversation:string)=>inProfile(async c=>(await c.query("SELECT payload FROM outbox WHERE workspace_id=$1 AND conversation_id=$2 AND payload->>'asset_id'=$3",[P,conversation,material])).rows.length);
@@ -150,6 +167,14 @@ it('sells a variant from the first message to the delivered material',async()=>{
  const wrong=await record(fourth.receipt);
  expect(wrong.body.status).toBe('HUMAN_REVIEW');expect(JSON.stringify(wrong.body.assessment.reasons)).toContain('AMOUNT');
  expect(await delivered(fourth.conversation.id)).toBe(0);
+ // The unread first receipt: approving needs the amount the person observed.
+ const unread=data(await call('owner','GET',`/v2/receipts/${first.receipt}`));expect(unread.observed_minor).toBeNull();
+ expect((await call('owner','POST',`/v2/receipts/${first.receipt}/decision`,{decision:'APPROVED',expected_version:unread.version})).json().error.code).toBe('RECEIPT_AMOUNT_REQUIRED');
+ expect(data(await call('owner','POST',`/v2/receipts/${first.receipt}/decision`,{decision:'APPROVED',expected_version:unread.version,amount_minor:9700}),202).status).toBe('PENDING');
+ await withRole('commerce_automation',()=>processCommands(10));
+ expect((await record(first.receipt)).body).toMatchObject({status:'APPROVED',extraction:{amount_minor:9700,source:'human_observation'}});
+ expect(await delivered(first.conversation.id)).toBe(1);
+ expect(data(await call('owner','GET','/v2/receipts')).pending).toBe(1);
  // The second order keeps the policy it captured (human approval).
  const snapshots=await inProfile(async c=>(await c.query('SELECT order_id,body FROM receipt_order_policy_snapshots WHERE workspace_id=$1 ORDER BY created_at',[P])).rows);
  expect(snapshots.find(s=>s.order_id===second.order.id)!.body.policy.automaticApproval).toBe(false);

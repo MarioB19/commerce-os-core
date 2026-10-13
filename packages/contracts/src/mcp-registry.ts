@@ -27,7 +27,7 @@ export const mcpRegistry:readonly McpRegistryEntry[]=Object.freeze([
  tool('warmup_manage','profile','/v2/continuity/warmup',['warmup:read','warmup:write'],['progreso','pausar','reanudar','evidencia']),
  tool('conversations_manage','profile','/v2/conversations',['conversations:read','conversations:write'],[],['listar','leer','asignar_persona','tomar_control','liberar_control','responder','registrar_baja','elegir_variante']),
  tool('orders_manage','profile','/v2/orders',['orders:read','orders:write'],[],['listar','leer','corregir_clasificacion','historial']),
- tool('receipts_manage','profile','/v2/receipts',['receipts:read','receipts:review'],[],['listar','leer','archivo','revisar']),
+ tool('receipts_manage','profile','/v2/receipts',['receipts:read','receipts:review'],['listar','leer','archivo','revisar']),
  tool('payments_manage','profile','/v2/payments',['payments:read','payments:write','payments:export'],['opciones','listar','exportar'],['leer','registrar','conciliar','corregir']),
  tool('remarketing_manage','profile','/v2/remarketing',['remarketing:read','remarketing:write'],[],['leer','guardar','validar','ciclos','previsualizar_reprogramacion','reprogramar','pausar','reanudar','resultados']),
  tool('campaigns_read','profile','/v2/campaigns',['campaigns:read'],[],['portafolios','cuentas','campanas','anuncios','resultados','sincronizar_lectura']),
