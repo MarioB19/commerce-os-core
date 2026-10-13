@@ -117,7 +117,10 @@ CREATE INDEX market_events_release ON market_variant_events(workspace_id,environ
 -- apply_retention_plan locks the records parent before redacting versions. Its
 -- asset reference check predates F4; preserve materials pinned only by F4 too.
 CREATE INDEX market_release_materials ON market_releases USING gin ((body->'configuration'->'materials') jsonb_path_ops);
-CREATE FUNCTION guard_market_material_retention() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+-- SECURITY DEFINER (migration owner): every retention writer role, including
+-- the D18 asset minimization owner, must see the pinning releases of the row's
+-- own profile; a reader lacking SELECT would otherwise fail or skip the guard.
+CREATE FUNCTION guard_market_material_retention() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
 BEGIN
  IF EXISTS(SELECT 1 FROM public.market_releases r WHERE r.workspace_id=OLD.workspace_id AND r.environment=OLD.environment
   AND r.body->'configuration'->'materials' @> jsonb_build_array(jsonb_build_object('id',OLD.id::text))) THEN

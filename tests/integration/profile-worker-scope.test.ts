@@ -1,5 +1,4 @@
 /** Synthetic isolated PostgreSQL; no scheduler, provider or production access. */
-import {readFile} from 'node:fs/promises';
 import {randomBytes} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';

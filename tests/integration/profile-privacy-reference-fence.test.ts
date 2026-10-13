@@ -1,8 +1,7 @@
-import {readFile,readdir} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
-import {beforeAll,afterAll,describe,it,expect} from 'vitest';
-import {requireMigratedProfileSchema} from '../support/migrated-database.js';
+import {beforeAll,afterAll,describe,it,expect,beforeEach} from 'vitest';
+import {requireMigratedProfileSchema,fenceSessionsExited} from '../support/migrated-database.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {readProfileCatalog} from '../../packages/db/src/profile-inventory.js';
 import {buildPrivacyWriterFencePlan} from '../../packages/db/src/privacy-writer-fence.js';
@@ -21,7 +20,7 @@ describe('035 global all-profile references and stale snapshot barrier',()=>{
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:4});
   // V7 F2: the canonical chain, its components and the isolation model are
-  // installed by the migrations (0069-0099); no transition source is applied here.
+  // installed by the migrations (0069-0100); no transition source is applied here.
   await requireMigratedProfileSchema(admin);
   for(const workspace of [w,other])await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic privacy fencing','UTC',0,0,100)",[workspace]);
   for(const workspace of [w,other]){const c=await admin.connect();try{await c.query('BEGIN');await scope(c,workspace);await c.query('SELECT adopt_profile_quota_inventory($1,profile_quota_inventory($1))',[workspace]);await c.query('COMMIT');}finally{c.release();}}
@@ -29,6 +28,7 @@ describe('035 global all-profile references and stale snapshot barrier',()=>{
   const secret=randomBytes(32).toString('hex'),second=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${secret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;GRANT commerce_privacy_fence_worker,commerce_privacy_reference_worker TO "${login}";CREATE ROLE "${apiLogin}" LOGIN PASSWORD '${second}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;GRANT commerce_api TO "${apiLogin}"`);
   const u=new URL(url);u.username=login;u.password=secret;worker=new pg.Pool({connectionString:u.toString(),max:3});const a=new URL(url);a.username=apiLogin;a.password=second;api=new pg.Pool({connectionString:a.toString(),max:3});
  },60000);
+ beforeEach(async()=>{if(admin)await fenceSessionsExited(admin);});
  afterAll(async()=>{await worker?.end();await api?.end();if(admin){try{await admin.query(`DROP ROLE IF EXISTS "${login}","${apiLogin}"`);}finally{await admin.end();}}});
 
  async function globalLease(){const c=await worker.connect();try{await c.query('SET ROLE commerce_privacy_reference_worker');const lease=(await c.query('SELECT privacy_reference_fence_acquire() r')).rows[0].r;return{c,lease};}catch(e){c.release(true);throw e;}}

@@ -29,6 +29,7 @@ const reviewedRoles = Object.freeze({
   commerce_profile_bootstrap_owner: false,
   commerce_authorization_reader: false,
   commerce_isolation_reader: false,
+  commerce_platform_owner: false,
 });
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 export async function captureIntegrationRoles(client) {

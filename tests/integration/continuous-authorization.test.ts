@@ -1,7 +1,6 @@
 import {bindProfileEnvironment} from '../../packages/db/src/profile-environment.js';
 /** Real PostgreSQL tests over synthetic local records. No channel/QR/provider
  * observation is asserted by this fixture, and no production schema is changed. */
-import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID,createHash} from 'node:crypto';
 import Fastify,{type FastifyInstance,type FastifyRequest} from 'fastify';
 import {fromNodeHeaders} from 'better-auth/node';
@@ -163,7 +162,7 @@ async function awaitGrant(f:Awaited<ReturnType<typeof commercialReady>>){
  return{...f,conversation,issue:()=>human((db,p)=>store.issueCommercialContinuity(db,'REAL',{operationId:randomUUID(),assignmentId:f.origin.assignment,expectedRevision:2},p.authority))};
 }
 async function clearWorkerCandidates(){await admin.query("UPDATE records SET body=body||'{\"historical_only\":true,\"ai_pending\":false}'::jsonb,version=version+1 WHERE workspace_id=$1 AND kind='conversation'",[workspace]);}
-const work=<T>(fn:(db:ProfileExecutor)=>Promise<T>)=>tx('commerce_automation',db=>withProfileQueryRouting(db,()=>fn(db)));
+const work=<T>(fn:(db:ProfileExecutor)=>Promise<T>,environment:'REAL'|'SIMULATION'='REAL')=>tx('commerce_automation',db=>withProfileQueryRouting(db,()=>fn(db)),workspace,environment);
 const effects=async(id:string)=>(await admin.query('SELECT * FROM outbox WHERE conversation_id=$1 ORDER BY dispatch_sequence',[id])).rows;
 const conversation=async(id:string)=>(await getRecord(admin,workspace,'conversation',id))!;
 const runFor=async(id:string)=>(await admin.query("SELECT * FROM records WHERE workspace_id=$1 AND kind='ai_run' AND body->>'conversation_id'=$2 ORDER BY created_at",[workspace,id])).rows;
@@ -429,8 +428,10 @@ describe('F3 continuity persistence, real restricted PostgreSQL and synthetic so
  });
  it('013 exposes only the selected locked profile to exact worker roles without global profiles SELECT',async()=>{
   for(const role of ['commerce_automation','commerce_channel'] as const){
-   expect(await tx(role,db=>lockedContinuousWorkerProfile(db))).toMatchObject({id:workspace,state:'ACTIVE',version:1,timezone:'UTC'});
-   expect(await tx(role,db=>lockedContinuousWorkerProfile(db),foreign)).toMatchObject({id:foreign,state:'ACTIVE',version:1,timezone:'UTC'});
+   // V7 RF-01.5: state changes are versioned (0100); compare with the native row.
+   const versions=Object.fromEntries((await admin.query('SELECT id,version FROM profiles WHERE id=ANY($1)',[[workspace,foreign]])).rows.map(r=>[r.id,r.version]));
+   expect(await tx(role,db=>lockedContinuousWorkerProfile(db))).toMatchObject({id:workspace,state:'ACTIVE',version:versions[workspace],timezone:'UTC'});
+   expect(await tx(role,db=>lockedContinuousWorkerProfile(db),foreign)).toMatchObject({id:foreign,state:'ACTIVE',version:versions[foreign],timezone:'UTC'});
    await expect(tx(role,db=>db.query('SELECT * FROM profiles'))).rejects.toThrow(/permission denied/);
   }
   await expect(tx('commerce_api',db=>db.query('SELECT * FROM read_locked_continuous_worker_profile()'))).rejects.toThrow(/permission denied/);
@@ -646,7 +647,7 @@ describe('F3 continuity persistence, real restricted PostgreSQL and synthetic so
  it('SIMULATION recognizes the exact original without inventing permanent authority',async()=>{
   const account=await record('channel_account',{provider:'simulator',status:'WORKING'},workspace,'SIMULATION'),contact=await record('contact',{status:'LEAD'},workspace,'SIMULATION');
   const id=await record('conversation',{account_id:account,contact_id:contact},workspace,'SIMULATION'),conv=(await getRecord(admin,workspace,'conversation',id))!,key=randomUUID();
-  const create=()=>work(db=>proposeEffectOutcome(db,conv,{kind:'text',text:'Simulation only'},key));const first=await create();expect(first.state).toBe('CREATED');if(first.state==='BLOCKED')throw Error('FIXTURE');
+  const create=()=>work(db=>proposeEffectOutcome(db,conv,{kind:'text',text:'Simulation only'},key),'SIMULATION');const first=await create();expect(first.state).toBe('CREATED');if(first.state==='BLOCKED')throw Error('FIXTURE');
   expect(first.effect).toMatchObject({environment:'SIMULATION',continuous_authorization_id:null,authorization_id:null,approval_hash:first.effect.config_hash});expect(await create()).toEqual({state:'EXISTING_MATCH',effect:first.effect});
  });
  it('AI discards output when the live assignment changes during its one provider request',async()=>{

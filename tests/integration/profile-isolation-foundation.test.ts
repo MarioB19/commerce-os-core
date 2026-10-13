@@ -5,6 +5,7 @@ import {afterAll,beforeAll,describe,expect,it} from 'vitest';
 import {withProfileTransaction} from '../../packages/db/src/profile-context.js';
 import {assessProfileCatalog,readProfileCatalog,type ProfileInventoryPolicy,type ProfileCatalog} from '../../packages/db/src/profile-inventory.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
+import {withMigratedDatabase} from '../support/migrated-database.js';
 
 // Synthetic PostgreSQL primitive proof only. It does not activate domain RLS.
 const suffix=randomBytes(8).toString('hex'),login='f2_test_'+suffix;
@@ -18,7 +19,9 @@ describe('profile foundation with PostgreSQL and an actual restricted login',()=
   if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw new Error('ISOLATED_TEST_DATABASE_REQUIRED');
   admin=new pg.Pool({connectionString:url.toString(),max:1,connectionTimeoutMillis:5000});
   policy=JSON.parse(await readFile(new URL('../../packages/db/profile-inventory-policy.json',import.meta.url),'utf8'));
-  baseline=await readProfileCatalog(admin,policy.runtime_roles);
+  // The F0 inventory policy pins the 68-migration historical schema (production
+  // before the V7 cutover); read it from a sub-database migrated through 0068.
+  await withMigratedDatabase('0068',async historical=>{baseline=await readProfileCatalog(historical,policy.runtime_roles);});
   const password=randomBytes(32).toString('hex');
   await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${password}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT`);
   await admin.query(`GRANT commerce_api TO "${login}"`);
@@ -40,7 +43,7 @@ describe('profile foundation with PostgreSQL and an actual restricted login',()=
   }
  });
  it('reads the migrated native catalog and exact historical hashes without declaring isolation complete',async()=>{
-  const files=(await readdir(sources)).filter(x=>x.endsWith('.sql')).sort();
+  const files=(await readdir(sources)).filter(x=>x.endsWith('.sql')&&x<'0069').sort();
   const expected=await Promise.all(files.map(async name=>({name,sha256:createHash('sha256').update(await readFile(new URL(name,sources))).digest('hex')})));
   expect(baseline.migrations).toEqual(expected);
   const report=assessProfileCatalog(baseline,policy);

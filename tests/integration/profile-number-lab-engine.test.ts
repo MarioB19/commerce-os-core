@@ -20,7 +20,7 @@ const allRoleNames=[login,seedLogin,'commerce_lab_engine','commerce_lab_engine_s
 const rolesSql=`SELECT oid::text,rolname,rolsuper,rolinherit,rolcreaterole,rolcreatedb,rolcanlogin,rolreplication,rolbypassrls,rolconnlimit,rolvaliduntil,rolconfig FROM pg_roles ORDER BY rolname`;
 const membersSql=`SELECT roleid::text,member::text,grantor::text,admin_option,inherit_option,set_option FROM pg_auth_members ORDER BY roleid,member,grantor`;
 async function applyCanonical(pool:pg.Pool){
- const migrations=new URL('../../packages/db/migrations/',import.meta.url),files=(await readdir(migrations)).filter(n=>n.endsWith('.sql')).sort();expect(files).toHaveLength(68);
+ const migrations=new URL('../../packages/db/migrations/',import.meta.url),files=(await readdir(migrations)).filter(n=>n.endsWith('.sql')&&n<'0069').sort();expect(files).toHaveLength(68);
  const c=await pool.connect();try{for(const name of files){await c.query('BEGIN');await c.query(await readFile(new URL(name,migrations),'utf8'));await c.query('COMMIT');}
  for(const name of ['001_profile_identity.sql','010_continuous_authorization.sql','012_continuous_effects.sql']){await c.query('BEGIN');await c.query(await readFile(new URL('../../packages/db/profile-transition/'+name,import.meta.url),'utf8'));await c.query('COMMIT');}}
  finally{c.release();}

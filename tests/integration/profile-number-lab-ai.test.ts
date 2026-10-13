@@ -1,5 +1,4 @@
 import {PostgresNumberLabSellerAi} from '../../packages/ai-providers/src/laboratory-seller.js';
-import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import {createServer,type Server} from 'node:http';
 import pg from 'pg';

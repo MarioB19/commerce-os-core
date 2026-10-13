@@ -16,7 +16,7 @@ describe('complete composed V7 FK proposal over the native schema',()=>{
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:3});
   // V7 F2: the canonical chain, its components and the isolation model are
-  // installed by the migrations (0069-0099); no transition source is applied here.
+  // installed by the migrations (0069-0100); no transition source is applied here.
   await requireMigratedProfileSchema(admin);
   catalog=await readProfileCatalog(admin,['commerce_api','commerce_ingress','commerce_automation','commerce_channel','commerce_maintenance','commerce_ai','commerce_mail_dispatch','commerce_number_lab','commerce_results']);plan=planProfileForeignKeys(catalog,commerceProfileForeignKeyPolicy(catalog));
   for(const w of [a,b])await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic FK','UTC',0,0,0)",[w]);
@@ -27,7 +27,7 @@ describe('complete composed V7 FK proposal over the native schema',()=>{
   // the same proposal because composed keys already carry their scope columns.
   const raw=await readFile(new URL('../../packages/db/migrations/0098_v7_composed_foreign_keys.sql',import.meta.url),'utf8');
   expect(raw.slice(raw.indexOf('-- Local proposal only'))).toBe(plan.sql);
-  expect(catalog.tables.length+catalog.non_public_tables!.length).toBe(220);expect(plan.changes).toHaveLength(145);expect(plan.changes.filter(c=>c.original.on_delete==='c').map(c=>c.source_table)).toEqual(['health_observation_index','outbox_gate_schedule']);expect(plan.changes.some(c=>c.source_table.startsWith('commerce_number_lab.'))).toBe(false);
+  expect(catalog.tables.length+catalog.non_public_tables!.length).toBe(222);expect(plan.changes).toHaveLength(145);expect(plan.changes.filter(c=>c.original.on_delete==='c').map(c=>c.source_table)).toEqual(['health_observation_index','outbox_gate_schedule']);expect(plan.changes.some(c=>c.source_table.startsWith('commerce_number_lab.'))).toBe(false);
  });
  it('does not permit an application role to execute the DDL proposal',async()=>{await transaction(async c=>{await c.query('SET LOCAL ROLE commerce_api');await expect(c.query(plan.sql)).rejects.toThrow('PROFILE_MIGRATION_OWNER_REQUIRED');});});
  it('revalidates nullable scope before any FK addition',async()=>{await transaction(async c=>{await c.query('ALTER TABLE records ALTER COLUMN environment DROP NOT NULL');await expect(c.query(plan.sql)).rejects.toThrow('PROFILE_FK_SCOPE_DRIFT');});});
@@ -35,7 +35,7 @@ describe('complete composed V7 FK proposal over the native schema',()=>{
  it('keeps every original key, its actions and validation next to its validated composed key',async()=>{
   const installed=(await admin.query("SELECT conname,convalidated FROM pg_constraint WHERE contype='f' AND conname LIKE 'profile_scope_f_%'")).rows as {conname:string;convalidated:boolean}[];
   expect(installed.map(r=>r.conname).sort()).toEqual(plan.changes.map(c=>c.foreign_key_name).sort());expect(installed.every(r=>r.convalidated)).toBe(true);
-  const keys=[...catalog.foreign_keys,...catalog.non_public_foreign_keys!];expect(keys).toHaveLength(526);const native=new Map(keys.map(k=>[k.table+'.'+k.name,k]));for(const change of plan.changes){const k=native.get(change.original.table+'.'+change.original.name);expect(k?.validated).toBe(true);expect(change.original).toMatchObject(k!);}
+  const keys=[...catalog.foreign_keys,...catalog.non_public_foreign_keys!];expect(keys).toHaveLength(531);const native=new Map(keys.map(k=>[k.table+'.'+k.name,k]));for(const change of plan.changes){const k=native.get(change.original.table+'.'+change.original.name);expect(k?.validated).toBe(true);expect(change.original).toMatchObject(k!);}
   const output=process.env.PROFILE_FK_CATALOG_PATH;if(output){if(!isAbsolute(output)||!relative(process.cwd(),resolve(output)).startsWith('../'))throw Error('PROFILE_FK_EXTERNAL_PATH_REQUIRED');await writeFile(output,JSON.stringify({schema_version:1,state:'LOCAL_MIGRATED_COMPOSED_FK_CATALOG',catalog_sha256:plan.catalog_sha256,policy_sha256:plan.policy_sha256,changes:plan.changes.length,catalog,production_affected:false},null,2)+'\n',{flag:'wx',mode:0o600});}
  });
  it('blocks a new cross-profile relation even through an owner that bypasses row policies',async()=>{await transaction(async c=>{const id=await health(c);await expect(c.query('UPDATE health_observation_index SET workspace_id=$2 WHERE record_id=$1',[id,b])).rejects.toMatchObject({code:'23503'});});});

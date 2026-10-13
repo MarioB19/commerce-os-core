@@ -15,12 +15,14 @@ import {paymentsRegisterRoutes} from './payments-register.js';
 import {receiptPolicyRoutes} from './receipt-policies.js';
 import {resultsRoutes} from './results.js';
 import {resultGoalRoutes} from './result-goals.js';
+import {platformProfileRoutes,type PlatformRouteDependencies} from './platform-profiles.js';
 
 export interface ProfileRuntimeDependencies {
  request?:ProfileRequestDependencies;
  identity?:ProfileIdentityDependencies;
  registration?:InvitationRegistrationDependencies;
  acceptance?:InvitationAcceptanceDependencies;
+ platform?:PlatformRouteDependencies;
 }
 /** Fixed composition of the reviewed V2 consumers. Each family retains its own
  * native authorization and transaction; no legacy principal or catch fallback.
@@ -33,6 +35,7 @@ export async function profileRuntimeRoutes(app:FastifyInstance,deps:ProfileRunti
   await invitationRegistrationRoutes(identity,deps.registration);
   await invitationAcceptanceRoutes(identity,deps.acceptance);
  });
+ await app.register(async platform=>{await platformProfileRoutes(platform,deps.platform);});
  for(const routes of [profileOverviewRoutes,profileSettingsRoutes,profileEmployeeRoutes,
   profileInvitationRoutes,profileTokenRoutes,profileCatalogRoutes,marketVariantRoutes,
   continuousAuthorizationRoutes,paymentsRegisterRoutes,receiptPolicyRoutes,resultsRoutes,resultGoalRoutes]){

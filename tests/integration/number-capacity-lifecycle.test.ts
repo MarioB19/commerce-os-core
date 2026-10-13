@@ -1,5 +1,5 @@
 import {beforeAll,afterAll,it,expect} from 'vitest';
-import {fixtureProfiles} from '../support/profile-fixture.js';
+import {fixtureProfiles,retireRealAccountOn} from '../support/profile-fixture.js';
 import {randomUUID,randomBytes} from 'node:crypto';
 import {createApp} from '../../apps/api/src/app.js';
 import {provisionUser} from '../../apps/api/src/auth.js';
@@ -23,7 +23,8 @@ afterAll(async()=>{
    const outside=async()=>Promise.all(['records','channel_sessions','number_capacity_slots','number_operations'].map(async table=>(await c.query(`SELECT count(*)::int count,md5(COALESCE(string_agg(to_jsonb(item)::text,'' ORDER BY id),'')) checksum FROM ${table} item WHERE workspace_id<>$1${table==='records'?" AND kind='channel_account'":''}`,[workspace])).rows[0]));
    const previous=await outside();
    const accounts=(await c.query("SELECT * FROM records WHERE workspace_id=$1 AND kind='channel_account' AND NOT body?'deleted_at'",[workspace])).rows;
-   for(const account of accounts)await putRecord(c,{id:account.id,version:account.version,workspaceId:workspace,environment:account.environment,kind:'channel_account',body:{...account.body,deleted_at:new Date().toISOString()}});
+   // V7 F2: a REAL number retires only through the quota-safe sequence.
+   for(const account of accounts)if(account.environment==='REAL')await retireRealAccountOn(c,workspace,account.id);else await putRecord(c,{id:account.id,version:account.version,workspaceId:workspace,environment:account.environment,kind:'channel_account',body:{...account.body,deleted_at:new Date().toISOString()}});
    await c.query('DELETE FROM number_capacity_slots WHERE workspace_id=$1',[workspace]);
    await c.query("UPDATE number_operations SET state='CANCELLED',lease_owner=NULL,lease_until=NULL,version=version+1 WHERE workspace_id=$1 AND state NOT IN('SUCCEEDED','FAILED','CANCELLED')",[workspace]);
    expect((await c.query("SELECT (SELECT count(*) FROM records WHERE workspace_id=$1 AND kind='channel_account' AND NOT body?'deleted_at')::int accounts,(SELECT count(*) FROM channel_sessions WHERE workspace_id=$1 AND archived_at IS NULL)::int sessions,(SELECT count(*) FROM number_capacity_slots WHERE workspace_id=$1)::int slots,(SELECT count(*) FROM number_operations WHERE workspace_id=$1 AND state NOT IN('SUCCEEDED','FAILED','CANCELLED'))::int jobs",[workspace])).rows[0]).toEqual({accounts:0,sessions:0,slots:0,jobs:0});

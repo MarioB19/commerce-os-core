@@ -1,4 +1,3 @@
-import {readFile} from 'node:fs/promises';
 import {randomBytes} from 'node:crypto';
 import pg from 'pg';
 import Fastify,{type FastifyInstance} from 'fastify';
@@ -87,7 +86,9 @@ describe('own profile settings on restricted native PostgreSQL',()=>{
    await asProfileOwner(admin!,one,c=>c.query("UPDATE profiles SET state='SUSPENDED' WHERE id=$1",[one]));
    expect((await patch({expectedVersion:before.version,businessName:'Forbidden',timezone:'UTC'})).statusCode).toBe(403);
   }finally{await asProfileOwner(admin!,one,c=>c.query("UPDATE profiles SET state='ACTIVE' WHERE id=$1",[one]));}
-  expect(await read()).toEqual(before);expect(await events()).toBe(count);
+  // V7 RF-01.5: suspend and reactivate are two versioned state changes (0100);
+  // the rejected settings writes changed nothing else.
+  const after=await read();expect({...after,version:after.version-2,updated_at:before.updated_at}).toEqual(before);expect(await events()).toBe(count);
  });
  it('checks expiration after a real profile lock wait before writing',async()=>{
   const before=await read(),count=await events(),blocker=await admin!.connect();let waiting:ReturnType<typeof patch>|undefined;

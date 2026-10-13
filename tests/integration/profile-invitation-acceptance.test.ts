@@ -1,4 +1,3 @@
-import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {hashPassword,verifyPassword} from 'better-auth/crypto';

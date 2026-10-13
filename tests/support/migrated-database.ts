@@ -125,3 +125,14 @@ export async function fixtureProfileRow(pool:{connect():Promise<pg.PoolClient>;q
 export async function disposeAllFixtureProfiles(pool:{connect():Promise<pg.PoolClient>;query:(sql:string,values?:unknown[])=>Promise<{rows:any[]}>},keep:readonly string[]=[]){
  for(const {id} of (await pool.query('SELECT id FROM profiles ORDER BY id')).rows as {id:string}[])if(!keep.includes(id))await disposeFixtureProfile(pool,id);
 }
+/** Test-only: a privacy fence destroys its session, whose advisory locks end
+ * only when that backend has exited. Between cases, wait (bounded) until no
+ * other backend of this database still holds an advisory lock, so a case never
+ * races the previous case's exiting fence session. */
+export async function fenceSessionsExited(pool:{query:(sql:string)=>Promise<{rowCount:number|null}>}){
+ for(let i=0;i<150;i++){
+  if(!(await pool.query("SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid=l.pid WHERE l.locktype='advisory' AND l.pid<>pg_backend_pid() AND a.datname=current_database() LIMIT 1")).rowCount)return;
+  await new Promise(resolve=>setTimeout(resolve,20));
+ }
+ throw new Error('FENCE_SESSION_STILL_ALIVE');
+}

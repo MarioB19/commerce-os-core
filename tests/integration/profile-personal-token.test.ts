@@ -1,12 +1,12 @@
-import {readFile} from 'node:fs/promises';
 import {createHash,randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {afterAll,beforeAll,describe,expect,it} from 'vitest';
 import {withPersonalProfileTransaction} from '../../packages/db/src/profile-personal-token.js';
-import {localInventoryTarget} from '../../scripts/profile-inventory.js';
+import {openMigratedDatabase,isolatedAdminUrl} from '../support/migrated-database.js';
 
 const suffix=randomBytes(8).toString('hex'),login='f2_pat_'+suffix,user='pat_user_'+suffix;
 const one='pat_one_'+suffix,two='pat_two_'+suffix,table='pat_fixture_'+suffix;
+let closeDatabase:(()=>Promise<void>)|undefined;
 let admin:pg.Pool|undefined,runtime:pg.Pool|undefined,tokenOwner:string;
 function hash(value:string){return createHash('sha256').update(value).digest('hex');}
 async function issue(workspace=one,scopes:unknown=['products:read','products:write'],seconds=3600){
@@ -19,15 +19,8 @@ const act=(secret:string,work:Parameters<typeof withPersonalProfileTransaction>[
  withPersonalProfileTransaction(runtime!,secret,'SIMULATION',{scope:'products:write',mutation:true},work);
 describe('PAT locator and scoped authority on actual PostgreSQL',()=>{
  beforeAll(async()=>{
-  const url=new URL(localInventoryTarget(process.env.DATABASE_URL));
-  if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw new Error('ISOLATED_TEST_DATABASE_REQUIRED');
-  admin=new pg.Pool({connectionString:url.toString(),max:3,connectionTimeoutMillis:5000});
-  if((await admin.query("SELECT to_regclass('public.profiles') AS existing")).rows[0].existing)throw new Error('TRANSITION_SCHEMA_ALREADY_PRESENT');
-  const db=await admin.connect();try{
-   await db.query('BEGIN');
-   for(const name of ['001_profile_identity.sql','002_profile_personal_tokens.sql'])await db.query(await readFile(new URL('../../packages/db/profile-transition/'+name,import.meta.url),'utf8'));
-   await db.query('COMMIT');
-  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+  // V7 F2: a database migrated through 0072 holds profile identity and PATs.
+  const database=await openMigratedDatabase('0072');admin=database.pool;closeDatabase=database.close;const url=new URL(database.url);
   const password=randomBytes(32).toString('hex');
   await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${password}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT;GRANT commerce_api TO "${login}"`);
   await admin.query(`CREATE TABLE "${table}"(workspace_id text NOT NULL,marker text NOT NULL);ALTER TABLE "${table}" ENABLE ROW LEVEL SECURITY;ALTER TABLE "${table}" FORCE ROW LEVEL SECURITY;
@@ -41,7 +34,7 @@ describe('PAT locator and scoped authority on actual PostgreSQL',()=>{
   if(!/^[a-z_][a-z0-9_]*$/.test(tokenOwner))throw new Error('FIXTURE_OWNER_INVALID');
   url.username=login;url.password=password;runtime=new pg.Pool({connectionString:url.toString(),max:3,connectionTimeoutMillis:5000});
  });
- afterAll(async()=>{await runtime?.end();if(admin){try{await admin.query(`DROP ROLE IF EXISTS "${login}"`);}finally{await admin.end();}}});
+ afterAll(async()=>{await runtime?.end();await closeDatabase?.();const parent=new pg.Pool({connectionString:isolatedAdminUrl().toString(),max:1});try{await parent.query(`DROP ROLE IF EXISTS "${login}"`);}finally{await parent.end();}});
  it('uses a restricted role; exposes only the exact locator and no direct global index or unscoped token rows',async()=>{
   const credential=await issue();
   expect((await runtime!.query('SELECT rolsuper,rolbypassrls FROM pg_roles WHERE rolname=current_user')).rows[0]).toEqual({rolsuper:false,rolbypassrls:false});

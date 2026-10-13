@@ -22,7 +22,7 @@ describe('native scoped foreign key proposal atomicity',()=>{
   expect(full.foreign_keys.every(f=>Array.isArray(f.columns)&&Array.isArray(f.referenced_columns))).toBe(true);
   expect(full.policies.every(p=>Array.isArray(p.roles))).toBe(true);
   expect(full.roles.length).toBeGreaterThan(0);expect(full.roles.every(r=>Array.isArray(r.runtime_memberships))).toBe(true);
-  const catalog:ProfileCatalog={...full,tables:full.tables.filter(t=>t.name.startsWith('profile_fk_')),foreign_keys:full.foreign_keys.filter(f=>f.table.startsWith('profile_fk_'))};
+  const catalog:ProfileCatalog={...full,tables:full.tables.filter(t=>t.name.startsWith('profile_fk_')),foreign_keys:full.foreign_keys.filter(f=>f.table.startsWith('profile_fk_')),non_public_tables:[],non_public_foreign_keys:[],other_relations:full.other_relations.filter(r=>r.schema==='public')};
   plan=planProfileForeignKeys(catalog,{schema_version:1,tables:{profile_fk_parents:{workspace:'workspace_id',environment:'environment'},profile_fk_children:{workspace:'workspace_id',environment:'environment'}}});
   const password=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${password}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;GRANT commerce_channel TO "${login}"`);url.username=login;url.password=password;runtime=new pg.Pool({connectionString:url.toString(),max:2});
  },60000);
@@ -31,7 +31,7 @@ describe('native scoped foreign key proposal atomicity',()=>{
   expect((await runtime.query('SELECT rolsuper,rolbypassrls FROM pg_roles WHERE rolname=current_user')).rows[0]).toEqual({rolsuper:false,rolbypassrls:false});await expect(runtime.query(plan.sql)).rejects.toThrow('PROFILE_MIGRATION_OWNER_REQUIRED');
  });
  it('detects original constraint drift before adding any new key',async()=>{
-  await admin.query('ALTER TABLE profile_fk_children RENAME CONSTRAINT old_parent_fk TO changed_fk');try{await expect(admin.query(plan.sql)).rejects.toThrow('PROFILE_FK_ORIGINAL_DRIFT');expect((await admin.query("SELECT 1 FROM pg_constraint WHERE conname LIKE 'profile_scope_%'")).rows).toEqual([]);}finally{await admin.query('ALTER TABLE profile_fk_children RENAME CONSTRAINT changed_fk TO old_parent_fk');}
+  await admin.query('ALTER TABLE profile_fk_children RENAME CONSTRAINT old_parent_fk TO changed_fk');try{await expect(admin.query(plan.sql)).rejects.toThrow('PROFILE_FK_ORIGINAL_DRIFT');expect((await admin.query("SELECT 1 FROM pg_constraint WHERE conname LIKE 'profile_scope_%' AND conrelid IN('profile_fk_parents'::regclass,'profile_fk_children'::regclass)")).rows).toEqual([]);}finally{await admin.query('ALTER TABLE profile_fk_children RENAME CONSTRAINT changed_fk TO old_parent_fk');}
  });
  it('rejects a timing change in the original FK before adding constraints',async()=>{
   const c=await admin.connect();try{await c.query('BEGIN');await c.query('ALTER TABLE profile_fk_children ALTER CONSTRAINT old_parent_fk DEFERRABLE INITIALLY DEFERRED');await expect(c.query(plan.sql)).rejects.toThrow('PROFILE_FK_ORIGINAL_DRIFT');}finally{await c.query('ROLLBACK');c.release();}
@@ -43,7 +43,7 @@ describe('native scoped foreign key proposal atomicity',()=>{
  });
  it('rolls the entire DDL back on historical cross-profile data without correcting it',async()=>{
   await admin.query('UPDATE profile_fk_children SET parent_id=$1 WHERE id=$2',[other,row]);
-  try{await expect(admin.query(plan.sql)).rejects.toMatchObject({code:'23503'});expect((await admin.query("SELECT 1 FROM pg_constraint WHERE conname LIKE 'profile_scope_%'")).rows).toEqual([]);expect((await admin.query('SELECT parent_id,payload FROM profile_fk_children WHERE id=$1',[row])).rows[0]).toEqual({parent_id:other,payload:{synthetic:true}});}
+  try{await expect(admin.query(plan.sql)).rejects.toMatchObject({code:'23503'});expect((await admin.query("SELECT 1 FROM pg_constraint WHERE conname LIKE 'profile_scope_%' AND conrelid IN('profile_fk_parents'::regclass,'profile_fk_children'::regclass)")).rows).toEqual([]);expect((await admin.query('SELECT parent_id,payload FROM profile_fk_children WHERE id=$1',[row])).rows[0]).toEqual({parent_id:other,payload:{synthetic:true}});}
   finally{await admin.query('UPDATE profile_fk_children SET parent_id=$1 WHERE id=$2',[one,row]);}
  });
  it('adds validated composite keys while preserving original rows and the original FK',async()=>{
@@ -61,7 +61,7 @@ describe('native scoped foreign key proposal atomicity',()=>{
  it('keeps a deferred relationship usable until COMMIT while still rejecting a crossed scope at COMMIT',async()=>{
   await admin.query(`CREATE TABLE profile_fk_deferred_parents(id uuid PRIMARY KEY,workspace_id text NOT NULL,environment text NOT NULL);
    CREATE TABLE profile_fk_deferred_children(id uuid PRIMARY KEY,workspace_id text NOT NULL,environment text NOT NULL,parent_id uuid NOT NULL REFERENCES profile_fk_deferred_parents(id) DEFERRABLE INITIALLY DEFERRED);`);
-  const full=await readProfileCatalog(admin,['commerce_channel']),prefix='profile_fk_deferred_',catalog={...full,tables:full.tables.filter(t=>t.name.startsWith(prefix)),foreign_keys:full.foreign_keys.filter(f=>f.table.startsWith(prefix))};
+  const full=await readProfileCatalog(admin,['commerce_channel']),prefix='profile_fk_deferred_',catalog={...full,tables:full.tables.filter(t=>t.name.startsWith(prefix)),foreign_keys:full.foreign_keys.filter(f=>f.table.startsWith(prefix)),non_public_tables:[],non_public_foreign_keys:[],other_relations:full.other_relations.filter(r=>r.schema==='public')};
   const deferred=planProfileForeignKeys(catalog,{schema_version:1,tables:{profile_fk_deferred_parents:{workspace:'workspace_id',environment:'environment'},profile_fk_deferred_children:{workspace:'workspace_id',environment:'environment'}}});await admin.query(deferred.sql);
   expect((await admin.query("SELECT condeferrable,condeferred FROM pg_constraint WHERE conrelid='profile_fk_deferred_children'::regclass AND contype='f'")).rows).toEqual([{condeferrable:true,condeferred:true},{condeferrable:true,condeferred:true}]);
   const parent=randomUUID(),child=randomUUID(),c=await admin.connect();try{

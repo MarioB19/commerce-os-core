@@ -102,7 +102,9 @@ export async function api<T>(
   init?: RequestInit,
   preserveEnvelope = false,
 ): Promise<T> {
-  const identityPath=path.startsWith('/api/')||/^\/v2\/me\/(profiles|profile-selection)$/.test(path);
+  // Identity and platform-administration routes are outside every profile:
+  // they never carry the profile fence, the /v1 prefix or an environment.
+  const identityPath=path.startsWith('/api/')||/^\/v2\/(me\/(profiles|profile-selection)|platform\/[a-z0-9/_.%-]+)$/i.test(path);
   // The standalone official client defaults explicitly to REAL; lab callers always
   // provide their SIMULATION query. Identity routes are outside business context.
   if (!identityPath) {

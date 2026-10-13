@@ -1,5 +1,4 @@
 /** Native database proof using the canonical close command. No erasure performed. */
-import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';

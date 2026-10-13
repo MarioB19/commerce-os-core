@@ -1,6 +1,5 @@
 /** Restricted real PostgreSQL over explicitly synthetic connection observations.
  * No provider, physical QR, host or external message is invoked. */
-import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect,vi} from 'vitest';

@@ -1,11 +1,10 @@
-import {readFile} from 'node:fs/promises';
 import pg from 'pg';
 import {beforeAll,beforeEach,afterAll,describe,it,expect} from 'vitest';
-import {localInventoryTarget} from '../../scripts/profile-inventory.js';
+import {openMigratedDatabase,promotedSource} from '../support/migrated-database.js';
 import {withProfileQueryRouting} from '../../packages/db/src/profile-query-routing.js';
 import type {ProfileQuery} from '../../packages/db/src/profile-context.js';
 import {readGlobalBudget,assertGlobalBudgetCapacity} from '../../packages/provider-broker/src/global-budget.js';
-let admin:pg.Pool;
+let admin:pg.Pool,closeDatabase:(()=>Promise<void>)|undefined;
 const budgetA='30000000-0000-4000-8000-000000000001',budgetB='30000000-0000-4000-8000-000000000002';
 async function scoped<T>(workspace:string|null,environment:string|null,work:(c:pg.PoolClient)=>Promise<T>,role='commerce_api'){
  const c=await admin.connect();try{await c.query('BEGIN');await c.query(`SET LOCAL ROLE ${role}`);if(workspace!==null)await c.query("SELECT set_config('app.workspace_id',$1,true)",[workspace]);if(environment!==null)await c.query("SELECT set_config('app.environment',$1,true)",[environment]);const r=await work(c);await c.query('ROLLBACK');return r;}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
@@ -13,9 +12,13 @@ async function scoped<T>(workspace:string|null,environment:string|null,work:(c:p
 const reader=(env='REAL')=>scoped('global-budget-a',env,c=>withProfileQueryRouting({workspaceId:'global-budget-a',query:c.query.bind(c) as ProfileQuery},()=>readGlobalBudget(c,'global-budget-a')));
 describe('closed creative aggregate under forced environment RLS',()=>{
  beforeAll(async()=>{
-  const url=localInventoryTarget(process.env.DATABASE_URL);if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(new URL(url).pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url,max:3});
-  const sql=await readFile(new URL('../../packages/db/profile-transition/components/020_global_creative_budget_reader.sql',import.meta.url),'utf8');
-  const c=await admin.connect();try{await c.query('BEGIN');await c.query('CREATE ROLE commerce_global_budget_reader NOLOGIN; GRANT commerce_api TO commerce_global_budget_reader');await expect(c.query(sql)).rejects.toThrow(/already exists/);await c.query('ROLLBACK');}finally{c.release();}
+  // V7 F2: a database migrated through 0082 is the exact state the promoted
+  // component sees; the installed component text is exercised there.
+  const database=await openMigratedDatabase('0082');admin=database.pool;closeDatabase=database.close;
+  const sql=await promotedSource('components/020_global_creative_budget_reader.sql');
+  // The reviewed owner already exists in this cluster: an unsafe variant of it
+  // (inheriting, member of the API role) must be refused, never adopted.
+  const c=await admin.connect();try{await c.query('BEGIN');await c.query('ALTER ROLE commerce_global_budget_reader INHERIT; GRANT commerce_api TO commerce_global_budget_reader');await expect(c.query(sql)).rejects.toThrow(/V7_ROLE_EXISTING/);await c.query('ROLLBACK');}finally{c.release();}
   await admin.query(sql);
   for(const name of ['creative_budgets','creative_provider_operations','integration_diagnostics'])await admin.query(`ALTER TABLE ${name} ENABLE ROW LEVEL SECURITY;ALTER TABLE ${name} FORCE ROW LEVEL SECURITY;CREATE POLICY fixture_runtime ON ${name} TO commerce_api USING(workspace_id=current_setting('app.workspace_id',true) AND environment=current_setting('app.environment',true));`);
   await admin.query("ALTER TABLE creative_global_budgets ENABLE ROW LEVEL SECURITY;ALTER TABLE creative_global_budgets FORCE ROW LEVEL SECURITY;CREATE POLICY fixture_runtime ON creative_global_budgets TO commerce_api USING(workspace_id=current_setting('app.workspace_id',true));");
@@ -24,7 +27,7 @@ describe('closed creative aggregate under forced environment RLS',()=>{
   await admin.query("DELETE FROM creative_provider_operations WHERE workspace_id LIKE 'global-budget-%';DELETE FROM integration_diagnostics WHERE workspace_id LIKE 'global-budget-%';DELETE FROM creative_budgets WHERE workspace_id LIKE 'global-budget-%';DELETE FROM creative_global_budgets WHERE workspace_id LIKE 'global-budget-%';");
   await admin.query(`INSERT INTO creative_budgets(id,workspace_id,environment,provider,limit_usd,max_units,reserved_usd,spent_usd,authorization_source,actor_id,expires_at) VALUES($1,'global-budget-a','REAL','openai',5,100,1,2,'Synthetic local test only','fixture',clock_timestamp()+interval '1 hour'),($2,'global-budget-a','SIMULATION','openai',7,100,3,1,'Synthetic local test only','fixture',clock_timestamp()+interval '1 hour'),('30000000-0000-4000-8000-000000000003','global-budget-b','REAL','openai',999,100,900,90,'Synthetic other profile','fixture',clock_timestamp()+interval '1 hour')`,[budgetA,budgetB]);
  });
- afterAll(async()=>{await admin?.end();});
+ afterAll(async()=>{await closeDatabase?.();});
  it('uses a non-inheriting, non-bypass owner with no memberships and no runtime SET ROLE',async()=>{
   expect((await admin.query("SELECT rolcanlogin,rolsuper,rolbypassrls,rolinherit,rolcreaterole,rolcreatedb,rolreplication FROM pg_roles WHERE rolname='commerce_global_budget_reader'")).rows[0]).toEqual({rolcanlogin:false,rolsuper:false,rolbypassrls:false,rolinherit:false,rolcreaterole:false,rolcreatedb:false,rolreplication:false});
   expect((await admin.query("SELECT count(*)::int n FROM pg_auth_members WHERE roleid='commerce_global_budget_reader'::regrole OR member='commerce_global_budget_reader'::regrole")).rows[0].n).toBe(0);

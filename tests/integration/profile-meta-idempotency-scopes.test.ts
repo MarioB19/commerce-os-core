@@ -1,10 +1,10 @@
-import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
-import {localInventoryTarget} from '../../scripts/profile-inventory.js';
+import {openMigratedDatabase,isolatedAdminUrl,promotedSource} from '../support/migrated-database.js';
 const suffix=randomBytes(6).toString('hex'),login='scope_receipts_'+suffix,one='receipts_one_'+suffix,two='receipts_two_'+suffix;
 const syncs=[randomUUID(),randomUUID()];
+let closeDatabase:(()=>Promise<void>)|undefined;
 let admin:pg.Pool,runtime:pg.Pool,meta:string,idem:string,originalIdem:unknown,originalMeta:unknown;
 async function scope<T>(workspace:string,environment:string,work:(c:pg.PoolClient)=>Promise<T>){const c=await runtime.connect();try{await c.query('BEGIN');await c.query('SET LOCAL ROLE commerce_api');await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment',$2,true)",[workspace,environment]);const result=await work(c);expect((await c.query('COMMIT')).command).toBe('COMMIT');return result;}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}}
 const columns=async()=> (await admin.query("SELECT attname FROM pg_attribute WHERE attrelid='idempotency'::regclass AND attname IN('environment','scope_adoption_sha256') AND NOT attisdropped")).rows;
@@ -16,15 +16,15 @@ const idemRows=async()=>(await admin.query("SELECT to_jsonb(i)-ARRAY['environmen
 const metaRows=async()=>(await admin.query("SELECT to_jsonb(s)-'environment' raw FROM meta_syncs s ORDER BY id")).rows;
 describe('explicit historical Meta and idempotency scopes',()=>{
  beforeAll(async()=>{
-  const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:3});
-  await admin.query(await readFile(new URL('../../packages/db/profile-transition/001_profile_identity.sql',import.meta.url),'utf8'));
-  meta=await readFile(new URL('../../packages/db/profile-transition/components/020_meta_inventory_scopes.sql',import.meta.url),'utf8');idem=await readFile(new URL('../../packages/db/profile-transition/components/020_idempotency_scopes.sql',import.meta.url),'utf8');
+  const database=await openMigratedDatabase('0082');admin=database.pool;closeDatabase=database.close;const url=new URL(database.url);
+  await admin.query("INSERT INTO profile_quota_policy(singleton,max_profiles,max_numbers,daily_conversations,calendar_timezone,adoption_sha256) VALUES(true,3,20,300,'UTC',repeat('a',64))");
+  meta=await promotedSource('components/020_meta_inventory_scopes.sql');idem=await promotedSource('components/020_idempotency_scopes.sql');
   await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic One','UTC',0,0,0),($2,'Synthetic Two','UTC',0,0,0)",[one,two]);
   for(const[key,w,response]of [['plain',one,{environment:'REAL',data:'synthetic'}],['cipher',one,{_encrypted_response:{version:1,ciphertext:'opaque synthetic'}}],['tombstone',two,{_retained:true,retained_payload_hash:'a'.repeat(64)}]] as const)await admin.query("INSERT INTO idempotency(workspace_id,actor_id,operation,key,request_hash,response,status_code) VALUES($1,'synthetic_actor','synthetic.operation',$2,$3,$4,$5)",[w,key,'b'.repeat(64),response,key==='tombstone'?410:200]);
   for(const [index,w]of [one,two].entries())await admin.query("INSERT INTO meta_syncs(id,workspace_id,actor_id,inventory) VALUES($1,$2,'synthetic_actor','{\"source\":\"META_API\",\"requests\":[]}')",[syncs[index],w]);
   originalIdem=await idemRows();originalMeta=await metaRows();const password=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${password}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;GRANT commerce_api TO "${login}"`);url.username=login;url.password=password;runtime=new pg.Pool({connectionString:url.toString(),max:2});
  },60000);
- afterAll(async()=>{await runtime?.end();if(admin){try{await admin.query(`DROP ROLE IF EXISTS "${login}"`);}finally{await admin.end();}}});
+ afterAll(async()=>{await runtime?.end();await closeDatabase?.();const parent=new pg.Pool({connectionString:isolatedAdminUrl().toString(),max:1});try{await parent.query(`DROP ROLE IF EXISTS "${login}"`);}finally{await parent.end();}});
  it('requires migration authority for both components',async()=>{await expect(runtime.query(meta)).rejects.toThrow('PROFILE_MIGRATION_OWNER_REQUIRED');await expect(runtime.query(idem)).rejects.toThrow('PROFILE_MIGRATION_OWNER_REQUIRED');expect(await columns()).toEqual([]);});
  it('never infers environment from response fields or ciphertext without a map',async()=>{await expect(admin.query(idem)).rejects.toThrow('PROFILE_IDEMPOTENCY_MAP_REQUIRED');expect(await columns()).toEqual([]);expect(await idemRows()).toEqual(originalIdem);});
  it('rejects incomplete adoption before schema change',async()=>{await expect(mapped(async c=>{await c.query("DELETE FROM pg_temp.profile_idempotency_scope_adoptions WHERE key='cipher'");await c.query(idem);})).rejects.toThrow('PROFILE_IDEMPOTENCY_ADOPTION_REQUIRED');expect(await columns()).toEqual([]);});

@@ -73,8 +73,9 @@ const privacyComponentTables=[
 ];
 const privacyReferenceTables=['privacy_reference_epoch','privacy_reference_leases'];
 const cutoverTables=['profile_adoption_quarantine','profile_adoption_receipts','profile_role_adoptions'];
+const platformTables=['platform_admins','platform_operations'];
 /** Metadata inventory only, for composition/review. Does not grant access. */
-export const commerceProfileRowTableNames:readonly string[]=Object.freeze([...environmentTables,...sharedProfileTables,...globalIdentityTables,...privateLaboratoryTables,...quotaTables,...privacyFenceTables,...retiredTables,...privacyComponentTables,...privacyReferenceTables,...cutoverTables,'profile_cutover_historical_tables','profiles','schema_migrations','ai_model_prices','manual_controls'].sort());
+export const commerceProfileRowTableNames:readonly string[]=Object.freeze([...environmentTables,...sharedProfileTables,...globalIdentityTables,...privateLaboratoryTables,...quotaTables,...privacyFenceTables,...retiredTables,...privacyComponentTables,...privacyReferenceTables,...cutoverTables,...platformTables,'profile_cutover_historical_tables','profiles','schema_migrations','ai_model_prices','manual_controls'].sort());
 function check(value:unknown,code:string):asserts value{if(!value)throw Error(code);}
 
 /** Pure, complete classification for the composed V7 schema through030.
@@ -105,6 +106,7 @@ export function commerceProfileRowPolicy(catalog:ProfileCatalog):ProfileRowIsola
  for(const name of privacyComponentTables){const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_PRIVACY_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Closed V7 privacy and financial retention custody; only its reviewed owner roles reach rows, through exact profile-scoped policies and ports.'});}
  for(const name of privacyReferenceTables){const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_PRIVACY_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Installation-wide privacy reference fence epoch and leases; no tenant business payload and no application role access.'});}
  for(const name of cutoverTables){const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_CUTOVER_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Immutable V7 cutover adoption receipts; written once by the migration owner and closed to application roles.'});}
+ for(const name of platformTables){const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_PLATFORM_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Platform administration outside every profile; only the closed platform owner reaches rows, through aggregate-only ports.'});}
  add('profile_cutover_historical_tables',{mode:'preserve',reason:'Global immutable list of historical table names used by the isolation model; no tenant data.'});
  check(Object.keys(result).length===rows.size,'COMMERCE_ROW_UNCLASSIFIED_RELATION');
  return{schema_version:1,tables:result};

@@ -1,4 +1,4 @@
-/** Real restricted login against the migrated V7 composition (0069-0099) and its
+/** Real restricted login against the migrated V7 composition (0069-0100) and its
  * native isolation model. No native adoption or HTTP mounting is implied. */
 import {createHash,randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
@@ -31,7 +31,7 @@ async function readPat(secret:string,environment:'REAL'|'SIMULATION'='SIMULATION
 describe('identity bootstrap and session/PAT authority under composed global RLS',()=>{
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:5,connectionTimeoutMillis:5000});
-  // V7 F2: the canonical chain (0069-0099) installs the composition and the
+  // V7 F2: the canonical chain (0069-0100) installs the composition and the
   // isolation model; no transition source or generated row plan is applied.
   await requireMigratedProfileSchema(admin);
   await admin.query('INSERT INTO "user"(id,name,email) VALUES($1,$1,$1||\'@example.test\'),($2,$2,$2||\'@example.test\')',[user,outsider]);
@@ -75,7 +75,8 @@ describe('identity bootstrap and session/PAT authority under composed global RLS
   await expect(withPersonalProfileTransaction(runtime,a.secret,'SIMULATION',{scope:'employees:write',mutation:true},async()=>true)).rejects.toThrow('PROFILE_ACTION_FORBIDDEN');
  });
  it('rejects profile and environment crossed inserts even after authenticated PAT entry',async()=>{
-  const a=await pat();for(const [p,e]of [[two,'SIMULATION'],[one,'REAL']])await expect(withPersonalProfileTransaction(runtime,a.secret,'SIMULATION',{scope:'products:write',mutation:true},async db=>{await bindProfileEnvironment(db,'SIMULATION');await db.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,$2,'asset','{\"name\":\"Crossed\"}')",[p,e]);})).rejects.toMatchObject({code:'42501'});
+  const a=await pat();for(const [p,e]of [[two,'SIMULATION'],[one,'REAL']])await expect(withPersonalProfileTransaction(runtime,a.secret,'SIMULATION',{scope:'products:write',mutation:true},async db=>{await bindProfileEnvironment(db,'SIMULATION');await db.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,$2,'asset','{\"name\":\"Crossed\"}')",[p,e]);})).rejects.toThrow(/row-level security|PRIVACY_ASSET_CONTEXT_REQUIRED/);
+  // V7 F2: the record context guard trigger fires before the RLS check.
   expect((await admin.query('SELECT count(*)::int n FROM records')).rows[0].n).toBe(6);
  });
  it('applies membership revocation to the next PAT transaction without widening its scopes',async()=>{

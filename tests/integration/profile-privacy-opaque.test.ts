@@ -1,9 +1,8 @@
 import {capturePrivacyOpaqueCopies,readPrivacyOpaquePass} from '../../packages/db/src/privacy-opaque-attestation.js';
-import {readFile,readdir} from 'node:fs/promises';
 import {randomBytes,randomUUID,createCipheriv,createHash} from 'node:crypto';
 import pg from 'pg';
-import {beforeAll,afterAll,afterEach,describe,it,expect} from 'vitest';
-import {requireMigratedProfileSchema} from '../support/migrated-database.js';
+import {beforeAll,afterAll,afterEach,describe,it,expect,beforeEach} from 'vitest';
+import {requireMigratedProfileSchema,fenceSessionsExited} from '../support/migrated-database.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {readProfileCatalog} from '../../packages/db/src/profile-inventory.js';
 import {buildPrivacyInventoryPlan,privacyInventoryPolicy,type PrivacyInventoryCatalog} from '../../packages/db/src/privacy-inventory-plan.js';
@@ -35,7 +34,7 @@ describe('035 native opaque pass and complete member binding',()=>{
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:4});
   // V7 F2: the canonical chain, its components and the isolation model are
-  // installed by the migrations (0069-0099); no transition source is applied here.
+  // installed by the migrations (0069-0100); no transition source is applied here.
   await requireMigratedProfileSchema(admin);
   for(const[id,email]of[[owner,'privacy@example.invalid'],[owner+'-backup','privacy-backup@example.invalid']])await admin.query('INSERT INTO "user"(id,name,email,"emailVerified","createdAt","updatedAt") VALUES($1,$2,$3,true,now(),now())',[id,'Synthetic privacy Owner',email]);
   for(const workspace of[w,other]){await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic privacy jobs','UTC',0,0,100)",[workspace]);for(const id of[owner,owner+'-backup'])await admin.query("INSERT INTO memberships(user_id,workspace_id,role,active) VALUES($1,$2,'owner',true)",[id,workspace]);await tx(admin,'NONE',c=>c.query('SELECT adopt_profile_quota_inventory($1,profile_quota_inventory($1))',[workspace]),workspace);}
@@ -50,6 +49,7 @@ describe('035 native opaque pass and complete member binding',()=>{
   for(const[name,roles]of[[workerLogin,'commerce_privacy_job_worker,commerce_privacy_fence_worker'],[attestorLogin,'commerce_privacy_attestor'],[apiLogin,'commerce_api']]){const secret=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${name}" LOGIN PASSWORD '${secret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION; GRANT ${roles} TO "${name}"`);const u=new URL(url);u.username=name;u.password=secret;const pool=new pg.Pool({connectionString:u.toString(),max:3});if(name===workerLogin)worker=pool;else if(name===attestorLogin)attestor=pool;else api=pool;}
   await admin.query(plan.seal_sql);await importPolicy();await importPolicy(other);
  },60000);
+ beforeEach(async()=>{if(admin)await fenceSessionsExited(admin);});
  afterAll(async()=>{await worker?.end();await attestor?.end();await api?.end();if(admin){try{await admin.query(`DROP ROLE IF EXISTS "${workerLogin}","${attestorLogin}","${apiLogin}"`);}finally{await admin.end();}}});
  afterEach(async()=>{await tx(admin,'NONE',async c=>{await c.query('DELETE FROM reported_sales WHERE workspace_id=$1',[w]);await c.query('DELETE FROM sales_history_imports WHERE workspace_id=$1',[w]);await c.query('DELETE FROM idempotency WHERE workspace_id=$1',[w]);});});
  function encrypted(value:unknown){const iv=randomBytes(12),c=createCipheriv('aes-256-gcm',key,iv);const bytes=Buffer.concat([c.update(JSON.stringify(value)),c.final()]);return['v1',iv.toString('base64'),c.getAuthTag().toString('base64'),bytes.toString('base64')].join('.');}

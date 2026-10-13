@@ -1,4 +1,5 @@
 import {ProfileApplication,isProfileApplicationPath} from './components/profile-application';
+import {PlatformDashboard} from './components/platform-dashboard.js';
 import {NumbersPage,WarmupsPage} from './pages/numbers';
 import {LaunchHelpPage} from './pages/launch-help';
 import {DisplayPreferences} from './components/display-preferences';
@@ -103,6 +104,7 @@ function App() {
  const pathname=useRouterState({select:state=>state.location.pathname});
  if(pathname==='/forgot-password')return <ForgotPasswordPage/>;
  if(pathname==='/reset-password')return <ResetPasswordPage/>;
+ if(pathname==='/platform')return <PlatformDashboard/>;
  if(isProfileApplicationPath(pathname))return <ProfileApplication path={pathname} login={retry=><Login onSignedIn={retry}/>}/>;
  return <SessionApp/>;
 }

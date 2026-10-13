@@ -18,7 +18,6 @@ async function receipt(f:Awaited<ReturnType<typeof prepared>>,patch:Record<strin
 async function observation(){const at=(await admin.query('SELECT clock_timestamp() now')).rows[0].now.toISOString();return{is_receipt:true,amount_minor:10000,currency:'MXN',destination_suffix:'6789',bank:'Synthetic',reference:randomUUID(),status:'completed',confidence:0.99,contradictions:[],destination:'123456789',beneficiary:'Synthetic Holder',paid_at:at,concept:null};}
 async function analyze(r:DomainRecord,raw:unknown,cause=r.id){return worker(async db=>{await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[r.body.conversation_id]);await applyReceiptAnalysis(db,await read(db,r.id),raw,cause);return read(db,r.id);});}
 const contributions=(order:string)=>admin.query('SELECT * FROM payment_contributions WHERE workspace_id=$1 AND order_id=$2',[one,order]).then(r=>r.rows);
-import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import Fastify,{type FastifyInstance,type FastifyRequest} from 'fastify';
 import {fromNodeHeaders} from 'better-auth/node';

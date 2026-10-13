@@ -8,7 +8,7 @@ import {pool,putRecord,getRecord,withTransaction} from '../../packages/db/src/in
 import {writeOperationalSettings,readOperationalSettings} from '../../packages/db/src/operational-settings.js';
 import {saveIntegrationSetting} from '../../packages/db/src/integration-settings.js';
 import {defaultOperationalSettings,type DomainRecord} from '../../packages/contracts/src/index.js';
-import {proposeEffect,proposeEffectOutcome} from '../../apps/automation-worker/src/shared.js';
+import {proposeEffectOutcome} from '../../apps/automation-worker/src/shared.js';
 import {roleExecutor} from '../support/database-role.js';
 import {advanceWorkflow,acceptCustomerResponse,deliver,ensureOrder} from '../../apps/automation-worker/src/workflows.js';
 

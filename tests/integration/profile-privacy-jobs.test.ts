@@ -1,8 +1,7 @@
-import {readFile,readdir} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
-import {beforeAll,afterAll,describe,it,expect} from 'vitest';
-import {requireMigratedProfileSchema} from '../support/migrated-database.js';
+import {beforeAll,afterAll,describe,it,expect,beforeEach} from 'vitest';
+import {requireMigratedProfileSchema,fenceSessionsExited} from '../support/migrated-database.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {readProfileCatalog} from '../../packages/db/src/profile-inventory.js';
 import {buildPrivacyInventoryPlan,privacyInventoryPolicy,type PrivacyInventoryCatalog} from '../../packages/db/src/privacy-inventory-plan.js';
@@ -35,7 +34,7 @@ describe('D18 closed authority and immutable inventory jobs',()=>{
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:4});
   // V7 F2: the canonical chain, its components and the isolation model are
-  // installed by the migrations (0069-0099); no transition source is applied here.
+  // installed by the migrations (0069-0100); no transition source is applied here.
   await requireMigratedProfileSchema(admin);
   for(const[id,email]of[[owner,'privacy@example.invalid'],[owner+'-backup','privacy-backup@example.invalid']])await admin.query('INSERT INTO "user"(id,name,email,"emailVerified","createdAt","updatedAt") VALUES($1,$2,$3,true,now(),now())',[id,'Synthetic privacy Owner',email]);
   for(const workspace of[w,other]){await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic privacy jobs','UTC',0,0,100)",[workspace]);for(const id of[owner,owner+'-backup'])await admin.query("INSERT INTO memberships(user_id,workspace_id,role,active) VALUES($1,$2,'owner',true)",[id,workspace]);await tx(admin,'NONE',c=>c.query('SELECT adopt_profile_quota_inventory($1,profile_quota_inventory($1))',[workspace]),workspace);}
@@ -45,6 +44,7 @@ describe('D18 closed authority and immutable inventory jobs',()=>{
   for(const[name,roles]of[[workerLogin,'commerce_privacy_job_worker,commerce_privacy_fence_worker'],[attestorLogin,'commerce_privacy_attestor'],[apiLogin,'commerce_api']]){const secret=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${name}" LOGIN PASSWORD '${secret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION; GRANT ${roles} TO "${name}"`);const u=new URL(url);u.username=name;u.password=secret;const pool=new pg.Pool({connectionString:u.toString(),max:3});if(name===workerLogin)worker=pool;else if(name===attestorLogin)attestor=pool;else api=pool;}
   await admin.query(plan.seal_sql);await importPolicy();await importPolicy(other);
  },60000);
+ beforeEach(async()=>{if(admin)await fenceSessionsExited(admin);});
  afterAll(async()=>{await worker?.end();await attestor?.end();await api?.end();if(admin){try{await admin.query(`DROP ROLE IF EXISTS "${workerLogin}","${attestorLogin}","${apiLogin}"`);}finally{await admin.end();}}});
  it('prepares native closure/inventory under fence without content or erasure authority',async()=>{const j=await seedJourney(),b=await backup(),r=await prepared(j,b.id);expect(r.status).toBe('INVENTORIED');expect(r.erasure_authorized).toBe(false);const job=(await admin.query('SELECT * FROM privacy_jobs WHERE id=$1',[r.job_id])).rows[0];expect(JSON.stringify(job)).not.toContain('PRIVATE_SENTINEL');expect(job.manifest.source_sha256).toMatch(/^[a-f0-9]{64}$/);expect((await admin.query('SELECT body FROM records WHERE id=$1',[j.id])).rows[0].body.private_note).toBe('PRIVATE_SENTINEL');});
  it('same operation readback is no-effect with the original manifest and epoch',async()=>{const j=await seedJourney(),b=await backup(),a=await prepared(j,b.id),r=await prepared(j,b.id,a.job_id);expect(r.status).toBe('NO_EFFECT');expect(r.manifest_sha256).toBe(a.manifest_sha256);expect((await admin.query('SELECT 1 FROM privacy_jobs WHERE id=$1',[a.job_id])).rowCount).toBe(1);});

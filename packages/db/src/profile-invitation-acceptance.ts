@@ -10,6 +10,13 @@ import {acceptInvitation,type ProfileInvitation} from '../../domain/src/core/pro
 import {profileIdSchema} from '../../contracts/src/profiles.js';
 
 import {invitationLinkTokenSchema} from '../../contracts/src/profile-invitation-acceptance.js';
+/** An owner member issued it, or (V7 RF-01.5) a still-active platform admin
+ * issued this owner invitation for a profile without owner. */
+async function issuerAuthorized(db:{query:(sql:string,params?:unknown[])=>Promise<{rows:any[]}>},row:{requested_by:string|null;platform_requested_by?:string|null;role:string},workspaceId:string){
+ if(row.platform_requested_by)return row.role==='owner'&&(await db.query('SELECT platform_invitation_issuer_active($1) AS active',[row.platform_requested_by])).rows[0]?.active===true;
+ const author=(await db.query('SELECT role,active FROM memberships WHERE user_id=$1 AND workspace_id=$2 FOR SHARE',[row.requested_by,workspaceId])).rows[0];
+ return author?.active===true&&author.role==='owner';
+}
 export {invitationLinkTokenSchema};
 export function invitationLinkDigest(token:string){return identityDigest('profile-invitation-link',invitationLinkTokenSchema.parse(token));}
 /** Token stays in RAM until the separately committed encrypted dispatch input.
@@ -56,8 +63,7 @@ async function invitationAccess(pool:ProfilePool&QueryExecutor,session:Interacti
   await lockProfileAuthorityChange(db,{scope:'employees:write',mutation:true});
   const identity=await nativeIdentity(db,session),row=await activeInvitation(db,route),time=await clock(db);
   live(row,route,identity.expiresAt,time);
-  const author=(await db.query('SELECT role,active FROM memberships WHERE user_id=$1 AND workspace_id=$2 FOR SHARE',[row.requested_by,route.workspaceId])).rows[0];
-  if(author?.active!==true||author.role!=='owner')fail('INVITATION_ISSUER_NO_LONGER_AUTHORIZED',403);
+  if(!await issuerAuthorized(db,row,route.workspaceId))fail('INVITATION_ISSUER_NO_LONGER_AUTHORIZED',403);
   const recipientDigest=invitationRecipientDigest(route.workspaceId,identity.user.email);
   if(recipientDigest!==row.recipient_digest||readInvitationRecipient(row)!==identity.user.email.trim().toLowerCase())fail('INVITATION_RECIPIENT_MISMATCH',403);
   if(row.status==='ACCEPTED'){
@@ -106,8 +112,7 @@ export async function registerInvitedProfileIdentity(pool:ProfilePool&QueryExecu
   const row=await activeInvitation(db,route),initial=await clock(db);
   // No session exists for this path; lifetime is limited to the actual link.
   live(row,route,null,initial);
-  const issuer=(await db.query('SELECT role,active FROM memberships WHERE user_id=$1 AND workspace_id=$2 FOR SHARE',[row.requested_by,route.workspaceId])).rows[0];
-  if(issuer?.active!==true||issuer.role!=='owner')fail('INVITATION_ISSUER_NO_LONGER_AUTHORIZED',403);
+  if(!await issuerAuthorized(db,row,route.workspaceId))fail('INVITATION_ISSUER_NO_LONGER_AUTHORIZED',403);
   const recipientDigest=invitationRecipientDigest(route.workspaceId,email);
   if(recipientDigest!==row.recipient_digest||readInvitationRecipient(row)!==email)fail('INVITATION_RECIPIENT_MISMATCH',403);
   if((await db.query('SELECT id FROM "user" WHERE lower(email)=$1',[email])).rows.length)fail('INVITATION_EXISTING_IDENTITY_LOGIN_REQUIRED');

@@ -16,6 +16,7 @@ import {PaymentsRegister} from './payments-register.js';
 import {ReceiptPolicies} from './receipt-policies.js';
 import {Results} from './results.js';
 import {Button} from './ui/button.js';
+import {loadPlatformAccess} from '../lib/platform-profiles.js';
 
 /** Closed set: unreviewed V1 pages are never offered by this profile entrypoint. */
 export const profileApplicationPaths=['/','/home','/login','/products','/sales/inbox','/sales/orders','/sales/receipts','/sales/payments','/sales/payments/rules','/results','/results/goals','/settings/profile','/settings/employees','/account/tokens','/account/security'] as const;
@@ -24,6 +25,8 @@ export const isProfileApplicationPath=(path:string)=>profileApplicationPaths.som
 export function ProfileApplication({path,login}:{path:string;login:(retry:()=>void)=>ReactNode}){
  const view=useRef<ReturnType<typeof createProfileApplication>|null>(null),[state,setState]=useState<ProfileApplicationState>({status:'LOADING'}),[confirmSwitch,setConfirmSwitch]=useState(false),[logoutError,setLogoutError]=useState(''),[leaving,setLeaving]=useState(false);
  const heading=useRef<HTMLHeadingElement>(null);
+ const [platformAdmin,setPlatformAdmin]=useState(false);
+ useEffect(()=>{const controller=new AbortController();loadPlatformAccess(controller.signal).then(admin=>{if(!controller.signal.aborted)setPlatformAdmin(admin);}).catch(()=>undefined);return()=>controller.abort();},[]);
  useEffect(()=>{const next=createProfileApplication();view.current=next;const off=next.subscribe(()=>setState(next.snapshot()));void next.refresh();return()=>{off();next.dispose();if(view.current===next)view.current=null;};},[]);
  useEffect(()=>{if(state.status==='READY'||state.status==='SELECTING')document.getElementById('profile-main')?.focus();heading.current?.focus();},[state.status,path]);
  const reload=()=>{void view.current?.refresh();};
@@ -38,7 +41,7 @@ export function ProfileApplication({path,login}:{path:string;login:(retry:()=>vo
  setProfileFence(fence);
  return <div className="profile-application">
   <a href="#profile-main" className="skip-link">Saltar al contenido</a>
-  <header className="topbar"><a href="/home" className="brand">Commerce <strong>OS</strong></a><div><strong>{profile.businessName}</strong> · {profileRoleLabels[profile.role]} <Button variant="secondary" onClick={()=>setConfirmSwitch(true)}>Cambiar perfil</Button></div><details><summary>Mi cuenta · {data.user.name||data.user.email}</summary><nav aria-label="Mi cuenta"><a href="/account/security">Seguridad</a><a href="/settings/profile">Perfil del negocio</a>{profile.role==='owner'&&<><a href="/settings/employees">Empleados e invitaciones</a><a href="/account/tokens">Accesos MCP</a></>}<Button variant="ghost" disabled={leaving} onClick={()=>{void logout();}}>Cerrar sesión</Button></nav></details></header>
+  <header className="topbar"><a href="/home" className="brand">Commerce <strong>OS</strong></a><div><strong>{profile.businessName}</strong> · {profileRoleLabels[profile.role]} <Button variant="secondary" onClick={()=>setConfirmSwitch(true)}>Cambiar perfil</Button>{platformAdmin&&<a href="/platform">Plataforma</a>}</div><details><summary>Mi cuenta · {data.user.name||data.user.email}</summary><nav aria-label="Mi cuenta"><a href="/account/security">Seguridad</a><a href="/settings/profile">Perfil del negocio</a>{profile.role==='owner'&&<><a href="/settings/employees">Empleados e invitaciones</a><a href="/account/tokens">Accesos MCP</a></>}<Button variant="ghost" disabled={leaving} onClick={()=>{void logout();}}>Cerrar sesión</Button></nav></details></header>
   <nav aria-label="Navegación del perfil" className="profile-application-nav"><a href="/home" aria-current={['/','/home','/login'].includes(path)?'page':undefined}>Inicio</a><a href="/products" aria-current={path==='/products'||productVariantPath.test(path)?'page':undefined}>Productos</a><a href="/sales/inbox" aria-current={path.startsWith('/sales/')?'page':undefined}>Ventas</a><a href="/results" aria-current={path.startsWith('/results')?'page':undefined}>Resultados</a></nav>
   <main id="profile-main" className="main-content" tabIndex={-1} key={key}>
    {profile.state==='SUSPENDED'&&<p role="status">Este perfil está suspendido. Las operaciones comerciales están detenidas.</p>}

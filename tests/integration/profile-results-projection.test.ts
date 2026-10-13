@@ -1,12 +1,10 @@
 /** PostgreSQL projection proof. AI ledger is an explicit contract fixture here;
  * the combined 019/020 suite must verify the actual ledger/RLS before mounting. */
-import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
 import {fixtureProfileRow,openMigratedDatabase,isolatedAdminUrl,asProfileOwner} from '../support/migrated-database.js';
 import {withProfileTransaction,type ProfilePool,type ProfileExecutor} from '../../packages/db/src/profile-context.js';
-import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {readResultFacts,readResultSpend,observedResultsReport as resultsReport} from '../../packages/db/src/results.js';
 import {resultOptions} from '../../packages/db/src/result-options.js';
 import {summarizeResults} from '../../packages/domain/src/sales/results.js';

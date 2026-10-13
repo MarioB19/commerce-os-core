@@ -1,4 +1,3 @@
-import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID,createHash} from 'node:crypto';
 import Fastify,{type FastifyInstance,type FastifyRequest} from 'fastify';
 import {fromNodeHeaders} from 'better-auth/node';

@@ -4056,3 +4056,14 @@ input:not([type="checkbox"]):not([type="radio"]),select,textarea{min-height:44px
 .profile-switch-overlay { position:fixed; inset:0; z-index:100; background:rgb(0 0 0 / .45); }
 .profile-switch-dialog { position:fixed; z-index:101; left:50%; top:50%; transform:translate(-50%,-50%); width:min(32rem,calc(100vw - 2rem)); max-height:calc(100dvh - 2rem); overflow:auto; padding:1.5rem; border-radius:1rem; background:var(--v5-surface,#fff); color:var(--v5-text,#18232f); box-shadow:0 1rem 3rem rgb(0 0 0 / .2); }
 .profile-switch-dialog > div { flex-wrap:wrap; }
+
+/* V7 RF-02 platform administration */
+.platform-dashboard .platform-capacity,.platform-dashboard .platform-counts{display:grid;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));gap:.75rem;margin:0}
+.platform-dashboard dl div{display:flex;flex-direction:column;gap:.15rem}
+.platform-dashboard dt{font-size:.85rem;color:var(--muted-foreground,#5b6472)}
+.platform-dashboard dd{margin:0;font-weight:600}
+.platform-dashboard .platform-profiles{list-style:none;padding:0;display:grid;gap:1rem}
+.platform-dashboard .platform-actions{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.75rem}
+.platform-dashboard form{display:grid;gap:.6rem;max-width:32rem;margin-top:.75rem}
+.platform-dashboard label{display:grid;gap:.25rem}
+@media (max-width:480px){.platform-dashboard .platform-actions button{width:100%}}

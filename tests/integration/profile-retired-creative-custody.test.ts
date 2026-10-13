@@ -1,7 +1,7 @@
-import {readFile} from 'node:fs/promises';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
-import {localInventoryTarget} from '../../scripts/profile-inventory.js';
+import {openMigratedDatabase,isolatedAdminUrl,promotedSource} from '../support/migrated-database.js';
+let closeDatabase:(()=>Promise<void>)|undefined;
 let admin:pg.Pool,sql:string,original:unknown,grants:unknown;
 const device='51000000-0000-4000-8000-000000000001',pairing='52000000-0000-4000-8000-000000000001';
 async function tx<T>(work:(c:pg.PoolClient)=>Promise<T>,role?:string){const c=await admin.connect();try{await c.query('BEGIN');if(role)await c.query(`SET LOCAL ROLE ${role}`);const value=await work(c);await c.query('ROLLBACK');return value;}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}}
@@ -9,13 +9,13 @@ const rows=async()=>(await admin.query("SELECT 'device' kind,to_jsonb(d) data FR
 const acl=async()=>(await admin.query("SELECT oid::regclass::text relation,relacl::text acl FROM pg_class WHERE oid IN('creative_devices'::regclass,'creative_pairings'::regclass) ORDER BY relation")).rows;
 describe('retired creative credentials remain closed administrative history',()=>{
  beforeAll(async()=>{
-  const url=localInventoryTarget(process.env.DATABASE_URL);if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(new URL(url).pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url,max:2});
-  sql=await readFile(new URL('../../packages/db/profile-transition/components/020_retired_creative_custody.sql',import.meta.url),'utf8');
+  const database=await openMigratedDatabase('0082');admin=database.pool;closeDatabase=database.close;const url=new URL(database.url);
+  sql=await promotedSource('components/020_retired_creative_custody.sql');
   await admin.query("INSERT INTO creative_devices(id,workspace_id,owner_id,name,platform,engine_version,token_hash,project_ids,status,revoked_at) VALUES($1,'synthetic-retired','synthetic-owner','Synthetic retired','darwin-arm64','1.0.0','synthetic-not-a-token','{}','REVOKED',clock_timestamp())",[device]);
   await admin.query("INSERT INTO creative_pairings(id,user_code_hash,poll_secret_hash,name,platform,engine_version,api_version,capabilities,status,workspace_id,token_ciphertext,expires_at) VALUES($1,'synthetic-code','synthetic-poll','Synthetic expired','darwin-arm64','1.0.0',1,'{}','EXPIRED',NULL,'synthetic-opaque-history',clock_timestamp()-interval '1 day')",[pairing]);
   original=await rows();grants=await acl();
  },60000);
- afterAll(async()=>{await admin?.end();});
+ afterAll(async()=>{await closeDatabase?.();});
  it('requires migration authority without changing rows',async()=>{await expect(tx(c=>c.query(sql),'commerce_api')).rejects.toThrow('PROFILE_MIGRATION_OWNER_REQUIRED');expect(await rows()).toEqual(original);});
  it('requires the exact original retirement migration',async()=>{await expect(tx(async c=>{await c.query("UPDATE schema_migrations SET sha256=repeat('0',64) WHERE name='0042_v5_platform_retirement.sql'");return c.query(sql);})).rejects.toThrow('PROFILE_CREATIVE_RETIREMENT_SOURCE_REQUIRED');});
  it('rejects an active device instead of retiring it implicitly',async()=>{await expect(tx(async c=>{await c.query("UPDATE creative_devices SET status='CONNECTED',revoked_at=NULL WHERE id=$1",[device]);return c.query(sql);})).rejects.toThrow('PROFILE_CREATIVE_RETIREMENT_INCOMPLETE');expect(await rows()).toEqual(original);});

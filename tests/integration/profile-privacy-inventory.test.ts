@@ -1,4 +1,3 @@
-import {readFile,readdir} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
@@ -18,12 +17,12 @@ describe('D18 complete native reference inventory, no erase permission',()=>{
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:3});
   // V7 F2: the canonical chain, its components and the isolation model are
-  // installed by the migrations (0069-0099); no transition source is applied here.
+  // installed by the migrations (0069-0100); no transition source is applied here.
   await requireMigratedProfileSchema(admin);
   for(const workspace of [w,other])await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic privacy inventory','UTC',0,0,100)",[workspace]);
   for(const workspace of [w,other]){const c=await admin.connect();try{await c.query('BEGIN');await c.query("SELECT set_config('app.workspace_id',$1,true)",[workspace]);await c.query('SELECT adopt_profile_quota_inventory($1,profile_quota_inventory($1))',[workspace]);await c.query('COMMIT');}finally{c.release();}}
   const catalog=await readProfileCatalog(admin,[]) as PrivacyInventoryCatalog;
-  const plan=buildPrivacyInventoryPlan(catalog,privacyInventoryPolicy(catalog.tables.map(t=>t.name)));expect(plan.relations).toBe(220);
+  const plan=buildPrivacyInventoryPlan(catalog,privacyInventoryPolicy(catalog.tables.map(t=>t.name)));expect(plan.relations).toBe(222);
   await admin.query(plan.prepare_sql);
   const secret=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${secret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;GRANT commerce_privacy_worker TO "${login}"`);
   const u=new URL(url);u.username=login;u.password=secret;worker=new pg.Pool({connectionString:u.toString(),max:2});

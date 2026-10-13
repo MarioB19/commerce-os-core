@@ -99,12 +99,12 @@ function worker(mode:'held'|'inflight'|'media-inflight',account:string,jobs=fals
 const integration=(type:'openai'|'waha',extra:Record<string,unknown>={})=>({expected_version:0,label:'Synthetic held integration',enabled:true,config:type==='waha'?{base_url:'http://waha-01:3000'}:{},secrets:type==='waha'?{api_key:'synthetic-fixture-key',webhook_secret:'synthetic-fixture-hook'}:{api_key:'synthetic-fixture-openai'},reason:'Synthetic integration hold regression',...extra});
 
 describe('Copy release hold with real restricted roles and PostgreSQL locks',()=>{
- it('retains the API status boundary and every installed migration hash (68 historical + V7 0069-0097)',async()=>{
+ it('retains the API status boundary and every installed migration hash (68 historical + V7 0069-0100)',async()=>{
   expect((await pool.query("SELECT has_column_privilege(current_user,'commands','status','UPDATE') allowed")).rows[0].allowed).toBe(false);
   const history=(await admin.query('SELECT name,sha256 FROM schema_migrations ORDER BY name')).rows;
   const directory=new URL('../../packages/db/migrations/',import.meta.url);
   const expected=readdirSync(directory).filter(name=>name.endsWith('.sql')).sort().map(name=>({name,sha256:createHash('sha256').update(readFileSync(new URL(name,directory))).digest('hex')}));
-  expect(history).toHaveLength(97);expect(history).toEqual(expected);
+  expect(history).toHaveLength(100);expect(history).toEqual(expected);
  });
  it('rejects channel/setup/catalog/number and all integration mutations while held without domain delta',async()=>{
   const f=await fixture();await hold();const before=await watched();

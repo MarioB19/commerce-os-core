@@ -1,6 +1,5 @@
 /** Real loopback HTTP/Better Auth/PostgreSQL; all business data and keys are synthetic.
  * Test-owned policies exercise native RLS without claiming the future 020 transition. */
-import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID,createHash} from 'node:crypto';
 import Fastify,{type FastifyInstance,type FastifyRequest} from 'fastify';
 import {fromNodeHeaders} from 'better-auth/node';

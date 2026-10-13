@@ -2,11 +2,10 @@ import {buildPrivacyAssetReferencePlan} from '../../packages/db/src/privacy-asse
 import {readPrivacyAssetReferences} from '../../packages/db/src/privacy-asset-references.js';
 import {capturePrivacyOpaqueCopies} from '../../packages/db/src/privacy-opaque-attestation.js';
 import {buildPrivacyReferenceFencePlan,withPrivacyReferenceFence} from '../../packages/db/src/privacy-reference-fence.js';
-import {readFile,readdir} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
-import {beforeAll,afterAll,describe,it,expect} from 'vitest';
-import {requireMigratedProfileSchema} from '../support/migrated-database.js';
+import {beforeAll,afterAll,describe,it,expect,beforeEach} from 'vitest';
+import {requireMigratedProfileSchema,fenceSessionsExited} from '../support/migrated-database.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {readProfileCatalog} from '../../packages/db/src/profile-inventory.js';
 import {buildPrivacyInventoryPlan,privacyInventoryPolicy,type PrivacyInventoryCatalog} from '../../packages/db/src/privacy-inventory-plan.js';
@@ -39,7 +38,7 @@ describe('035 global asset reference reader with canonical031/032/033',()=>{
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:4});
   // V7 F2: the canonical chain, its components and the isolation model are
-  // installed by the migrations (0069-0099); no transition source is applied here.
+  // installed by the migrations (0069-0100); no transition source is applied here.
   await requireMigratedProfileSchema(admin);
   for(const[id,email]of[[owner,'privacy@example.invalid'],[owner+'-backup','privacy-backup@example.invalid']])await admin.query('INSERT INTO "user"(id,name,email,"emailVerified","createdAt","updatedAt") VALUES($1,$2,$3,true,now(),now())',[id,'Synthetic privacy Owner',email]);
   for(const workspace of[w,other]){await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic privacy jobs','UTC',0,0,100)",[workspace]);for(const id of[owner,owner+'-backup'])await admin.query("INSERT INTO memberships(user_id,workspace_id,role,active) VALUES($1,$2,'owner',true)",[id,workspace]);await tx(admin,'NONE',c=>c.query('SELECT adopt_profile_quota_inventory($1,profile_quota_inventory($1))',[workspace]),workspace);}
@@ -57,6 +56,7 @@ describe('035 global asset reference reader with canonical031/032/033',()=>{
   await admin.query('GRANT EXECUTE ON FUNCTION read_privacy_asset_references(uuid,uuid,uuid,uuid),privacy_opaque_sources(uuid,integer,uuid,uuid),import_privacy_opaque_pass(uuid,uuid,integer,uuid,uuid,uuid,jsonb),read_privacy_opaque_pass(uuid,uuid,uuid,uuid) TO commerce_privacy_job_worker');
   await admin.query(plan.seal_sql);await importPolicy();await importPolicy(other);
  },60000);
+ beforeEach(async()=>{if(admin)await fenceSessionsExited(admin);});
  afterAll(async()=>{await worker?.end();await attestor?.end();await api?.end();if(admin){try{await admin.query(`DROP ROLE IF EXISTS "${workerLogin}","${attestorLogin}","${apiLogin}"`);}finally{await admin.end();}}});
 
  async function fixture(kind='file',patch:Record<string,unknown>={},historicalOnly=false){

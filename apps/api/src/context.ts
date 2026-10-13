@@ -6,8 +6,8 @@ import {z} from 'zod';
 import {privateIntegrationDigest} from '../../../packages/db/src/integration-settings.js';
 
 import {pool,hash,stableJson,readOperationalSettings,appendEvent,getRecord,uuid,encrypt,decrypt,type QueryExecutor} from '../../../packages/db/src/index.js';
-import {environmentSchema,type Environment,type DomainRecord,type Body,type Role} from '../../../packages/contracts/src/index.js';
-import {permissionsFor,assertPermission,type Principal} from '../../../packages/domain/src/core/permissions.js';
+import {environmentSchema,type Environment,type DomainRecord,type Body} from '../../../packages/contracts/src/index.js';
+import {assertPermission,type Principal} from '../../../packages/domain/src/core/permissions.js';
 export const principalMap=new WeakMap<FastifyRequest,Principal>();
 export function principal(req:FastifyRequest){const p=principalMap.get(req);if(!p)throw fail(401,'UNAUTHENTICATED','Inicia sesión.');profilePrincipalAuthority(req,p);return p;}
 export const fail=(statusCode:number,code:string,message=code,details?:unknown)=>Object.assign(new Error(message),{statusCode,code,details});

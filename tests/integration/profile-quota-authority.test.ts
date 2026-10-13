@@ -1,14 +1,13 @@
-import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {afterAll,beforeAll,beforeEach,describe,expect,it} from 'vitest';
 import {withProfileTransaction,type ProfileExecutor} from '../../packages/db/src/profile-context.js';
-import {localInventoryTarget} from '../../scripts/profile-inventory.js';
+import {openMigratedDatabase,isolatedAdminUrl,promotedSource} from '../support/migrated-database.js';
 
 const suffix=randomBytes(8).toString('hex'),login='quota_'+suffix;
 const one='quota_one_'+suffix,two='quota_two_'+suffix,three='quota_three_'+suffix;
-let admin:pg.Pool,runtime:pg.Pool;
-const component=()=>readFile(new URL('../../packages/db/profile-transition/components/020_global_quota_authority.sql',import.meta.url),'utf8');
+let admin:pg.Pool,runtime:pg.Pool,closeDatabase:(()=>Promise<void>)|undefined;
+const component=()=>promotedSource('components/020_global_quota_authority.sql');
 const insert=async(db:ProfileExecutor,kind='conversation',body:object={},environment='REAL',id=randomUUID())=>{
  await db.query('INSERT INTO records(id,workspace_id,environment,kind,body) VALUES($1,$2,$3,$4,$5)',[id,db.workspaceId,environment,kind,body]);return id;
 };
@@ -27,13 +26,11 @@ async function seedConversations(n:number,workspace=two){
 
 describe('closed quota owner retains global caps under native FORCE RLS',()=>{
  beforeAll(async()=>{
-  const url=new URL(localInventoryTarget(process.env.DATABASE_URL));
-  if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');
-  admin=new pg.Pool({connectionString:url.toString(),max:5,connectionTimeoutMillis:5000});
-  if((await admin.query("SELECT to_regclass('public.profiles') present")).rows[0].present)throw Error('TRANSITION_SCHEMA_ALREADY_PRESENT');
-  for(const file of ['001_profile_identity.sql','003_profile_settings.sql'])await admin.query(await readFile(new URL('../../packages/db/profile-transition/'+file,import.meta.url),'utf8'));
+  // V7 F2: a database migrated through 0079 (profiles, settings and quotas) is
+  // the state the promoted 0084 quota authority component is exercised on.
+  const database=await openMigratedDatabase('0079');admin=database.pool;closeDatabase=database.close;const url=new URL(database.url);
+  await admin.query("INSERT INTO profile_quota_policy(singleton,max_profiles,max_numbers,daily_conversations,calendar_timezone,adoption_sha256) VALUES(true,3,20,300,'UTC',$1)",['a'.repeat(64)]);
   await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'One','UTC',2,2,2),($2,'Two','UTC',18,10,1000),($3,'Three','UTC',0,0,0)",[one,two,three]);
-  await admin.query(await readFile(new URL('../../packages/db/profile-transition/014_profile_quotas.sql',import.meta.url),'utf8'));
   // Test-owned RLS on the actual migrated tables, not a production policy claim.
   for(const table of ['records','record_versions'])await admin.query(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;CREATE POLICY quota_fixture ON ${table} USING(workspace_id=NULLIF(current_setting('app.workspace_id',true),'')) WITH CHECK(workspace_id=NULLIF(current_setting('app.workspace_id',true),''))`);
   const secret=randomBytes(32).toString('hex');
@@ -52,10 +49,11 @@ describe('closed quota owner retains global caps under native FORCE RLS',()=>{
   await admin.query('DELETE FROM manual_controls WHERE workspace_id=ANY($1)',[[one,two,three]]);
   for(const id of [one,two,three])await adopt(id);
  });
- afterAll(async()=>{await runtime?.end();if(admin){try{await admin.query(`DROP ROLE IF EXISTS "${login}"`);}finally{await admin.end();}}});
- it('rejects altered definitions before creating an authority role',async()=>{const c=await admin.connect();try{await c.query('BEGIN');await c.query('ALTER FUNCTION profile_quota_inventory(text) SET search_path=public');await expect(c.query(await component())).rejects.toThrow('PROFILE_QUOTA_DEFINITION_DRIFT');}finally{await c.query('ROLLBACK');c.release();}expect((await admin.query("SELECT 1 FROM pg_roles WHERE rolname='commerce_quota_owner'")).rows).toEqual([]);});
+ afterAll(async()=>{await runtime?.end();await closeDatabase?.();const parent=new pg.Pool({connectionString:isolatedAdminUrl().toString(),max:1});try{await parent.query(`DROP ROLE IF EXISTS "${login}"`);}finally{await parent.end();}});
+ it('rejects altered definitions before creating an authority role',async()=>{const c=await admin.connect();try{await c.query('BEGIN');await c.query('ALTER FUNCTION profile_quota_inventory(text) SET search_path=public');await expect(c.query(await component())).rejects.toThrow('PROFILE_QUOTA_DEFINITION_DRIFT');}finally{await c.query('ROLLBACK');c.release();}expect((await admin.query("SELECT count(*)::int n FROM pg_shdepend d JOIN pg_roles r ON r.oid=d.refobjid WHERE r.rolname='commerce_quota_owner' AND d.dbid=(SELECT oid FROM pg_database WHERE datname=current_database())")).rows[0].n).toBe(0);});
  it('rejects an extra function caller rather than retaining a wider adoption port',async()=>{const c=await admin.connect();try{await c.query('BEGIN');await c.query('GRANT EXECUTE ON FUNCTION profile_quota_inventory(text) TO commerce_api');await expect(c.query(await component())).rejects.toThrow('PROFILE_QUOTA_ACL_DRIFT');}finally{await c.query('ROLLBACK');c.release();}});
- it('never reuses a preexisting quota role with unrelated authority',async()=>{const c=await admin.connect();try{await c.query('BEGIN');await c.query('CREATE ROLE commerce_quota_owner NOLOGIN');await c.query('GRANT commerce_api TO commerce_quota_owner');await expect(c.query(await component())).rejects.toMatchObject({code:'42710'});}finally{await c.query('ROLLBACK');c.release();}});
+ it('never reuses a preexisting quota role with unrelated authority',async()=>{const c=await admin.connect();try{await c.query('BEGIN');// The reviewed owner exists in this cluster; an unsafe variant is refused, never adopted.
+  await c.query('ALTER ROLE commerce_quota_owner INHERIT');await c.query('GRANT commerce_api TO commerce_quota_owner');await expect(c.query(await component())).rejects.toThrow(/V7_ROLE_EXISTING/);}finally{await c.query('ROLLBACK');c.release();}});
  it('transfers only the unchanged four functions to a non-inheriting private owner',async()=>{
   const names=['profile_quota_allocation_guard','profile_quota_inventory','adopt_profile_quota_inventory','profile_quota_record_guard'];
   const original=(await admin.query("SELECT proname,pg_get_functiondef(oid) body FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname=ANY($1) ORDER BY proname",[names])).rows;

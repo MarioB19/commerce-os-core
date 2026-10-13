@@ -1,10 +1,10 @@
 import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
-import {beforeAll,afterAll,describe,it,expect} from 'vitest';
+import {beforeAll,afterAll,describe,it,expect,beforeEach} from 'vitest';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {readProfileCatalog} from '../../packages/db/src/profile-inventory.js';
-import {requireMigratedProfileSchema,sealFixtureProfiles} from '../support/migrated-database.js';
+import {requireMigratedProfileSchema,sealFixtureProfiles,fenceSessionsExited} from '../support/migrated-database.js';
 import {buildPrivacyWriterFencePlan,withPrivacyWriterFence} from '../../packages/db/src/privacy-writer-fence.js';
 import {privacyInventoryPolicy,buildPrivacyInventoryPlan} from '../../packages/db/src/privacy-inventory-plan.js';
 import {listProfileChoicesFromSession,selectProfileFromSession} from '../../packages/db/src/profile-identity-bootstrap.js';
@@ -15,7 +15,7 @@ async function select(session:{id:string;userId:string},workspace=w,version=0,ro
 describe('profile selection remains identity-only with native D18 fencing',()=>{
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:4});
-  // V7 F2: the canonical chain (0069-0099) installs the profile, isolation and
+  // V7 F2: the canonical chain (0069-0100) installs the profile, isolation and
   // selection components; only the generated D18 writer fence is applied here.
   await requireMigratedProfileSchema(admin);
   await admin.query(`INSERT INTO "user"(id,name,email) VALUES($1,$1,$1||'@example.test')`,[user]);
@@ -25,6 +25,7 @@ describe('profile selection remains identity-only with native D18 fencing',()=>{
   loginOid=(await admin.query('SELECT oid FROM pg_roles WHERE rolname=$1',[login])).rows[0].oid;workerOid=(await admin.query('SELECT oid FROM pg_roles WHERE rolname=$1',[workerLogin])).rows[0].oid;
   const a=new URL(url);a.username=login;a.password=first;api=new pg.Pool({connectionString:a.toString(),max:3});const b=new URL(url);b.username=workerLogin;b.password=second;worker=new pg.Pool({connectionString:b.toString(),max:2});
  },60000);
+ beforeEach(async()=>{if(admin)await fenceSessionsExited(admin);});
  afterAll(async()=>{await api?.end();await worker?.end();if(admin){try{if(loginOid){expect((await admin.query('SELECT oid FROM pg_roles WHERE rolname=$1',[login])).rows[0].oid).toBe(loginOid);await admin.query(`DROP ROLE "${login}"`);}if(workerOid){expect((await admin.query('SELECT oid FROM pg_roles WHERE rolname=$1',[workerLogin])).rows[0].oid).toBe(workerOid);await admin.query(`DROP ROLE "${workerLogin}"`);}}finally{await admin.end();}}});
  it('lists authentic memberships and selects without a fabricated app.workspace',async()=>{const s=await nativeSession();expect((await listProfileChoicesFromSession(api,s)).map(p=>p.id).sort()).toEqual([w,other].sort());expect(await select(s)).toEqual({workspaceId:w,version:1});expect((await api.query("SELECT NULLIF(current_setting('app.workspace_id',true),'') w")).rows[0].w).toBeNull();});
  it('changes profile by exact CAS and rejects a stale selection with no partial write',async()=>{const s=await nativeSession();await select(s);await select(s,other,1);await expect(select(s,w,1)).rejects.toThrow('PROFILE_SELECTION_CHANGED');expect((await listProfileChoicesFromSession(api,s)).find(p=>p.selected)?.id).toBe(other);});
