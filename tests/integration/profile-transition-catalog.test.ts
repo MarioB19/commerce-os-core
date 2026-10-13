@@ -21,7 +21,7 @@ describe('canonical V7 migrated catalog',()=>{
  afterAll(async()=>{await admin?.end();});
  it('keeps the 68 historical migration hashes byte-identical under the V7 chain',async()=>{
   const rows=(await admin.query('SELECT name,sha256 FROM schema_migrations ORDER BY name')).rows as {name:string;sha256:string}[];
-  expect(rows).toHaveLength(103);
+  expect(rows).toHaveLength(104);
   for(const row of rows){const bytes=await readFile(new URL('../../packages/db/migrations/'+row.name,import.meta.url));expect(createHash('sha256').update(bytes).digest('hex')).toBe(row.sha256);}
   expect(rows.filter(r=>r.name<'0069')).toHaveLength(68);
  });

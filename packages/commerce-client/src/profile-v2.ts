@@ -12,16 +12,30 @@ export function personalProfileV2(origin:string,token:string,fetcher:typeof fetc
 export function platformV2(origin:string,token:string,fetcher:typeof fetch=fetch,limit=2*1024*1024):ProfileV2Client{
  return fixedBearer(origin,token,/^cos_plt_[A-Za-z0-9_-]{43}$/,path=>path.startsWith('/v2/platform/'),fetcher,limit);
 }
-function fixedBearer(origin:string,token:string,tokenPattern:RegExp,allowed:(path:string)=>boolean,fetcher:typeof fetch,limit:number):ProfileV2Client{
+/** V7 F3: the reviewed /v1 number journey (RF-07, wireframe D) for the same
+ * personal token. Only the listed path families; the environment is fixed to
+ * REAL and every write carries the caller's operation UUID as idempotency key,
+ * so a repeated MCP call with the same operation never repeats the effect. */
+export type ProfileV1Client=(method:ProfileV2Method,path:string,body?:unknown,operationId?:string,signal?:AbortSignal)=>Promise<unknown>;
+const v1Pattern=/^\/v1\/(numbers|number-operations)(?:\/[A-Za-z0-9._~%-]+)*$/;
+export function personalProfileV1(origin:string,token:string,fetcher:typeof fetch=fetch,limit=2*1024*1024):ProfileV1Client{
+ return async(method,path,body,operationId,signal)=>{
+  if(!v1Pattern.test(path)||path.includes('..'))throw new ProfileV2ClientError('PROFILE_ROUTE_INVALID');
+  if(method!=='GET'&&!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(operationId??''))throw new ProfileV2ClientError('OPERATION_ID_REQUIRED');
+  const client=fixedBearer(origin,token,/^cos_pat_[A-Za-z0-9_-]{43}$/,()=>true,fetcher,limit,/^\/v1\/[a-z-]+(?:\/[A-Za-z0-9._~%-]+)*\?environment=REAL$/,method==='GET'?{}:{'idempotency-key':'mcp:'+operationId!.toLowerCase()});
+  return client(method,path+'?environment=REAL',body,signal);
+ };
+}
+function fixedBearer(origin:string,token:string,tokenPattern:RegExp,allowed:(path:string)=>boolean,fetcher:typeof fetch,limit:number,pattern=pathPattern,extra:Record<string,string>={}):ProfileV2Client{
  let base:URL;try{base=new URL(origin);}catch{throw new ProfileV2ClientError('PROFILE_AUTHORITY_REQUIRED');}
  if(base.username||base.password||base.pathname!=='/'||base.search||base.hash||!(base.protocol==='https:'||base.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(base.hostname))||!tokenPattern.test(token))
   throw new ProfileV2ClientError('PROFILE_AUTHORITY_REQUIRED');
  return async(method,path,body,signal)=>{
-  if(!pathPattern.test(path)||path.includes('..')||!allowed(path))throw new ProfileV2ClientError('PROFILE_ROUTE_INVALID');
+  if(!pattern.test(path)||path.includes('..')||!allowed(path))throw new ProfileV2ClientError('PROFILE_ROUTE_INVALID');
   const controller=new AbortController(),abort=()=>controller.abort(signal?.reason);if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});
   const timer=setTimeout(()=>controller.abort(),30000),write=method!=='GET';
   try{
-   const response=await fetcher(base.origin+path,{method,headers:{authorization:'Bearer '+token,accept:'application/json',...(body===undefined?{}:{'content-type':'application/json'})},credentials:'omit',cache:'no-store',redirect:'error',signal:controller.signal,...(body===undefined?{}:{body:JSON.stringify(body)})});
+   const response=await fetcher(base.origin+path,{method,headers:{...extra,authorization:'Bearer '+token,accept:'application/json',...(body===undefined?{}:{'content-type':'application/json'})},credentials:'omit',cache:'no-store',redirect:'error',signal:controller.signal,...(body===undefined?{}:{body:JSON.stringify(body)})});
    const reader=response.body?.getReader();if(!reader)throw Error('body');const chunks:Uint8Array[]=[];let size=0;
    try{for(;;){const part=await reader.read();if(part.done)break;size+=part.value.byteLength;if(size>limit)throw Error('bound');chunks.push(part.value);}}finally{await reader.cancel().catch(()=>undefined);reader.releaseLock();}
    const raw=new Uint8Array(size);let offset=0;for(const chunk of chunks){raw.set(chunk,offset);offset+=chunk.length;}

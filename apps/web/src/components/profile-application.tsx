@@ -5,6 +5,7 @@ import * as Dialog from '@radix-ui/react-dialog';
 import {profileRoleLabels,type ProfileBrowserBootstrap} from '../../../../packages/contracts/src/profiles.js';
 import {createProfileApplication,type ProfileApplicationState} from '../lib/profile-application.js';
 import {ApiError,api,setProfileFence} from '../lib/api.js';
+import {ProfileNumbers} from './profile-numbers.js';
 import {AccountSecurityView} from '../pages/account-security.js';
 import {ProfileSelector} from './profile-selector.js';
 import {ProfileCatalog} from './profile-catalog.js';
@@ -73,7 +74,7 @@ function ProfilePage({path,data}:{path:string;data:ProfileBrowserBootstrap}){
  if(path==='/products')return <><h1>Productos</h1><ProfileCatalog selection={selection} environment="REAL" variantLinks/></>;
  if(path==='/settings/profile')return <ProfileSettings selection={selection} role={profile.role}/>;
  if(path==='/account/integrations')return <ProfileIntegrations selection={selection} role={profile.role} state={profile.state}/>;
- if(path==='/numbers')return <section><h1>Números</h1><p>Aquí verás tus números de WhatsApp, su conexión y su calentamiento.</p></section>;
+ if(path==='/numbers')return <ProfileNumbers role={profile.role} state={profile.state}/>;
  if(path==='/settings/employees')return profile.role==='owner'?<><ProfileEmployees selection={selection} role={profile.role} state={profile.state} currentUserId={data.user.id}/><ProfileInvitations selection={selection} role={profile.role} state={profile.state}/></>:<p role="alert">No tienes permiso para gestionar empleados.</p>;
  if(path==='/account/tokens')return profile.role==='owner'?<ProfileTokens selection={selection} role={profile.role} state={profile.state}/>:<p role="alert">No tienes permiso para gestionar accesos MCP.</p>;
  if(path==='/results'||path==='/results/goals')return <Results selection={selection} timezone={profile.timezone} role={profile.role} profileState={profile.state}/>;

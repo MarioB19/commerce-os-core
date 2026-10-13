@@ -517,7 +517,7 @@ import signal
 
 MIGRATION_NAMES = frozenset({'0066_pending_channel_cancellation.sql', '0067_copy_source_isolation.sql'})
 OPERATING_MIGRATION_NAMES = frozenset({'0068_operational_metric_writer.sql'})
-# V7 F2 profile cutover: the exact reviewed 68→103 set, applied as one bounded
+# V7 F2 profile cutover: the exact reviewed 68→104 set, applied as one bounded
 # OPERATING publication (docs/adr-v7-isolation-model.md). Names are fixed here;
 # hashes come from the private review and must equal the candidate's files.
 V7_PROFILE_MIGRATION_NAMES = frozenset({
@@ -532,7 +532,7 @@ V7_PROFILE_MIGRATION_NAMES = frozenset({
     '0093_v7_commercial_resolution_financial_retention.sql', '0094_v7_record_minimization.sql',
     '0095_v7_privacy_copies_backups.sql', '0096_v7_isolation_model.sql', '0097_v7_service_token_profile_binding.sql',
     '0098_v7_composed_foreign_keys.sql', '0099_v7_api_environment_guard.sql',
-    '0100_v7_platform_admin.sql', '0101_v7_profile_integrations.sql', '0102_v7_platform_tokens.sql', '0103_v7_capacity_agent_tokens.sql'})
+    '0100_v7_platform_admin.sql', '0101_v7_profile_integrations.sql', '0102_v7_platform_tokens.sql', '0103_v7_capacity_agent_tokens.sql', '0104_v7_number_identity_claims.sql'})
 V7_PROFILE_MIGRATION_TOTAL = 68 + len(V7_PROFILE_MIGRATION_NAMES)
 
 
@@ -551,7 +551,7 @@ def reviewed_migration_names(metadata):
 
 def migration_stage_guard(applied, metadata, *, initial=False, stage=None):
     """Only the reviewed 65→67 cold copy, the 67→68 OPERATING correction or
-    the 68→103 OPERATING V7 profile cutover."""
+    the 68→104 OPERATING V7 profile cutover."""
     names = reviewed_migration_names(metadata); expected = metadata['migration_hashes']
     verify_migrations(applied, expected)
     if initial:

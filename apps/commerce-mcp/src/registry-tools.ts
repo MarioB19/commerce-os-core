@@ -14,12 +14,13 @@ import type {ContinuityClient} from '../../../packages/commerce-client/src/conti
 import type {MarketClient} from '../../../packages/commerce-client/src/market-variants.js';
 import type {PaymentsClient} from '../../../packages/commerce-client/src/payments.js';
 import type {ProfileCatalogReader} from '../../../packages/commerce-client/src/profile-catalog.js';
-import type {ProfileV2Client} from '../../../packages/commerce-client/src/profile-v2.js';
+import type {ProfileV1Client,ProfileV2Client} from '../../../packages/commerce-client/src/profile-v2.js';
+import {numberCountries,type NumberCountry} from '../../../packages/domain/src/numbers/phone.js';
 import type {ReceiptPolicyClient} from '../../../packages/commerce-client/src/receipt-policies.js';
 import type {ResultsClient} from '../../../packages/commerce-client/src/results.js';
 import {humanAction,registerManageTool,type ManageAction} from './manage-tool.js';
 
-export interface ProfileRegistryClients {v2:ProfileV2Client;catalog:ProfileCatalogReader;variants:MarketClient;continuity:ContinuityClient;payments:PaymentsClient;receiptPolicies:ReceiptPolicyClient;results:ResultsClient}
+export interface ProfileRegistryClients {v2:ProfileV2Client;v1:ProfileV1Client;catalog:ProfileCatalogReader;variants:MarketClient;continuity:ContinuityClient;payments:PaymentsClient;receiptPolicies:ReceiptPolicyClient;results:ResultsClient}
 const id=(v:string)=>encodeURIComponent(v);
 const query=(values:Record<string,unknown>)=>{const q=new URLSearchParams();for(const[k,v]of Object.entries(values))if(v!==undefined&&v!==null)q.set(k,String(v));const s=q.toString();return s?'?'+s:'';};
 function failure(action:string,error:unknown,input:unknown){
@@ -119,5 +120,24 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
  tool('number_assignments_manage','Autorizaciones de venta de números','Autorizaciones permanentes de los números asignados: consultar, autorizar, pausar, reanudar o revocar. No envía mensajes.',{
   ...fromUnion(continuityRequestSchema,{list:'autorizaciones',get:'autorizacion',receipt:'consultar_operacion',issue:'autorizar'},op=>['list','get','receipt'].includes(op),i=>c.continuity(i)),
   pausar:human('pause'),reanudar:human('resume'),revocar:human('revoke'),
+ });
+
+ // V7 F3 (RF-07, wireframe D): the number journey. The QR is shown only in the
+ // application to the person who scans it; no tool returns QR material.
+ const numberId=z.object({numberId:z.uuid()}).strict(),countries=Object.keys(numberCountries) as [NumberCountry,...NumberCountry[]];
+ tool('numbers_manage','Números de WhatsApp','Lista tus números con estado legible, agrega uno (alias, país y número privado), consulta el impacto antes de eliminar y elimina conservando la historia. Agregar no conecta ni envía.',{
+  listar:{schema:empty,read:true,run:()=>c.v1('GET','/v1/numbers/overview')},
+  leer:{schema:numberId,read:true,run:i=>c.v1('GET','/v1/numbers/'+id(i.numberId)+'/link')},
+  crear:{schema:z.object({operationId:z.uuid(),alias:z.string().trim().min(2).max(100),country:z.enum(countries),phone:z.string().trim().min(4).max(32).optional()}).strict(),read:false,
+   run:i=>c.v1('POST','/v1/numbers/quick',{alias:i.alias,country:i.country,...(i.phone?{phone:i.phone}:{})},i.operationId)},
+  impacto_eliminar:{schema:numberId,read:true,run:i=>c.v1('GET','/v1/numbers/'+id(i.numberId)+'/removal')},
+  eliminar:{schema:z.object({operationId:z.uuid(),numberId:z.uuid(),expectedVersion:z.number().int().positive()}).strict(),read:false,destructive:true,
+   run:i=>c.v1('POST','/v1/numbers/'+id(i.numberId)+'/removal',{expected_version:i.expectedVersion,confirmation:'REMOVE_NUMBER'},i.operationId)},
+ });
+ const qr=humanAction('/numbers','El QR se muestra sólo en la aplicación, a la persona que lo escanea con su teléfono.');
+ tool('number_connection_manage','Conexión del número','Estado de la vinculación del número. Conectar o vincular se hace en la aplicación con el QR; desconectar cierra la sesión de ese número sin borrar su historia.',{
+  estado:{schema:numberId,read:true,run:i=>c.v1('GET','/v1/numbers/'+id(i.numberId)+'/link')},
+  conectar:{schema:numberId,read:false,run:qr},vincular:{schema:numberId,read:false,run:qr},
+  desconectar:{schema:z.object({operationId:z.uuid(),numberId:z.uuid()}).strict(),read:false,destructive:true,run:i=>c.v1('POST','/v1/numbers/'+id(i.numberId)+'/link',{action:'unlink'},i.operationId)},
  });
 }

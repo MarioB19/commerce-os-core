@@ -100,7 +100,7 @@ class OperatingMigration(unittest.TestCase):
                 self.assertEqual(sorted(arg for arg in args if ':/copy-sql/' in arg),
                                  sorted(str(root/'packages/db/migrations'/n)+':/copy-sql/'+n+':ro' for n in c.V7_PROFILE_MIGRATION_NAMES))
                 self.assertEqual(args[-1], c.BOUNDED_MIGRATION_JS)
-                self.assertIn('"0103_v7_capacity_agent_tokens.sql"]', c.BOUNDED_MIGRATION_JS)
+                self.assertIn('"0104_v7_number_identity_claims.sql"]', c.BOUNDED_MIGRATION_JS)
 
     def test_installed_release_must_match_db_and_private_source(self):
         with tempfile.TemporaryDirectory() as tmp:

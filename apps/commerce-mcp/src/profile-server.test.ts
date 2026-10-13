@@ -64,3 +64,32 @@ describe('composed V7 profile MCP server',()=>{
   }finally{await client.close();await server.close();}
  });
 });
+
+describe('V7 F3 number tools',()=>{
+ it('reads the number journey with the token and sends writes with the operation as idempotency key',async()=>{
+  const seen:{method:string;url:string;key:string|null;body:unknown}[]=[];
+  const {client,server}=await connect(async(input,init)=>{seen.push({method:String(init?.method??'GET'),url:String(input),key:new Headers(init?.headers).get('idempotency-key'),body:init?.body?JSON.parse(String(init.body)):undefined});return json(200,{data:{ok:true}});});
+  try{
+   const operationId='11111111-1111-4111-8111-111111111111',numberId='22222222-2222-4222-8222-222222222222';
+   await client.callTool({name:'numbers_manage',arguments:{action:'listar'}});
+   await client.callTool({name:'numbers_manage',arguments:{action:'crear',operationId,alias:'Ventas MX',country:'MX',phone:'55 1234 5678'}});
+   await client.callTool({name:'numbers_manage',arguments:{action:'eliminar',operationId,numberId,expectedVersion:3}});
+   await client.callTool({name:'number_connection_manage',arguments:{action:'desconectar',operationId,numberId}});
+   expect(seen.map(s=>[s.method,s.url,s.key])).toEqual([
+    ['GET','https://commerce.example.test/v1/numbers/overview?environment=REAL',null],
+    ['POST','https://commerce.example.test/v1/numbers/quick?environment=REAL','mcp:'+operationId],
+    ['POST',`https://commerce.example.test/v1/numbers/${numberId}/removal?environment=REAL`,'mcp:'+operationId],
+    ['POST',`https://commerce.example.test/v1/numbers/${numberId}/link?environment=REAL`,'mcp:'+operationId]]);
+   expect(seen[2]!.body).toEqual({expected_version:3,confirmation:'REMOVE_NUMBER'});
+   expect(seen[3]!.body).toEqual({action:'unlink'});
+  }finally{await client.close();await server.close();}
+ });
+ it('never returns QR material: connecting is a human action in the application',async()=>{
+  let calls=0;
+  const {client,server}=await connect(async()=>{calls++;return json(200,{data:{}});});
+  try{
+   const result=await client.callTool({name:'number_connection_manage',arguments:{action:'conectar',numberId:'22222222-2222-4222-8222-222222222222'}});
+   expect(JSON.stringify(result)).toContain('HUMAN_ACTION_REQUIRED');expect(JSON.stringify(result)).toContain('/numbers');expect(calls).toBe(0);
+  }finally{await client.close();await server.close();}
+ });
+});
