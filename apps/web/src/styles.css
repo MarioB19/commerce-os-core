@@ -1008,7 +1008,15 @@ details summary {
   color: white;
   padding: 10px;
 }
-.skip-link:focus {
+.skip-link:not(:focus-visible) {
+  clip-path: inset(50%);
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  white-space: nowrap;
+  padding: 0;
+}
+.skip-link:focus-visible {
   top: 10px;
 }
 .mobile-menu,
@@ -4167,3 +4175,4 @@ input:not([type="checkbox"]):not([type="radio"]),select,textarea{min-height:44px
  .variant-table td{border:0;padding:.3rem 0}
  .variant-table td[data-label]::before{content:attr(data-label) ': ';font-weight:600}
 }
+.variant-feedback:focus{outline:none}

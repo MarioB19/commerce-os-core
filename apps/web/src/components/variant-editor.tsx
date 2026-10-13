@@ -23,17 +23,22 @@ export function VariantEditor({productId,variantId,section,selection,role,state}
  const load=useCallback(async(signal?:AbortSignal)=>{try{const v=await variantRequest<VariantView>(selection,'GET',`/v2/variants/${variantId}`,undefined,undefined,signal);if(v.product.id!==productId){setVariant(null);return;}setVariant(v);setError('');}catch(e){if(!signal?.aborted){if((e as {status?:number}).status===404)setVariant(null);else setError(message(e,'No se pudo consultar la variante.'));}}},[selection,variantId,productId]);
  const reloadMaterials=useCallback(async()=>{try{setMaterials(await variantRequest<Material[]>(selection,'GET','/v2/materials'));}catch{/* the section shows the list it already has */}},[selection]);
  useEffect(()=>{const c=new AbortController();void load(c.signal);void reloadMaterials();return()=>c.abort();},[load,reloadMaterials]);
+ // While busy every control is disabled, so the browser drops focus to the
+ // page. Once the action ends, focus returns to the control that started it
+ // (or to the result message) instead of the top of the page.
+ const keepFocus=()=>{const origin=document.activeElement as HTMLElement|null;return()=>requestAnimationFrame(()=>{if(document.activeElement&&document.activeElement!==document.body)return;
+  if(origin&&origin!==document.body&&origin.isConnected&&!(origin as HTMLButtonElement).disabled)origin.focus({preventScroll:true});else document.getElementById('variant-feedback')?.focus({preventScroll:true});});};
  // Sequential saves (Venta → modelo → mercado) must each use the latest version.
  const latest=useRef<VariantView|null|undefined>(undefined);latest.current=variant;
- const save=useCallback(async(path:string,value:unknown)=>{const current=latest.current;if(!current)return false;setBusy(true);setError('');setNotice('');
+ const save=useCallback(async(path:string,value:unknown)=>{const current=latest.current;if(!current)return false;const back=keepFocus();setBusy(true);setError('');setNotice('');
   try{const v=await variantRequest<VariantView>(selection,'PUT',`/v2/variants/${current.id}/${path}`,{expected_version:current.version,value},newOperationKey());latest.current=v;setVariant(v);setNotice('Cambios guardados. Publica para usarlos en conversaciones nuevas.');return true;}
-  catch(e){setError(message(e,'No se pudo guardar.'));return false;}finally{setBusy(false);}},[selection]);
- async function publish(){if(!variant)return;setBusy(true);setError('');setNotice('');
+  catch(e){setError(message(e,'No se pudo guardar.'));return false;}finally{setBusy(false);back();}},[selection]);
+ async function publish(){if(!variant)return;const back=keepFocus();setBusy(true);setError('');setNotice('');
   try{const r=await variantRequest<{variant:VariantView;numbers_following:number}>(selection,'POST',`/v2/variants/${variant.id}/publish`,{expected_version:variant.version,document_sha256:variant.document_sha256},newOperationKey());
    setVariant(r.variant);setNotice(r.numbers_following?`Publicado. Las conversaciones nuevas de ${r.numbers_following} ${r.numbers_following===1?'número':'números'} usarán estos cambios; las que están en curso conservan su configuración.`:'Publicado. Asigna un número para empezar a vender.');}
-  catch(e){setError(message(e,'No se pudo publicar.'));}finally{setBusy(false);}}
- async function review(fields:string[]){if(!variant)return;setBusy(true);try{setVariant(await variantRequest<VariantView>(selection,'POST',`/v2/variants/${variant.id}/review`,{expected_version:variant.version,reviewed:fields},newOperationKey()));}catch(e){setError(message(e,'No se pudo marcar como revisado.'));}finally{setBusy(false);}}
- async function lifecycle(action:'archive'|'restore'){if(!variant)return;setBusy(true);setError('');try{setVariant(await variantRequest<VariantView>(selection,'POST',`/v2/variants/${variant.id}/${action}`,{expected_version:variant.version},newOperationKey()));}catch(e){setError(message(e,'No se pudo cambiar la variante.'));}finally{setBusy(false);}}
+  catch(e){setError(message(e,'No se pudo publicar.'));}finally{setBusy(false);back();}}
+ async function review(fields:string[]){if(!variant)return;const back=keepFocus();setBusy(true);try{setVariant(await variantRequest<VariantView>(selection,'POST',`/v2/variants/${variant.id}/review`,{expected_version:variant.version,reviewed:fields},newOperationKey()));}catch(e){setError(message(e,'No se pudo marcar como revisado.'));}finally{setBusy(false);back();}}
+ async function lifecycle(action:'archive'|'restore'){if(!variant)return;const back=keepFocus();setBusy(true);setError('');try{setVariant(await variantRequest<VariantView>(selection,'POST',`/v2/variants/${variant.id}/${action}`,{expected_version:variant.version},newOperationKey()));}catch(e){setError(message(e,'No se pudo cambiar la variante.'));}finally{setBusy(false);back();}}
  if(variant===null)return <section><a href="/products">← Productos</a><p role="alert">No encontramos esa variante en este perfil.</p></section>;
  if(!variant)return <section aria-busy="true">{error?<p role="alert">{error}</p>:<p role="status">Consultando variante…</p>}</section>;
  const d=variant.document,blocking=variant.missing.filter(m=>m.code!=='publish'),canPublish=manage&&!variant.archived&&!blocking.length&&(variant.unpublished_changes||!variant.published);
@@ -46,8 +51,7 @@ export function VariantEditor({productId,variantId,section,selection,role,state}
   </div>
   <p className="variant-hint">{languageLabel(d.locale.language)} · {d.locale.currency} · {d.locale.timezone}. Los cambios se aplican a conversaciones nuevas; las conversaciones en curso conservan su configuración.</p>
   {variant.unpublished_changes&&variant.published&&<p className="variant-pending" role="status">Tienes cambios guardados sin publicar.</p>}
-  {notice&&<p role="status" className="variant-notice">{notice}</p>}
-  {error&&<p role="alert">{error}</p>}
+  <div id="variant-feedback" tabIndex={-1} className="variant-feedback">{notice&&<p role="status" className="variant-notice">{notice}</p>}{error&&<p role="alert">{error}</p>}</div>
   {blocking.length>0&&<div className="variant-missing" role="region" aria-label="Lo que falta"><strong>Para publicar falta:</strong><ul>{blocking.map(m=><li key={m.code}>{m.label}</li>)}</ul></div>}
   {d.pending_review.length>0&&manage&&<ReviewPanel fields={d.pending_review} busy={busy} onReview={fields=>void review(fields)}/>}
   <nav className="variant-tabs" aria-label="Secciones de la variante">{variantSectionTabs.map(([key,label])=><a key={key} href={variantPath(productId,variant.id,key)} aria-current={key===section?'page':undefined}>{label}</a>)}</nav>
