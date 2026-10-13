@@ -3,6 +3,7 @@ import type {FastifyInstance,FastifyReply,FastifyRequest} from 'fastify';
 import {z} from 'zod';
 import {pool,withTransaction} from '../../../packages/db/src/index.js';
 import {identityAudit} from '../../../packages/db/src/identity.js';
+import {cancelPlatformProfileDeletion,platformProfileDeletionState,requestPlatformProfileDeletion} from '../../../packages/db/src/platform-profiles.js';
 import {createPlatformProfile,invitePlatformOwner,issueCapacityAgentToken,isPlatformAdmin,isPlatformToken,issuePlatformToken,listPlatformProfiles,listPlatformTokens,readPlatformCapacity,resolvePlatformToken,revokePlatformToken,updatePlatformProfile,PlatformError,type PlatformScope,type PlatformSession} from '../../../packages/db/src/platform-profiles.js';
 import {auth,trustedOrigins} from './auth.js';
 import {mailPatchSchema,readMailSetting,mailMetadata,saveMailSetting,diagnoseMail} from './identity-mail.js';
@@ -75,6 +76,19 @@ export async function platformProfileRoutes(app:FastifyInstance,deps:PlatformRou
  app.patch('/v2/platform/profiles/:id',{bodyLimit:4096},async(req,reply)=>{
   const current=await session(req,reply,true,'platform:profiles'),{id}=idParams.parse(req.params);
   return{data:await audited(current,'platform.profile.update',req,db=>updatePlatformProfile(db,current,id,req.body))};
+ });
+ // RF-01.5: deletion request (interactive session only: Brandon's specific confirmation).
+ app.get('/v2/platform/profiles/:id/deletion',async(req,reply)=>{
+  const current=await session(req,reply,false,'platform:profiles',{interactiveOnly:true}),{id}=idParams.parse(req.params);
+  return{data:await withTransaction(db=>platformProfileDeletionState(db,current,id))};
+ });
+ app.post('/v2/platform/profiles/:id/deletion',{bodyLimit:2048},async(req,reply)=>{
+  const current=await session(req,reply,true,'platform:profiles',{interactiveOnly:true}),{id}=idParams.parse(req.params);
+  return{data:await audited(current,'platform.profile.deletion_requested',req,db=>requestPlatformProfileDeletion(db,current,id,req.body))};
+ });
+ app.post('/v2/platform/profiles/:id/deletion/cancel',{bodyLimit:2048},async(req,reply)=>{
+  const current=await session(req,reply,true,'platform:profiles',{interactiveOnly:true}),{id}=idParams.parse(req.params);
+  return{data:await audited(current,'platform.profile.deletion_cancelled',req,db=>cancelPlatformProfileDeletion(db,current,id,req.body))};
  });
  app.post('/v2/platform/profiles/:id/owner-invitations',{bodyLimit:4096},async(req,reply)=>{
   const current=await session(req,reply,true,'platform:profiles'),{id}=idParams.parse(req.params);

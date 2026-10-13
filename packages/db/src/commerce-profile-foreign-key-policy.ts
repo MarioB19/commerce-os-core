@@ -29,7 +29,7 @@ export function commerceProfileForeignKeyPolicy(catalog:ProfileCatalog):ProfileF
   if(key==='privacy_writer_epochs'||key==='privacy_writer_leases'||key==='creative_devices'||key==='profile_quota_coverage'||key==='profile_quota_entries'||privateTables.has(key)){tables[key]={workspace:'workspace_id',environment:null};continue;}
   if(componentEnvironmentTables.has(key)){tables[key]={workspace:'workspace_id',environment:'environment'};continue;}
   if(componentProfileTables.has(key)){tables[key]={workspace:'workspace_id',environment:null};continue;}
-  if(key==='platform_operations'){tables[key]={workspace:'profile_id',environment:null};continue;}
+  if(key==='platform_operations'||key==='platform_profile_deletions'){tables[key]={workspace:'profile_id',environment:null};continue;}
   throw Error('COMMERCE_FK_RELATION_UNCLASSIFIED');
  }
  // Retired unbound pairings are never a parent/child business authority. Their

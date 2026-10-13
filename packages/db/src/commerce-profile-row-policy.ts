@@ -77,10 +77,12 @@ const cutoverTables=['profile_adoption_quarantine','profile_adoption_receipts','
 const platformTables=['platform_admins','platform_operations','platform_tokens'];
 // V7 F1 (0111) and later: platform tables created after the retirement
 // boundary. A catalog through 0108 (or 0109-0110) does not have them yet.
-const addedAfterRetirement=['platform_backup_runs'];
+// V7 RF-01.5 (0117): platform deletion requests, outside every profile.
+const addedAfterRetirement=['platform_backup_runs','platform_profile_deletions'];
 // V7 RF-19.d: laboratory example receipts (0113), preserved only when present.
 // V7 RF-07.e: owner alert mail (0116), profile scoped, preserved only when present.
-const profileAddedAfterRetirement=['owner_alert_mail_attempts','owner_alert_mail_jobs'];
+// V7 RF-01.5: owner export receipts (0117), profile scoped, no content.
+const profileAddedAfterRetirement=['owner_alert_mail_attempts','owner_alert_mail_jobs','profile_data_exports'];
 const laboratoryAddedAfterRetirement=['commerce_number_lab.attachments','commerce_number_lab.retention_receipts','commerce_number_lab.suites','commerce_number_lab.suite_cases'];
 // V7 F2 profile integrations (0101): reviewed profile and environment guards in
 // the migration; only the API and the closed AI/platform readers reach rows.

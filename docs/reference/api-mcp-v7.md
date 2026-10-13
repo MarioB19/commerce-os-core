@@ -2,7 +2,7 @@
 
 > Generada por `scripts/api-reference.ts` desde el código (OpenAPI de la app y registro MCP tipado). No se edita a mano: CI falla si difiere del código.
 
-Contenido: `c6cddba32e79980a` · 193 operaciones HTTP en 170 rutas · 40 herramientas MCP (presupuesto 40).
+Contenido: `2dc46d5c3078e53c` · 197 operaciones HTTP en 173 rutas · 40 herramientas MCP (presupuesto 40).
 
 ## Herramientas MCP
 
@@ -419,6 +419,9 @@ Contenido: `c6cddba32e79980a` · 193 operaciones HTTP en 170 rutas · 40 herrami
 | GET | `/v2/platform/profiles` | autenticado |
 | POST | `/v2/platform/profiles` | autenticado |
 | PATCH | `/v2/platform/profiles/{id}` | autenticado |
+| GET | `/v2/platform/profiles/{id}/deletion` | autenticado |
+| POST | `/v2/platform/profiles/{id}/deletion` | autenticado |
+| POST | `/v2/platform/profiles/{id}/deletion/cancel` | autenticado |
 | POST | `/v2/platform/profiles/{id}/owner-invitations` | autenticado |
 | GET | `/v2/platform/tokens` | autenticado |
 | POST | `/v2/platform/tokens` | autenticado |
@@ -442,6 +445,7 @@ Contenido: `c6cddba32e79980a` · 193 operaciones HTTP en 170 rutas · 40 herrami
 |---|---|---|
 | GET | `/v2/profile` | autenticado |
 | PATCH | `/v2/profile` | autenticado |
+| GET | `/v2/profile/export` | autenticado |
 
 ### `/v2/receipts`
 

@@ -1,6 +1,6 @@
 import {useEffect,useId,useRef,useState,type FormEvent} from 'react';
 import type {ProfileOverview,ProfileRole} from '../../../../packages/contracts/src/profiles.js';
-import {loadProfileSettings,saveProfileSettings,type ProfileRequestFence} from '../lib/profile-settings.js';
+import {downloadProfileExport,loadProfileSettings,saveProfileSettings,type ProfileRequestFence} from '../lib/profile-settings.js';
 import {Button} from './ui/button';
 
 /** Prepared for the complete server profile cutover; not mounted by legacy UI. */
@@ -43,5 +43,24 @@ export function ProfileSettings({selection,role}:{selection:ProfileRequestFence;
    <dl><dt>Límite de números</dt><dd>{currentData.number_limit}</dd><dt>Límite de productos</dt><dd>{currentData.product_limit}</dd><dt>Conversaciones diarias</dt><dd>{currentData.daily_conversation_limit}</dd></dl>
   </>}
   <Button type="button" variant="secondary" disabled={loading||saving} onClick={()=>{void refresh();}}>Actualizar datos</Button>
+  {role==='owner'&&<ProfileDataExport selection={selection}/>}
  </section>;
+}
+
+/** RF-01.5: readable export of the profile's own data, owner only. */
+function ProfileDataExport({selection}:{selection:ProfileRequestFence}){
+ const id=useId(),[busy,setBusy]=useState(false),[error,setError]=useState(''),[done,setDone]=useState<{sha256:string;bytes:number}>();
+ async function run(){
+  if(busy)return;setBusy(true);setError('');setDone(undefined);
+  try{const result=await downloadProfileExport(selection);setDone({sha256:result.sha256,bytes:result.bytes});}
+  catch(failure){setError(failure instanceof Error?failure.message:'No se pudo descargar la exportación.');}
+  finally{setBusy(false);}
+ }
+ return <div aria-labelledby={id} className="profile-export">
+  <h3 id={id}>Exportar datos del perfil</h3>
+  <p>Descarga un archivo legible (JSON por líneas, comprimido) con productos, variantes, números, contactos, conversaciones, ventas y comprobantes de este perfil. No incluye llaves, tokens ni contraseñas. La plataforma sólo guarda la huella del archivo.</p>
+  {error&&<p role="alert">{error}</p>}
+  {done&&<p role="status">Exportación descargada ({Math.max(1,Math.round(done.bytes/1024))} KB). Huella: <code>{done.sha256.slice(0,16)}…</code></p>}
+  <Button type="button" variant="secondary" disabled={busy} onClick={()=>{void run();}}>{busy?'Preparando…':'Exportar datos'}</Button>
+ </div>;
 }

@@ -22,6 +22,12 @@ const messages:Record<string,string>={
  PLATFORM_TOKEN_LIMIT:'Ya tienes 10 accesos activos. Revoca uno antes de crear otro.',
  PLATFORM_TOKEN_INVALID_INPUT:'Revisa el nombre, los permisos y la vigencia (máximo 90 días).',
  PLATFORM_INTERACTIVE_SESSION_REQUIRED:'Esta acción sólo puede hacerse con tu sesión en la aplicación.',
+ PLATFORM_DELETION_REQUIRES_SUSPENDED:'Suspende el perfil antes de pedir su eliminación.',
+ PLATFORM_DELETION_CONFIRMATION_MISMATCH:'El nombre escrito no coincide exactamente con el nombre del negocio.',
+ PLATFORM_DELETION_EXPORT_REQUIRED:'Falta una exportación de los últimos 7 días. La persona Dueño debe exportar los datos del perfil primero.',
+ PROFILE_DELETION_PENDING:'Este perfil tiene una eliminación pendiente. Cancélala antes de reactivarlo o de pedir otra.',
+ PLATFORM_DELETION_NOT_PENDING:'La eliminación ya no está pendiente. Actualiza la lista.',
+ PLATFORM_DELETION_INVALID:'Escribe un motivo de 8 a 500 caracteres.',
  REQUEST_TIMEOUT:'La operación tardó demasiado y su resultado no es concluyente. Actualiza la lista antes de repetir.',
 };
 export function platformMessage(error:unknown){
@@ -40,3 +46,9 @@ export const platformScopeLabels:Record<string,string>={'platform:profiles':'Per
 export function loadPlatformTokens(signal?:AbortSignal){return api<PlatformToken[]>('/v2/platform/tokens',{signal});}
 export function issuePlatformToken(input:{name:string;scopes:string[];expiresAt:string}){return api<PlatformToken&{token:string}>('/v2/platform/tokens',{method:'POST',body:JSON.stringify(input)});}
 export function revokePlatformToken(id:string){return api<{id:string;revoked:true;changed:boolean}>(`/v2/platform/tokens/${encodeURIComponent(id)}/revoke`,{method:'POST',body:'{}'});}
+export type PlatformDeletionState={profileId:string;state:'ACTIVE'|'SUSPENDED';version:number;
+ lastExport:{id:string;sha256:string;rows:number;bytes:number;createdAt:string;usable:boolean}|null;
+ deletion:{id:string;status:'PENDING_ERASURE'|'CANCELLED';requestedAt:string;exportId:string}|null};
+export function loadPlatformDeletion(id:string,signal?:AbortSignal){return api<PlatformDeletionState>(`/v2/platform/profiles/${encodeURIComponent(id)}/deletion`,{signal});}
+export function requestPlatformDeletion(id:string,input:{operationId:string;expectedVersion:number;confirmation:string;exportId:string;reason:string}){return api<{status:string;deletionId:string;erased:false;replayed:boolean}>(`/v2/platform/profiles/${encodeURIComponent(id)}/deletion`,{method:'POST',body:JSON.stringify(input)});}
+export function cancelPlatformDeletion(id:string,input:{operationId:string;deletionId:string;reason:string}){return api<{status:string;deletionId:string;replayed:boolean}>(`/v2/platform/profiles/${encodeURIComponent(id)}/deletion/cancel`,{method:'POST',body:JSON.stringify(input)});}

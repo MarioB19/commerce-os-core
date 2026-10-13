@@ -2136,6 +2136,61 @@
     }
    }
   },
+  "/v2/platform/profiles/{id}/deletion": {
+   "get": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "id",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Default Response"
+     }
+    }
+   },
+   "post": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "id",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Default Response"
+     }
+    }
+   }
+  },
+  "/v2/platform/profiles/{id}/deletion/cancel": {
+   "post": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "id",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Default Response"
+     }
+    }
+   }
+  },
   "/v2/platform/profiles/{id}/owner-invitations": {
    "post": {
     "parameters": [
@@ -2310,6 +2365,15 @@
     }
    },
    "patch": {
+    "responses": {
+     "200": {
+      "description": "Default Response"
+     }
+    }
+   }
+  },
+  "/v2/profile/export": {
+   "get": {
     "responses": {
      "200": {
       "description": "Default Response"

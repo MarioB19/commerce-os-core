@@ -18,7 +18,8 @@ export class PlatformError extends Error{constructor(readonly code:string,readon
 const known:Record<string,number>={PROFILE_SESSION_EXPIRED:401,PLATFORM_ADMIN_REQUIRED:403,PLATFORM_OUTSIDE_PROFILE_REQUIRED:409,PLATFORM_PROFILE_INVALID:400,
  PLATFORM_INVITATION_INVALID:400,PLATFORM_OPERATION_INVALID:400,PLATFORM_OPERATION_CONTENT_CHANGED:409,PLATFORM_PROFILE_NOT_FOUND:404,PLATFORM_PROFILE_CHANGED:409,
  PLATFORM_PROFILE_HAS_OWNER:409,PROFILE_SUSPENDED:409,INVITATION_ALREADY_PENDING:409,PROFILE_QUOTA_ALLOCATION_EXCEEDED:409,PROFILE_QUOTA_BELOW_CONSUMED:409,PROFILE_QUOTA_BUSY:409,
- PLATFORM_TOKEN_INVALID:401,PLATFORM_INTERACTIVE_SESSION_REQUIRED:403,PLATFORM_TOKEN_LIMIT:409,PLATFORM_TOKEN_INVALID_INPUT:400,PLATFORM_TOKEN_NOT_FOUND:404};
+ PLATFORM_TOKEN_INVALID:401,PLATFORM_INTERACTIVE_SESSION_REQUIRED:403,PLATFORM_TOKEN_LIMIT:409,PLATFORM_TOKEN_INVALID_INPUT:400,PLATFORM_TOKEN_NOT_FOUND:404,
+ PLATFORM_DELETION_INVALID:400,PLATFORM_DELETION_REQUIRES_SUSPENDED:409,PLATFORM_DELETION_CONFIRMATION_MISMATCH:409,PLATFORM_DELETION_EXPORT_REQUIRED:409,PROFILE_DELETION_PENDING:409,PLATFORM_DELETION_NOT_PENDING:409};
 async function port<T>(work:()=>Promise<T>):Promise<T>{
  try{return await work();}
  catch(error){const code=(error as {message?:string}).message;if(code&&Object.hasOwn(known,code))throw new PlatformError(code,known[code]!);throw error;}
@@ -116,4 +117,36 @@ export async function issueCapacityAgentToken(db:QueryExecutor,current:PlatformS
  const token='cos_cap_'+randomBytes(32).toString('base64url'),tokenId=uuid(),expiresAt=new Date(Date.now()+14*60000).toISOString();
  const result=z.object({id:z.uuid(),workspaceId:profileIdSchema,expiresAt:z.coerce.date()}).strict().parse(await port(async()=>(await db.query('SELECT platform_issue_capacity_agent_token($1,$2,$3,$4,$5,$6) AS r',[s.id,s.userId,id,tokenId,tokenHash(token),expiresAt])).rows[0]?.r));
  return{token,id:result.id,workspaceId:result.workspaceId,expiresAt:result.expiresAt.toISOString()};
+}
+
+/** V7 RF-01.5: deleting a profile needs a readable export made by its owner
+ * (receipt only here) and Brandon's specific confirmation: the exact business
+ * name typed in an interactive session. The request keeps the profile
+ * suspended and feeds the D-18 erasure window; nothing is erased here. */
+export const platformDeletionRequestSchema=z.object({operationId:z.uuid(),expectedVersion:z.number().int().positive(),confirmation:z.string().min(1).max(160),
+ exportId:z.uuid(),reason:z.string().trim().min(8).max(500)}).strict();
+export const platformDeletionCancelSchema=z.object({operationId:z.uuid(),deletionId:z.uuid(),reason:z.string().trim().min(8).max(500)}).strict();
+const deletionStateSchema=z.object({profile_id:profileIdSchema,state:z.enum(['ACTIVE','SUSPENDED']),version:z.number().int().positive(),
+ last_export:z.object({id:z.uuid(),sha256:z.string().regex(/^[a-f0-9]{64}$/),rows:z.coerce.number().int().min(0),bytes:z.coerce.number().int().positive(),created_at:z.string(),usable:z.boolean()}).strict().nullable(),
+ deletion:z.object({id:z.uuid(),status:z.enum(['PENDING_ERASURE','CANCELLED']),requested_at:z.string(),export_id:z.uuid()}).strict().nullable()}).strict();
+export async function platformProfileDeletionState(db:QueryExecutor,current:PlatformSession,profileId:string){
+ const s=session(current),id=profileIdSchema.parse(profileId);
+ const r=deletionStateSchema.parse(await port(async()=>(await db.query('SELECT platform_profile_deletion_state($1,$2,$3) AS r',[s.id,s.userId,id])).rows[0]?.r));
+ return{profileId:r.profile_id,state:r.state,version:r.version,
+  lastExport:r.last_export?{id:r.last_export.id,sha256:r.last_export.sha256,rows:r.last_export.rows,bytes:r.last_export.bytes,createdAt:r.last_export.created_at,usable:r.last_export.usable}:null,
+  deletion:r.deletion?{id:r.deletion.id,status:r.deletion.status,requestedAt:r.deletion.requested_at,exportId:r.deletion.export_id}:null};
+}
+const deletionResultSchema=z.object({status:z.enum(['DELETION_REQUESTED','DELETION_CANCELLED']),profile_id:profileIdSchema,deletion_id:z.uuid(),
+ export_sha256:z.string().regex(/^[a-f0-9]{64}$/).optional(),erased:z.literal(false).optional(),replayed:z.literal(true).optional()}).strict();
+export async function requestPlatformProfileDeletion(db:QueryExecutor,current:PlatformSession,profileId:string,raw:unknown){
+ const s=session(current),id=profileIdSchema.parse(profileId),input=platformDeletionRequestSchema.parse(raw);
+ const r=deletionResultSchema.parse(await port(async()=>(await db.query('SELECT platform_request_profile_deletion($1,$2,$3,$4,$5,$6,$7,$8) AS r',
+  [s.id,s.userId,input.operationId,id,input.expectedVersion,input.confirmation,input.exportId,input.reason])).rows[0]?.r));
+ return{status:r.status,profileId:r.profile_id,deletionId:r.deletion_id,exportSha256:r.export_sha256??null,erased:false as const,replayed:r.replayed===true};
+}
+export async function cancelPlatformProfileDeletion(db:QueryExecutor,current:PlatformSession,profileId:string,raw:unknown){
+ const s=session(current),id=profileIdSchema.parse(profileId),input=platformDeletionCancelSchema.parse(raw);
+ const r=deletionResultSchema.parse(await port(async()=>(await db.query('SELECT platform_cancel_profile_deletion($1,$2,$3,$4,$5,$6) AS r',
+  [s.id,s.userId,input.operationId,id,input.deletionId,input.reason])).rows[0]?.r));
+ return{status:r.status,profileId:r.profile_id,deletionId:r.deletion_id,replayed:r.replayed===true};
 }

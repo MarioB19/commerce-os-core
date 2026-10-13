@@ -40,3 +40,21 @@ export async function saveProfileSettings(fence:ProfileRequestFence,input:unknow
   throw new ApiError('No se pudo confirmar el guardado. Actualiza los datos antes de volver a guardar.',409,'PROFILE_SETTINGS_UNCONFIRMED');
  return parsed.data;
 }
+/** RF-01.5: the owner downloads the profile's own data (gzip NDJSON). One GET;
+ * the server keeps only a receipt (hash, rows, bytes) for a later deletion. */
+export async function downloadProfileExport(fence:ProfileRequestFence):Promise<{id:string;sha256:string;bytes:number}>{
+ const selected=headers(fence),controller=new AbortController(),timer=setTimeout(()=>controller.abort(),120_000);
+ try{
+  const response=await fetch('/v2/profile/export',{credentials:'include',cache:'no-store',signal:controller.signal,headers:selected});
+  if(response.status===403)throw new ApiError('Sólo la persona Dueño puede exportar los datos del perfil.',403,'PROFILE_ACTION_FORBIDDEN');
+  if(!response.ok)throw new ApiError('No se pudo generar la exportación. Vuelve a intentar en unos minutos.',response.status,'PROFILE_EXPORT_FAILED');
+  const id=response.headers.get('x-commerce-export-id')??'',sha256=response.headers.get('x-commerce-export-sha256')??'';
+  const blob=await response.blob(),url=URL.createObjectURL(blob),a=document.createElement('a');
+  a.href=url;a.download=`perfil-${fence.workspaceId}-${new Date().toISOString().slice(0,10)}.ndjson.gz`;document.body.append(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),10_000);
+  return{id,sha256,bytes:blob.size};
+ }catch(error){
+  if(error instanceof ApiError)throw error;
+  throw new ApiError('No se pudo descargar la exportación. Vuelve a intentar.',0,'PROFILE_EXPORT_UNCONFIRMED');
+ }finally{clearTimeout(timer);}
+}
