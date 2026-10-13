@@ -517,7 +517,7 @@ import signal
 
 MIGRATION_NAMES = frozenset({'0066_pending_channel_cancellation.sql', '0067_copy_source_isolation.sql'})
 OPERATING_MIGRATION_NAMES = frozenset({'0068_operational_metric_writer.sql'})
-# V7 F2 profile cutover: the exact reviewed 68→104 set, applied as one bounded
+# V7 profile cutover: the exact reviewed 68→109 set, applied as one bounded
 # OPERATING publication (docs/adr-v7-isolation-model.md). Names are fixed here;
 # hashes come from the private review and must equal the candidate's files.
 V7_PROFILE_MIGRATION_NAMES = frozenset({
@@ -534,7 +534,7 @@ V7_PROFILE_MIGRATION_NAMES = frozenset({
     '0098_v7_composed_foreign_keys.sql', '0099_v7_api_environment_guard.sql',
     '0100_v7_platform_admin.sql', '0101_v7_profile_integrations.sql', '0102_v7_platform_tokens.sql', '0103_v7_capacity_agent_tokens.sql', '0104_v7_number_identity_claims.sql',
     '0105_v7_variant_documents.sql', '0106_v7_ai_price_catalog.sql', '0107_v7_ai_budget_continuity.sql',
-    '0108_v7_number_lab_queue.sql'})
+    '0108_v7_number_lab_queue.sql', '0109_v7_retire_modules.sql'})
 V7_PROFILE_MIGRATION_TOTAL = 68 + len(V7_PROFILE_MIGRATION_NAMES)
 
 
@@ -553,7 +553,9 @@ def reviewed_migration_names(metadata):
 
 def migration_stage_guard(applied, metadata, *, initial=False, stage=None):
     """Only the reviewed 65→67 cold copy, the 67→68 OPERATING correction or
-    the 68→104 OPERATING V7 profile cutover."""
+    the 68→109 OPERATING V7 profile cutover. 0109 retires the V5 modules only
+    after scripts/v7-retirement-export.ts recorded their export (otherwise the
+    whole transaction aborts and the database stays at 68)."""
     names = reviewed_migration_names(metadata); expected = metadata['migration_hashes']
     verify_migrations(applied, expected)
     if initial:
@@ -1235,11 +1237,12 @@ def profiles(before, private, *, initial=False):
 
 def commercial_snapshot(server, root):
     # Private stable configuration and reservations. No row bodies are reported.
-    tables = ('manual_controls', 'integration_settings', 'commercial_assignments', 'operation_authorizations',
-              'creative_budgets', 'creative_global_budgets', 'intelligence_searches')
+    tables = ('manual_controls', 'integration_settings', 'commercial_assignments', 'operation_authorizations')
+    # V7 F8-E: 0109 exports and drops these retired V5 reservations.
+    retired = ('creative_budgets', 'creative_global_budgets', 'intelligence_searches')
     query = 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SELECT json_build_object('+','.join(
-        "'"+name+"',(SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]'::jsonb) FROM "+name+' t)'
-        for name in tables)+'); ROLLBACK;'
+        ["'"+name+"',(SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]'::jsonb) FROM "+name+' t)'
+         for name in tables]+["'"+name+"',"+native.retired_rows(name) for name in retired])+'); ROLLBACK;'
     real_quotas = {
         'warmup_rate_buckets': "JOIN records a ON a.id=t.account_id AND a.kind='channel_account' WHERE a.environment='REAL'",
         'warmup_rate_reservations': "JOIN outbox e ON e.id=t.effect_id WHERE e.environment='REAL'",
@@ -1299,7 +1302,7 @@ def reviewed_backup_module(manifest_ref, root, source_sha):
 
 
 def in_flight_guard(server, root):
-    query = "SELECT json_build_object('sends',(SELECT count(*) FROM outbox WHERE environment='REAL' AND status='SENDING'),'provider',(SELECT count(*) FROM creative_provider_operations WHERE status IN('RESERVED','RUNNING')),'voice',(SELECT count(*) FROM creative_voice_operations WHERE status IN('QUOTED','REQUESTED','RUNNING','PAID_PENDING_STORAGE')),'number',(SELECT count(*) FROM number_operations WHERE environment='REAL' AND state='PREPARING' AND lease_until>now()),'profile',(SELECT count(*) FROM warmup_identities WHERE environment='REAL' AND profile_operation_status='APPLYING'),'lifecycle',(SELECT count(*) FROM commands WHERE environment='REAL' AND kind='channel_command' AND status='PENDING' AND result ? 'processing_owner'));"
+    query = "SELECT json_build_object('sends',(SELECT count(*) FROM outbox WHERE environment='REAL' AND status='SENDING'),'provider',"+native.retired_count('creative_provider_operations',"status IN('RESERVED','RUNNING')")+",'voice',"+native.retired_count('creative_voice_operations',"status IN('QUOTED','REQUESTED','RUNNING','PAID_PENDING_STORAGE')")+",'number',(SELECT count(*) FROM number_operations WHERE environment='REAL' AND state='PREPARING' AND lease_until>now()),'profile',(SELECT count(*) FROM warmup_identities WHERE environment='REAL' AND profile_operation_status='APPLYING'),'lifecycle',(SELECT count(*) FROM commands WHERE environment='REAL' AND kind='channel_command' AND status='PENDING' AND result ? 'processing_owner'));"
     value = _parse(server.database(root, query).encode())
     require(type(value) is dict and set(value) == {'sends', 'provider', 'voice', 'number', 'profile', 'lifecycle'}
             and all(type(count) is int and count == 0 for count in value.values()),

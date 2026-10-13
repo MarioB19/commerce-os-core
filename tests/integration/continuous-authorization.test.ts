@@ -479,7 +479,7 @@ describe('F3 continuity persistence, real restricted PostgreSQL and synthetic so
  it('campaigns and historical unapproved effects cannot acquire continuous authority at dispatch',async()=>{
   const f=await commercialReady(),value=await f.propose();
   const payload={...value.payload,campaign_id:randomUUID()},config_hash=hash(stableJson({account_id:value.account_id,contact_id:value.contact_id,payload}));
-  expect(await f.gate({...value,payload,config_hash,approval_hash:config_hash})).toMatchObject({reason:'CAMPAIGN_AUTHORIZATION_REQUIRED'});
+  expect(await f.gate({...value,payload,config_hash,approval_hash:config_hash})).toMatchObject({reason:'V5_CAMPAIGN_RETIRED'});
   const old=await effect(null,{account:f.origin.account,conversation:f.conversation.id,contact:f.contact,payload:value.payload});
   const row=(await admin.query('SELECT * FROM outbox WHERE id=$1',[old])).rows[0];row.config_hash=hash(stableJson({account_id:row.account_id,contact_id:row.contact_id,payload:row.payload}));
   expect(await f.gate(row)).toMatchObject({reason:'AUTHORIZATION_MISSING_OR_EXPIRED'});

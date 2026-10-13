@@ -1,5 +1,6 @@
 import type {ProfileCatalog} from './profile-inventory.js';
 import type {ProfileRowIsolationPolicy,ProfileRowScope} from './profile-row-isolation-plan.js';
+import {V7_RETIRED_TABLES} from './retired-tables.js';
 
 // Explicit reviewed application roles. ACLs remain the source of SQL privileges;
 // membership in this list grants nothing and does not include closed-port owners.
@@ -77,8 +78,14 @@ const platformTables=['platform_admins','platform_operations','platform_tokens']
 // V7 F2 profile integrations (0101): reviewed profile and environment guards in
 // the migration; only the API and the closed AI/platform readers reach rows.
 const integrationTables=['ai_profile_preferences','meta_profile_credential_versions','meta_profile_credentials','profile_onboarding'];
-/** Metadata inventory only, for composition/review. Does not grant access. */
-export const commerceProfileRowTableNames:readonly string[]=Object.freeze([...environmentTables,...sharedProfileTables,...globalIdentityTables,...privateLaboratoryTables,...quotaTables,...privacyFenceTables,...retiredTables,...privacyComponentTables,...privacyReferenceTables,...cutoverTables,...platformTables,...integrationTables,'profile_cutover_historical_tables','profiles','schema_migrations','ai_model_prices','manual_controls'].sort());
+// V7 F8-E: the tables migration 0109 drops. A catalog holds all of them
+// (through 0108) or none (0109 onward); anything in between is refused.
+const retiredByV7=new Set<string>(V7_RETIRED_TABLES);
+const historicalTableNames=[...environmentTables,...sharedProfileTables,...globalIdentityTables,...privateLaboratoryTables,...quotaTables,...privacyFenceTables,...retiredTables,...privacyComponentTables,...privacyReferenceTables,...cutoverTables,...platformTables,...integrationTables,'profile_cutover_historical_tables','profiles','schema_migrations','ai_model_prices','manual_controls'].sort();
+/** Metadata inventory only, for composition/review. Does not grant access.
+ * The current schema (0109 onward); the historical one adds V7_RETIRED_TABLES. */
+export const commerceProfileRowTableNames:readonly string[]=Object.freeze(historicalTableNames.filter(name=>!retiredByV7.has(name)));
+export const commerceProfileHistoricalRowTableNames:readonly string[]=Object.freeze(historicalTableNames);
 function check(value:unknown,code:string):asserts value{if(!value)throw Error(code);}
 
 /** Pure, complete classification for the composed V7 schema through030.
@@ -89,13 +96,16 @@ export function commerceProfileRowPolicy(catalog:ProfileCatalog):ProfileRowIsola
  const all=[...catalog.tables.map(t=>[t.name,t] as const),...(catalog.non_public_tables??[]).map(t=>[t.schema+'.'+t.name,t] as const)];
  const rows=new Map(all);check(rows.size===all.length,'COMMERCE_ROW_DUPLICATE_RELATION');
  const result:Record<string,ProfileRowScope>={};
+ const retiredPresent=V7_RETIRED_TABLES.filter(name=>rows.has(name)).length;
+ check(retiredPresent===0||retiredPresent===V7_RETIRED_TABLES.length,'COMMERCE_ROW_RETIREMENT_PARTIAL');
+ const dropped=retiredPresent===0,live=(names:readonly string[])=>dropped?names.filter(name=>!retiredByV7.has(name)):names;
  const add=(name:string,scope:ProfileRowScope)=>{check(rows.has(name)&&!result[name],'COMMERCE_ROW_RELATION_REQUIRED');result[name]=scope;};
  const scoped=(name:string,workspace:string,environment:string|null)=>{
   const table=rows.get(name);check(table,'COMMERCE_ROW_RELATION_REQUIRED');
   add(name,{mode:'scope',workspace,environment,roles:[...applicationRoles],initialize_permission:!table.rls});
  };
- for(const name of environmentTables)scoped(name,'workspace_id','environment');
- for(const name of sharedProfileTables)scoped(name,'workspace_id',null);
+ for(const name of live(environmentTables))scoped(name,'workspace_id','environment');
+ for(const name of live(sharedProfileTables))scoped(name,'workspace_id',null);
  scoped('profiles','id',null);
  for(const name of globalIdentityTables)add(name,{mode:'preserve',reason:'Global authenticated identity, separate from profile authority; identity pool and ACL review remain required.'});
  add('schema_migrations',{mode:'preserve',reason:'Global immutable migration metadata; no tenant business payload or profile authority.'});
@@ -104,7 +114,7 @@ export function commerceProfileRowPolicy(catalog:ProfileCatalog):ProfileRowIsola
  for(const name of privacyFenceTables){const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_PRIVACY_FENCE_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Closed030 session leases and writer epochs are profile-wide authority; only the reviewed fence owner may access rows, through its exact scoped policies and ports.'});}
  const manual=rows.get('manual_controls');check(manual?.rls&&manual.force_rls,'COMMERCE_ROW_MANUAL_COMPONENT_REQUIRED');
  add('manual_controls',{mode:'preserve',reason:'Reviewed020 separates record environments while preserving the workspace stop shared across both environments.'});
- for(const name of retiredTables){const row=rows.get(name),pol=catalog.policies.filter(p=>p.table===name);check(row?.rls&&row.force_rls&&pol.length===1&&pol[0]!.name==='retired_creative_custody'&&pol[0]!.command==='*'&&!pol[0]!.permissive&&pol[0]!.roles.length===1&&pol[0]!.roles[0]==='PUBLIC'&&pol[0]!.using==='false'&&pol[0]!.with_check==='false','COMMERCE_ROW_RETIRED_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Retired credentials remain administrative history under restrictive deny; no invented profile or environment.'});}
+ for(const name of live(retiredTables)){const row=rows.get(name),pol=catalog.policies.filter(p=>p.table===name);check(row?.rls&&row.force_rls&&pol.length===1&&pol[0]!.name==='retired_creative_custody'&&pol[0]!.command==='*'&&!pol[0]!.permissive&&pol[0]!.roles.length===1&&pol[0]!.roles[0]==='PUBLIC'&&pol[0]!.using==='false'&&pol[0]!.with_check==='false','COMMERCE_ROW_RETIRED_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Retired credentials remain administrative history under restrictive deny; no invented profile or environment.'});}
  for(const name of privateLaboratoryTables){const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_LAB_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Dedicated021 control is profile scoped with immutable source/budget REAL and execution SIMULATION dimensions; preserve its exact reviewed gates.'});}
  for(const name of privacyComponentTables){const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_PRIVACY_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Closed V7 privacy and financial retention custody; only its reviewed owner roles reach rows, through exact profile-scoped policies and ports.'});}
  for(const name of privacyReferenceTables){const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_PRIVACY_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Installation-wide privacy reference fence epoch and leases; no tenant business payload and no application role access.'});}

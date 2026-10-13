@@ -43,8 +43,6 @@ beforeAll(async()=>{
  await personal.insertPersonalToken(admin,{workspace_id:workspace,user_id:user,name:'Synthetic hold owner API',allowed_environments:['REAL'],expires_at:new Date(Date.now()+3600000).toISOString()},token);
  await admin.query("INSERT INTO operational_settings(workspace_id,environment,version,body,updated_by) VALUES($1,'REAL',1,$2,$3)",[workspace,{...defaultPolicy,allow_channel_onboarding:true},user]);
  await admin.query("INSERT INTO operation_authorizations(workspace_id,environment,actor_id,scope,config_hash,expires_at) VALUES($1,'REAL',$2,'{}','synthetic-held-custody',now()+interval '1 hour')",[workspace,user]);
- await admin.query("INSERT INTO creative_budgets(id,workspace_id,environment,provider,limit_usd,max_units,reserved_usd,spent_usd,reserved_units,spent_units,authorization_source,actor_id,expires_at) VALUES($1,$2,'REAL','openai',20,1000,3,2,30,20,'synthetic-held-budget',$3,now()+interval '1 hour')",[randomUUID(),workspace,user]);
- await admin.query("INSERT INTO creative_global_budgets(workspace_id,limit_usd,external_status,external_reserved_usd,authorization_source,actor_id,expires_at) VALUES($1,20,'NONE',0,'synthetic-held-global-budget',$2,now()+interval '1 hour')",[workspace,user]);
  app=await(await import('../../apps/api/src/app.js')).createApp();
 });
 beforeEach(async()=>{
@@ -79,7 +77,7 @@ async function hold(){
  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
 }
 async function watched(){
- const tables=['records','record_versions','channel_sessions','session_ownership','commands','idempotency','domain_events','operational_settings','integration_settings','integration_setting_versions','integration_secrets','operation_authorizations','manual_controls','number_capacity_slots','number_operations','creative_budgets','creative_global_budgets'];
+ const tables=['records','record_versions','channel_sessions','session_ownership','commands','idempotency','domain_events','operational_settings','integration_settings','integration_setting_versions','integration_secrets','operation_authorizations','manual_controls','number_capacity_slots','number_operations'];
  const values:Record<string,unknown>={};
  for(const table of tables)values[table]=(await admin.query(`SELECT row_to_json(t) data FROM ${table} t WHERE workspace_id=$1 ORDER BY row_to_json(t)::text`,[workspace])).rows;
  return values;

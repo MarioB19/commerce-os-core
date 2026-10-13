@@ -21,7 +21,7 @@ describe('canonical V7 migrated catalog',()=>{
  afterAll(async()=>{await admin?.end();});
  it('keeps the 68 historical migration hashes byte-identical under the V7 chain',async()=>{
   const rows=(await admin.query('SELECT name,sha256 FROM schema_migrations ORDER BY name')).rows as {name:string;sha256:string}[];
-  expect(rows).toHaveLength(108);
+  expect(rows).toHaveLength(109);
   for(const row of rows){const bytes=await readFile(new URL('../../packages/db/migrations/'+row.name,import.meta.url));expect(createHash('sha256').update(bytes).digest('hex')).toBe(row.sha256);}
   expect(rows.filter(r=>r.name<'0069')).toHaveLength(68);
  });
@@ -32,7 +32,8 @@ describe('canonical V7 migrated catalog',()=>{
   expect(catalog.tables.find(t=>t.name==='ai_attempts')?.columns.some(c=>c.name==='lab_binding_id')).toBe(true);
   expect(catalog.primary_keys!.find(k=>k.schema==='public'&&k.table==='records')?.columns).toEqual(['id']);expect(catalog.primary_keys!.find(k=>k.schema==='commerce_number_lab'&&k.table==='runs')?.columns).toEqual(['workspace_id','id']);
   expect(catalog.foreign_keys.every(f=>f.validated&&Array.isArray(f.columns)&&Array.isArray(f.referenced_columns))).toBe(true);expect(catalog.roles.every(r=>Array.isArray(r.runtime_memberships))).toBe(true);expect(catalog.policies.every(p=>Array.isArray(p.roles))).toBe(true);
-  expect(Object.keys(commerceProfileRowPolicy(catalog).tables)).toHaveLength(227);
+  // V7 F8-E: 0109 dropped the 39 retired V5 tables (227 relations through 0108).
+  expect(Object.keys(commerceProfileRowPolicy(catalog).tables)).toHaveLength(188);for(const table of ['creative_budgets','intelligence_searches','mcl_sponsorships'])expect(tables.has(table)).toBe(false);
  });
  it('does not fabricate profile adoption, quota allocation, credentials or business grants',async()=>{
   for(const table of ['profiles','ai_credentials','ai_runtime_grants','result_goals','profile_session_context'])expect((await admin.query(`SELECT count(*)::int n FROM ${table}`)).rows[0].n).toBe(0);
@@ -58,17 +59,12 @@ describe('canonical V7 migrated catalog',()=>{
   }finally{await c.query('ROLLBACK');c.release();}
   expect((await admin.query('SELECT count(*)::int n FROM records')).rows[0].n).toBe(0);
  });
- it('keeps the shared creative counter and the global quota owner intact',async()=>{
+ it('keeps the global quota owner intact after the retired creative counters were dropped',async()=>{
+  expect((await admin.query("SELECT to_regclass('public.creative_budgets') IS NULL AS table_gone,to_regprocedure('read_profile_global_budget(text)') IS NULL AS reader_gone")).rows).toEqual([{table_gone:true,reader_gone:true}]);
   const c=await admin.connect();try{
    await c.query('BEGIN');
    await c.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES('scope-budget-a','Synthetic A','UTC',10,0,0),('scope-budget-b','Synthetic B','UTC',10,0,0)");
-   await c.query("SELECT set_config('app.workspace_id','scope-budget-a',true),set_config('app.environment','REAL',true)");
-   await c.query("INSERT INTO creative_budgets(id,workspace_id,environment,provider,limit_usd,max_units,reserved_usd,spent_usd,authorization_source,actor_id,expires_at) VALUES('53000000-0000-4000-8000-000000000001','scope-budget-a','REAL','openai',5,100,1,2,'Synthetic only','fixture',clock_timestamp()+interval '1 hour')");
-   await c.query("SELECT set_config('app.environment','SIMULATION',true)");
-   await c.query("INSERT INTO creative_budgets(id,workspace_id,environment,provider,limit_usd,max_units,reserved_usd,spent_usd,authorization_source,actor_id,expires_at) VALUES('53000000-0000-4000-8000-000000000002','scope-budget-a','SIMULATION','openai',7,100,3,1,'Synthetic only','fixture',clock_timestamp()+interval '1 hour')");
-   await c.query('SET LOCAL ROLE commerce_api');await c.query("SELECT set_config('app.workspace_id','scope-budget-a',true),set_config('app.environment','REAL',true)");
-   expect((await c.query('SELECT reserved_usd::text FROM creative_budgets')).rows).toEqual([{reserved_usd:'1.000000'}]);expect((await c.query("SELECT limit_usd::text,spent_usd::text,reserved_usd::text FROM read_profile_global_budget('scope-budget-a')")).rows).toEqual([{limit_usd:'12.000000',spent_usd:'3.000000',reserved_usd:'4.000000'}]);
-   await c.query('RESET ROLE');await c.query('SAVEPOINT exceed_global');await expect(c.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES('scope-budget-c','Synthetic C','UTC',1,0,0)")).rejects.toThrow('PROFILE_QUOTA_ALLOCATION_EXCEEDED');await c.query('ROLLBACK TO SAVEPOINT exceed_global');
+   await c.query('SAVEPOINT exceed_global');await expect(c.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES('scope-budget-c','Synthetic C','UTC',1,0,0)")).rejects.toThrow('PROFILE_QUOTA_ALLOCATION_EXCEEDED');await c.query('ROLLBACK TO SAVEPOINT exceed_global');
   }finally{await c.query('ROLLBACK');c.release();}
  });
 });

@@ -31,7 +31,7 @@ async function effectiveNow(client:QueryExecutor,conversation:DomainRecord|undef
  if(conversation?.environment==='SIMULATION'&&conversation.body.simulation_id){const simulation=await getRecord(client,conversation.workspace_id,'simulation',conversation.body.simulation_id);if(simulation?.body.virtual_now)return new Date(simulation.body.virtual_now);}
  return (await client.query('SELECT now() AS now')).rows[0].now as Date;
 }
-const cancelledGateReasons=new Set(['EFFECT_EXPIRED','CONTACT_SUPPRESSED','CONTROL_VERSION_CHANGED','COLLECTION_STOPPED','RECEIPT_RECEIVED','FOLLOWUP_INELIGIBLE','FOLLOWUP_WINDOW_CLOSED','TEMPLATE_MEDIA_UNSUPPORTED','TEMPLATE_TRANSPORT_UNSUPPORTED','TEMPLATE_PROVIDER_EVIDENCE_REQUIRED','HUMAN_TAKEOVER','BUYER_EXCLUDED','AGREEMENT_ACCEPTED','REMARKETING_INELIGIBLE','REMARKETING_CYCLE_CLOSED','REMARKETING_ATTEMPT_INACTIVE','CAUSAL_PREDECESSOR_FAILED']);
+const cancelledGateReasons=new Set(['V5_CAMPAIGN_RETIRED','EFFECT_EXPIRED','CONTACT_SUPPRESSED','CONTROL_VERSION_CHANGED','COLLECTION_STOPPED','RECEIPT_RECEIVED','FOLLOWUP_INELIGIBLE','FOLLOWUP_WINDOW_CLOSED','TEMPLATE_MEDIA_UNSUPPORTED','TEMPLATE_TRANSPORT_UNSUPPORTED','TEMPLATE_PROVIDER_EVIDENCE_REQUIRED','HUMAN_TAKEOVER','BUYER_EXCLUDED','AGREEMENT_ACCEPTED','REMARKETING_INELIGIBLE','REMARKETING_CYCLE_CLOSED','REMARKETING_ATTEMPT_INACTIVE','CAUSAL_PREDECESSOR_FAILED']);
 export async function gateDispatch(client:QueryExecutor,effect:Body,owner:string):Promise<{allowed:boolean;reason?:string;account?:DomainRecord;contact?:DomainRecord;leaseMs?:number}>{
  // Inside a profile scope, environment-bound tables (session ownership, custody)
  // are visible only with the effect's own environment bound to the transaction.
@@ -39,6 +39,9 @@ export async function gateDispatch(client:QueryExecutor,effect:Body,owner:string
  if(effect.kind==='warmup')return gateWarmupDispatch(client,effect,owner);
  const account=await getRecord(client,effect.workspace_id,'channel_account',effect.account_id),contact=await getRecord(client,effect.workspace_id,'contact',effect.contact_id),conversation=await getRecord(client,effect.workspace_id,'conversation',effect.conversation_id);
  const deny=(reason:string)=>({allowed:false,reason});if(!account||!contact||!conversation||account.environment!==effect.environment||contact.environment!==effect.environment||conversation.environment!==effect.environment)return deny('RESOURCE_SCOPE_INVALID');
+ // V7 F8-E: V5 message campaigns were retired with their routes; an effect
+ // left from one is cancelled with its reason and never sent (no outbound outside D-17).
+ if(effect.payload.campaign_id)return deny('V5_CAMPAIGN_RETIRED');
  if(account.body.deleted_at)return deny('CHANNEL_ACCOUNT_DELETED');
  if(!effect.payload||typeof effect.payload!=='object'||Array.isArray(effect.payload))return deny('EFFECT_PAYLOAD_INVALID');
  let effectAsset:DomainRecord|undefined;
@@ -145,7 +148,6 @@ export async function gateDispatch(client:QueryExecutor,effect:Body,owner:string
     accountId:account.id,productId:conversation.body.product_id});
    if(reason)return deny(reason);
    if(effect.authorization_id||effect.approval_hash!==effect.config_hash)return deny('CONTINUITY_EFFECT_APPROVAL_INVALID');
-   if(effect.payload.campaign_id)return deny('CAMPAIGN_AUTHORIZATION_REQUIRED');
    if(!continuousInboundRecipient(conversation,contact,now,!!eligibleTemplate))return deny('CONTINUITY_INBOUND_CONSENT_REQUIRED');
   }else{
   const auth=(await client.query(`SELECT * FROM read_locked_operation_authorization($1,$2,'REAL')`,[effect.authorization_id,effect.workspace_id])).rows[0];if(!auth)return deny('AUTHORIZATION_MISSING_OR_EXPIRED');
@@ -155,10 +157,8 @@ export async function gateDispatch(client:QueryExecutor,effect:Body,owner:string
   if(!authorizedRecipient(auth,effect.contact_id,conversation,now.getTime()))return deny('RECIPIENT_NOT_AUTHORIZED');
   if(auth.config_hash!==(effect.payload.approval_config_hash??effect.config_hash)||effect.approval_hash!==effect.config_hash)return deny('APPROVAL_INVALIDATED');
   const count=Number((await client.query(`SELECT count(*) FROM outbox WHERE authorization_id=$1 AND id<>$2 AND status IN('SENDING','SENT','DELIVERED','READ','UNKNOWN')`,[auth.id,effect.id])).rows[0].count);if(!Number.isSafeInteger(scope.max_messages)||count>=scope.max_messages)return deny('AUTHORIZATION_MESSAGE_LIMIT');
-  if(effect.payload.campaign_id&&scope.campaign_id!==effect.payload.campaign_id)return deny('CAMPAIGN_AUTHORIZATION_REQUIRED');
   }
  }
- if(effect.payload.campaign_id){const campaign=await getRecord(client,effect.workspace_id,'message_campaign',effect.payload.campaign_id);if(!campaign||!['EXECUTING','SCHEDULED'].includes(campaign.body.status))return deny('CAMPAIGN_CANCELLED_OR_PAUSED');if(campaign.body.message!==effect.payload.text||campaign.body.approved_snapshot?.message!==campaign.body.message)return deny('CAMPAIGN_CONFIG_CHANGED');if(!contact.body.consent?.evidence||!['marketing','messages'].includes(contact.body.consent?.purpose)||!contact.body.consent?.source||!contact.body.consent?.observed_at)return deny('CAMPAIGN_CONSENT_REQUIRED');}
  const inboundAt=new Date(conversation.body.last_inbound_at??0).getTime();const inWindow=now.getTime()-inboundAt<24*3600_000;
  const windowTemplateEligible=effect.payload.purpose==='remarketing'?eligibleTemplate:effect.payload.kind==='template'&&effect.payload.template?.approved===true;
  if(account.body.provider==='cloud'&&!inWindow&&!windowTemplateEligible)return deny('BUSINESS_WINDOW_CLOSED');
