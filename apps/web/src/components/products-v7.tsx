@@ -88,7 +88,7 @@ export function ProductsHome({selection,role,state}:{selection:ProfileFence;role
  async function adopt(p:ProductSummary){setAdopting(p.id);try{const r=await variantRequest<{variant_id:string}>(selection,'POST',`/v2/products/${p.id}/adopt`,{},newOperationKey());window.location.assign(variantPath(p.id,r.variant_id));}catch(e){setError(message(e,'No se pudo configurar el mercado.'));}finally{setAdopting('');}}
  const shown=(products??[]).filter(p=>!filter||p.name.toLowerCase().includes(filter.toLowerCase()));
  return <section className="products-v7" aria-labelledby="products-title">
-  <div className="variant-heading"><h1 id="products-title">Productos</h1>{manage&&<Button onClick={()=>setCreating(true)}>Crear producto</Button>}</div>
+  <div className="variant-heading"><h1 id="products-title">Productos</h1>{manage&&!(products&&!products.length)&&<Button onClick={()=>setCreating(true)}>Crear producto</Button>}</div>
   <p className="variant-hint">Un producto, varios mercados. Cada mercado tiene su precio, idioma, cobro y números.</p>
   {error&&<p role="alert">{error}</p>}
   {!products&&!error&&<p role="status">Consultando productos…</p>}

@@ -60,6 +60,41 @@ test('six sections, account menu and every main page: accessible, without errors
  expect(errors).toEqual([]);
 });
 
+// RF-17.k (UX-A11Y) and RF-17.b (UX-PRIMARY): keyboard only, targets of at
+// least 44 px and, per page, at most one primary action in view on arrival.
+test('keyboard reaches every section, targets are 44 px and one primary action per page',async({page})=>{
+ await signIn(page,await owner());
+ await page.goto('/home');await page.waitForLoadState('networkidle');
+ // The application moves focus to <main> on each route; from the top of the
+ // document the first stop is the skip link.
+ await page.evaluate(()=>{const b=document.body;b.tabIndex=-1;b.focus();b.removeAttribute('tabindex');});
+ await page.keyboard.press('Tab');
+ await expect(page.getByRole('link',{name:'Saltar al contenido'})).toBeFocused();
+ await page.keyboard.press('Enter');
+ await expect(page.locator('#profile-main')).toBeFocused();
+ for(const [label,href] of sections){
+  await page.goto('/home');await page.waitForLoadState('networkidle');
+  await page.evaluate(()=>{const b=document.body;b.tabIndex=-1;b.focus();b.removeAttribute('tabindex');});
+  const link=page.getByRole('navigation',{name:'Navegación del perfil'}).getByRole('link',{name:label,exact:true});
+  let reached=false;
+  for(let i=0;i<40&&!reached;i++){await page.keyboard.press('Tab');reached=await link.evaluate(e=>e===document.activeElement);}
+  expect(reached,label+' by keyboard').toBe(true);
+  await page.keyboard.press('Enter');await expect(page).toHaveURL(new RegExp(href.replace(/\//g,'\\/')+'$'));
+ }
+ for(const width of [1440,390]){
+  await page.setViewportSize({width,height:width===390?844:1050});
+  for(const [path] of pages){
+   await page.goto(path);await page.waitForLoadState('networkidle');
+   const small=await page.evaluate(()=>[...document.querySelectorAll('main button,main summary,main a[data-variant],main input:not([type=checkbox]):not([type=radio]):not([type=hidden]),main select,main textarea,nav a,header button')]
+    .filter(e=>{const r=e.getBoundingClientRect(),st=getComputedStyle(e);return r.width>0&&r.height>0&&st.visibility!=='hidden';})
+    .filter(e=>e.getBoundingClientRect().height<43.5).map(e=>(e.tagName+':'+(e.textContent??'').trim()).slice(0,60)));
+   expect(small,path+' targets at '+width+' px').toEqual([]);
+   const primary=await page.evaluate(()=>[...document.querySelectorAll('main [data-variant="default"]')].filter(e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0&&r.top<window.innerHeight;}).map(e=>(e.textContent??'').trim()));
+   expect(primary.length,path+' primary actions in view at '+width+' px: '+primary.join(' | ')).toBeLessThanOrEqual(1);
+  }
+ }
+});
+
 test('previous addresses lead to V7 and retired functions say so without data',async({page})=>{
  await signIn(page,await owner());
  for(const [from,to] of [['/catalog','/products'],['/sales','/sales/inbox'],['/sales/channels/whatsapp','/numbers'],['/settings/integrations','/account/integrations'],['/help/launch','/help'],['/settings/tests','/numbers']] as const){

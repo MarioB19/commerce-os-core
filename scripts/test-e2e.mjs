@@ -5,7 +5,12 @@ import { spawn } from 'node:child_process';
 import { applyLocalEnv } from './local-env.mjs';
 import { runBrowserVerification } from './browser-contracts.mjs';
 import { assertSourceTreeUnchanged, sourceTreeSnapshot } from './source-tree-guard.mjs';
+import { provisionLocalApiLogin } from './local-role-login.mjs';
 applyLocalEnv();
+// Same database role as production for the API (payments, results and other
+// commerce_api-only reads refuse the owner connection by design).
+const apiLogin = await provisionLocalApiLogin();
+if (apiLogin) { process.env.LOCAL_ROLE_LOGINS = 'true'; process.env.API_DATABASE_URL = apiLogin; }
 const before = sourceTreeSnapshot();
 async function run(command, args) {
   return new Promise((resolve, reject) => {

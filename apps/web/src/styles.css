@@ -4061,6 +4061,10 @@ input:not([type="checkbox"]):not([type="radio"]),select,textarea{min-height:44px
 .profile-application .topbar details nav { display:flex; flex-direction:column; gap:.75rem; background:var(--v5-surface,#fff); padding:1rem; border:1px solid var(--v5-line,#ccc); }
 .profile-application-nav { display:flex; flex-wrap:wrap; gap:1.25rem; padding:1rem; border-bottom:1px solid var(--v5-line,#ccc); }
 .profile-application-nav [aria-current=page] { font-weight:700; text-decoration:underline; text-underline-offset:.25em; }
+/* RF-17.k: navigation targets of at least 44 px (WCAG 2.5.5), keyboard and touch. */
+.profile-application-nav a,.profile-application .topbar details nav a,.profile-application .topbar .brand,.profile-application .topbar a{display:inline-flex;align-items:center;min-height:44px}
+.profile-application-nav{gap:.75rem 1.25rem;padding:.5rem 1rem}
+main nav a{display:inline-flex;align-items:center;min-height:44px}
 .profile-switch-overlay { position:fixed; inset:0; z-index:100; background:rgb(0 0 0 / .45); }
 .profile-switch-dialog { position:fixed; z-index:101; left:50%; top:50%; transform:translate(-50%,-50%); width:min(32rem,calc(100vw - 2rem)); max-height:calc(100dvh - 2rem); overflow:auto; padding:1.5rem; border-radius:1rem; background:var(--v5-surface,#fff); color:var(--v5-text,#18232f); box-shadow:0 1rem 3rem rgb(0 0 0 / .2); }
 .profile-switch-dialog > div { flex-wrap:wrap; }
