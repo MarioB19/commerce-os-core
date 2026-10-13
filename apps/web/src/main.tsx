@@ -401,6 +401,8 @@ const routes = [
   ["/settings/profile", EmptyProfileRoute],
   ["/settings/employees", EmptyProfileRoute],
   ["/account/tokens", EmptyProfileRoute],
+  ["/account/integrations", EmptyProfileRoute],
+  ["/numbers", EmptyProfileRoute],
   ["/account/security", AccountSecurityPage],
   ["/forgot-password", ForgotPasswordPage],
   ["/reset-password", ResetPasswordPage],

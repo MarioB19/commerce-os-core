@@ -17,10 +17,23 @@ import {ReceiptPolicies} from './receipt-policies.js';
 import {Results} from './results.js';
 import {Button} from './ui/button.js';
 import {loadPlatformAccess} from '../lib/platform-profiles.js';
+import {ProfileIntegrations} from './profile-integrations.js';
+import {ProfileOnboarding} from './profile-onboarding.js';
 
 /** Closed set: unreviewed V1 pages are never offered by this profile entrypoint. */
-export const profileApplicationPaths=['/','/home','/login','/products','/sales/inbox','/sales/orders','/sales/receipts','/sales/payments','/sales/payments/rules','/results','/results/goals','/settings/profile','/settings/employees','/account/tokens','/account/security'] as const;
+export const profileApplicationPaths=['/','/home','/login','/products','/sales/inbox','/sales/orders','/sales/receipts','/sales/payments','/sales/payments/rules','/results','/results/goals','/settings/profile','/settings/employees','/account/integrations','/numbers','/account/tokens','/account/security'] as const;
 const productVariantPath=/^\/products\/([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/variants$/i;
+/** RF-17.a: at most six destinations, identical on desktop and mobile;
+ * configuration lives in the account menu. */
+export const profileSections=[
+ {label:'Inicio',href:'/home',active:(path:string)=>['/','/home','/login'].includes(path)},
+ {label:'Productos',href:'/products',active:(path:string)=>path==='/products'||productVariantPath.test(path)},
+ {label:'Ventas',href:'/sales/inbox',active:(path:string)=>path.startsWith('/sales/')},
+ {label:'Números',href:'/numbers',active:(path:string)=>path==='/numbers'},
+ // Until F7 moves it, Campañas opens the reviewed read-only campaign dashboard.
+ {label:'Campañas',href:'/campaigns',active:(path:string)=>path==='/campaigns'},
+ {label:'Resultados',href:'/results',active:(path:string)=>path.startsWith('/results')},
+] as const;
 export const isProfileApplicationPath=(path:string)=>profileApplicationPaths.some(value=>value===path)||productVariantPath.test(path);
 export function ProfileApplication({path,login}:{path:string;login:(retry:()=>void)=>ReactNode}){
  const view=useRef<ReturnType<typeof createProfileApplication>|null>(null),[state,setState]=useState<ProfileApplicationState>({status:'LOADING'}),[confirmSwitch,setConfirmSwitch]=useState(false),[logoutError,setLogoutError]=useState(''),[leaving,setLeaving]=useState(false);
@@ -41,8 +54,8 @@ export function ProfileApplication({path,login}:{path:string;login:(retry:()=>vo
  setProfileFence(fence);
  return <div className="profile-application">
   <a href="#profile-main" className="skip-link">Saltar al contenido</a>
-  <header className="topbar"><a href="/home" className="brand">Commerce <strong>OS</strong></a><div><strong>{profile.businessName}</strong> · {profileRoleLabels[profile.role]} <Button variant="secondary" onClick={()=>setConfirmSwitch(true)}>Cambiar perfil</Button>{platformAdmin&&<a href="/platform">Plataforma</a>}</div><details><summary>Mi cuenta · {data.user.name||data.user.email}</summary><nav aria-label="Mi cuenta"><a href="/account/security">Seguridad</a><a href="/settings/profile">Perfil del negocio</a>{profile.role==='owner'&&<><a href="/settings/employees">Empleados e invitaciones</a><a href="/account/tokens">Accesos MCP</a></>}<Button variant="ghost" disabled={leaving} onClick={()=>{void logout();}}>Cerrar sesión</Button></nav></details></header>
-  <nav aria-label="Navegación del perfil" className="profile-application-nav"><a href="/home" aria-current={['/','/home','/login'].includes(path)?'page':undefined}>Inicio</a><a href="/products" aria-current={path==='/products'||productVariantPath.test(path)?'page':undefined}>Productos</a><a href="/sales/inbox" aria-current={path.startsWith('/sales/')?'page':undefined}>Ventas</a><a href="/results" aria-current={path.startsWith('/results')?'page':undefined}>Resultados</a></nav>
+  <header className="topbar"><a href="/home" className="brand">Commerce <strong>OS</strong></a><div><strong>{profile.businessName}</strong> · {profileRoleLabels[profile.role]} <Button variant="secondary" onClick={()=>setConfirmSwitch(true)}>Cambiar perfil</Button>{platformAdmin&&<a href="/platform">Plataforma</a>}</div><details><summary>Mi cuenta · {data.user.name||data.user.email}</summary><nav aria-label="Mi cuenta"><a href="/account/security">Seguridad</a><a href="/settings/profile">Perfil del negocio</a>{profile.role!=='viewer'&&<a href="/account/integrations">Integraciones</a>}{profile.role==='owner'&&<><a href="/settings/employees">Empleados e invitaciones</a><a href="/account/tokens">Accesos MCP</a></>}<Button variant="ghost" disabled={leaving} onClick={()=>{void logout();}}>Cerrar sesión</Button></nav></details></header>
+  <nav aria-label="Navegación del perfil" className="profile-application-nav">{profileSections.map(section=><a key={section.href} href={section.href} aria-current={section.active(path)?'page':undefined}>{section.label}</a>)}</nav>
   <main id="profile-main" className="main-content" tabIndex={-1} key={key}>
    {profile.state==='SUSPENDED'&&<p role="status">Este perfil está suspendido. Las operaciones comerciales están detenidas.</p>}
    {logoutError&&<p role="alert">{logoutError}</p>}
@@ -58,11 +71,13 @@ function ProfilePage({path,data}:{path:string;data:ProfileBrowserBootstrap}){
  if(productId)return <ProductVariants productId={productId} selection={selection} actorId={data.user.id} role={profile.role} profileState={profile.state}/>;
  if(path==='/products')return <><h1>Productos</h1><ProfileCatalog selection={selection} environment="REAL" variantLinks/></>;
  if(path==='/settings/profile')return <ProfileSettings selection={selection} role={profile.role}/>;
+ if(path==='/account/integrations')return <ProfileIntegrations selection={selection} role={profile.role} state={profile.state}/>;
+ if(path==='/numbers')return <section><h1>Números</h1><p>Aquí verás tus números de WhatsApp, su conexión y su calentamiento.</p></section>;
  if(path==='/settings/employees')return profile.role==='owner'?<><ProfileEmployees selection={selection} role={profile.role} state={profile.state} currentUserId={data.user.id}/><ProfileInvitations selection={selection} role={profile.role} state={profile.state}/></>:<p role="alert">No tienes permiso para gestionar empleados.</p>;
  if(path==='/account/tokens')return profile.role==='owner'?<ProfileTokens selection={selection} role={profile.role} state={profile.state}/>:<p role="alert">No tienes permiso para gestionar accesos MCP.</p>;
  if(path==='/results'||path==='/results/goals')return <Results selection={selection} timezone={profile.timezone} role={profile.role} profileState={profile.state}/>;
  if(['/sales/inbox','/sales/orders','/sales/receipts'].includes(path))return <ProfileSales key={path} resource={path==='/sales/inbox'?'conversations':path==='/sales/orders'?'orders':'receipts'} selection={selection} actorId={data.user.id} role={profile.role} profileState={profile.state} timezone={profile.timezone}/>;
  if(path==='/sales/payments/rules')return <ReceiptPolicies selection={selection} actorId={data.user.id} environment="REAL" role={profile.role} profileState={profile.state} variant={null}/>;
  if(path==='/sales/payments')return <><h1>Pagos</h1><a href="/sales/payments/rules">Reglas de comprobantes</a><PaymentsRegister selection={selection} environment="REAL" timezone={profile.timezone} role={profile.role}/></>;
- return <section><h1>Inicio · {profile.businessName}</h1><p>Trabajas en {profile.businessName} con el rol {profileRoleLabels[profile.role]}.</p><div className="grid gap-4"><a href="/products">Consultar productos</a><a href="/sales/inbox">Atender conversaciones</a><a href="/sales/payments">Consultar pagos</a><a href="/results">Consultar resultados y metas</a></div></section>;
+ return <section><h1>Inicio · {profile.businessName}</h1><ProfileOnboarding selection={selection} role={profile.role} state={profile.state}/><p>Trabajas en {profile.businessName} con el rol {profileRoleLabels[profile.role]}.</p><div className="grid gap-4"><a href="/products">Consultar productos</a><a href="/sales/inbox">Atender conversaciones</a><a href="/sales/payments">Consultar pagos</a><a href="/results">Consultar resultados y metas</a></div></section>;
 }
