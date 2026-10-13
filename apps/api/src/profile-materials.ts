@@ -3,7 +3,7 @@ import {z} from 'zod';
 import {withProfileRequest,type ProfileRequestDependencies} from './profile-request.js';
 import {marketOperation} from '../../../packages/db/src/market-variants.js';
 import {MaterialError,listMaterials,readMaterial,createMaterial,putMaterialPart,completeMaterial,cancelMaterial,archiveMaterial,materialBytes,MATERIAL_PART_BYTES} from '../../../packages/db/src/profile-materials.js';
-import {assetFilename,byteRange} from './asset-preview.js';
+import {assetFilename,byteRange} from './file-response.js';
 
 /** V7 F4 /v2/materials (RF-06.c): list, upload in parts, preview, cancel and
  * remove from new configurations. Same service for UI, API and MCP. */

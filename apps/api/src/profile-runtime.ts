@@ -8,7 +8,6 @@ import {profileSettingsRoutes} from './profile-settings.js';
 import {profileEmployeeRoutes} from './profile-employees.js';
 import {profileInvitationRoutes} from './profile-invitations.js';
 import {profileTokenRoutes} from './profile-tokens.js';
-import {profileCatalogRoutes} from './profile-catalog.js';
 import {marketVariantRoutes} from './market-variants.js';
 import {continuousAuthorizationRoutes} from './continuous-authorization.js';
 import {paymentsRegisterRoutes} from './payments-register.js';
@@ -47,7 +46,7 @@ export async function profileRuntimeRoutes(app:FastifyInstance,deps:ProfileRunti
  await app.register(async platform=>{await platformProfileRoutes(platform,deps.platform);});
  await app.register(async integrations=>{await profileIntegrationRoutes(integrations,{...deps.integrations,request:deps.integrations?.request??deps.request});});
  for(const routes of [profileOverviewRoutes,profileSettingsRoutes,profileEmployeeRoutes,
-  profileInvitationRoutes,profileTokenRoutes,profileCatalogRoutes,marketVariantRoutes,
+  profileInvitationRoutes,profileTokenRoutes,marketVariantRoutes,
   continuousAuthorizationRoutes,paymentsRegisterRoutes,receiptPolicyRoutes,resultsRoutes,resultGoalRoutes,profileReadRoutes,variantWorkspaceRoutes,profileMaterialRoutes,receiptQueueRoutes,numberTestRoutes,campaignsV2Routes,helpRoutes]){
   await app.register(async family=>{await routes(family,deps.request);});
  }

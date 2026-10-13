@@ -45,28 +45,27 @@ const apiPrelude=`
  }
  const me=await call('GET','/v1/me');assert.equal(me.role,'owner');assert.equal(me.authentication_method,'personal_access_token');assert.equal(me.service,false);
  assert.equal((await pool.query('SELECT current_user role')).rows[0].role,'commerce_api');
- const path='/v1/channel-accounts/'+f.account;
  // V7 F2: commerce_api reads and writes only inside its profile context (forced RLS).
  async function profileQuery(sql,values){const c=await pool.connect();try{await c.query('BEGIN');await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','REAL',true)",[f.workspace]);const r=await c.query(sql,values);await c.query('COMMIT');return r;}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}}
 `;
 
-it('runs channel recovery, logout, deletion and gateway reuse through real restricted API/worker roles',async()=>{
- const recovery=await runtime('commerce_api',apiPrelude+`
-  let s=await call('GET',path+'/session');const key=randomUUID();
-  const body={expected_version:s.revision,action:'reconcile_command',command_id:f.command,outcome:'confirmed_not_applied',reason:'Synthetic pre-provider gate failure and fresh health verified'};
-  await call('POST',path+'/session/recovery',{...body,expected_version:s.revision+1},409);
-  await profileQuery("UPDATE channel_sessions SET health_expires_at=now()-interval '1 second' WHERE account_id=$1",[f.account]);
-  await call('POST',path+'/session/recovery',body,409);
-  await profileQuery("UPDATE channel_sessions SET last_health_at=now(),health_expires_at=now()+interval '1 hour' WHERE account_id=$1",[f.account]);
-  s=await call('POST',path+'/session/recovery',body,200,key);
-  assert.equal(s.uncertain_commands.length,0);
-  assert.deepEqual(await call('POST',path+'/session/recovery',body,200,key),s);
-  const c=await call('GET','/v1/commands/'+f.command);assert.equal(c.status,'FAILED');assert.equal(c.result.error,'QR_OPERATION_NOT_AUTHORIZED');assert.equal(c.result.reconciliation,'confirmed_not_applied');assert.equal(c.payload.type,'connect');
-  s=await call('POST',path+'/session/recovery',{expected_version:s.revision,action:'acknowledge_alert',alert_id:f.alert,reason:'Synthetic acknowledgment'});
-  s=await call('POST',path+'/session/recovery',{expected_version:s.revision,action:'open_incident',reason:'Synthetic operator recovery incident'});
-  const cmd=await call('POST',path+'/commands',{type:'logout',reason:'Retire synthetic isolated channel'},202);
-  await app.close();await pool.end();console.log(JSON.stringify({logoutCommand:cmd.id,reconciled:true}));
- `);expect(recovery.reconciled).toBe(true);
+// V7 F8-D: the number is removed from Números (/v1/numbers/:id/removal): the
+// restricted API role pauses it and queues the logout, the restricted channel
+// role closes the session, and the next read finalizes the tombstone.
+it('runs number removal, logout and tombstone through real restricted API/worker roles',async()=>{
+ const requested=await runtime('commerce_api',apiPrelude+`
+  // A lifecycle command left UNKNOWN blocks every later link/unlink: the owner
+  // reconciles it with fresh health through the kept session recovery port.
+  let s=await call('GET','/v1/channel-accounts/'+f.account+'/session');
+  const reconcile={expected_version:s.revision,action:'reconcile_command',command_id:f.command,outcome:'confirmed_not_applied',reason:'Synthetic pre-provider gate failure and fresh health verified'};
+  await call('POST','/v1/channel-accounts/'+f.account+'/session/recovery',{...reconcile,expected_version:s.revision+1},409);
+  s=await call('POST','/v1/channel-accounts/'+f.account+'/session/recovery',reconcile);assert.equal(s.uncertain_commands.length,0);
+  const impact=await call('GET','/v1/numbers/'+f.account+'/removal');assert.equal(impact.history_preserved,true);assert.equal(impact.customer_data_deleted,false);
+  const current=await call('GET','/v1/numbers/'+f.account+'/link'),key=randomUUID(),body={expected_version:current.version,confirmation:'REMOVE_NUMBER'};
+  const removal=await call('POST','/v1/numbers/'+f.account+'/removal',body,202,key);assert.equal(removal.state,'REMOVING');assert.ok(removal.command_id);
+  assert.deepEqual(await call('POST','/v1/numbers/'+f.account+'/removal',body,202,key),removal);
+  await app.close();await pool.end();console.log(JSON.stringify({logoutCommand:removal.command_id}));
+ `);expect(requested.logoutCommand).toBeTruthy();
  const worker=await runtime('commerce_channel',`
   import {pool} from './packages/db/src/index.ts';import {processChannelCommands} from './apps/channel-worker/src/lifecycle.ts';import {SimulatorProvider} from './packages/messaging/src/index.ts';
   const f=JSON.parse(process.env.CHANNEL_ROLE_FIXTURE),actions=[];
@@ -75,31 +74,20 @@ it('runs channel recovery, logout, deletion and gateway reuse through real restr
   const result=(await pool.query("SELECT status,result FROM commands WHERE workspace_id=$1 AND payload->>'type'='logout'",[f.workspace])).rows[0];
   await pool.end();console.log(JSON.stringify({role,actions,result}));
  `);expect(worker).toMatchObject({role:'commerce_channel',actions:['logout'],result:{status:'APPLIED',result:{status:'STOPPED'}}});
- const deleted=await runtime('commerce_api',apiPrelude+`
-  const a=await call('GET',path);assert.equal(a.status,'STOPPED');assert.ok(a.unlinked_at);
-  const key=randomUUID(),body={expected_version:a.version,confirmation:'DELETE_CHANNEL_ACCOUNT',reason:'Replace synthetic channel and preserve history'};
-  const deletion=await call('DELETE',path,body,200,key);assert.equal(deletion.history_preserved,true);
-  assert.deepEqual(await call('DELETE',path,body,200,key),deletion);
-  const tombstone=await call('GET',path);assert.ok(tombstone.deleted_at);assert.equal(tombstone.sending_enabled,false);
-  const inventory=await call('GET','/v1/channel-accounts');assert.equal(inventory.some(a=>a.id===f.account),false);
-  await call('POST',path+'/commands',{type:'connect',reason:'Synthetic tombstone guard test'},410);
-  await call('GET',path+'/qr',undefined,410);
-  const created=await call('POST','/v1/channel-accounts',{name:'New synthetic number',provider:'waha',gateway_ref:f.gateway,engine:'GOWS',purpose:'',sending_enabled:false},201);
-  const saved=await call('GET','/v1/channel-accounts/'+created.id),s=await call('GET','/v1/channel-accounts/'+created.id+'/session');
-  assert.equal(saved.sending_enabled,false);assert.equal(saved.purpose,'');assert.equal(saved.status,'DISCONNECTED');
-  const health=await call('GET','/v1/channel-accounts/'+created.id+'/health');assert.equal(health.reception.messages.received,0);assert.equal(health.reception.envelopes.received,0);assert.equal(health.reception.sending_enabled,false);
-  assert.equal(s.operational_pause,true);assert.equal(s.recovery_enabled,false);assert.equal(s.desired_state,'STOPPED');
-  assert.equal((await profileQuery('SELECT count(*)::int n FROM commands WHERE resource_id=$1',[created.id])).rows[0].n,0);
-  assert.equal(s.gateway_id.startsWith('unconfigured:'),false);
-  assert.equal((await call('GET','/v1/outbox')).length,0);
-  await app.close();await pool.end();console.log(JSON.stringify({deleted:true,newAccount:created.id}));
- `);expect(deleted.deleted).toBe(true);
+ const removed=await runtime('commerce_api',apiPrelude+`
+  const link=await call('GET','/v1/numbers/'+f.account+'/link');assert.equal(link.state,'REMOVED');
+  await call('POST','/v1/numbers/'+f.account+'/link',{action:'link'},410);
+  await call('GET','/v1/channel-accounts/'+f.account+'/qr',undefined,410);
+  const overview=await call('GET','/v1/numbers/overview');assert.equal(JSON.stringify(overview).includes(f.account),false);
+  assert.equal((await profileQuery('SELECT count(*)::int n FROM commands WHERE resource_id=$1 AND status=$2',[f.account,'PENDING'])).rows[0].n,0);
+  await app.close();await pool.end();console.log(JSON.stringify({deleted:true}));
+ `);expect(removed.deleted).toBe(true);
  expect((await pool.query('SELECT id FROM records WHERE id=ANY($1::uuid[])',[historyIds])).rows).toHaveLength(historyIds.length);
  expect((await pool.query("SELECT count(*)::int n FROM domain_events WHERE workspace_id=$1 AND event_type='fixture.history'",[fixture.workspace])).rows[0].n).toBe(1);
  expect((await pool.query('SELECT revoked_at FROM operation_authorizations WHERE id=$1',[fixture.authorization])).rows[0].revoked_at).toBeTruthy();
- expect((await pool.query('SELECT archived_at FROM channel_sessions WHERE account_id=$1',[fixture.account])).rows[0].archived_at).toBeTruthy();
- expect((await pool.query('SELECT acknowledged_at FROM operational_alerts WHERE id=$1',[fixture.alert])).rows[0].acknowledged_at).toBeTruthy();
- expect((await pool.query("SELECT count(*)::int n FROM records WHERE workspace_id=$1 AND kind='incident'",[fixture.workspace])).rows[0].n).toBe(1);
+ expect((await pool.query("SELECT body->>'deleted_at' deleted FROM records WHERE id=$1",[fixture.account])).rows[0].deleted).toBeTruthy();
+ expect((await pool.query('SELECT frozen FROM session_ownership WHERE account_id=$1',[fixture.account])).rows[0].frozen).toBe(true);
+ expect((await pool.query("SELECT count(*)::int n FROM domain_events WHERE workspace_id=$1 AND aggregate_id=$2 AND event_type='channel.deleted'",[fixture.workspace,fixture.account])).rows[0].n).toBe(1);
 },90000);
 
 it('imports encrypted history with the existing channel and automation roles',async()=>{

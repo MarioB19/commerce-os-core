@@ -39,7 +39,7 @@ describe('composed V7 profile MCP server',()=>{
   const seen:{url:string;authorization:string|null}[]=[];
   const {client,server}=await connect(async(input,init)=>{seen.push({url:String(input),authorization:new Headers(init?.headers).get('authorization')});return json(401,{error:{code:'PROFILE_TOKEN_REVOKED'}});});
   try{
-   for(const [name,args] of [['products_manage',{action:'listar',resource:'products'}],['profile_settings_manage',{action:'leer'}],['integrations_manage',{action:'listar'}],['employees_manage',{action:'listar'}]] as const){
+   for(const [name,args] of [['products_manage',{action:'listar'}],['profile_settings_manage',{action:'leer'}],['integrations_manage',{action:'listar'}],['employees_manage',{action:'listar'}]] as const){
     const result=await client.callTool({name,arguments:args});expect(result.isError,name).toBe(true);
    }
    expect(seen.length).toBeGreaterThanOrEqual(4);

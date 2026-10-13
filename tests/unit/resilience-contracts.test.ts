@@ -1,7 +1,7 @@
 import {describe,expect,it} from 'vitest';
 import {hostMetricsSchema,numberFlowTestResetSchema,numberFlowTestStartSchema} from '../../packages/contracts/src/numbers.js';
 import {projectCapacityMetrics} from '../../apps/api/src/number-capacity.js';
-import {projectAssignmentAuthorization} from '../../apps/api/src/channel-setup.js';
+import {projectAssignmentAuthorization} from '../../apps/api/src/assignment-authorization.js';
 import {lifecycleSafety} from '../../apps/api/src/channel-command-safety.js';
 import {channelIdentityHash} from '../../packages/db/src/commercial-assignments.js';
 

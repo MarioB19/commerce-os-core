@@ -1,4 +1,5 @@
 import {afterAll,beforeAll,expect,it} from 'vitest';
+import {retireLegacyNumber} from '../support/channel-commands.js';
 import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomBytes,randomUUID} from 'node:crypto';
 import {createApp} from '../../apps/api/src/app.js';
@@ -22,8 +23,7 @@ beforeAll(async()=>{
 afterAll(async()=>{
  try {
   if(fixtureAccountId){
-   const account=data(await call('GET','/v1/channel-accounts/'+fixtureAccountId));
-   data(await call('DELETE','/v1/channel-accounts/'+fixtureAccountId,{expected_version:account.version,confirmation:'DELETE_CHANNEL_ACCOUNT',reason:'Retire isolated reconciliation fixture'}));
+   await retireLegacyNumber(workspace,fixtureAccountId);
   }
  } finally {await app.close();await pool.end();}
 });
@@ -49,5 +49,5 @@ it('adopts an exact legacy gateway idempotently and uses its inventory as previe
  expect((await pool.query("SELECT count(*)::int n FROM domain_events WHERE workspace_id=$1 AND event_type='number.capacity.legacy_adopted'",[workspace])).rows[0].n).toBe(1);
  const mismatchedSlot=slot===20?19:slot+1;await pool.query("UPDATE channel_sessions SET gateway_id='http://waha-'||lpad($2::text,2,'0')||':3000',revision=revision+1 WHERE account_id=$1",[account.id,mismatchedSlot]);
  const mismatch=data(await call('GET','/v1/number-capacity/reconciliation')).items.find((item:any)=>item.code==='GATEWAY_SLOT_MISMATCH'&&item.account_id===account.id);expect(mismatch).toMatchObject({canonical_slot:slot,session_gateway_slot:mismatchedSlot});
- const blocked=await call('POST','/v1/numbers',{alias:'Must not reuse physical slot',responsible:'Synthetic owner',device_ref:'Blocked by mismatch'});expect(blocked.statusCode,blocked.body).toBe(409);expect(blocked.json().error.code).toBe('GATEWAY_SLOT_MISMATCH');
+ const blocked=await call('POST','/v1/numbers/quick',{alias:'Must not reuse physical slot',country:'MX'});expect(blocked.statusCode,blocked.body).toBe(409);expect(blocked.json().error.code).toBe('GATEWAY_SLOT_MISMATCH');
 },60000);

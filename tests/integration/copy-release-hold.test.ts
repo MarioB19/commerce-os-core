@@ -109,10 +109,11 @@ describe('Copy release hold with real restricted roles and PostgreSQL locks',()=
  it('rejects channel/setup/catalog/number and all integration mutations while held without domain delta',async()=>{
   const f=await fixture();await hold();const before=await watched();
   const requests:[any,string,any][]=[
-   ['POST',`/v1/channel-accounts/${f.account.id}/commands`,{type:'connect',expected_version:f.account.version,reason:'Synthetic held connect'}],
-   ['PATCH',`/v1/channel-accounts/${f.account.id}/setup`,{expected_version:f.account.version,product_id:randomUUID(),offer_version_id:randomUUID(),workflow_version_id:randomUUID(),reason:'Synthetic held setup'}],
-   ['PATCH',`/v1/channel-accounts/${f.account.id}`,{expected_version:f.account.version,name:'Synthetic held edit'}],
-   ['POST','/v1/numbers',{alias:'Synthetic held alias',responsible:'Synthetic responsible',device_ref:'synthetic-device'}],
+   // V7 F8-D: the V7 number journey and the kept owner recovery port.
+   ['POST',`/v1/numbers/${f.account.id}/link`,{action:'link'}],
+   ['POST',`/v1/numbers/${f.account.id}/removal`,{expected_version:f.account.version,confirmation:'REMOVE_NUMBER'}],
+   ['POST','/v1/numbers/quick',{alias:'Synthetic held alias',country:'MX'}],
+   ['POST',`/v1/channel-accounts/${f.account.id}/session/recovery`,{expected_version:f.session.revision,action:'open_incident',reason:'Synthetic held recovery'}],
    ['PUT','/v1/settings/integrations/openai:default',integration('openai')],
    ['PUT','/v1/settings/integrations/waha:hold',integration('waha')],
    ['POST','/v1/settings/integrations/waha:hold/disable',{expected_version:1,reason:'Synthetic held disable'}],
@@ -129,13 +130,9 @@ describe('Copy release hold with real restricted roles and PostgreSQL locks',()=
   expect(result).toMatchObject({role:'commerce_channel',processed:0,factoryCalls:0,lifecycleCalls:0,healthCalls:0,qrCalls:0,networkAttempts:0,signals:0,qrStatus:409,qrCode:'RELEASE_HOLD_ACTIVE'});
   expect(await watched()).toEqual(before);
  });
- it('permits canonical cancellation and integration quarantine between publications when no hold is active',async()=>{
-  const f=await fixture(),command=await pending(f.account.id);
+ it('permits integration quarantine between publications when no hold is active',async()=>{
   const profile=await request('PUT','/v1/settings/integrations/waha:phase',integration('waha'));
   expect(profile.statusCode,profile.body).toBe(200);
-  const cancellation=await request('POST',`/v1/numbers/${f.account.id}/setup/commands`,{action:'cancel_pending',command_id:command.id,expected_version:f.account.version,expected_session_version:f.session.revision,reason:'Cancel fixture before next publication'});
-  expect(cancellation.statusCode,cancellation.body).toBe(200);
-  expect((await admin.query('SELECT status,result FROM commands WHERE id=$1',[command.id])).rows[0]).toMatchObject({status:'FAILED',result:{error:'CHANNEL_COMMAND_CANCELLED_BEFORE_EXECUTION',remote_outcome:'NOT_ATTEMPTED'}});
   const disabled=await request('POST','/v1/settings/integrations/waha:phase/disable',{expected_version:1,reason:'Quarantine fixture before next publication'});
   expect(disabled.statusCode,disabled.body).toBe(200);expect(disabled.json().data).toMatchObject({enabled:false,changed:true});
  });
@@ -179,7 +176,7 @@ describe('Copy release hold with real restricted roles and PostgreSQL locks',()=
   try{
    await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`operations:${workspace}:REAL`]);
    const rootPid=(await client.query('SELECT pg_backend_pid() pid')).rows[0].pid;
-   const before=await watched(),pendingRequest=request('POST',`/v1/channel-accounts/${f.account.id}/commands`,{type:'connect',reason:'Queued synthetic request'});
+   const before=await watched(),pendingRequest=request('POST',`/v1/numbers/${f.account.id}/link`,{action:'link'});
    // LightMyRequest starts lazily; attaching the continuation actually queues it.
    const resultPromise=Promise.resolve(pendingRequest);
    await waitFor(async()=>Number((await admin.query("SELECT count(*) n FROM pg_stat_activity WHERE datname=$1 AND application_name='copy-hold-api' AND $2=ANY(pg_blocking_pids(pid))",[database,rootPid])).rows[0].n)>0,'API_DID_NOT_WAIT_ON_CANONICAL_OPERATIONS_LOCK');

@@ -44,40 +44,31 @@ describe('server-owned SQL route registration',()=>{
  it('uses the same authority for Fastify HEAD and refuses mismatched token selection',async()=>{const f=fixture();expect((await f.app.inject({method:'HEAD',url:'/v1/reviewed/id',headers})).statusCode).toBe(200);expect(f.legacy).not.toHaveBeenCalled();const prior=f.calls.length;expect((await f.app.inject({url:'/v1/reviewed/id',headers:{...headers,authorization:'Bearer cos_pat_'+'p'.repeat(43)}})).statusCode).toBe(403);expect(f.calls).toHaveLength(prior);});
  it.each(['revocation','failure'])('discards handler result on final %s',async mode=>{const f=fixture();if(mode==='revocation')f.revoke();else f.fail();const r=await f.app.inject({url:'/v1/reviewed/id',headers});expect(r.statusCode).toBeGreaterThanOrEqual(400);expect(r.body).not.toContain('native-user');expect(r.body).not.toContain('"workspace"');expect(f.calls).toContain('ROLLBACK');expect(f.calls).not.toContain('COMMIT');});
  it('freezes its action at registration and rejects URL wildcards',async()=>{const f=fixture();f.action.scope='offers:read' as typeof f.action.scope;expect((await f.app.inject({url:'/v1/reviewed/id',headers})).json().permissions).toEqual(['products:read','catalog:read']);expect(()=>registerProfileSqlRoute(f.app,{method:'GET',url:'/v1/*',action:f.action,permissions:[],handler:async()=>({})})).toThrow('PROFILE_SQL_ROUTE_INVALID');});
- it('mounts all twelve reviewed V1 reads in createApp with fixed actions and no legacy auth',async()=>{const spy=vi.spyOn(profileRequest,'withProfileRequest'),app=await createApp();apps.push(app);for(const[path,scope]of[['categories','products:read'],['products','products:read'],['offers','offers:read'],['assets','materials:read'],['workflows','flows:read'],['agents','sellers:read']]as const){for(const tail of['','/10000000-0000-4000-8000-000000000001']){spy.mockClear();const r=await app.inject('/v1/'+path+tail);expect(r.statusCode,path+tail).toBe(401);expect(r.json().error.code).toBe('PROFILE_SESSION_EXPIRED');expect(spy).toHaveBeenCalledWith(expect.anything(),'REAL',{scope,mutation:false},expect.any(Function),undefined);}}});
+ // V7 F8-D: the generic V5 catalog reads were retired; createApp no longer mounts them.
+ it('does not mount the retired V5 catalog reads in createApp',async()=>{const app=await createApp();apps.push(app);await app.ready();for(const path of ['categories','products','offers','assets','workflows','agents']){for(const tail of['','/:id']){expect(app.hasRoute({method:'GET',url:'/v1/'+path+tail}),path+tail).toBe(false);}}});
 });
 
-describe('catalog SQL writer registration',()=>{
- it('mounts fixed resource actions for metadata, versions and validations',async()=>{
-  const app=await createApp();apps.push(app);const spy=vi.spyOn(profileRequest,'withProfileRequest');
-  const id='10000000-0000-4000-8000-000000000001';
-  const routes:Array<['GET'|'POST'|'PATCH',string,string,boolean]>=[];
-  for(const[path,scope]of[['categories','products'],['products','products'],['assets','materials'],['workflows','flows'],['agents','sellers']])for(const method of['POST','PATCH'] as const)routes.push([method,'/v1/'+path+(method==='PATCH'?'/'+id:''),scope+':write',true]);
-  routes.push(['POST',`/v1/products/${id}/offers`,'offers:write',true],['POST',`/v1/offers/${id}/publish`,'offers:write',true],['GET',`/v1/products/${id}/versions`,'products:read',false],['POST',`/v1/products/${id}/duplicate`,'products:write',true],['POST','/v1/assets/upload-intents','materials:write',true],['POST','/v1/workflows/validate','flows:write',true],['POST','/v1/workflows/apply','flows:write',true]);
-  for(const action of['versions','transition'])routes.push(['POST',`/v1/products/${id}/${action}`,'products:write',true]);
-  for(const[path,scope]of[['offers','offers'],['workflows','flows']])for(const method of['GET','POST']as const)routes.push([method,`/v1/${path}/${id}/versions`,scope+(method==='GET'?':read':':write'),method!=='GET']);
-  routes.push(['POST',`/v1/workflows/${id}/validate`,'flows:read',false]);
-  for(const action of['publish','duplicate','rollback'])routes.push(['POST',`/v1/workflows/${id}/${action}`,'flows:write',true]);
-  routes.push(['GET',`/v1/offers/${id}/sales-flow`,'offers:read',false],['POST',`/v1/offers/${id}/sales-flow/validate`,'offers:read',false],['PATCH',`/v1/offers/${id}/sales-flow`,'offers:write',true]);
-  expect(routes).toHaveLength(30);
-  for(const[method,url,scope,mutation]of routes){spy.mockClear();const r=await app.inject({method,url,headers:{origin:'https://example.test'},...(method==='GET'?{}:{payload:{environment:'REAL'}})});expect(r.statusCode,method+' '+url+' '+r.body).toBe(401);expect(r.json().error.code).toBe('PROFILE_SESSION_EXPIRED');expect(spy).toHaveBeenCalledWith(expect.anything(),'REAL',{scope,mutation},expect.any(Function),undefined);}
+describe('retired catalog SQL writers',()=>{
+ it('no longer mounts the V5 catalog writes, versions or validations',async()=>{
+  const app=await createApp();apps.push(app);
+  const routes:Array<['GET'|'POST'|'PATCH',string]>=[];
+  for(const path of['categories','products','assets','workflows','agents'])routes.push(['POST','/v1/'+path],['PATCH','/v1/'+path+'/:id']);
+  routes.push(['POST','/v1/products/:id/offers'],['POST','/v1/offers/:id/publish'],['GET','/v1/products/:id/versions'],['POST','/v1/assets/upload-intents'],['POST','/v1/workflows/validate'],['POST','/v1/workflows/apply'],['GET','/v1/offers/:id/sales-flow'],['PATCH','/v1/offers/:id/sales-flow']);
+  await app.ready();for(const[method,url]of routes)expect(app.hasRoute({method,url}),method+' '+url).toBe(false);
  });
 });
 
 
 describe('sales SQL route registration',()=>{
- it('binds all reviewed reads, decisions and operation reconciliation to fixed native profile actions',async()=>{
+ it('binds the kept sales reads, conversation actions and operation reads to fixed native profile actions',async()=>{
   const app=await createApp();apps.push(app);const spy=vi.spyOn(profileRequest,'withProfileRequest'),id='10000000-0000-4000-8000-000000000001';
   const routes:Array<['GET'|'POST',string,string,boolean]>=[];
-  for(const[path,scope]of[['conversations','conversations'],['contacts','conversations'],['leads','conversations'],['touchpoints','conversations'],['orders','orders'],['fulfillments','orders'],['receipts','receipts']])for(const suffix of['','/'+id])routes.push(['GET','/v1/'+path+suffix,scope+':read',false]);
+  for(const[path,scope]of[['conversations','conversations'],['orders','orders']])for(const suffix of['','/'+id])routes.push(['GET','/v1/'+path+suffix,scope+':read',false]);
   for(const path of['commands','controls'])routes.push(['POST',`/v1/conversations/${id}/${path}`,'conversations:write',true]);
-  routes.push(['POST',`/v1/receipts/${id}/review`,'receipts:review',true]);
-  for(const path of['orders','receipts'])routes.push(['POST',`/v1/${path}/${id}/classification`,'payments:write',true]);
-  routes.push(['POST',`/v1/orders/${id}/attribution`,'payments:write',true]);
-  for(const path of['edit','cancel'])routes.push(['POST',`/v1/outbox/${id}/${path}`,'conversations:write',true]);
-  for(const path of['commands','outbox'])for(const suffix of['','/'+id])routes.push(['GET','/v1/'+path+suffix,'operations:read',false]);
-  for(const path of['events','timers',`sales-operations/${id}`])routes.push(['GET','/v1/'+path,'operations:read',false]);
-  expect(routes).toHaveLength(29);
+  routes.push(['GET',`/v1/outbox/${id}`,'operations:read',false],['GET',`/v1/sales-operations/${id}`,'operations:read',false]);
+  expect(routes).toHaveLength(8);
   for(const[method,url,scope,mutation]of routes){spy.mockClear();const r=await app.inject({method,url,headers:{origin:'https://example.test'},...(method==='GET'?{}:{payload:{environment:'REAL'}})});expect(r.statusCode,method+' '+url+' '+r.body).toBe(401);expect(r.json().error.code).toBe('PROFILE_SESSION_EXPIRED');expect(spy).toHaveBeenCalledWith(expect.anything(),'REAL',{scope,mutation},expect.any(Function),undefined);}
+  // V7 F8-D: the V5 sales surface retired with its screens and tools.
+  for(const url of['/v1/contacts','/v1/leads','/v1/touchpoints','/v1/fulfillments','/v1/receipts','/v1/commands','/v1/outbox','/v1/events','/v1/timers','/v1/receipts/:id/review','/v1/orders/:id/classification','/v1/orders/:id/attribution','/v1/outbox/:id/edit','/v1/outbox/:id/cancel']){const method=url.split('/').length>4?'POST':'GET';expect(app.hasRoute({method,url}),url).toBe(false);}
  });
 });

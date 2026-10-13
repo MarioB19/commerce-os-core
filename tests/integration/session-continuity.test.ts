@@ -2,7 +2,6 @@ import {consumeProviderObservations} from '../../apps/channel-worker/src/observa
 import {beforeAll,beforeEach,afterAll,it,expect} from 'vitest';
 import {fixtureProfiles,releaseFixtureNumbers} from '../support/profile-fixture.js';
 import {randomUUID,randomBytes} from 'node:crypto';
-import {createApp} from '../../apps/api/src/app.js';
 import {provisionUser} from '../../apps/api/src/auth.js';
 import {pool,putRecord,withTransaction,getRecord,appendEvent,writeOperationalSettings,readOperationalSettings} from '../../packages/db/src/index.js';
 import {observeChannelSession,readChannelSession} from '../../packages/db/src/channel-sessions.js';
@@ -12,14 +11,13 @@ import {superviseSessions} from '../../apps/channel-worker/src/session-superviso
 import {collectSessionAlerts} from '../../apps/automation-worker/src/session-alerts.js';
 import {SimulatorProvider,type HealthSignal} from '../../packages/messaging/src/index.js';
 import type {DomainRecord} from '../../packages/contracts/src/index.js';
-const workspace='continuity-'+randomUUID(),outsider='other-'+workspace,origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0]!;
+const workspace='continuity-'+randomUUID(),outsider='other-'+workspace;
 // V7 F2: fixture workspaces are adopted profiles (max three per installation).
 beforeAll(()=>fixtureProfiles({id:workspace,numbers:19},{id:outsider,numbers:1}));
 // V7 F2: the installation admits 20 connected numbers; each case starts with
 // the earlier synthetic numbers' quota reservations released.
 beforeEach(()=>releaseFixtureNumbers(pool));
-let app:Awaited<ReturnType<typeof createApp>>,cookie:string,user:string;
-const request=(method:any,url:string,body?:any,key=randomUUID())=>app.inject({method,url:url+(url.includes('?')?'&':'?')+'environment=REAL',payload:body,headers:{cookie,origin,'idempotency-key':key}});
+let user:string;
 const signals=(state='WORKING',fingerprint='fixture-identity',at=new Date()):HealthSignal[]=>[{dimension:'session',status:state==='WORKING'?'OK':'BLOCKED',value:state,source:'provider_read',scope:'account',availability:'supported',observedAt:at.toISOString(),expiresAt:new Date(at.getTime()+60000).toISOString()},...(state==='WORKING'?[{dimension:'transport' as const,status:'OK' as const,value:{identity_fingerprint:fingerprint},source:'provider_read' as const,scope:'account' as const,availability:'supported' as const,observedAt:at.toISOString(),expiresAt:new Date(at.getTime()+60000).toISOString()}]:[])];
 async function account(provider='waha'){return putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'channel_account',body:{name:'Synthetic continuity',provider,gateway_ref:'fixture-'+randomUUID(),status:'STOPPED',sending_enabled:false}});}
 const session=async(a:DomainRecord)=>(await pool.query('SELECT * FROM channel_sessions WHERE account_id=$1',[a.id])).rows[0];
@@ -31,18 +29,8 @@ async function recoveryEvidence(a:DomainRecord,owner:string,frozen=false){
  await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'health_signal',body:{account_id:a.id,dimension:'session',status:'BLOCKED',value:'STOPPED',source:'provider_read',scope:'account',availability:'supported',observed_at:new Date(now-2000).toISOString(),expires_at:new Date(now+60000).toISOString()}});
  await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'health_signal',body:{account_id:a.id,dimension:'restriction',status:'OK',value:{latest_read:{timelock:true,capping:true}},source:'provider_read',scope:'account',availability:'supported',observed_at:new Date(now-1000).toISOString(),expires_at:new Date(now+60000).toISOString()}});
 }
-beforeAll(async()=>{app=await createApp();const email=randomUUID()+'@example.invalid',password=randomBytes(24).toString('base64url');await provisionUser({name:'Continuity operator',email,password,workspace_id:workspace,role:'owner'});const login=await app.inject({method:'POST',url:'/api/auth/sign-in/email',remoteAddress:'192.0.2.143',payload:{email,password},headers:{origin}});expect(login.statusCode).toBe(200);cookie=[login.headers['set-cookie']].flat().filter(Boolean).map(x=>String(x).split(';')[0]).join('; ');user=login.json().user.id;});
-afterAll(async()=>{await app.close();await pool.end();});
-it('backfills conservative state, validates scope, revisions and primary declarations without enabling sending',async()=>{
- const a=await account(),url=`/v1/channel-accounts/${a.id}`;expect(await session(a)).toMatchObject({desired_state:'STOPPED',observed_state:'UNKNOWN',recovery_enabled:false,operational_pause:true,primary_last_used_at:null});
- expect((await request('GET',url+'/session')).statusCode).toBe(200);
- const key=randomUUID(),body={expected_version:1,source:'operator_confirmation',used_at:new Date(Date.now()-1000).toISOString(),reason:'Opened primary app manually'};
- const response=await request('POST',url+'/primary-usage',body,key);expect(response.statusCode,response.body).toBe(200);expect((await request('POST',url+'/primary-usage',body,key)).json()).toEqual(response.json());expect((await request('POST',url+'/primary-usage',body)).statusCode).toBe(409);
- expect((await request('POST',url+'/primary-usage',{...body,expected_version:2,used_at:new Date(Date.now()+86400000).toISOString()})).statusCode).toBe(400);
- expect((await request('PATCH',url+'/session',{expected_version:2,responsible_user_id:'other-workspace',reason:'bad scope'})).statusCode).toBe(400);
- const outside=await putRecord(pool,{workspaceId:outsider,environment:'REAL',kind:'channel_account',body:{provider:'cloud'}});expect((await request('GET',`/v1/channel-accounts/${outside.id}/session`)).statusCode).toBe(404);
- const saved=await session(a);expect(saved.primary_usage_source).toBe('operator_confirmation');expect(saved.primary_usage_recorded_by).toBe(user);expect((await getRecord(pool,workspace,'channel_account',a.id))!.body.sending_enabled).toBe(false);
-});
+beforeAll(async()=>{const email=randomUUID()+'@example.invalid',password=randomBytes(24).toString('base64url');user=(await provisionUser({name:'Continuity operator',email,password,workspace_id:workspace,role:'owner'})).id;});
+afterAll(async()=>{await pool.end();});
 it('observations require identity, preserve expected identity and reject older or future observations',async()=>{
  const a=await account(),provider=new SimulatorProvider();provider.health=async()=>signals();await recordHealth(a,()=>provider);const s=await session(a);expect(s.observed_state).toBe('CONNECTED');expect(s.primary_last_used_at).toBeNull();const at=s.provider_observed_at;
  await withTransaction(c=>observeChannelSession(c,a,signals('STOPPED','x',new Date(at.getTime()-1000))));expect((await session(a)).observed_state).toBe('CONNECTED');
@@ -96,7 +84,9 @@ it('fences a replacement check-health read with a verified isolation receipt bef
  provider.lifecycle=async()=>{lifecycleCalls++;throw Error('LIFECYCLE_MUST_NOT_RUN');};
  await recordHealth(a,()=>provider);
  await pool.query("UPDATE session_ownership SET lease_expires_at=now()-interval '1 second' WHERE account_id=$1",[a.id]);
- const queueCheck=async()=>{const setup=(await request('GET',`/v1/numbers/${a.id}/setup`)).json().data;const queued=await request('POST',`/v1/numbers/${a.id}/setup/commands`,{action:'check_health',expected_version:setup.account_version,expected_session_version:setup.session_version,reason:'Verify current health after worker replacement'});expect(queued.statusCode,queued.body).toBe(202);return queued.json().data.command_id as string;};
+ // V7 F8-D: the V5 setup assistant that queued this check was retired; the
+ // channel worker still processes a check queued before the cutover.
+ const queueCheck=async()=>(await withTransaction(async c=>(await c.query("INSERT INTO commands(workspace_id,environment,kind,resource_id,actor_id,payload,idempotency_key) VALUES($1,'REAL','channel_command',$2,$3,$4,$5) RETURNING id",[workspace,a.id,user,{type:'check_health',expected_version:(await getRecord(c,workspace,'channel_account',a.id))!.version,reason:'Verify current health after worker replacement'},randomUUID()])).rows[0].id)) as string;
  const first=await queueCheck();provider.health=async()=>{healthCalls++;return observed('OK');};
  await processChannelCommands(100,candidate=>candidate.id===a.id&&candidate.workspace_id===a.workspace_id?provider:new SimulatorProvider(),newOwner);
  expect((await pool.query('SELECT status,result FROM commands WHERE id=$1',[first])).rows[0]).toMatchObject({status:'FAILED',result:{error:'VERIFIED_ISOLATION_PROOF_REQUIRED',remote_outcome:'NOT_ATTEMPTED'}});
@@ -170,10 +160,11 @@ it('database rejects cross-workspace session and history writes',async()=>{
 it('a pause after queuing recovery cancels the mutation before contacting the provider',async()=>{
  const a=await account();await configureRecovery(a);await recoveryEvidence(a,'pause-owner');
  await superviseSessions();const queued=await session(a);expect(queued.last_attempt_id).toBeTruthy();
- const paused=await request('PATCH',`/v1/channel-accounts/${a.id}/session`,{expected_version:queued.revision,operational_pause:true,reason:'Pause wins before provider call'});expect(paused.statusCode,paused.body).toBe(200);
+ // V7: unlinking or pausing from Números sets the operational pause the worker honours.
+ await pool.query('UPDATE channel_sessions SET operational_pause=true,revision=revision+1,updated_at=now() WHERE id=$1 AND revision=$2',[queued.id,queued.revision]);
  let calls=0;const provider=new SimulatorProvider();provider.lifecycle=async()=>{calls++;return{status:'WORKING'};};await processChannelCommands(100,candidate=>candidate.id===a.id&&candidate.workspace_id===a.workspace_id?provider:new SimulatorProvider(),'pause-owner');expect(calls).toBe(0);
  expect((await pool.query('SELECT result FROM commands WHERE id=$1',[queued.last_attempt_id])).rows[0].result.remote_outcome).toBe('NOT_ATTEMPTED');
- const result=await request('GET',`/v1/commands/${queued.last_attempt_id}`);expect(result.statusCode,result.body).toBe(200);expect(result.json().data.status).toBe('FAILED');expect(result.json().data.result.remote_outcome).toBe('NOT_ATTEMPTED');
+ expect((await pool.query('SELECT status FROM commands WHERE id=$1',[queued.last_attempt_id])).rows[0].status).toBe('FAILED');
 });
 
 it('never queues or calls a provider while ownership, incidents or canonical health block recovery',async()=>{

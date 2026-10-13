@@ -25,7 +25,7 @@ Tratamiento de las 121: 62 sustituidas por una acción V7, 3 pasan a acción hum
 | `employees_manage` | perfil | listar, invitaciones, invitar, cancelar_invitacion, cambiar_rol, desactivar, consultar_operacion |
 | `api_tokens_manage` | perfil | listar, crear, revocar, consultar_operacion |
 | `integrations_manage` | perfil | listar, guardar, rotar, validar, preferencias, activar, desactivar, eliminar |
-| `products_manage` | perfil | listar, leer, versiones, productos, crear, editar, archivar, restaurar, dependencias |
+| `products_manage` | perfil | listar, leer, crear, editar, archivar, restaurar, dependencias |
 | `materials_manage` | perfil | listar, leer, iniciar_subida, parte, completar, cancelar, eliminar |
 | `variants_manage` | perfil | listar, leer, adoptar, crear, editar, revisar, duplicar, publicar, version, historial, archivar, restaurar, consultar_operacion |
 | `offers_manage` | perfil | leer, guardar, validar, publicar, historial |
@@ -71,7 +71,7 @@ Tratamiento de las 121: 62 sustituidas por una acción V7, 3 pasan a acción hum
 | `assistant_propose` | Preparar propuesta contextual | — | Retirado | Asistente interno retirado. |
 | `catalog_create` | Crear recurso comercial | products_manage · crear; variants_manage · crear / duplicar | Sustituido | Crear un producto crea también su primera variante. |
 | `catalog_get` | Consultar recurso completo | products_manage · leer; variants_manage · leer | Sustituido | Contrato por dominio. |
-| `catalog_list` | Consultar catálogo y operación | products_manage · listar / productos; variants_manage · listar | Sustituido | Contrato por dominio en lugar del recurso genérico. |
+| `catalog_list` | Consultar catálogo y operación | products_manage · listar; variants_manage · listar | Sustituido | Contrato por dominio en lugar del recurso genérico. |
 | `catalog_transition` | Validar, publicar internamente o recuperar | products_manage · archivar / restaurar; variants_manage · publicar / archivar / restaurar | Sustituido | Publicar aplica sólo a conversaciones nuevas. |
 | `catalog_update` | Editar borrador con revisión | products_manage · editar; variants_manage · editar; offers/sales_flows/sellers/collections/remarketing_manage · guardar | Sustituido | Cada sección de la variante tiene su acción. |
 | `channel_command` | Solicitar control de sesión | number_connection_manage · desconectar / pausar / reanudar | Sustituido | Conectar o vincular es acción humana con el QR. |
@@ -185,3 +185,8 @@ Tratamiento de las 121: 62 sustituidas por una acción V7, 3 pasan a acción hum
 
 - `apps/commerce-mcp/src/profile-server.test.ts`: el registro tiene 40 entradas (34 de perfil y 6 de plataforma), sin acciones duplicadas entre servidas y pendientes; el servidor sólo anuncia herramientas del registro y ninguna acepta perfil, token, origen, ruta o SQL.
 - `tests/integration/v7-mcp-stdio.test.ts`: cliente MCP SDK real por STDIO y HTTPS local verificado con un token personal; la lista coincide con el registro, ninguna herramienta retirada aparece y un token de servicio se rechaza antes de registrar herramientas.
+
+
+## Ajuste F8-D (13-oct)
+
+`products_manage.listar/leer` leen `/v2/products` (antes `/v2/catalog`, retirado con las rutas genéricas V5); `versiones` y `productos` se fusionaron en `listar`. El historial de versiones de una variante sigue en `variants_manage · historial / version`. `apps/commerce-mcp/src/numbers.ts` se retiró en F8-D junto con sus rutas.

@@ -4,8 +4,6 @@ import {z} from 'zod';
 import {continuityRequestSchema} from '../../../packages/contracts/src/continuous-consumer.js';
 import {variantSellerSchema,variantOfferSchema,collectionInputSchema,variantLocaleSchema,variantSections} from '../../../packages/contracts/src/variants.js';
 import {paymentsCommandSchema} from '../../../packages/contracts/src/payments-client.js';
-import {profileCatalogResourceSchema} from '../../../packages/contracts/src/profile-catalog-consumer.js';
-import {profileCatalogListSchema,profileCatalogVersionsQuerySchema} from '../../../packages/contracts/src/profile-catalog.js';
 import {invitationCreateSchema,invitationCancelSchema} from '../../../packages/contracts/src/profile-invitations.js';
 import {profileTokenCommandSchema,profileTokenListSchema} from '../../../packages/contracts/src/profile-token-management.js';
 import {profileEmployeeInputSchema,profileRoleSchema,profileSettingsInputSchema} from '../../../packages/contracts/src/profiles.js';
@@ -13,7 +11,6 @@ import {receiptPolicyCommand} from '../../../packages/contracts/src/receipt-poli
 import {resultsCommandSchema} from '../../../packages/contracts/src/results-client.js';
 import type {ContinuityClient} from '../../../packages/commerce-client/src/continuous-authorization.js';
 import type {PaymentsClient} from '../../../packages/commerce-client/src/payments.js';
-import type {ProfileCatalogReader} from '../../../packages/commerce-client/src/profile-catalog.js';
 import type {ProfileV1Client,ProfileV2Client,ProfileVariantClient} from '../../../packages/commerce-client/src/profile-v2.js';
 import {numberCountries,type NumberCountry} from '../../../packages/domain/src/numbers/phone.js';
 import type {ReceiptPolicyClient} from '../../../packages/commerce-client/src/receipt-policies.js';
@@ -24,7 +21,7 @@ import {createHash} from 'node:crypto';
 import {humanAction,registerManageTool,type ManageAction} from './manage-tool.js';
 import {helpMarkdown} from '../../../packages/contracts/src/help.js';
 
-export interface ProfileRegistryClients {v2:ProfileV2Client;v1:ProfileV1Client;catalog:ProfileCatalogReader;variant:ProfileVariantClient;continuity:ContinuityClient;payments:PaymentsClient;receiptPolicies:ReceiptPolicyClient;results:ResultsClient;sales:ProfileSalesClient}
+export interface ProfileRegistryClients {v2:ProfileV2Client;v1:ProfileV1Client;variant:ProfileVariantClient;continuity:ContinuityClient;payments:PaymentsClient;receiptPolicies:ReceiptPolicyClient;results:ResultsClient;sales:ProfileSalesClient}
 const id=(v:string)=>encodeURIComponent(v);
 const query=(values:Record<string,unknown>)=>{const q=new URLSearchParams();for(const[k,v]of Object.entries(values))if(v!==undefined&&v!==null)q.set(k,String(v));const s=q.toString();return s?'?'+s:'';};
 function failure(action:string,error:unknown,input:unknown){
@@ -46,7 +43,6 @@ function fromUnion(union:{options:readonly z.ZodObject<any>[]},map:Record<string
 }
 const v=(method:'GET'|'POST'|'PUT'|'PATCH',schema:z.ZodObject<any>,path:(input:any)=>string,body?:(input:any)=>unknown,options:{read?:boolean;destructive?:boolean}={})=>(client:ProfileV2Client):ManageAction=>({schema,read:options.read??method==='GET',destructive:options.destructive,run:input=>client(method,path(input),body?body(input):undefined)});
 const empty=z.object({}).strict();
-const environment=z.object({environment:z.enum(['REAL','SIMULATION']).default('REAL')}).strict();
 const provider=z.enum(['openai','anthropic','google']);
 /** The composed V7 registry (Inventario y paridad V7): one tool per domain with
  * closed actions; profile identity comes only from the configured token. */
@@ -93,10 +89,8 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
  const P=(method:'GET'|'POST'|'PUT'|'PATCH',schema:z.ZodObject<any>,path:(i:any)=>string,body?:(i:any)=>unknown,options:{read?:boolean;destructive?:boolean}={}):ManageAction=>({schema,read:options.read??method==='GET',destructive:options.destructive,
   run:i=>c.variant(method,path(i),body?body(i):undefined,method==='GET'?undefined:i.operationId)});
  tool('products_manage','Productos del perfil','Productos padre con sus variantes por mercado: consultar, crear (con su primera variante), editar, archivar o restaurar. Crear no asigna números ni envía mensajes.',{
-  listar:{schema:z.object({resource:profileCatalogResourceSchema,...profileCatalogListSchema.shape}).strict(),read:true,run:i=>c.catalog({...i,operation:'list'})},
-  leer:{schema:z.object({resource:profileCatalogResourceSchema,id:z.uuid(),...environment.shape}).strict(),read:true,run:i=>c.catalog({...i,operation:'get'})},
-  versiones:{schema:z.object({resource:profileCatalogResourceSchema,id:z.uuid(),...profileCatalogVersionsQuerySchema.shape}).strict(),read:true,run:i=>c.catalog({...i,operation:'versions'})},
-  productos:P('GET',z.object({include:z.enum(['active','all']).optional(),q:z.string().max(160).optional()}).strict(),i=>'/v2/products'+query(i)),
+  listar:P('GET',z.object({include:z.enum(['active','all']).optional(),q:z.string().max(160).optional()}).strict(),i=>'/v2/products'+query(i)),
+  leer:{schema:z.object({productId:z.uuid()}).strict(),read:true,run:async i=>{const all=await c.variant('GET','/v2/products?include=all') as {id:string}[];const found=all.find(p=>p.id===i.productId.toLowerCase());if(!found)throw Object.assign(new Error('PRODUCT_NOT_FOUND'),{code:'PRODUCT_NOT_FOUND'});return found;}},
   crear:P('POST',operation.extend({name:z.string().min(1).max(160),description:z.string().max(4000).optional(),variant:z.object({name:z.string().min(1).max(160),locale:variantLocaleSchema}).strict()}).strict(),()=>'/v2/products',({operationId:_,...i})=>i),
   editar:P('PATCH',operation.extend({productId:z.uuid(),expectedVersion:z.number().int().positive(),name:z.string().min(1).max(160),description:z.string().max(4000)}).strict(),i=>'/v2/products/'+id(i.productId),i=>({expected_version:i.expectedVersion,name:i.name,description:i.description})),
   archivar:P('POST',operation.extend({productId:z.uuid(),expectedVersion:z.number().int().positive()}).strict(),i=>'/v2/products/'+id(i.productId)+'/archive',i=>({expected_version:i.expectedVersion}),{destructive:true}),

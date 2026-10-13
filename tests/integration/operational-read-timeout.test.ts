@@ -25,9 +25,8 @@ const cases=[
  {method:'GET' as const,path:'/v1/number-capacity/reconciliation',table:'number_capacity_slots'},
  {method:'GET' as const,path:'/v1/number-capacity/discrepancies',table:'number_capacity_slots'},
  {method:'POST' as const,path:'/v1/number-capacity',table:'number_capacity_slots',payload:{action:'preview',reason:'Synthetic read only preview'}},
- {method:'GET' as const,path:'health',table:'health_observation_index'},
 ];
-const request=(input:typeof cases[number],bearer=token)=>withRole('commerce_api',()=>app.inject({method:input.method,url:(input.path==='health'?`/v1/channel-accounts/${accountId}/health`:input.path)+'?environment=SIMULATION',payload:input.payload,headers:{authorization:'Bearer '+bearer}}));
+const request=(input:typeof cases[number],bearer=token)=>withRole('commerce_api',()=>app.inject({method:input.method,url:input.path+'?environment=SIMULATION',payload:input.payload,headers:{authorization:'Bearer '+bearer}}));
 
 it.each(cases)('returns an explicit unavailable error and recovers after a blocked $method $path read',async input=>{
  const blocker=await pool.connect();
@@ -52,10 +51,12 @@ it('preserves permission, environment and resource isolation without creating co
  const denied=await credential([]),restricted=await credential(['channels:read'],[accountId]);
  for(const input of cases){expect((await request(input,denied)).statusCode).toBe(403);}
  expect((await request(cases[0]!,restricted)).statusCode).toBe(403);
- expect((await request(cases[4]!,restricted)).statusCode).toBe(200);
  const foreign=await putRecord(pool,{workspaceId:'other-'+randomUUID(),environment:'SIMULATION',kind:'channel_account',body:{name:'Other fixture',provider:'simulator'}});
- expect((await app.inject({method:'GET',url:`/v1/channel-accounts/${foreign.id}/health?environment=SIMULATION`,headers:{authorization:'Bearer '+token}})).statusCode).toBe(404);
- expect((await app.inject({method:'GET',url:`/v1/channel-accounts/${accountId}/health?environment=REAL`,headers:{authorization:'Bearer '+token}})).statusCode).toBe(403);
+ // V7 F8-D: the per-number health read left with the V5 screens; the kept
+ // session read keeps the same resource and environment boundaries.
+ expect((await app.inject({method:'GET',url:`/v1/channel-accounts/${accountId}/session?environment=SIMULATION`,headers:{authorization:'Bearer '+restricted}})).statusCode).not.toBe(403);
+ expect((await app.inject({method:'GET',url:`/v1/channel-accounts/${foreign.id}/session?environment=SIMULATION`,headers:{authorization:'Bearer '+token}})).statusCode).toBe(404);
+ expect((await app.inject({method:'GET',url:`/v1/channel-accounts/${accountId}/session?environment=REAL`,headers:{authorization:'Bearer '+token}})).statusCode).toBe(403);
  for(const table of ['commands','outbox','number_operations'])expect((await pool.query(`SELECT count(*)::int n FROM ${table} WHERE workspace_id=$1`,[workspace])).rows[0].n).toBe(0);
 });
 

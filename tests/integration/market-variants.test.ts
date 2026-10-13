@@ -19,8 +19,6 @@ import {withPersonalProfileTransaction} from '../../packages/db/src/profile-pers
 import * as store from '../../packages/db/src/market-variants.js';
 import {marketCopyReviewFields,type MarketRelease} from '../../packages/contracts/src/market-variants.js';
 import {type MarketDraftFields} from '../../packages/contracts/src/market-variant-store.js';
-import {marketDraftViewSchema} from '../../packages/contracts/src/market-variant-client.js';
-import {personalMarketVariants,sessionMarketVariants} from '../../packages/commerce-client/src/market-variants.js';
 import {createProfileMcp} from '../../apps/commerce-mcp/src/profile-server.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 
@@ -35,7 +33,6 @@ function tx<T>(work:(db:ProfileExecutor)=>Promise<T>,account=owner){return withP
 async function request(path:string,body?:object,headers:Record<string,string>={},method=body?'POST':'GET'){
  return fetch(address+path,{method,redirect:'error',headers:{origin,...headers,...(body?{'content-type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})});
 }
-function headers(account=owner){return{cookie:account.cookie,'x-commerce-profile-id':one,'x-commerce-profile-version':'1','idempotency-key':randomUUID()};}
 async function account(role='owner'){
  const user=randomUUID(),email=user+'@example.invalid';
  await admin.query('INSERT INTO "user"(id,name,email,"emailVerified") VALUES($1,\'Synthetic Market\',$2,true)',[user,email]);
@@ -136,67 +133,23 @@ describe('F4 persisted variants with native profile authority and restricted Pos
   expect(copied.id).not.toBe(f.draft.id);expect(copied.source_release_id).toBe(published.release.id);expect(copied.current_release_id).toBeNull();expect(copied.pending_review).toEqual(marketCopyReviewFields);expect(copied.publication_authorized).toBe(false);
   expect((await tx(db=>store.readMarketVariant(db,'REAL',copied.id))).source_release_id).toBe(published.release.id);await expect(publish(copied)).rejects.toMatchObject({code:'MARKET_PRICE_CHANGED'});
  });
- it('commits operation receipt with creation and rejects content change; uncertain reply uses GET only',async()=>{
-  const f=await fixture(),key=randomUUID(),body={family_id:f.product.id,fields:f.fields},h={...headers(),'idempotency-key':key};
-  const first=await request('/v2/market/variants?environment=REAL',body,h);expect(first.status).toBe(200);const value=(await first.json()).data;
-  const read=await request('/v2/market/operations/'+key+'?environment=REAL',undefined,headers());expect((await read.json()).data).toEqual(value);
-  const repeat=await request('/v2/market/variants?environment=REAL',body,h);expect((await repeat.json()).data).toEqual(value);
-  expect((await request('/v2/market/variants?environment=REAL',{...body,fields:{...body.fields,amount_minor:1}},h)).status).toBe(409);
-  expect((await admin.query('SELECT count(*)::int n FROM market_variants WHERE id=$1',[value.id])).rows[0].n).toBe(1);
-  expect(JSON.stringify(value)).not.toContain('private_sentinel');
- });
- it('lists bounded family pages with real SQL and no foreign/environment fallback',async()=>{
-  const f=await fixture();await tx(db=>store.createMarketDraft(db,'REAL',{family_id:f.product.id,fields:f.fields},owner.user));
-  const first=await request('/v2/market/variants?environment=REAL&family_id='+f.product.id+'&limit=1',undefined,headers());expect(first.status).toBe(200);const page=await first.json();expect(page.data).toHaveLength(1);expect(page.meta.has_more).toBe(true);
-  const second=await(await request('/v2/market/variants?environment=REAL&family_id='+f.product.id+'&limit=1&after='+page.meta.next,undefined,headers())).json();expect(second.data).toHaveLength(1);expect(second.data[0].id).not.toBe(page.data[0].id);expect(second.meta.has_more).toBe(false);
-  expect((await request('/v2/market/variants?environment=SIMULATION&family_id='+f.product.id,undefined,headers())).status).toBe(404);
-  expect((await request('/v2/market/variants?environment=REAL&family_id='+f.product.id+'&limit=101',undefined,headers())).status).toBe(400);
- });
- it('uses native PAT profile/scope/environment and rechecks revocation instead of cookie fallback',async()=>{
-  const f=await fixture(),secret='cos_pat_'+randomBytes(32).toString('base64url'),id=randomUUID();
+ // V7 F8-D: variants are written through /v2/products and /v2/variants; the
+ // F4 draft routes were retired. One published release stays readable over
+ // native HTTP and through the composed profile MCP with the same PAT.
+ it('reads a published release with a native PAT over HTTP and MCP, and rechecks scope, environment and revocation',async()=>{
+  const f=await fixture(),published=await publish(f.draft),secret='cos_pat_'+randomBytes(32).toString('base64url'),tokenId=randomUUID();
   await admin.query(`INSERT INTO personal_access_tokens(id,workspace_id,user_id,name,token_hash,allowed_environments,profile_scopes,expires_at)
-   VALUES($1,$2,$3,'Synthetic variants',$4,'["REAL"]','["variants:read"]',clock_timestamp()+interval '1 hour')`,[id,one,owner.user,createHash('sha256').update(secret).digest('hex')]);
-  const h={authorization:'Bearer '+secret,cookie:owner.cookie,'idempotency-key':randomUUID()};
-  expect((await request('/v2/market/variants/'+f.draft.id.toUpperCase()+'?environment=REAL',undefined,h)).status).toBe(200);
-  expect((await request('/v2/market/variants?environment=REAL',{family_id:f.product.id,fields:f.fields},h)).status).toBe(403);
-  expect((await request('/v2/market/variants/'+f.draft.id+'?environment=SIMULATION',undefined,h)).status).toBe(401);
-  await admin.query('UPDATE personal_access_tokens SET revoked_at=clock_timestamp() WHERE id=$1',[id]);
-  expect((await request('/v2/market/variants/'+f.draft.id+'?environment=REAL',undefined,h)).status).toBe(401);
- });
- it('runs the shared client over TCP, reconciles a lost committed reply and preserves copy/publication contracts',async()=>{
-  const f=await fixture(),secret='cos_pat_'+randomBytes(32).toString('base64url'),tokenId=randomUUID();
-  await admin.query(`INSERT INTO personal_access_tokens(id,workspace_id,user_id,name,token_hash,allowed_environments,profile_scopes,expires_at)
-   VALUES($1,$2,$3,'Synthetic shared market client',$4,'["REAL"]','["variants:read","variants:write"]',clock_timestamp()+interval '1 hour')`,[tokenId,one,owner.user,createHash('sha256').update(secret).digest('hex')]);
-  let loseReply=true,posts=0;
-  const transport:typeof fetch=async(input,init)=>{
-   if(init?.method==='POST')posts++;
-   const response=await fetch(input,init);
-   if(loseReply&&init?.method==='POST'){loseReply=false;expect(response.status).toBe(200);await response.arrayBuffer();throw Error('synthetic reply lost after native COMMIT');}
-   return response;
-  };
-  const client=personalMarketVariants(address,secret,transport),operation_id=randomUUID(),command={operation:'create',environment:'REAL',operation_id,body:{family_id:f.product.id,fields:f.fields}};
-  await expect(client(command)).rejects.toMatchObject({code:'MARKET_WRITE_UNCONFIRMED'});expect(posts).toBe(1);
-  const recovered=marketDraftViewSchema.parse((await client({operation:'reconcile',environment:'REAL',id:operation_id})).data);expect(posts).toBe(1);
-  expect((await admin.query('SELECT count(*)::int n FROM market_operations WHERE operation_id=$1',[operation_id])).rows[0].n).toBe(1);
-  const replaced=marketDraftViewSchema.parse((await client({operation:'replace',environment:'REAL',id:recovered.id,operation_id:randomUUID(),body:{expected_version:1,fields:{...f.fields,locale:{...locale,market:'México cliente'}}}})).data);
-  const published=(await client({operation:'publish',environment:'REAL',id:replaced.id,operation_id:randomUUID(),body:{expected_version:2,draft_sha256:replaced.draft_sha256,reviewed_fields:[...marketCopyReviewFields]}})).data;
-  if(!('release'in published))throw Error('Expected canonical published result');
-  expect((await client({operation:'release',environment:'REAL',id:published.release.id})).data).toEqual(published.release);
-  const copied=(await client({operation:'copy',environment:'REAL',operation_id:randomUUID(),body:{source_release_id:published.release.id,locale:{...locale,market:'Colombia',currency:'COP'}}})).data;
-  if(!('publication_authorized'in copied))throw Error('Expected canonical copied draft');
-  expect(copied.publication_authorized).toBe(false);expect(copied.pending_review).toEqual(marketCopyReviewFields);
-  const list=await client({operation:'list',environment:'REAL',family_id:f.product.id,limit:1});expect(list.data).toHaveLength(1);
-  const browser=sessionMarketVariants({workspaceId:one,version:1},async(input,init)=>fetch(address+String(input),{...init,headers:{...init?.headers,cookie:owner.cookie,origin}}));
-  expect((await browser({operation:'get',environment:'REAL',id:recovered.id})).data).toMatchObject({id:recovered.id,version:3,current_release_id:published.release.id});
-  // V7 F8: the composed profile MCP reads the same published version with the same token.
+   VALUES($1,$2,$3,'Synthetic release reader',$4,'["REAL"]','["variants:read"]',clock_timestamp()+interval '1 hour')`,[tokenId,one,owner.user,createHash('sha256').update(secret).digest('hex')]);
+  const h={authorization:'Bearer '+secret,cookie:owner.cookie};
+  const read=await request('/v2/market/releases/'+published.release.id.toUpperCase()+'?environment=REAL',undefined,h);expect(read.status).toBe(200);expect((await read.json()).data).toEqual(published.release);
+  expect((await request('/v2/market/releases/'+published.release.id+'?environment=SIMULATION',undefined,h)).status).toBe(401);
+  for(const retired of ['/v2/market/variants/'+f.draft.id,'/v2/market/operations/'+randomUUID(),'/v2/market/products/'+f.product.id+'/options'])expect((await request(retired+'?environment=REAL',undefined,h)).status).toBe(404);
   const server=createProfileMcp(address,secret),sdk=new Client({name:'synthetic-market-postgres-client',version:'1'}),[ct,st]=InMemoryTransport.createLinkedPair();
   await server.connect(st);await sdk.connect(ct);
-  try{
-   const count=posts,result=await sdk.callTool({name:'variants_manage',arguments:{action:'version',releaseId:published.release.id}});
-   expect(result.isError).not.toBe(true);expect(result.structuredContent).toEqual(published.release);expect(posts).toBe(count);
-  }finally{await sdk.close();await server.close();}
+  try{const result=await sdk.callTool({name:'variants_manage',arguments:{action:'version',releaseId:published.release.id}});expect(result.isError).not.toBe(true);expect(result.structuredContent).toEqual(published.release);}
+  finally{await sdk.close();await server.close();}
   await admin.query('UPDATE personal_access_tokens SET revoked_at=clock_timestamp() WHERE id=$1',[tokenId]);
-  await expect(client({operation:'get',environment:'REAL',id:recovered.id})).rejects.toMatchObject({code:'MARKET_READ_UNCONFIRMED',status:401});
+  expect((await request('/v2/market/releases/'+published.release.id+'?environment=REAL',undefined,h)).status).toBe(401);
  });
  it('operation contention fails immediately and never runs the second callback',async()=>{
   const key=randomUUID();let release!:()=>void,entered!:()=>void;const blocked=new Promise<void>(r=>release=r),ready=new Promise<void>(r=>entered=r);let ran=false;
@@ -210,14 +163,6 @@ describe('F4 persisted variants with native profile authority and restricted Pos
   expect((await admin.query('SELECT count(*)::int n FROM market_variants WHERE id=$1',[id])).rows[0].n).toBe(0);
   expect((await admin.query('SELECT count(*)::int n FROM market_operations WHERE operation_id=$1',[key])).rows[0].n).toBe(0);
   expect((await admin.query('SELECT count(*)::int n FROM market_variant_events WHERE variant_id=$1',[id])).rows[0].n).toBe(0);
- });
- it('rejects foreign details, extra authority fields, missing idempotency and revoked native authority',async()=>{
-  const f=await fixture(),viewer=await account('viewer');
-  expect((await request('/v2/market/variants/'+f.draft.id+'?environment=SIMULATION',undefined,headers())).status).toBe(404);
-  expect((await request('/v2/market/variants?environment=REAL',{family_id:f.product.id,fields:f.fields,workspace_id:two},headers())).status).toBe(400);
-  const h=headers();delete(h as Partial<typeof h>)['idempotency-key'];expect((await request('/v2/market/variants?environment=REAL',{family_id:f.product.id,fields:f.fields},h)).status).toBe(400);
-  expect((await request('/v2/market/variants?environment=REAL',{family_id:f.product.id,fields:f.fields},headers(viewer))).status).toBe(403);
-  expect((await request('/v2/market/variants?environment=REAL',{family_id:f.product.id,fields:f.fields},{...headers(),origin:'https://untrusted.invalid'})).status).toBe(403);
  });
  it('rolls back canonical retention of extra published materials while preserving unreferenced retention',async()=>{
   async function retention(id:string){

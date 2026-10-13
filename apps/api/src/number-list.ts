@@ -12,7 +12,7 @@ import {integrationDefinitions,validateIntegrationConfig,type IntegrationType} f
 import {readEffectiveHealthBatch,currentEffectiveSignal,currentProviderHealthReady} from '../../../packages/db/src/effective-health.js';
 import {numberNow} from '../../../packages/db/src/number-clock.js';
 import type {QueryExecutor} from '../../../packages/db/src/index.js';
-import {projectAssignmentAuthorization} from './channel-setup.js';
+import {projectAssignmentAuthorization} from './assignment-authorization.js';
 import {fail,resourcePermitted} from './context.js';
 
 type PageInput={q?:string;state?:string;offset:number;limit:number};

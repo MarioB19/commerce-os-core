@@ -68,8 +68,8 @@ try{
  check('api_readiness',readiness.data?.status==='ready'&&readiness.data?.service==='api');
 
  stage='anonymous_access';
- const anonymous=await request('/v1/products');
- check('anonymous_products_denied',anonymous.status===401,{status:anonymous.status});
+ const anonymous=await request('/v1/conversations');
+ check('anonymous_sales_denied',anonymous.status===401,{status:anonymous.status});
 
  stage='public_signup';
  // An empty request cannot provision a user even if the signup guard regresses.
@@ -85,15 +85,16 @@ try{
  stage='authenticated_access';
  const me=await request('/v1/me',{authenticated:true});
  check('owner_membership',me.status===200&&me.data?.data?.role==='owner'&&me.data?.data?.service===false,{status:me.status});
- const products=await request('/v1/products',{authenticated:true});
- check('authenticated_products_readable',products.status===200&&Array.isArray(products.data?.data),{status:products.status});
+ const conversations=await request('/v1/conversations',{authenticated:true});
+ check('authenticated_sales_readable',conversations.status===200&&Array.isArray(conversations.data?.data),{status:conversations.status});
 
  stage='bootstrap_accounts';
- const simulated=await request('/v1/channel-accounts?environment=SIMULATION&limit=200',{authenticated:true});
- const real=await request('/v1/channel-accounts?environment=REAL&limit=200',{authenticated:true});
- const simulatedRows=simulated.data?.data,realRows=real.data?.data;
- check('ten_simulation_accounts',simulated.status===200&&simulated.data?.meta?.total===10&&Array.isArray(simulatedRows)&&simulatedRows.length===10&&simulatedRows.every(row=>row.environment==='SIMULATION'&&row.provider==='simulator'),{status:simulated.status,total:Number.isSafeInteger(simulated.data?.meta?.total)?simulated.data.meta.total:null});
- check('zero_real_accounts',real.status===200&&real.data?.meta?.total===0&&Array.isArray(realRows)&&realRows.length===0,{status:real.status,total:Number.isSafeInteger(real.data?.meta?.total)?real.data.meta.total:null});
+ // V7 F8-D: the number journey's own read (the V5 account list was retired).
+ const simulated=await request('/v1/numbers/overview?environment=SIMULATION',{authenticated:true});
+ const real=await request('/v1/numbers/overview?environment=REAL',{authenticated:true});
+ const simulatedRows=simulated.data?.data?.numbers,realRows=real.data?.data?.numbers;
+ check('ten_simulation_accounts',simulated.status===200&&Array.isArray(simulatedRows)&&simulatedRows.length===10,{status:simulated.status,total:Array.isArray(simulatedRows)?simulatedRows.length:null});
+ check('zero_real_accounts',real.status===200&&Array.isArray(realRows)&&realRows.length===0,{status:real.status,total:Array.isArray(realRows)?realRows.length:null});
 
  stage='service_heartbeats';
  const deadline=Date.now()+60000;let system,heartbeats=[];

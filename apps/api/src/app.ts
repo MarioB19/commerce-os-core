@@ -3,23 +3,9 @@ import {isProfileSqlRequest} from './profile-sql-route.js';
 import {runInRequestProfileScope,bindRequestProfileEnvironment,closeRequestProfileScope} from '../../../packages/db/src/profile-request-scope.js';
 import {profileRuntimeRoutes} from './profile-runtime.js';
 import {copySourceIsolationRoutes} from './copy-source-isolation.js';
-import {documentNumbersApi} from './openapi-numbers.js';
-import {personalAccessTokenRoutes,documentPersonalAccessTokens} from './personal-access-tokens.js';
-import {channelSessionRoutes} from './channel-sessions.js';
-import {productAssignmentRoutes} from './product-assignments.js';
-import {numberHealthRoutes} from './number-health.js';
-import {commercialConfigurationRoutes} from './commercial-configuration.js';
-import {warmupBackfillRoutes} from './warmup-backfill.js';
 import {readinessRoutes} from './readiness.js';
 import {numbersRoutes} from './numbers.js';
-import {warmupRoutes} from './warmup.js';
-import {documentOperationalApi} from './openapi-operations.js';
 import {remarketingRoutes} from './remarketing.js';
-import {channelDeletionRoutes} from './channel-deletion.js';
-import {sellerRoutes} from './seller.js';
-import {receiptAccessRoutes} from './receipt-access.js';
-import {campaignPerformanceRoutes} from './campaign-performance.js';
-import {salesHistoryRoutes} from './sales-history.js';
 import {integrationSettingsRoutes} from './integrations-settings.js';
 import {operationalSettingsRoutes} from './operational-settings.js';
 import Fastify from 'fastify';
@@ -27,22 +13,17 @@ import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import swagger from '@fastify/swagger';
 import {accountSecurityRoutes} from './account-security.js';
-import {z,ZodError} from 'zod';
+import {ZodError} from 'zod';
 import {pool} from '../../../packages/db/src/index.js';
-import {schemas,resourceKinds} from '../../../packages/contracts/src/index.js';
 import {trustedOrigins} from './auth.js';
 import {authenticate,envOf} from './context.js';
-import {catalogRoutes} from './catalog.js';
-import {channelSetupRoutes} from './channel-setup.js';
 import {salesRoutes} from './sales.js';
 import {systemRoutes} from './system.js';
-import {documentCatalogApi} from './openapi-catalog.js';
-import {metaRoutes} from './meta.js';
-import {numberSetupRoutes} from './number-setup.js';
-import {homeOperationsSummaryRoutes} from './home-operations-summary.js';
 import {registerVersionRoute} from './version.js';
 import {retiredRoutes} from './retired-routes.js';
-import {commandEffectRoutes} from './command-effects.js';
+import {salesReadRoutes} from './sales-reads.js';
+import {channelSessionRoutes} from './channel-sessions.js';
+import {warmupReviewRoutes} from './warmup-review.js';
 export async function createApp(){const app=Fastify({logger:process.env.LOG_LEVEL?{level:process.env.LOG_LEVEL,redact:['req.headers.authorization','req.headers.cookie','res.headers.set-cookie','req.body']} :false,disableRequestLogging:true,bodyLimit:30*1024*1024,trustProxy:process.env.NODE_ENV==='production'});
 // V7 F2: every request starts outside any profile scope. A connection's
 // callbacks can be scheduled from the async context of an earlier request on
@@ -59,10 +40,15 @@ app.addHook('preValidation',async req=>{if(req.url.startsWith('/v1/')&&!req.url.
 app.addHook('onResponse',async()=>{closeRequestProfileScope();});
 registerVersionRoute(app);
 await app.register(profileRuntimeRoutes);
-await numberHealthRoutes(app);
 app.get('/livez',async()=>({status:'ok',service:'api'}));app.get('/readyz',async()=>{await pool.query('SELECT 1');return{status:'ready',service:'api'};});app.get('/health/live',async()=>({status:'ok',service:'api'}));app.get('/health/ready',async()=>{await pool.query('SELECT 1');return{status:'ready',service:'api'};});
-await retiredRoutes(app);await commandEffectRoutes(app);await readinessRoutes(app);await warmupRoutes(app);await numbersRoutes(app);await numberSetupRoutes(app);await homeOperationsSummaryRoutes(app);await warmupBackfillRoutes(app);await remarketingRoutes(app);await accountSecurityRoutes(app);await sellerRoutes(app);
-await receiptAccessRoutes(app);await campaignPerformanceRoutes(app);await salesHistoryRoutes(app);await catalogRoutes(app);await salesRoutes(app);await channelDeletionRoutes(app);await channelSetupRoutes(app);await channelSessionRoutes(app);await copySourceIsolationRoutes(app);await commercialConfigurationRoutes(app);await productAssignmentRoutes(app);await systemRoutes(app);await personalAccessTokenRoutes(app);await metaRoutes(app);await operationalSettingsRoutes(app);await integrationSettingsRoutes(app);
-app.get('/v1/openapi.json',async()=>{const spec=app.swagger() as any;spec.components??={};spec.components.schemas={};for(const[kind,schema]of Object.entries(schemas)){try{spec.components.schemas[kind]=z.toJSONSchema(schema,{target:'openapi-3.0'});}catch{/* refined schemas remain documented in endpoint examples */}}for(const[path,kind]of Object.entries(resourceKinds)){if(schemas[kind]&&spec.paths?.['/v1/'+path]?.post){spec.paths['/v1/'+path].post.requestBody={required:true,content:{'application/json':{schema:{$ref:'#/components/schemas/'+kind}}}};spec.paths['/v1/'+path].post.parameters=[{name:'Idempotency-Key',in:'header',required:true,schema:{type:'string',minLength:8}}];}}const bodyDefinitions:Record<string,any>={'/v1/conversations/{id}/commands':{type:'object',required:['type'],properties:{type:{type:'string',enum:['send_message','assign','set_stage','consent','opt_out','commitment','receipt_received','approve_step']},expected_workflow_version_id:{type:'string'},expected_node_id:{type:'string'},reason:{type:'string',minLength:3},text:{type:'string'},asset_id:{type:'string',format:'uuid'},consent:{type:'object',required:['purpose','source','observed_at','evidence'],properties:{purpose:{type:'string'},source:{type:'string'},observed_at:{type:'string',format:'date-time'},evidence:{type:'string'}}}}},'/v1/receipts/{id}/review':{type:'object',required:['decision','reason','expected_version'],properties:{decision:{type:'string',enum:['APPROVED','REJECTED','HUMAN_REVIEW']},reason:{type:'string',minLength:3},expected_version:{type:'integer',minimum:1}}},'/v1/orders/{id}/reconcile':{type:'object',required:['amount_minor','currency','evidence_asset_id','reason','expected_version'],properties:{amount_minor:{type:'integer',minimum:1},currency:{type:'string',pattern:'^[A-Z]{3}$'},evidence_asset_id:{type:'string',format:'uuid'},reason:{type:'string',minLength:3},expected_version:{type:'integer',minimum:1}}}};for(const[path,schema]of Object.entries(bodyDefinitions))if(spec.paths?.[path]?.post)spec.paths[path].post.requestBody={required:true,content:{'application/json':{schema}}};documentCatalogApi(spec);documentOperationalApi(spec);documentPersonalAccessTokens(spec);documentNumbersApi(spec);return spec;});
+// V7 F8-D: the /v1 surface keeps only what the V7 application, the V7 MCP,
+// the capacity agent and owner operation controls still call (see
+// docs/v7-api-surface.md). Everything else answered by V5 screens and the
+// service-token MCP left with them.
+await retiredRoutes(app);await readinessRoutes(app);await numbersRoutes(app);await remarketingRoutes(app);await accountSecurityRoutes(app);
+await salesReadRoutes(app);await salesRoutes(app);await channelSessionRoutes(app);await warmupReviewRoutes(app);await copySourceIsolationRoutes(app);await systemRoutes(app);await operationalSettingsRoutes(app);await integrationSettingsRoutes(app);
+app.get('/v1/openapi.json',async()=>{const spec=app.swagger() as any;const command=spec.paths?.['/v1/conversations/{id}/commands']?.post;
+ if(command)command.requestBody={required:true,content:{'application/json':{schema:{type:'object',required:['type'],properties:{type:{type:'string',enum:['close_conversation','send_message','commitment','receipt_received','set_stage','assign','consent','opt_out','approve_step']}}}}}};
+ return spec;});
 return app;}
 export const buildApp=createApp;

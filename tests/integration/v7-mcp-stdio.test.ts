@@ -53,13 +53,13 @@ it('serves only the composed V7 registry over STDIO and HTTPS with a personal to
   const call=async(name:string,args:Record<string,unknown>)=>{const r=await client.callTool({name,arguments:args});expect(r.isError,JSON.stringify(r.content)).not.toBe(true);return r.structuredContent as Record<string,unknown>;};
   const created=await call('products_manage',{action:'crear',operationId:randomUUID(),name:'Curso por MCP',variant:{name:'México',locale:{market:'México',country:'MX',currency:'MXN',language:'es-MX',timezone:'America/Mexico_City'}}});
   expect(JSON.stringify(created)).toContain('Curso por MCP');
-  expect(JSON.stringify(await call('products_manage',{action:'productos'}))).toContain('Curso por MCP');
+  expect(JSON.stringify(await call('products_manage',{action:'listar'}))).toContain('Curso por MCP');
   await call('home_get',{action:'resumen'});
   expect(await call('conversations_manage',{action:'listar'})).toMatchObject({data:[],meta:{total:0}});
   expect(await call('orders_manage',{action:'listar'})).toMatchObject({data:[],meta:{total:0}});
   const help=await call('help_read',{action:'guia'});expect(JSON.stringify(help)).toContain('Empieza a vender');
   // The token fixes the profile: no tool accepts another one.
-  const foreign=await client.callTool({name:'products_manage',arguments:{action:'productos',workspaceId:'other'}});expect(foreign.isError).toBe(true);
+  const foreign=await client.callTool({name:'products_manage',arguments:{action:'listar',workspaceId:'other'}});expect(foreign.isError).toBe(true);
  }finally{await client.close();await transport.close();}
 },180000);
 it('refuses a historical service token before registering any tool',async()=>{

@@ -13,7 +13,7 @@ export const mcpRegistry:readonly McpRegistryEntry[]=Object.freeze([
  tool('employees_manage','profile','/v2/employees',['employees:read','employees:write'],['listar','invitaciones','invitar','cancelar_invitacion','cambiar_rol','desactivar','consultar_operacion'],['reenviar_invitacion']),
  tool('integrations_manage','profile','/v2/integrations',['integrations:read','integrations:write'],['listar','guardar','validar','rotar','preferencias','activar','desactivar','eliminar']),
  tool('api_tokens_manage','profile','/v2/tokens',['tokens:read','tokens:write'],['listar','crear','revocar','consultar_operacion']),
- tool('products_manage','profile','/v2/products',['products:read','products:write'],['listar','leer','versiones','productos','crear','editar','archivar','restaurar','dependencias']),
+ tool('products_manage','profile','/v2/products',['products:read','products:write'],['listar','leer','crear','editar','archivar','restaurar','dependencias']),
  tool('variants_manage','profile','/v2/variants',['variants:read','variants:write'],['listar','leer','adoptar','crear','editar','revisar','duplicar','publicar','version','historial','archivar','restaurar','consultar_operacion']),
  tool('offers_manage','profile','/v2/variants/{id}/offer',['offers:read','offers:write'],['leer','guardar','validar','publicar','historial']),
  tool('materials_manage','profile','/v2/materials',['materials:read','materials:write'],['listar','leer','iniciar_subida','parte','completar','cancelar','eliminar']),

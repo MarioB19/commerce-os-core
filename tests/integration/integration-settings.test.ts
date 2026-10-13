@@ -40,10 +40,7 @@ afterAll(async()=>{
   });
   }
   if(gatewayFixtureAccountId){
-   const path='/v1/channel-accounts/'+gatewayFixtureAccountId+'?environment=REAL',account=await call('GET',path);
-   expect(account.statusCode,account.body).toBe(200);
-   const removed=await call('DELETE',path,{expected_version:account.json().data.version,confirmation:'DELETE_CHANNEL_ACCOUNT',reason:'Retire isolated integration gateway fixture'});
-   expect(removed.statusCode,removed.body).toBe(200);
+   const accountId=gatewayFixtureAccountId;await withTransaction(c=>retireRealAccountOn(c,workspace,accountId));
   }
  } finally {vi.unstubAllEnvs();await app.close();await pool.end();}
 });
@@ -235,11 +232,5 @@ describe('Private owner integration settings, field-scoped DB runtime reads',()=
   const expected:Record<string,string[]>={commerce_automation:['meta:access_token','openai:api_key'],commerce_ingress:['cloud:app_secret','cloud:verify_token','waha:webhook_secret'],commerce_channel:['cloud:token','fulfillment:token','waha:api_key','waha:webhook_secret']};
   for(const[role,fields]of Object.entries(expected)){const rows=await withTransaction(async c=>{await c.query('SET LOCAL ROLE '+role);return(await c.query('SELECT DISTINCT type,field FROM integration_secrets WHERE workspace_id=$1',[workspace])).rows;});expect(rows.map(r=>`${r.type}:${r.field}`).sort()).toEqual(fields.sort());await expect(withTransaction(async c=>{await c.query('SET LOCAL ROLE '+role);await c.query("UPDATE integration_settings SET enabled=true WHERE workspace_id=$1",[workspace]);})).rejects.toThrow('permission denied');}
   await withTransaction(async c=>{await c.query('SET LOCAL ROLE commerce_ingress');const cloud=await readIntegrationSettings(c,workspace,'REAL','cloud:CLOUD');expect(Object.keys(cloud!.secrets).sort()).toEqual(['app_secret','verify_token']);});
- });
- it('protects static portal access in catalog, history, idempotency and API metadata',async()=>{
-  const code='synthetic-preescolar-private-code',reference=JSON.stringify({url:'https://portal.example/access',code,instructions:'Synthetic approved static access'}),payload={name:'Synthetic portal access',kind:'access',adapter:'link',delivery_reference:reference};
-  const key=randomUUID(),result=await call('POST','/v1/assets?environment=REAL',payload,key);expect(result.statusCode,result.body).toBe(201);expect(result.body).not.toContain(code);expect((await call('POST','/v1/assets?environment=REAL',payload,key)).json()).toEqual(result.json());
-  for(const table of ['records','record_versions','idempotency','domain_events']){const rows=(await pool.query(`SELECT * FROM ${table} WHERE workspace_id=$1`,[workspace])).rows;expect(JSON.stringify(rows)).not.toContain(code);}
-  const asset=(await pool.query('SELECT body FROM records WHERE id=$1',[result.json().data.id])).rows[0].body;expect(JSON.parse(decrypt(asset.delivery_ciphertext)).delivery_reference).toBe(reference);expect((await call('POST','/v1/assets?environment=REAL',{...payload,name:code})).statusCode).toBe(400);expect((await call('POST','/v1/assets?environment=REAL',{...payload,delivery_reference:'invalid'})).statusCode).toBe(400);
  });
 });

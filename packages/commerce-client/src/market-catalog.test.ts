@@ -1,9 +1,0 @@
-import {describe,it,expect,vi} from 'vitest';
-import {sessionMarketCatalog} from './market-catalog.js';
-const id='10000000-0000-4000-8000-000000000001';
-const data={scope:{workspace_id:'w',environment:'REAL'},product:{id,version:1,name:'Native',adopted:false},options:[]};
-describe('fixed market catalogue GET',()=>{
- it('fixes profile/environment/product and uses credentials without retry',async()=>{const fetcher=vi.fn().mockResolvedValue(Response.json({data}));expect(await sessionMarketCatalog({workspaceId:'w',version:3},fetcher)(id,'REAL')).toEqual(data);expect(fetcher).toHaveBeenCalledOnce();expect(fetcher.mock.calls[0]![0]).toBe('/v2/market/products/'+id+'/options?environment=REAL');expect(fetcher.mock.calls[0]![1]).toMatchObject({credentials:'include',cache:'no-store',redirect:'error',headers:{'x-commerce-profile-id':'w','x-commerce-profile-version':'3'}});});
- it.each(['workspace','environment','id','extra'])('rejects %s drift',async field=>{const v=structuredClone(data);if(field==='workspace')v.scope.workspace_id='other';if(field==='environment')v.scope.environment='SIMULATION';if(field==='id')v.product.id=id.replace(/1$/,'2');const fetcher=vi.fn().mockResolvedValue(Response.json({data:v,...(field==='extra'?{secret:'forbidden'}:{})}));await expect(sessionMarketCatalog({workspaceId:'w',version:3},fetcher)(id,'REAL')).rejects.toThrow('MARKET_CATALOG_UNCONFIRMED');});
- it('rejects an aborted request before transport and a response over512KiB',async()=>{const fetcher=vi.fn(),signal=AbortSignal.abort();await expect(sessionMarketCatalog({workspaceId:'w',version:3},fetcher)(id,'REAL',signal)).rejects.toThrow();expect(fetcher).not.toHaveBeenCalled();fetcher.mockResolvedValue(new Response('x'.repeat(512*1024+1)));await expect(sessionMarketCatalog({workspaceId:'w',version:3},fetcher)(id,'REAL')).rejects.toThrow();expect(fetcher).toHaveBeenCalledOnce();});
-});

@@ -63,16 +63,16 @@ describe('V7 ISO: two profiles, three roles, real personal tokens',()=>{
 
  it('lists only the token profile in every V2 read family',async()=>{
   const forbidden=[B,ids.productB,ids.goalB,actors.ownerB!.user];
-  for(const url of ['/v2/profile','/v2/employees','/v2/invitations','/v2/tokens','/v2/integrations','/v2/onboarding','/v2/home','/v2/usage','/v2/audit','/v2/catalog/products','/v2/goals','/v2/alerts']){
+  for(const url of ['/v2/profile','/v2/employees','/v2/invitations','/v2/tokens','/v2/integrations','/v2/onboarding','/v2/home','/v2/usage','/v2/audit','/v2/products','/v2/goals','/v2/alerts']){
    const r=await call('ownerA','GET',url);expect(r.statusCode,url).toBe(200);
    for(const value of forbidden)expect(r.body,url).not.toContain(value);
   }
   expect((await call('ownerA','GET','/v2/profile')).json().data.id).toBe(A);
-  expect((await call('ownerA','GET','/v2/catalog/products')).body).toContain(ids.productA);
+  expect((await call('ownerA','GET','/v2/products')).body).toContain(ids.productA);
   expect((await call('ownerA','GET','/v2/audit')).json().data.entries.length).toBeGreaterThan(0);
  });
  it('never resolves an object of the other profile by its ID or operation UUID',async()=>{
-  expect((await call('ownerA','GET','/v2/catalog/products/'+ids.productB)).statusCode).toBe(404);
+  expect((await call('ownerA','GET','/v2/products/'+ids.productB+'/dependencies')).statusCode).toBeGreaterThanOrEqual(400);
   expect((await call('ownerA','GET','/v2/goals/'+ids.goalB)).statusCode).toBeGreaterThanOrEqual(400);
   expect((await call('ownerA','GET','/v2/operations/'+ids.opB)).json().data.state).toBe('NOT_FOUND');
   expect((await call('ownerA','PATCH','/v2/employees/'+actors.ownerB!.user,{expectedVersion:1,role:'viewer',active:true})).statusCode).toBe(404);

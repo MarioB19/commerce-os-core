@@ -1,7 +1,9 @@
 import {z} from 'zod';
 const id=z.uuid().transform(v=>v.toLowerCase()),environment=z.enum(['REAL','SIMULATION']);
 const reason=z.string().trim().min(3).max(2000);
-export const profileSalesResource=z.enum(['conversations','orders','receipts']);
+// V7 F8-D: receipts are decided in the receipt queue (/v2/receipts); the V5
+// sales-client receipt review was retired with its route.
+export const profileSalesResource=z.enum(['conversations','orders']);
 const common={resource_id:id,operation_id:id,environment};
 const conversationBody=z.discriminatedUnion('type',[
  z.object({type:z.literal('send_message'),kind:z.literal('text'),text:z.string().min(1).max(4096),expected_version:z.number().int().positive()}).strict(),
@@ -12,7 +14,6 @@ const conversationBody=z.discriminatedUnion('type',[
 export const profileSalesMutation=z.discriminatedUnion('operation',[
  z.object({operation:z.literal('conversation.command'),...common,body:conversationBody}).strict(),
  z.object({operation:z.literal('conversation.controls'),...common,body:z.object({paused:z.boolean().optional(),takeover:z.boolean().optional(),suppressed:z.boolean().optional(),reason}).strict().refine(v=>v.paused!==undefined||v.takeover!==undefined||v.suppressed!==undefined)}).strict(),
- z.object({operation:z.literal('receipt.review'),...common,body:z.object({decision:z.enum(['APPROVED','REJECTED','HUMAN_REVIEW']),reason,expected_version:z.number().int().positive(),amount_minor:z.number().int().positive().safe().optional(),currency:z.string().regex(/^[A-Z]{3}$/).optional(),payment_key:z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/).optional(),replaces_receipt_id:id.optional()}).strict()}).strict(),
 ]);
 export type ProfileSalesMutation=z.infer<typeof profileSalesMutation>;
 export const profileSalesPointer=z.object({operation:z.enum(['conversation.command','conversation.controls','receipt.review']),operation_id:id,resource_id:id,environment,request_sha256:z.string().regex(/^[a-f0-9]{64}$/)}).strict();
