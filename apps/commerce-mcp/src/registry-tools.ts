@@ -197,6 +197,8 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
  const step=(action:(i:any)=>unknown,extra:z.ZodRawShape={})=>P('POST',operation.extend({runId:z.uuid(),expectedVersion:z.number().int().positive(),...extra}).strict(),
   i=>'/v2/number-tests/'+id(i.runId)+'/actions',i=>({expected_version:i.expectedVersion,action:action(i)}));
  tool('number_test_manage','Probar número','Prueba un número como lo vería un cliente, con la configuración vigente fijada al iniciar. Primero estima el costo máximo de IA (lo paga la clave del perfil); crear acepta ese máximo. Cada acción se aplica en segundo plano: lee la prueba para ver la conversación y el siguiente paso. Nada se envía por WhatsApp ni cuenta como venta.',{
+  // RF-19.i: what blocks the test (or leaves part of it out) and where to fix it.
+  diagnosticar:P('GET',z.object({accountId:z.uuid()}).strict(),i=>'/v2/number-tests/diagnose?account_id='+id(i.accountId)),
   estimar:{schema:z.object({accountId:z.uuid(),mode:z.enum(['CHAT']).optional()}).strict(),read:true,run:i=>c.variant('POST','/v2/number-tests/estimate',{account_id:i.accountId,mode:i.mode??'CHAT'},crypto.randomUUID())},
   crear:P('POST',operation.extend({accountId:z.uuid(),acceptedMaximumMicrousd:z.number().int().positive()}).strict(),()=>'/v2/number-tests',i=>({account_id:i.accountId,mode:'CHAT',accepted_maximum_microusd:i.acceptedMaximumMicrousd})),
   leer:P('GET',runId,i=>'/v2/number-tests/'+id(i.runId)),

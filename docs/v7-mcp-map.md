@@ -37,7 +37,7 @@ Tratamiento de las 121: 62 sustituidas por una acción V7, 3 pasan a acción hum
 | `conversations_manage` | perfil | listar, leer, responder, registrar_acuerdo, cerrar, registrar_baja, tomar_control, liberar_control, pausar, reanudar |
 | `orders_manage` | perfil | listar, leer |
 | `receipts_manage` | perfil | listar, leer, archivo, revisar |
-| `number_test_manage` | perfil | estimar, crear, leer, ultima, mensaje, seleccionar, avanzar_reloj, continuar, reiniciar, adjuntar, revisar_comprobante |
+| `number_test_manage` | perfil | diagnosticar, estimar, crear, leer, ultima, mensaje, seleccionar, avanzar_reloj, continuar, reiniciar, adjuntar, revisar_comprobante |
 | `campaigns_read` | perfil | cuentas, resultados, campanas, anuncios, sincronizar_lectura |
 | `payments_manage` | perfil | opciones, listar, exportar |
 | `results_read` | perfil | opciones, resumen |

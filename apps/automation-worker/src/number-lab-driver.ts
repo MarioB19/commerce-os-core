@@ -53,14 +53,30 @@ function receiptExplanation(b:Record<string,any>,lab:Record<string,any>|undefine
  else if(b.analysis_status==='PENDING')parts.push('Recibido; esperando la lectura.');
  return parts.join(' ').slice(0,600)||null;
 }
+const intentLabels:Record<string,string>={question:'una pregunta',purchase:'una intención de compra',objection:'una objeción',greeting:'un saludo',opt_out:'una baja',unknown:'un mensaje que no entendió'};
+const groundingLabels:Record<string,string>={offer_snapshot:'la oferta publicada',knowledge:'el conocimiento de la variante',faq:'las preguntas frecuentes',policy:'las reglas de venta'};
+/** RF-19.g: why the business sent each message, for the person testing:
+ * which part of the published variant produced it (flow step, collection,
+ * follow-up, delivery or the AI seller and what it relied on). */
+function businessExplanation(r:{payload?:Record<string,any>|null;material?:unknown;ai_model?:unknown;ai_intent?:unknown;ai_grounding?:unknown}){
+ const p=r.payload??{},w=(v:unknown)=>typeof v==='string'?v.slice(0,80):'';
+ if(p.purpose==='seller_reply'){const grounding=Array.isArray(r.ai_grounding)?r.ai_grounding.map(g=>groundingLabels[String(g)]??String(g)).slice(0,4):[];
+  return`Vendedor IA${r.ai_model?` (${w(r.ai_model)})`:''}: respondió ${intentLabels[w(r.ai_intent)]??'un mensaje libre'}${grounding.length?` con ${grounding.join(', ')}`:''}.`;}
+ if(p.purpose==='remarketing'||p.purpose==='followup'){const touch=Number(p.followup_touch);return`Seguimiento${Number.isInteger(touch)&&touch>0?' '+touch:''} de la variante: el cliente no respondió${String(p.remarketing_stage??'').includes('payment')?' después de aceptar (esperando el pago)':' (esperando que acepte)'}.`;}
+ if(p.purpose==='collection')return'Cobro de la variante: instrucciones de pago (en la prueba se muestran datos de marcador, nunca tu cuenta).';
+ if(p.fulfillment_id||p.release_on)return`Entrega de la variante${typeof r.material==='string'?`: «${w(r.material)}»`:''}, liberada ${p.release_on==='commitment_accepted'?'al aceptar':'al aprobarse el pago'} (simulada).`;
+ if(p.workflow_node_id)return`Flujo publicado de la variante, paso «${w(p.workflow_node_id)}»${p.workflow_recipe_step!==undefined?` (${Number(p.workflow_recipe_step)})`:''}.`;
+ return null;
+}
 async function readTranscript(db:ProfileExecutor,conversationId:string){
  const inbound=(await db.query(`SELECT created_at,body FROM records WHERE workspace_id=$1 AND environment='SIMULATION' AND kind='message' AND body->>'conversation_id'=$2 AND body->>'direction'='INBOUND' ORDER BY created_at DESC,id LIMIT 200`,[db.workspaceId,conversationId])).rows;
- const outbound=(await db.query(`SELECT o.created_at,o.status,o.payload,a.body->>'name' AS material,a.id::text AS material_id,a.body->>'kind' AS material_kind,a.body->>'mime_type' AS mime FROM outbox o LEFT JOIN records a ON a.workspace_id=o.workspace_id AND a.environment=o.environment AND a.kind='asset' AND a.id::text=o.payload->>'asset_id'
+ const outbound=(await db.query(`SELECT o.created_at,o.status,o.payload,a.body->>'name' AS material,a.id::text AS material_id,a.body->>'kind' AS material_kind,a.body->>'mime_type' AS mime,ar.body->>'model' AS ai_model,ar.body->'proposal'->>'intent' AS ai_intent,ar.body->'proposal'->'grounding' AS ai_grounding FROM outbox o LEFT JOIN records a ON a.workspace_id=o.workspace_id AND a.environment=o.environment AND a.kind='asset' AND a.id::text=o.payload->>'asset_id'
+  LEFT JOIN records ar ON ar.workspace_id=o.workspace_id AND ar.environment=o.environment AND ar.kind='ai_run' AND ar.id::text=o.payload->>'ai_run_id'
   WHERE o.workspace_id=$1 AND o.environment='SIMULATION' AND o.conversation_id::text=$2 ORDER BY o.created_at DESC LIMIT 200`,[db.workspaceId,conversationId])).rows;
  const at=(v:unknown)=>new Date(v as string).toISOString(),clip=(v:unknown)=>typeof v==='string'?v.slice(0,4000):null;
  const entries:z.infer<typeof transcriptEntrySchema>[]=[...inbound.map(r=>({at:at(r.created_at),from:'customer' as const,kind:String(r.body.kind??'text').slice(0,20),text:clip(r.body.text),material:null,status:null,purpose:null})),
   ...outbound.map(r=>({at:at(r.created_at),from:'business' as const,kind:String(r.payload?.kind??'text').slice(0,20),text:clip(r.payload?.text),material:typeof r.material==='string'?r.material.slice(0,160):null,status:String(r.status).slice(0,20),purpose:typeof r.payload?.purpose==='string'?r.payload.purpose.slice(0,40):null,
-   ...(r.material_kind==='file'&&typeof r.mime==='string'&&previewMime.test(r.mime)?{material_id:String(r.material_id),mime:r.mime}:{})}))]
+   ...(r.material_kind==='file'&&typeof r.mime==='string'&&previewMime.test(r.mime)?{material_id:String(r.material_id),mime:r.mime}:{}),explanation:businessExplanation(r)}))]
   .sort((x,y)=>x.at.localeCompare(y.at));
  // RF-19.d: each example receipt, as the customer sent it, with its decision.
  const receipts=(await db.query(`SELECT r.id::text,r.created_at,r.body AS receipt,a.body AS asset FROM records r LEFT JOIN records a ON a.workspace_id=r.workspace_id AND a.environment=r.environment AND a.kind='asset' AND a.id::text=r.body->>'asset_id'

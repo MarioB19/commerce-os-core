@@ -1659,6 +1659,15 @@
     }
    }
   },
+  "/v2/number-tests/diagnose": {
+   "get": {
+    "responses": {
+     "200": {
+      "description": "Default Response"
+     }
+    }
+   }
+  },
   "/v2/number-tests/estimate": {
    "post": {
     "responses": {

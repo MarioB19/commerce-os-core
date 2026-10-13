@@ -10,13 +10,15 @@ import {Button} from './ui/button.js';
  * Nothing reaches WhatsApp, sales, payments or the number's quota. */
 interface Estimate {mode:'CHAT'|'AUTOMATIC';maximum_microusd:number;maximum_ai_calls:number;valid_until:string;captured_at:string;note:string;
  variants:{variant_id:string;name:string;provider:string;model:string;cases:number;maximum_microusd:number}[]}
-interface Entry {at:string;from:'customer'|'business';kind:string;text:string|null;material:string|null;status:string|null;purpose:string|null;material_id?:string|null;mime?:string|null;attachment_id?:string|null;receipt_id?:string|null;explanation?:string|null}
+interface Entry {at:string;from:'customer'|'business';kind:string;text:string|null;material:string|null;status:string|null;purpose:string|null;material_id?:string|null;mime?:string|null;attachment_id?:string|null;receipt_id?:string|null;explanation?:string|null;variant_name?:string|null}
 interface View {run:{run_id:string;account_id:string;state:string;state_label:string;version:number;virtual_now:string;created_at:string;expires_at:string};
  captured:{captured_at:string;estimate:{maximum_microusd:number;maximum_ai_calls:number}}|null;
  variants:{variant_id:string;name:string;revision:number;amount_minor:number;currency:string}[];selected_variant_id:string|null;
- operations:{operation_id:string;state:string;state_label:string;created_at:string;action:{type:string;hours?:number;text?:string};result:{state:string|null;reason:string|null;reason_label:string|null}|null}[];
+ operations:{operation_id:string;state:string;state_label:string;created_at:string;action:{type:string;hours?:number;text?:string};result:{state:string|null;reason:string|null;reason_label:string|null;fix?:Fix|null}|null}[];
  pending:boolean;conversation:{transcript:Entry[];timers:{due_at:string;purpose:string|null}[];waiting_for:string|null;next_step:{action:string;label:string}};
  isolation:{label:string}}
+interface Fix {label:string;href:string}
+interface Diagnosis {ready:boolean;problems:{code:string;severity:'BLOCKING'|'WARNING';label:string;fix:Fix|null;variant_name:string|null}[]}
 interface NumberRow {account_id:string;name:string;masked:string|null;sells:{variant_id:string|null;variant:string;product:string}[]}
 
 const usd=(micro:number)=>new Intl.NumberFormat('es-MX',{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:4}).format(micro/1_000_000);
@@ -50,7 +52,11 @@ export function NumberTest({accountId,selection,role,state,timezone}:{accountId:
  const canRun=role!=='viewer'&&state==='ACTIVE';
  const [number,setNumber]=useState<NumberRow|null>(null),[view,setView]=useState<View|null>(null),[estimate,setEstimate]=useState<Estimate|null>(null);
  const [loaded,setLoaded]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(''),[text,setText]=useState(''),[fresh,setFresh]=useState(false);
- const log=useRef<HTMLOListElement>(null),input=useRef<HTMLInputElement>(null);
+ const log=useRef<HTMLOListElement>(null),input=useRef<HTMLInputElement>(null),[diagnosis,setDiagnosis]=useState<Diagnosis|null>(null);
+ // RF-19.i: before starting, what blocks the test or leaves part of it out, with the screen that fixes it.
+ useEffect(()=>{if(!loaded||(view&&!fresh))return;const c=new AbortController();
+  variantRequest<Diagnosis>(selection,'GET',`/v2/number-tests/diagnose?account_id=${accountId}`,undefined,undefined,c.signal).then(setDiagnosis).catch(()=>{if(!c.signal.aborted)setDiagnosis(null);});
+  return()=>c.abort();},[loaded,view,fresh,accountId,selection]);
  const readRun=useCallback(async(runId:string,signal?:AbortSignal)=>{const v=await variantRequest<View>(selection,'GET',`/v2/number-tests/${runId}`,undefined,undefined,signal);setView(v);return v;},[selection]);
  useEffect(()=>{const c=new AbortController();
   (async()=>{try{
@@ -91,7 +97,11 @@ export function NumberTest({accountId,selection,role,state,timezone}:{accountId:
   {loaded&&(!view||fresh)&&<section className="number-test-start" aria-label="Nueva prueba">
    <h2>{view?'Nueva prueba con la configuración actual':'Empieza una prueba'}</h2>
    {number&&<p>Este número vende: {number.sells.length?number.sells.map(s=>`${s.product} · ${s.variant}`).join(' — '):'ninguna variante (asígnale una para probarlo)'}.</p>}
-   {!estimate?<Button disabled={!canRun||busy} onClick={()=>void estimateNow()}>{busy?'Estimando…':'Ver costo y empezar'}</Button>:<>
+   {diagnosis&&diagnosis.problems.length>0&&<div className="number-test-diagnosis" role={diagnosis.ready?'note':'alert'}>
+    <strong>{diagnosis.ready?'La prueba no cubrirá todo:':'Antes de probar, corrige esto:'}</strong>
+    <ul>{diagnosis.problems.map((p,i)=><li key={i}>{p.variant_name&&<>{p.variant_name}: </>}{p.label}{p.fix&&<> · <a href={p.fix.href}>{p.fix.label}</a></>}</li>)}</ul>
+   </div>}
+   {!estimate?<Button disabled={!canRun||busy||diagnosis?.ready===false} onClick={()=>void estimateNow()}>{busy?'Estimando…':'Ver costo y empezar'}</Button>:<>
     <p><strong>Costo máximo de IA: {usd(estimate.maximum_microusd)}</strong> ({estimate.maximum_ai_calls} respuestas como máximo).</p>
     <p className="variant-hint">{estimate.note}</p>
     <ul className="number-test-variants">{estimate.variants.map(v=><li key={v.variant_id}>{v.name}: {v.provider} · {v.model}, hasta {usd(v.maximum_microusd)}</li>)}</ul>
@@ -111,10 +121,12 @@ export function NumberTest({accountId,selection,role,state,timezone}:{accountId:
      {m.kind==='receipt'&&m.status==='HUMAN_REVIEW'&&m.receipt_id&&canRun&&<span className="number-test-review" role="group" aria-label="Decidir el comprobante">
       <Button variant="secondary" disabled={blocked} onClick={()=>void act({type:'review_receipt',receipt_id:m.receipt_id,decision:'APPROVED',reason:'Aprobado en la prueba'})}>Aprobar</Button>
       <Button variant="secondary" disabled={blocked} onClick={()=>void act({type:'review_receipt',receipt_id:m.receipt_id,decision:'REJECTED',reason:'Rechazado en la prueba'})}>Rechazar</Button></span>}
+     {m.from==='business'&&m.explanation&&<details className="number-test-why"><summary>¿Por qué?</summary>{m.variant_name&&<>{m.variant_name}. </>}{m.explanation}</details>}
      <span className="number-test-meta">{m.from==='customer'?'Cliente':'Negocio'}</span>
     </li>)}
    </ol>
    {view.pending?<p role="status">El negocio está respondiendo…</p>:next&&<p role="status" className="number-test-next">{next.label}</p>}
+   {!view.pending&&view.operations.at(-1)?.result?.fix&&<p role="alert" className="number-test-fix">{view.operations.at(-1)!.result!.reason_label??'Falta una configuración.'} <a href={view.operations.at(-1)!.result!.fix!.href}>{view.operations.at(-1)!.result!.fix!.label}</a></p>}
    {view.conversation.timers.length>0&&<p className="variant-hint">Programado: {view.conversation.timers.map(t=>`${t.purpose==='remarketing'||!t.purpose?'seguimiento':t.purpose} el ${clock(t.due_at,timezone)}`).join(' · ')}. Adelanta el reloj para verlo.</p>}
    {multiple&&<div className="number-test-select" role="group" aria-label="¿Qué le interesa al cliente?">
     <span>El número vende varias variantes. ¿Por cuál llega el cliente? (como si viniera de su anuncio)</span>
@@ -133,7 +145,7 @@ export function NumberTest({accountId,selection,role,state,timezone}:{accountId:
     <Button variant="secondary" disabled={!canRun||busy} onClick={()=>{setFresh(true);setEstimate(null);}}>Reiniciar</Button>
    </div>
    {view.operations.length>0&&<details className="number-test-history"><summary>Historial de la prueba ({view.operations.length})</summary>
-    <ol>{view.operations.map(o=><li key={o.operation_id}>{actionLabel(o.action)} · {o.state_label}{o.result?.reason_label?` — ${o.result.reason_label}`:''}</li>)}</ol>
+    <ol>{view.operations.map(o=><li key={o.operation_id}>{actionLabel(o.action)} · {o.state_label}{o.result?.reason_label?` — ${o.result.reason_label}`:''}{o.result?.fix&&<> · <a href={o.result.fix.href}>{o.result.fix.label}</a></>}</li>)}</ol>
    </details>}
   </>}
  </section>;

@@ -66,7 +66,7 @@ beforeAll(async()=>{
  created.push(...Object.values(installation.logins!).map(l=>l.user));
  // Idempotent: a second run verifies and never rebuilds or issues logins.
  const again=await installNumberLabEngine(url.toString());expect(again).toEqual({database:installation.database,installationId:installation.installationId,engineSha256:installation.engineSha256,created:false});
- await fixtureProfiles({id:P,numbers:5});app=await createApp();ownerId=(await login('owner','owner')).id;await login('operator','operator');
+ await fixtureProfiles({id:P,numbers:8});app=await createApp();ownerId=(await login('owner','owner')).id;await login('operator','operator');
  aiPool=new pg.Pool({connectionString:process.env.DATABASE_URL,max:3});aiPool.on('connect',c=>{void c.query('SET ROLE commerce_ai');});
  const authority:ProfileAuthority={profile:{id:P,state:'ACTIVE'},membership:{userId:ownerId,workspaceId:P,role:'owner',active:true,version:1},
   credential:{kind:'session',userId:ownerId,workspaceId:P,revoked:false,expiresAt:new Date(Date.now()+3600000).toISOString(),scopes:[],membershipVersion:1}};
@@ -147,7 +147,7 @@ it('tests a number through the API and the laboratory worker without touching RE
  view=data(await call('operator','GET',`/v2/number-tests/${run.run_id}`));
  expect(view.operations[2]).toMatchObject({state:'APPLIED',action:{type:'advance',hours:2}});
  expect(Date.parse(view.run.virtual_now)-virtual).toBe(2*3600000);
- expect(view.conversation.transcript.at(-1)).toMatchObject({from:'business',purpose:'remarketing',text:'¿Sigues interesado? (1)'});
+ expect(view.conversation.transcript.at(-1)).toMatchObject({from:'business',purpose:'remarketing',text:'¿Sigues interesado? (1)',variant_name:'Curso · México',explanation:expect.stringContaining('Seguimiento 1 de la variante')});
  // The customer accepts: the payment instructions of the variant (RF-19.b).
  data(await call('operator','POST',`/v2/number-tests/${run.run_id}/actions`,{expected_version:view.run.version,action:{type:'message',text:'Sí, acepto'}}),202);
  await tick();
@@ -155,7 +155,7 @@ it('tests a number through the API and the laboratory worker without touching RE
  const accepted=view.conversation.transcript as {from:string;text:string|null;purpose:string|null}[];
  expect(accepted.at(-2)).toMatchObject({from:'customer',text:'Sí, acepto'});
  // Payment details are laboratory placeholders: a test never shows or uses the real account.
- expect(accepted.at(-1)).toMatchObject({from:'business',purpose:'collection'});expect(accepted.at(-1)!.text).toContain('SIMULACIÓN');expect(accepted.at(-1)!.text).not.toContain('01218000011835971');
+ expect(accepted.at(-1)).toMatchObject({from:'business',purpose:'collection',explanation:expect.stringContaining('nunca tu cuenta')});expect(accepted.at(-1)!.text).toContain('SIMULACIÓN');expect(accepted.at(-1)!.text).not.toContain('01218000011835971');
  expect(view.conversation).toMatchObject({waiting_for:'receipt_approved',next_step:{action:'receipt'}});
  expect(sellerCalls).toBe(0);
  // A free question goes to the variant's seller with the profile's own key; the
@@ -164,7 +164,10 @@ it('tests a number through the API and the laboratory worker without touching RE
  await tick();
  view=data(await call('operator','GET',`/v2/number-tests/${run.run_id}`));
  expect(sellerCalls).toBe(1);
- expect(view.conversation.transcript.at(-1)).toMatchObject({from:'business',purpose:'seller_reply',text:'¡Hola! El curso cuesta 97 pesos. ¿Te interesa?'});
+ expect(view.conversation.transcript.at(-1)).toMatchObject({from:'business',purpose:'seller_reply',text:'¡Hola! El curso cuesta 97 pesos. ¿Te interesa?',
+  // RF-19.g: which part of the variant answered, and with what.
+  explanation:'Vendedor IA (claude-haiku-5-5): respondió una pregunta con la oferta publicada.',variant_name:'Curso · México'});
+ expect(view.conversation.transcript.filter((e:{from:string;explanation?:string|null})=>e.from==='business'&&!e.explanation)).toEqual([]);
  const attempts=await withTransaction(async c=>(await c.query("SELECT environment,state,lab_binding_id IS NOT NULL AS lab,charged_microusd FROM ai_attempts WHERE workspace_id=$1 AND lab_binding_id IS NOT NULL",[P])).rows);
  expect(attempts).toEqual([expect.objectContaining({environment:'REAL',lab:true,state:'SUCCEEDED'})]);
  // The month's AI shows the test apart from sales (RF-14.d, RF-19.l).
@@ -337,3 +340,27 @@ it('reads an example receipt with the profile key and decides it with the rules 
  // Another run's attachment is not served.
  expect((await call('owner','GET',`/v2/number-tests/${randomUUID()}/attachments/${right.attachment_id}?environment=REAL`)).statusCode).toBe(404);
 },240000);
+
+it('explains before starting what blocks a test or leaves part of it out, with the screen that fixes it (RF-19.i)',async()=>{
+ const account=(name:string)=>withTransaction(async c=>{await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','REAL',true)",[P]);
+  return(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','channel_account',$2) RETURNING id",[P,{name,provider:'waha',gateway_ref:'lab-'+randomUUID(),status:'WORKING',sending_enabled:true,identity_verified:true}])).rows[0].id as string;});
+ // A number that sells nothing cannot be tested; the link goes to Products.
+ const idle=await account('Sin venta');
+ const empty=data(await call('operator','GET',`/v2/number-tests/diagnose?account_id=${idle}`));
+ expect(empty.ready).toBe(false);
+ expect(empty.problems).toEqual(expect.arrayContaining([expect.objectContaining({code:'LAB_ASSIGNMENT_COVERAGE',severity:'BLOCKING',fix:{label:expect.any(String),href:'/products'}})]));
+ // A variant with changes not yet published can be tested, with a warning
+ // that points to the variant (the test uses what is published).
+ const link=data(await call('owner','POST','/v2/materials?environment=REAL',{name:'Acceso diagnóstico',kind:'link',url:'https://example.com/diag'}),201).id as string;
+ let v=data(await call('owner','POST','/v2/products',{name:'Diagnóstico',variant:{name:'México',locale:MX}}),201).variant;
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/offer`,{expected_version:v.version,value:{...v.document.offer,price_minor:12300,fulfillment:[{asset_id:link,release_on:'receipt_approved'}]}}));
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/collection`,{expected_version:v.version,value:{spei:{bank:'Banco sintético',holder:'Titular sintético',clabe:clabe('01218000011835971')},links:[],instructions:''}}));
+ data(await call('owner','POST',`/v2/variants/${v.id}/publish`,{expected_version:v.version,document_sha256:v.document_sha256}));
+ const selling=await account('Con venta');data(await call('owner','POST',`/v2/variants/${v.id}/numbers`,{account_id:selling,sell:true}));
+ v=data(await call('owner','GET',`/v2/variants/${v.id}`));
+ data(await call('owner','PUT',`/v2/variants/${v.id}/offer`,{expected_version:v.version,value:{...v.document.offer,price_minor:12900}}));
+ const warned=data(await call('operator','GET',`/v2/number-tests/diagnose?account_id=${selling}`));
+ expect(warned.ready).toBe(true);
+ expect(warned.problems).toEqual([expect.objectContaining({code:'LAB_UNPUBLISHED_CHANGES',severity:'WARNING',variant_name:'Diagnóstico · México',fix:{label:'Publicar los cambios',href:`/products/${v.product.id}/variants/${v.id}/sale`}})]);
+ expect((await call('operator','GET',`/v2/number-tests/diagnose?account_id=${randomUUID()}`)).statusCode).toBe(404);
+},120000);

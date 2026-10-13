@@ -195,6 +195,8 @@ describe('V7 F3 number tools',()=>{
   const {client,server}=await connect(async(input,init)=>{seen.push({method:String(init?.method??'GET'),url:String(input).replace('https://commerce.example.test',''),key:new Headers(init?.headers).get('idempotency-key'),body:init?.body?JSON.parse(String(init.body)):undefined});
    return json(200,{data:{maximum_microusd:51200,run:{account_id:accountId,run_id:runId,version:2}}});});
   try{
+   await client.callTool({name:'number_test_manage',arguments:{action:'diagnosticar',accountId}});
+   expect(seen.shift()).toMatchObject({method:'GET',url:`/v2/number-tests/diagnose?account_id=${accountId}`});
    const estimate=await client.callTool({name:'number_test_manage',arguments:{action:'estimar',accountId}});
    expect(JSON.stringify(estimate.structuredContent)).toContain('51200');
    await client.callTool({name:'number_test_manage',arguments:{action:'crear',operationId,accountId,acceptedMaximumMicrousd:51200}});

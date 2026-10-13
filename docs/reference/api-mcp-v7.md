@@ -2,7 +2,7 @@
 
 > Generada por `scripts/api-reference.ts` desde el código (OpenAPI de la app y registro MCP tipado). No se edita a mano: CI falla si difiere del código.
 
-Contenido: `80736bf0a83871aa` · 187 operaciones HTTP en 164 rutas · 40 herramientas MCP (presupuesto 40).
+Contenido: `ee4e2c6b3feacf9d` · 188 operaciones HTTP en 165 rutas · 40 herramientas MCP (presupuesto 40).
 
 ## Herramientas MCP
 
@@ -33,7 +33,7 @@ Contenido: `80736bf0a83871aa` · 187 operaciones HTTP en 164 rutas · 40 herrami
 | `campaigns_read` | perfil | `/v2/campaigns` | `campaigns:read`, `integrations:write` | cuentas, resultados, campanas, anuncios, sincronizar_lectura | portafolios |
 | `results_read` | perfil | `/v2/results` | `results:read` | opciones, resumen | embudo, series, comparar, exportar |
 | `goals_manage` | perfil | `/v2/goals` | `goals:read`, `goals:write` | listar, leer, avance, crear, editar, consultar_operacion | eliminar |
-| `number_test_manage` | perfil | `/v2/number-tests` | `tests:read`, `tests:run` | estimar, crear, leer, ultima, mensaje, seleccionar, avanzar_reloj, continuar, reiniciar, adjuntar, revisar_comprobante | ejecutar_suite, informe |
+| `number_test_manage` | perfil | `/v2/number-tests` | `tests:read`, `tests:run` | diagnosticar, estimar, crear, leer, ultima, mensaje, seleccionar, avanzar_reloj, continuar, reiniciar, adjuntar, revisar_comprobante | ejecutar_suite, informe |
 | `operations_get` | perfil | `/v2/operations` | `operations:read` | leer_resultado | efectos |
 | `alerts_manage` | perfil | `/v2/alerts` | `alerts:read`, `alerts:write` | listar, leer, acusar | configurar_preferencias |
 | `help_read` | perfil | `/v2/help` | `help:read` | guia, descargar | receta, referencia |
@@ -363,6 +363,7 @@ Contenido: `80736bf0a83871aa` · 187 operaciones HTTP en 164 rutas · 40 herrami
 | POST | `/v2/number-tests/{id}/attachments` | autenticado |
 | GET | `/v2/number-tests/{id}/attachments/{attachment}` | autenticado |
 | GET | `/v2/number-tests/{id}/materials/{material}` | autenticado |
+| GET | `/v2/number-tests/diagnose` | autenticado |
 | POST | `/v2/number-tests/estimate` | autenticado |
 | GET | `/v2/number-tests/latest` | autenticado |
 

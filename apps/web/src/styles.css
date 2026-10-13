@@ -4223,6 +4223,11 @@ button.number-test-material{background:none;border:0;padding:0;text-align:left;c
 .number-test-media{display:block;max-width:min(100%,280px);max-height:240px;border-radius:8px}
 audio.number-test-media{width:min(100%,280px)}
 .number-test-receipt{display:block;font-size:.85rem;margin-top:.25rem}
+.number-test-diagnosis{border:1px solid var(--ux-border,#d7dbe3);border-radius:8px;padding:.75rem 1rem;margin:.75rem 0}
+.number-test-diagnosis ul{margin:.35rem 0 0;padding-left:1.1rem}
+.number-test-why{font-size:.8rem;margin-top:.25rem;opacity:.85}
+.number-test-why summary{cursor:pointer}
+.number-test-fix{color:var(--ux-state-danger-fg,#9b1c1c)}
 .number-test-review{display:flex;gap:.5rem;margin-top:.35rem;flex-wrap:wrap}
 .number-test-attach{display:inline-flex;align-items:center;cursor:pointer;padding:0 .5rem;font-size:1.2rem}
 .number-test-attach input{position:absolute;width:1px;height:1px;opacity:0}

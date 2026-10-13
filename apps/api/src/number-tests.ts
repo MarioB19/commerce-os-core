@@ -7,6 +7,7 @@ import {captureNumberLab} from '../../../packages/db/src/number-lab-snapshot.js'
 import {numberLabKeys,startNumberLab,enqueueNumberLab,readNumberLab,readNumberLabStartOperation,listNumberLabOperations,latestNumberLab,numberLabRunScope,numberLabRunMaterial,attachNumberLabFile,listNumberLabAttachments,readNumberLabAttachment,NUMBER_LAB_ATTACHMENT_MAX} from '../../../packages/db/src/number-laboratory.js';
 import {materialBytes} from '../../../packages/db/src/profile-materials.js';
 import {sendPrivateFile} from './file-response.js';
+import {diagnoseNumberTest,duringFix} from './number-test-diagnosis.js';
 import {createHash} from 'node:crypto';
 import {estimateNumberLab,labHash} from '../../../packages/domain/src/laboratory/number-lab.js';
 import {numberLabActionSchema} from '../../../packages/contracts/src/number-laboratory.js';
@@ -121,7 +122,7 @@ async function view(db:ProfileExecutor,authority:ProfileAuthority,runId:string){
  const key=numberLabKeys().control,run=await readNumberLab(db,authority,runId);if(!run)fail('LAB_RUN_NOT_FOUND',404);
  const scope=await numberLabRunScope(db,authority,runId,key),operations=await listNumberLabOperations(db,authority,runId,key);
  const names=await variantNames(db,scope?.variants.map(v=>v.variant_id)??[]);
- type Result={variant_id?:string|null;conversation_id?:string|null;state?:string;reason?:string|null;transcript?:unknown[];timers?:unknown[];flow?:{status:string|null;waiting_for:string|null;ai_status:string|null};ai_result?:{human_review?:boolean;dependency?:string|null}|undefined;transport_result?:unknown};
+ type Result={variant_id?:string|null;conversation_id?:string|null;state?:string;reason?:string|null;transcript?:unknown[];timers?:unknown[];flow?:{status:string|null;waiting_for:string|null;ai_status:string|null};ai_result?:{human_review?:boolean;dependency?:string|null}|undefined;transport_result?:unknown;receipt_result?:{dependency?:string|null}|undefined};
  const settled=operations.filter(o=>o.result).map(o=>({o,r:o.result as Result}));
  const last=[...settled].reverse().find(x=>x.r.transcript),selected=[...settled].reverse().find(x=>x.r.variant_id)?.r.variant_id??null;
  return{run:{...run,state_label:{READY:'Lista',RUNNING:'En curso',PARTIAL:'En curso',COMPLETED:'Terminada',STOPPED:'Detenida'}[run.state]},
@@ -129,9 +130,12 @@ async function view(db:ProfileExecutor,authority:ProfileAuthority,runId:string){
   variants:(scope?.variants??[]).map(v=>({...v,name:names[v.variant_id]??'Variante'})),selected_variant_id:selected,
   operations:operations.map(o=>{const r=o.result as Result|null;return{operation_id:o.operation_id,state:o.state,state_label:stateLabels[o.state],created_at:o.created_at,action:o.action,
    result:r?{state:r.state??null,reason:r.reason??null,reason_label:r.reason?reasonLabels[r.reason]??r.reason:null,variant_id:r.variant_id??null,
-    ai:r.ai_result?{human_review:!!r.ai_result.human_review,dependency:r.ai_result.dependency??null}:null}:null};}),
+    ai:r.ai_result?{human_review:!!r.ai_result.human_review,dependency:r.ai_result.dependency??null}:null,
+    // RF-19.i: the screen that fixes what stopped this step, when there is one.
+    fix:duringFix(r.reason)??duringFix(r.ai_result?.dependency)??duringFix(r.receipt_result?.dependency)}:null};}),
   pending:operations.some(o=>['QUEUED','INTENT'].includes(o.state)),
-  conversation:{transcript:last?.r.transcript??[],timers:last?.r.timers??[],waiting_for:last?.r.flow?.waiting_for??null,
+  // RF-19.g: each business message names the variant that produced it.
+  conversation:{transcript:(last?.r.transcript??[]).map(e=>{const entry=e as {from?:string};return entry.from==='business'&&selected?{...entry,variant_id:selected,variant_name:names[selected]??'Variante'}:entry;}),timers:last?.r.timers??[],waiting_for:last?.r.flow?.waiting_for??null,
    next_step:settled.at(-1)?.r.state==='SELECTION_REQUIRED'?{action:'select',label:'El número vende varias variantes y el mensaje no dice cuál. Elige por cuál llega el cliente, como si viniera de su anuncio.'}
     :last?.r.flow?nextStep(last.r.flow):{action:'message',label:'Escribe como cliente para empezar.'}},
   isolation:{environment:'SIMULATION',whatsapp:false,real_records:false,label:'Prueba aislada: no envía mensajes reales, no registra ventas ni consume la cuota del número.'}};
@@ -155,6 +159,12 @@ export async function numberTestRoutes(app:FastifyInstance,deps?:ProfileRequestD
    return{run,created:run.created};
   },deps));
   reply.code(data.created?201:200);return{data:data.run};});
+ // RF-19.i: before starting, everything that keeps the number from being
+ // tested (blocking) or from being tested completely (warning), with links.
+ app.get('/v2/number-tests/diagnose',async req=>{const q=z.object({account_id:z.string().uuid(),environment:z.literal('REAL').optional()}).strict().parse(req.query??{});
+  return{data:await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:read',mutation:false},async({db})=>{
+   const value=await diagnoseNumberTest(db,q.account_id,{installed:/^[a-f0-9]{64}$/.test(process.env.LAB_ENGINE_SHA256??'')});
+   if(!value)fail('LAB_ACCOUNT_NOT_FOUND',404);return value;},deps))};});
  app.get('/v2/number-tests/latest',async req=>{const q=z.object({account_id:z.string().uuid().optional(),environment:z.literal('REAL').optional()}).strict().parse(req.query??{});
   return{data:await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:read',mutation:false},async({db,profile})=>{
    const run=await latestNumberLab(db,profile.authority,q.account_id??null);return run?view(db,profile.authority,run.run_id):null;},deps))};});
