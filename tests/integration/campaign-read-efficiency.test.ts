@@ -1,5 +1,5 @@
 import {beforeAll,beforeEach,afterAll,describe,it,expect,vi} from 'vitest';
-import {disposeAllFixtureProfiles} from '../support/migrated-database.js';
+import {disposeAllFixtureProfiles,asProfileOwner} from '../support/migrated-database.js';
 import {randomUUID,randomBytes} from 'node:crypto';
 import type {FastifyInstance} from 'fastify';
 import {createApp} from '../../apps/api/src/app.js';
@@ -63,7 +63,7 @@ describe('Campaign read projection and quota boundaries',()=>{
  it('reuses inventory snapshots and identical durable Insights requests without outbound calls',async()=>{
   await withTransaction(c=>saveIntegrationSetting(c,w,'REAL','meta:fixture',{expected_version:0,label:'Synthetic Meta profile',enabled:true,config:{},secrets:{access_token:'private-fixture-'+randomUUID()},clear_secrets:[],reason:'Synthetic recent snapshot'},actor));
   const id=randomUUID(),inventory={meta_profile_revisions:{'meta:fixture':1},source:'META_API',graph_api_version:'v26.0',synced_at:new Date().toISOString(),valid_until:new Date(Date.now()+3600000).toISOString(),status:'SYNCED',credentials:[],portfolios:[],requests:[],external_mutations:0};
-  await pool.query('INSERT INTO meta_syncs(id,workspace_id,actor_id,inventory) VALUES($1,$2,$3,$4)',[id,w,actor,inventory]);
+  await asProfileOwner(pool,w,c=>c.query('INSERT INTO meta_syncs(id,workspace_id,actor_id,inventory) VALUES($1,$2,$3,$4)',[id,w,actor,inventory]));/* V7 F2: Meta inventory in its REAL profile context */
   const fetcher=vi.spyOn(globalThis,'fetch').mockRejectedValue(new Error('EXTERNAL_SERVICE_FORBIDDEN'));
   try{const replies=await Promise.all([call('POST','/v1/meta/sync',{environment:'REAL'}),call('POST','/v1/meta/sync',{environment:'REAL'})]);for(const r of replies){expect(r.statusCode,r.body).toBe(200);expect(r.json().data).toMatchObject({id,reused:true});}expect(fetcher).not.toHaveBeenCalled();}finally{fetcher.mockRestore();}
   const jobs=await Promise.all([call('POST','/v1/meta/insights/sync',{environment:'REAL',from:day,to:day,recurring:false}),call('POST','/v1/meta/insights/sync',{environment:'REAL',from:day,to:day,recurring:false})]);for(const r of jobs)expect(r.statusCode,r.body).toBe(202);expect(jobs[0]!.json().data.id).toBe(jobs[1]!.json().data.id);

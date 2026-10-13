@@ -41,6 +41,7 @@ async function fixture(expired=false){
  return{a,s,c,body};
 }
 const call=(f:Awaited<ReturnType<typeof fixture>>,body:Record<string,unknown>=f.body,key=randomUUID(),environment='REAL')=>app.inject({method:'POST',url:`/v1/channel-accounts/${f.a.id}/source-isolation/confirm?environment=${environment}`,payload:body,headers:{authorization:'Bearer '+token,'idempotency-key':key}});
+async function apiInProfile<T>(work:(c:any)=>Promise<T>){const c=await pool.connect();try{await c.query('BEGIN');await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','REAL',true)",[workspace]);return await work(c);}finally{await c.query('ROLLBACK');c.release();}}
 async function receiptRead(f:Awaited<ReturnType<typeof fixture>>,id:string|null=null){const c=await admin.connect();try{await c.query('BEGIN');await c.query('SET LOCAL ROLE commerce_channel');const r=await c.query('SELECT id FROM public.read_copy_source_isolation_receipt($1,$2,$3,3,$4)',[f.a.id,workspace,'synthetic-old-owner',id]);await c.query('ROLLBACK');return r.rows;}finally{c.release();}}
 describe('Root technical observation and human declaration remain separate',()=>{
  it('records a personal-owner report once without minting isolation or modifying the session',async()=>{
@@ -53,7 +54,8 @@ describe('Root technical observation and human declaration remain separate',()=>
  });
  it('rejects partial SQL declarations and keeps Root fields inaccessible to the API',async()=>{
   const f=await fixture();
-  await expect(pool.query('UPDATE copy_source_isolation_challenges SET primary_revocation_reported_at=clock_timestamp() WHERE id=$1',[f.c.id])).rejects.toMatchObject({code:'23514'});
+  // V7 F2: the API writes only inside its profile context (forced RLS).
+  await expect(apiInProfile(c=>c.query('UPDATE copy_source_isolation_challenges SET primary_revocation_reported_at=clock_timestamp() WHERE id=$1',[f.c.id]))).rejects.toMatchObject({code:'23514'});
   await expect(pool.query("UPDATE copy_source_isolation_challenges SET billing_enabled=true WHERE id=$1",[f.c.id])).rejects.toMatchObject({code:'42501'});
   await expect(pool.query('UPDATE copy_source_isolation_challenges SET completed_receipt_id=$2 WHERE id=$1',[f.c.id,randomUUID()])).rejects.toMatchObject({code:'42501'});
   await expect(pool.query('INSERT INTO ownership_isolation_receipts(account_id,workspace_id,previous_owner_id,generation,method,evidence_sha256,verified_at) VALUES($1,$2,$3,3,$4,$5,now())',[f.a.id,workspace,'synthetic-old-owner','source_billing_disabled_and_primary_device_revoked','b'.repeat(64)])).rejects.toMatchObject({code:'42501'});
@@ -89,12 +91,10 @@ describe('Root technical observation and human declaration remain separate',()=>
  });
  it('rejects a receipt whose workspace differs from the bound account and challenge',async()=>{
   const f=await fixture();expect((await call(f)).statusCode).toBe(200);const foreign='synthetic-foreign-'+randomUUID();
-  const r=(await admin.query('INSERT INTO ownership_isolation_receipts(account_id,workspace_id,previous_owner_id,generation,method,evidence_sha256,verified_at) VALUES($1,$2,$3,3,$4,$5,clock_timestamp()) RETURNING id',[f.a.id,foreign,'synthetic-old-owner','source_billing_disabled_and_primary_device_revoked','f'.repeat(64)])).rows[0];
-  await admin.query('UPDATE copy_source_isolation_challenges SET completed_receipt_id=$2 WHERE id=$1',[f.c.id,r.id]);
-  const client=await admin.connect();try{await client.query('BEGIN');await client.query('SET LOCAL ROLE commerce_channel');
-   expect((await client.query('SELECT id FROM public.read_copy_source_isolation_receipt($1,$2,$3,3,$4)',[f.a.id,foreign,'synthetic-old-owner',r.id])).rows).toEqual([]);
-   await client.query('ROLLBACK');
-  }finally{client.release();}
+  // V7 F2: the ownership scope (020) refuses a receipt outside its account's
+  // profile in the database itself, so no such receipt can be read.
+  await expect(admin.query('INSERT INTO ownership_isolation_receipts(account_id,workspace_id,previous_owner_id,generation,method,evidence_sha256,verified_at) VALUES($1,$2,$3,3,$4,$5,clock_timestamp()) RETURNING id',[f.a.id,foreign,'synthetic-old-owner','source_billing_disabled_and_primary_device_revoked','f'.repeat(64)])).rejects.toThrow(/PROFILE_OWNERSHIP_/);
+  expect(await receiptRead(f)).toEqual([]);
  });
  it('rechecks expiry after actually waiting for the receipt row lock',async()=>{
   const f=await fixture();expect((await call(f)).statusCode).toBe(200);

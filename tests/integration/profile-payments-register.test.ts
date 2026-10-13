@@ -7,7 +7,8 @@ import {fromNodeHeaders} from 'better-auth/node';
 import {hashPassword} from 'better-auth/crypto';
 import {ZodError} from 'zod';
 import pg from 'pg';
-import {afterAll,beforeAll,describe,expect,it,vi} from 'vitest';
+import {afterAll,beforeAll,describe,expect,it,vi,beforeEach} from 'vitest';
+import {releaseFixtureNumbers} from '../support/profile-fixture.js';
 import {requireMigratedProfileSchema,sealFixtureProfiles} from '../support/migrated-database.js';
 import {listProfileChoicesFromSession,selectProfileFromSession} from '../../packages/db/src/profile-identity-bootstrap.js';
 import {createAuth} from '../../apps/api/src/auth.js';
@@ -70,6 +71,9 @@ async function snapshot(j:Payment){
  await admin!.query("INSERT INTO market_journey_snapshots(journey_id,workspace_id,environment,release_id,body) VALUES($1,$2,'REAL',$3,$4)",[j.conversation,j.w,release,{journey_id:j.conversation,release:body,chat:{workspace_id:j.w,environment:'REAL'}}]);return variant;
 }
 async function stub(j:Payment){await admin!.query("UPDATE records SET body=body||'{\"privacy_erased\":true}',version=version+1 WHERE id=$1",[j.conversation]);}
+// V7 F2: cases admit their own REAL numbers; earlier cases' reservations are
+// retired (test-only) so the installation stays within 20 connected numbers.
+beforeEach(async()=>{if(admin)await releaseFixtureNumbers(admin);});
 describe('profile payments and canonical F7 reconciliation',()=>{
  beforeAll(async()=>{
   vi.stubEnv('BETTER_AUTH_SECRET','synthetic-catalog-'+randomBytes(32).toString('hex'));passwordHash=await hashPassword(password);

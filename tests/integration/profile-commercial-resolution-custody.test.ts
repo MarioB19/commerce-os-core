@@ -73,9 +73,11 @@ describe('029 native minimal commercial resolution custody',()=>{
  async function logsUnavailable<T>(work:()=>Promise<T>){
   // Native fixture hides old events but permits INSERT RETURNING of the NEW
   // closure event. Revoking SELECT on the whole table would also forbid that.
-  expect((await admin.query("SELECT relrowsecurity FROM pg_class WHERE oid='domain_events'::regclass")).rows[0].relrowsecurity).toBe(false);
-  await admin.query("ALTER TABLE domain_events ENABLE ROW LEVEL SECURITY;ALTER TABLE domain_events FORCE ROW LEVEL SECURITY;CREATE POLICY custody_fixture_reads ON domain_events FOR SELECT TO commerce_automation USING(event_type='conversation.closed');CREATE POLICY custody_fixture_insert ON domain_events FOR INSERT TO commerce_automation WITH CHECK(event_type='conversation.closed');REVOKE SELECT ON effect_attempts FROM commerce_automation;REVOKE SELECT ON domain_events,effect_attempts,commands FROM commerce_result_custody");
-  try{return await work();}finally{await admin.query('DROP POLICY custody_fixture_reads ON domain_events;DROP POLICY custody_fixture_insert ON domain_events;ALTER TABLE domain_events DISABLE ROW LEVEL SECURITY;ALTER TABLE domain_events NO FORCE ROW LEVEL SECURITY;GRANT SELECT ON effect_attempts TO commerce_automation;GRANT SELECT ON domain_events,effect_attempts,commands TO commerce_result_custody');}
+  // V7 F2: domain_events already has forced profile RLS (0096); the fixture
+  // narrows the worker with RESTRICTIVE policies and removes only those.
+  expect((await admin.query("SELECT relrowsecurity AND relforcerowsecurity forced FROM pg_class WHERE oid='domain_events'::regclass")).rows[0].forced).toBe(true);
+  await admin.query("CREATE POLICY custody_fixture_reads ON domain_events AS RESTRICTIVE FOR SELECT TO commerce_automation USING(event_type='conversation.closed');CREATE POLICY custody_fixture_insert ON domain_events AS RESTRICTIVE FOR INSERT TO commerce_automation WITH CHECK(event_type='conversation.closed');REVOKE SELECT ON effect_attempts FROM commerce_automation;REVOKE SELECT ON domain_events,effect_attempts,commands FROM commerce_result_custody");
+  try{return await work();}finally{await admin.query('DROP POLICY custody_fixture_reads ON domain_events;DROP POLICY custody_fixture_insert ON domain_events;GRANT SELECT ON effect_attempts TO commerce_automation;GRANT SELECT ON domain_events,effect_attempts,commands TO commerce_result_custody');}
  }
  async function olderEvent(f:Awaited<ReturnType<typeof order>>,age:string){
   // Explicit synthetic clock-boundary evidence; no production history altered.

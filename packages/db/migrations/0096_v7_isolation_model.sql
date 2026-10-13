@@ -7,11 +7,13 @@
 -- * Other reviewed V7 roles that hold privileges on a table that had no RLS
 --   receive a context-bound policy; existing V7 policies are preserved.
 -- No grant is added, no role gains BYPASSRLS and no row is read or changed.
+-- The worker is the acting role or, inside a SECURITY DEFINER function or
+-- trigger owned by a reviewed role, the connecting worker login.
 CREATE FUNCTION public.v7_worker_global_without_context() RETURNS boolean
 LANGUAGE sql STABLE SET search_path=pg_catalog AS $$
  SELECT NULLIF(current_setting('app.workspace_id',true),'') IS NULL
   AND NULLIF(current_setting('app.environment',true),'') IS NULL
-  AND pg_has_role(current_user,'commerce_worker_global','USAGE')
+  AND (pg_has_role(current_user,'commerce_worker_global','USAGE') OR pg_has_role(session_user,'commerce_worker_global','USAGE'))
 $$;
 REVOKE ALL ON FUNCTION public.v7_worker_global_without_context() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.v7_worker_global_without_context() TO PUBLIC;

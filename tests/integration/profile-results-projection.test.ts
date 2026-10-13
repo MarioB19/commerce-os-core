@@ -4,7 +4,7 @@ import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
-import {fixtureProfileRow,openMigratedDatabase,isolatedAdminUrl} from '../support/migrated-database.js';
+import {fixtureProfileRow,openMigratedDatabase,isolatedAdminUrl,asProfileOwner} from '../support/migrated-database.js';
 import {withProfileTransaction,type ProfilePool,type ProfileExecutor} from '../../packages/db/src/profile-context.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {readResultFacts,readResultSpend,observedResultsReport as resultsReport} from '../../packages/db/src/results.js';
@@ -19,7 +19,7 @@ const day='2026-10-10',started='2026-10-10T16:00:00.000Z',response='2026-10-10T1
 const query=resultFiltersSchema.parse({from:day,to:day,currency:'MXN'});
 function tx<T>(w:string,work:(db:ProfileExecutor)=>Promise<T>){return withProfileTransaction(scoped,w,work);}
 async function profile(timezone='America/Mexico_City'){return fixtureProfileRow(admin,createdProfiles,'results_'+suffix+'_'+(++serial),{businessName:'Synthetic Results',timezone,numbers:6,products:20,daily:100});}
-async function rec(w:string,kind:string,body:Record<string,unknown>,environment='REAL'){const id=randomUUID();await admin.query('INSERT INTO records(id,workspace_id,environment,kind,body,created_at) VALUES($1,$2,$3,$4,$5,$6)',[id,w,environment,kind,body,started]);return id;}
+async function rec(w:string,kind:string,body:Record<string,unknown>,environment='REAL'){const id=randomUUID();/* V7 F2: REAL quota rows are admitted in their profile context */await asProfileOwner(admin,w,c=>c.query('INSERT INTO records(id,workspace_id,environment,kind,body,created_at) VALUES($1,$2,$3,$4,$5,$6)',[id,w,environment,kind,body,started]),environment);return id;}
 async function journey(w:string,patch:Record<string,unknown>={},environment='REAL'){
  const family=await rec(w,'product',{name:'Synthetic product'},environment),account=await rec(w,'channel_account',{provider:'simulator'},environment),offer=await rec(w,'offer',{currency:'MXN',product_id:family},environment);
  const conversation=await rec(w,'conversation',{started_at:started,account_id:account,product_id:family,offer_version_id:offer,origin:{classification:'observed',ad_id:'100',meta_ad_account_id:'act_1'},...patch},environment);

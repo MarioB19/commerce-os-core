@@ -2,7 +2,8 @@
 import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
-import {beforeAll,afterAll,describe,it,expect} from 'vitest';
+import {beforeAll,afterAll,describe,it,expect,beforeEach} from 'vitest';
+import {releaseFixtureNumbers} from '../support/profile-fixture.js';
 import {requireMigratedProfileSchema,fixtureProfileRow} from '../support/migrated-database.js';
 import {withProfileTransaction,type ProfilePool,type ProfileExecutor} from '../../packages/db/src/profile-context.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
@@ -66,6 +67,9 @@ async function aiFixture(){
  const ports=new PostgresAiPorts(aiPool,await makeGrant(false),key),scope:Scope={...testScope,variantId,conversationId:j.conversation,task:'seller.reply',attemptId:randomUUID()},request:RequestIdentity={sha256:'b'.repeat(64),bytes:100,capability:'chat'};
  return{j,ports,scope,request,q,success};
 }
+// V7 F2: cases admit their own REAL numbers; earlier cases' reservations are
+// retired (test-only) so the installation stays within 20 connected numbers.
+beforeEach(async()=>{if(admin)await releaseFixtureNumbers(admin);});
 describe('actual commercial ledger to anonymous result generations',()=>{
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:5});await requireMigratedProfileSchema(admin);

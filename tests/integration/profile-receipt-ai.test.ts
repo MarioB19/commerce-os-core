@@ -57,6 +57,7 @@ import {hashPassword} from 'better-auth/crypto';
 import {ZodError} from 'zod';
 import pg from 'pg';
 import {afterAll,beforeAll,beforeEach,describe,expect,it,vi} from 'vitest';
+import {releaseFixtureNumbers} from '../support/profile-fixture.js';
 import {asProfileOwner,requireMigratedProfileSchema,sealFixtureProfiles} from '../support/migrated-database.js';
 import {listProfileChoicesFromSession,selectProfileFromSession} from '../../packages/db/src/profile-identity-bootstrap.js';
 import {createAuth} from '../../apps/api/src/auth.js';
@@ -118,6 +119,9 @@ import {receiptPolicyRoutes} from '../../apps/api/src/receipt-policies.js';
 import * as policies from '../../packages/db/src/receipt-policies.js';
 import {defaultReceiptPolicy} from '../../packages/domain/src/sales/receipt-policy.js';
 
+// V7 F2: cases admit their own REAL numbers; earlier cases' reservations are
+// retired (test-only) so the installation stays within 20 connected numbers.
+beforeEach(async()=>{if(admin)await releaseFixtureNumbers(admin);});
 describe('receipt019 protected provider orchestration through native worker phases',()=>{
  beforeAll(async()=>{
   vi.stubEnv('PRIVATE_DATA_KEY',randomBytes(32).toString('hex'));vi.stubEnv('BETTER_AUTH_SECRET','synthetic-market-'+randomBytes(32).toString('hex'));passwordHash=await hashPassword(password);

@@ -8,9 +8,14 @@ import {pool,putRecord,getRecord,withTransaction} from '../../packages/db/src/in
 import {writeOperationalSettings,readOperationalSettings} from '../../packages/db/src/operational-settings.js';
 import {saveIntegrationSetting} from '../../packages/db/src/integration-settings.js';
 import {defaultOperationalSettings,type DomainRecord} from '../../packages/contracts/src/index.js';
-import {proposeEffect} from '../../apps/automation-worker/src/shared.js';
+import {proposeEffect,proposeEffectOutcome} from '../../apps/automation-worker/src/shared.js';
+import {roleExecutor} from '../support/database-role.js';
 import {advanceWorkflow,acceptCustomerResponse,deliver,ensureOrder} from '../../apps/automation-worker/src/workflows.js';
 
+// V7 F2: automation steps run as the production worker role; REAL continuity
+// (013) accepts only commerce_automation/commerce_channel as the acting role.
+const withRole=roleExecutor(pool);
+const asAutomation=<T>(work:(c:any)=>Promise<T>)=>withRole('commerce_automation',()=>withTransaction(work));
 const workspace='setup-'+randomUUID(),origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0]!;
 let app:FastifyInstance,cookie:string,operatorCookie:string;
 const request=(method:any,url:string,payload?:any,auth=cookie,key=randomUUID())=>app.inject(explicitFixtureEnvironment({method,url,payload,headers:{origin,cookie:auth,'idempotency-key':key}}));
@@ -36,6 +41,11 @@ const setup=(account:DomainRecord)=>dataPromise(request('GET',`/v1/channel-accou
 async function dataPromise(p:Promise<any>){return data(await p);}
 async function assign(f:Awaited<ReturnType<typeof fixture>>){const result=data(await request('PATCH',`/v1/channel-accounts/${f.account.id}/setup`,{environment:'REAL',expected_version:1,product_id:f.product.id,offer_version_id:f.offer.id,workflow_version_id:f.workflow.id,reason:'Configure synthetic product'}));const a=result.assignment;f.conversation=await putRecord(pool,{...base,id:f.conversation.id,kind:'conversation',version:f.conversation.version,body:{...f.conversation.body,product_id:f.product.id,assignment_id:a.id,assignment_revision:a.revision,binding_id:a.binding_id}});return result.account;}
 async function authorize(f:Awaited<ReturnType<typeof fixture>>,payload:any){const s=await setup(f.account),a=s.assignments[0];return request('POST',`/v1/assignments/${a.id}/authorize`,{recipient_mode:'selected_contacts',...payload,expected_version:a.revision});}
+async function realOutcome(conversation:DomainRecord,text:string){return asAutomation(c=>proposeEffectOutcome(c,conversation,{kind:'text',text},randomUUID()));}
+async function pin(f:Awaited<ReturnType<typeof fixture>>){const a=(await setup(f.account)).assignments[0];const current=(await getRecord(pool,workspace,'conversation',f.conversation.id))!;
+ return putRecord(pool,{...base,id:current.id,kind:'conversation',version:current.version,body:{...current.body,product_id:f.product.id,assignment_id:a.id,assignment_revision:a.revision,binding_id:a.binding_id}});}
+async function continuity(f:Awaited<ReturnType<typeof fixture>>){const a=(await setup(f.account)).assignments[0];
+ const r=await app.inject({method:'POST',url:'/v2/continuity/commercial',headers:{origin,cookie,'idempotency-key':randomUUID()},payload:{environment:'REAL',operationId:randomUUID(),assignmentId:a.id,expectedRevision:a.revision}});expect(r.statusCode,r.body).toBeLessThan(300);return r.json().data;}
 async function activateAndAuthorize(f:Awaited<ReturnType<typeof fixture>>){const current=await setup(f.account);data(await request('POST',`/v1/channel-accounts/${f.account.id}/activate`,{environment:'REAL',expected_version:current.account_version,configuration_version:current.configuration_version,reason:'Activate bounded fixture',confirmation:'ENABLE_REAL_ACCOUNT'}),202);const active=await setup(f.account);return data(await authorize(f,{environment:'REAL',configuration_version:active.configuration_version,contact_ids:[f.contact.id],max_messages:5,expires_at:new Date(Date.now()+3600000).toISOString(),allow_automation:true,reason:'Only synthetic fixture recipient',confirmation:'AUTHORIZE_REAL_SCOPE'}),201);}
 
 beforeAll(async()=>{app=await createApp();for(const role of ['owner','operator'] as const){const email=`${role}-${randomUUID()}@example.invalid`,password=randomBytes(24).toString('base64url');await provisionUser({name:'Synthetic '+role,email,password,workspace_id:workspace,role});const login=await app.inject(explicitFixtureEnvironment({method:'POST',url:'/api/auth/sign-in/email',remoteAddress:'192.0.2.28',payload:{email,password},headers:{origin}}));expect(login.statusCode).toBe(200);const value=[login.headers['set-cookie']].flat().filter(Boolean).map(x=>String(x).split(';')[0]).join('; ');if(role==='owner')cookie=value;else operatorCookie=value;}
@@ -57,44 +67,56 @@ describe('Guided number configuration and bounded real scope, with no provider c
  const stranger=await putRecord(pool,{...base,kind:'contact',body:{name:'Unobserved fixture',identity:'opaque:'+randomUUID()}}),fresh=await setup(f.account);
  expect((await authorize(f,{environment:'REAL',expected_version:fresh.account_version,configuration_version:fresh.configuration_version,contact_ids:[stranger.id],max_messages:1,expires_at:new Date(Date.now()+3600000).toISOString(),allow_automation:true,reason:'Unobserved recipient',confirmation:'AUTHORIZE_REAL_SCOPE'})).statusCode).toBe(400);
  });
- it('approves only new effects matching the contact and pinned assignment; reassignment revokes',async()=>{const f=await fixture();await assign(f);const before=await withTransaction(c=>proposeEffect(c,f.conversation,{kind:'text',text:'Before authorization'},randomUUID()));expect(before.approval_hash).toBeNull();const launched=await activateAndAuthorize(f);
- const approved=await withTransaction(c=>proposeEffect(c,f.conversation,{kind:'text',text:'Authorized fixture'},randomUUID()));expect(approved.authorization_id).toBe(launched.authorization.id);expect(approved.approval_hash).toBe(approved.config_hash);
- const historical=(await pool.query('SELECT approval_hash FROM outbox WHERE id=$1',[before.id])).rows[0];expect(historical.approval_hash).toBeNull();
- const other=await fixture();const otherConversation=await putRecord(pool,{...base,kind:'conversation',body:{...f.conversation.body,contact_id:other.contact.id}});const denied=await withTransaction(c=>proposeEffect(c,otherConversation,{kind:'text',text:'Wrong recipient fixture'},randomUUID()));expect(denied.approval_hash).toBeNull();
- const s=await setup(f.account);data(await request('PATCH',`/v1/channel-accounts/${f.account.id}/setup`,{environment:'REAL',expected_version:s.account_version,product_id:f.product.id,offer_version_id:f.offer.id,workflow_version_id:f.workflow.id,reason:'New assignment revision'}));
- expect((await pool.query('SELECT revoked_at FROM operation_authorizations WHERE id=$1',[launched.authorization.id])).rows[0].revoked_at).toBeTruthy();expect((await setup(f.account)).authorization).toBeNull();expect((await setup(f.account)).sending_enabled).toBe(true);
- expect((await getRecord(pool,workspace,'conversation',f.conversation.id))?.body.offer_version_id).toBe(f.offer.id);
+ // V7 F2: REAL effects are authorized by commercial continuity issued per
+ // assignment (POST /v2/continuity/commercial, reviewed transitions 010/012).
+ // The owner temporal-grant API keeps its own contract below, but a temporal
+ // grant alone no longer authorizes a REAL proposal; these cases replace the
+ // historical inheritance assertions with their V7 equivalents.
+ it('approves only effects of a pinned assignment with commercial continuity; reassignment revokes',async()=>{
+  const f=await fixture();await assign(f);const launched=await activateAndAuthorize(f);
+  expect(await realOutcome(f.conversation,'Unpinned conversation')).toMatchObject({state:'BLOCKED',reason:'CONTINUITY_ASSIGNMENT_UNAVAILABLE'});
+  const pinned=await pin(f);
+  expect(await realOutcome(pinned,'Temporal grant only')).toMatchObject({state:'BLOCKED',reason:'CONTINUITY_AUTHORITY_UNAVAILABLE'});
+  await continuity(f);
+  const approved=await realOutcome(pinned,'Continuity authorized fixture') as {state:string;effect:any};expect(approved.state).toBe('CREATED');
+  expect(approved.effect.authorization_id).toBeNull();expect(approved.effect.continuous_authorization_id).toBeTruthy();expect(approved.effect.approval_hash).toBe(approved.effect.config_hash);
+  const s=await setup(f.account);data(await request('PATCH',`/v1/channel-accounts/${f.account.id}/setup`,{environment:'REAL',expected_version:s.account_version,product_id:f.product.id,offer_version_id:f.offer.id,workflow_version_id:f.workflow.id,reason:'New assignment revision'}));
+  expect((await pool.query('SELECT revoked_at FROM operation_authorizations WHERE id=$1',[launched.authorization.id])).rows[0].revoked_at).toBeTruthy();expect((await setup(f.account)).authorization).toBeNull();
+  expect((await realOutcome(pinned,'Old assignment revision')).state).toBe('BLOCKED');
+  expect((await getRecord(pool,workspace,'conversation',f.conversation.id))?.body.offer_version_id).toBe(f.offer.id);
  });
- it('authorizing A never authorizes B on the same number, and changing channel identity invalidates A',async()=>{
-  const f=await fixture();await assign(f);const authorization=await activateAndAuthorize(f),second=await fixture();
+ it('commercial continuity of assignment A never authorizes B on the same number',async()=>{
+  const f=await fixture();await assign(f);await activateAndAuthorize(f);const second=await fixture();
   const binding=data(await request('POST','/v1/assignments',{environment:'REAL',account_id:f.account.id,product_id:second.product.id,offer_version_id:second.offer.id,workflow_version_id:second.workflow.id,expected_version:0,entry_rules:[{kind:'keyword',value:'second product'}],reason:'Add independently approved B configuration'}),201);
-  const conversationB=await putRecord(pool,{...base,kind:'conversation',body:{...f.conversation.body,product_id:second.product.id,offer_version_id:second.offer.id,workflow_version_id:second.workflow.id,assignment_id:binding.id,assignment_revision:binding.revision,binding_id:binding.binding_id}});
-  const a=await withTransaction(c=>proposeEffect(c,f.conversation,{kind:'text',text:'Scoped A'},randomUUID())),b=await withTransaction(c=>proposeEffect(c,conversationB,{kind:'text',text:'Unapproved B'},randomUUID()));expect(a.authorization_id).toBe(authorization.authorization.id);expect(b.authorization_id).toBeNull();expect(b.approval_hash).toBeNull();
-  const account=(await getRecord(pool,workspace,'channel_account',f.account.id))!;await putRecord(pool,{...base,id:account.id,kind:'channel_account',version:account.version,body:{...account.body,identity_fingerprint:'replacement-identity'}});
-  const invalid=await withTransaction(c=>proposeEffect(c,f.conversation,{kind:'text',text:'Invalid after identity change'},randomUUID()));expect(invalid.approval_hash).toBeNull();
+  const pinned=await pin(f);await continuity(f);
+  const conversationB=await putRecord(pool,{...base,kind:'conversation',body:{...pinned.body,product_id:second.product.id,offer_version_id:second.offer.id,workflow_version_id:second.workflow.id,assignment_id:binding.id,assignment_revision:binding.revision,binding_id:binding.binding_id}});
+  expect((await realOutcome(pinned,'Scoped A')).state).toBe('CREATED');
+  expect(await realOutcome(conversationB,'Unapproved B')).toMatchObject({state:'BLOCKED',reason:'CONTINUITY_AUTHORITY_UNAVAILABLE'});
  });
- it('a settings revision prevents inheritance of an old authorization',async()=>{const f=await fixture();await assign(f);await activateAndAuthorize(f);await withTransaction(async c=>{const s=await readOperationalSettings(c,workspace,'REAL');await writeOperationalSettings(c,workspace,'REAL',s.version,{...s.body,contact_messages_per_minute:3},'test');});const effect=await withTransaction(c=>proposeEffect(c,f.conversation,{kind:'text',text:'Stale policy fixture'},randomUUID()));expect(effect.approval_hash).toBeNull();});
- it('can authorize future inbound conversations while excluding the historical base',async()=>{
+ it('a settings revision leaves the old temporal grant stale and REAL proposals behind continuity',async()=>{
+  const f=await fixture();await assign(f);const launched=await activateAndAuthorize(f);
+  await withTransaction(async c=>{const s=await readOperationalSettings(c,workspace,'REAL');await writeOperationalSettings(c,workspace,'REAL',s.version,{...s.body,contact_messages_per_minute:3},'test');});
+  const current=await withTransaction(c=>readOperationalSettings(c,workspace,'REAL'));expect(launched.authorization.configuration_version).not.toBe(current.version);
+  expect(await realOutcome(await pin(f),'Stale policy fixture')).toMatchObject({state:'BLOCKED',reason:'CONTINUITY_AUTHORITY_UNAVAILABLE'});
+ });
+ it('records a future-inbound temporal grant while REAL proposals stay behind continuity',async()=>{
   const f=await fixture();await assign(f);const s=await setup(f.account);data(await request('POST',`/v1/channel-accounts/${f.account.id}/activate`,{environment:'REAL',expected_version:s.account_version,configuration_version:s.configuration_version,reason:'New inbound fixture only',confirmation:'ENABLE_REAL_ACCOUNT'}),202);
   const fresh=await setup(f.account),launched=data(await authorize(f,{environment:'REAL',expected_version:fresh.account_version,configuration_version:fresh.configuration_version,recipient_mode:'new_inbound',contact_ids:[],max_messages:5,expires_at:new Date(Date.now()+3600000).toISOString(),allow_automation:true,reason:'Only future incoming conversations',confirmation:'AUTHORIZE_REAL_SCOPE'}),201);
-  const old=await withTransaction(c=>proposeEffect(c,f.conversation,{kind:'text',text:'Historical conversation'},randomUUID()));expect(old.approval_hash).toBeNull();
+  expect(launched.authorization.scope.recipient_mode).toBe('new_inbound');
+  expect((await realOutcome(f.conversation,'Historical conversation')).state).toBe('BLOCKED');
   const contact=await putRecord(pool,{...base,kind:'contact',body:{name:'Future inbound fixture',identity:'opaque:'+randomUUID()}}),at=new Date().toISOString();
   const conversation=await putRecord(pool,{...base,kind:'conversation',body:{...f.conversation.body,contact_id:contact.id,started_at:at,last_inbound_at:at}});
-  const effect=await withTransaction(c=>proposeEffect(c,conversation,{kind:'text',text:'Future incoming conversation'},randomUUID()));expect(effect.authorization_id).toBe(launched.authorization.id);expect(effect.approval_hash).toBe(effect.config_hash);
+  expect((await realOutcome(conversation,'Future incoming conversation')).state).toBe('BLOCKED');
  });
- it('renews an annual owner grant without losing conversations that entered under the prior grant',async()=>{
+ it('renews an annual owner grant and revokes the prior grant',async()=>{
   const f=await fixture();await assign(f);const s=await setup(f.account);data(await request('POST',`/v1/channel-accounts/${f.account.id}/activate`,{environment:'REAL',expected_version:s.account_version,configuration_version:s.configuration_version,reason:'Annual renewal fixture',confirmation:'ENABLE_REAL_ACCOUNT'}),202);
   const active=await setup(f.account),authPayload={environment:'REAL',configuration_version:active.configuration_version,recipient_mode:'new_inbound',contact_ids:[],max_messages:5,allow_automation:true,reason:'Annual inbound fixture',confirmation:'AUTHORIZE_REAL_SCOPE'};
   expect((await request('POST',`/v1/assignments/${active.assignments[0].id}/authorize`,{...authPayload,expected_version:active.assignments[0].revision,expires_at:new Date(Date.now()+120*86400000).toISOString()},operatorCookie)).statusCode).toBe(400);
   const first=data(await authorize(f,{...authPayload,expires_at:new Date(Date.now()+3600000).toISOString()}),201);
-  const contact=await putRecord(pool,{...base,kind:'contact',body:{name:'Renewal fixture',identity:'opaque:'+randomUUID()}});
-  const started=new Date().toISOString();const conversation=await putRecord(pool,{...base,kind:'conversation',body:{...f.conversation.body,contact_id:contact.id,started_at:started,last_inbound_at:started}});
   const renewed=data(await authorize(f,{...authPayload,max_messages:250,expires_at:new Date(Date.now()+120*86400000).toISOString()}),201);
   expect(new Date(renewed.authorization.expires_at).getTime()).toBeGreaterThan(Date.now()+100*86400000);
   expect(renewed.authorization.scope.new_inbound_since).toBe(new Date(first.authorization.created_at).toISOString());
   expect((await pool.query('SELECT revoked_at FROM operation_authorizations WHERE id=$1',[first.authorization.id])).rows[0].revoked_at).toBeTruthy();
-  const effect=await withTransaction(c=>proposeEffect(c,conversation,{kind:'text',text:'Continued after renewal'},randomUUID()));
-  expect(effect.authorization_id).toBe(renewed.authorization.id);expect(effect.approval_hash).toBe(effect.config_hash);
   expect((await authorize(f,{...authPayload,expires_at:new Date(Date.now()+367*86400000).toISOString()})).statusCode).toBe(400);
  });
  it('releases the Kit using reconciled money, never a conflicting receipt estimate',async()=>{
@@ -106,7 +128,7 @@ describe('Guided number configuration and bounded real scope, with no provider c
   }
  });
  it('waits indefinitely for a customer reply before the next pitch, without follow-up timers',async()=>{const f=await fixture();const workflow=await putRecord(pool,{...base,kind:'workflow',body:{name:'Reply-gated fixture',status:'PUBLISHED',entry_node_id:'hello',nodes:[{id:'hello',type:'message',config:{text:'Which grade?'},next:'reply'},{id:'reply',type:'reply',config:{variable:'grade'},next:'pitch'},{id:'pitch',type:'message',config:{text:'Fixture pitch'},next:'end'},{id:'end',type:'end',config:{}}]}});const conversation=await putRecord(pool,{id:f.conversation.id,...base,kind:'conversation',version:1,body:{...f.conversation.body,workflow_version_id:workflow.id}});
- await withTransaction(c=>advanceWorkflow(c,conversation));let waiting=(await getRecord(pool,workspace,'conversation',conversation.id))!;expect(waiting.body.flow_state.waiting_for).toBe('customer_reply');await withTransaction(c=>advanceWorkflow(c,waiting,'timer'));expect((await pool.query('SELECT count(*)::int n FROM outbox WHERE conversation_id=$1',[conversation.id])).rows[0].n).toBe(1);expect((await pool.query('SELECT 1 FROM timers WHERE conversation_id=$1',[conversation.id])).rowCount).toBe(0);
- waiting=await putRecord(pool,{id:waiting.id,...base,kind:'conversation',version:waiting.version,body:{...waiting.body,last_customer_text:'Second grade'}});await withTransaction(c=>acceptCustomerResponse(c,waiting,'synthetic-inbound'));const finished=(await getRecord(pool,workspace,'conversation',waiting.id))!;expect(finished.body.flow_state.variables.grado).toBe('Second grade');expect(finished.body.flow_state.status).toBe('FINISHED');expect((await pool.query('SELECT count(*)::int n FROM outbox WHERE conversation_id=$1',[conversation.id])).rows[0].n).toBe(2);
+ await asAutomation(c=>advanceWorkflow(c,conversation));let waiting=(await getRecord(pool,workspace,'conversation',conversation.id))!;expect(waiting.body.flow_state.waiting_for).toBe('customer_reply');await asAutomation(c=>advanceWorkflow(c,waiting,'timer'));expect((await pool.query('SELECT count(*)::int n FROM outbox WHERE conversation_id=$1',[conversation.id])).rows[0].n).toBe(1);expect((await pool.query('SELECT 1 FROM timers WHERE conversation_id=$1',[conversation.id])).rowCount).toBe(0);
+ waiting=await putRecord(pool,{id:waiting.id,...base,kind:'conversation',version:waiting.version,body:{...waiting.body,last_customer_text:'Second grade'}});await asAutomation(c=>acceptCustomerResponse(c,waiting,'synthetic-inbound'));const finished=(await getRecord(pool,workspace,'conversation',waiting.id))!;expect(finished.body.flow_state.variables.grado).toBe('Second grade');expect(finished.body.flow_state.status).toBe('FINISHED');expect((await pool.query('SELECT count(*)::int n FROM outbox WHERE conversation_id=$1',[conversation.id])).rows[0].n).toBe(2);
  });
 });

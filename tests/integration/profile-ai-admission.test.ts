@@ -3,6 +3,7 @@ import {randomBytes,randomUUID} from 'node:crypto';
 import {createServer,type Server} from 'node:http';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
+import {fixtureCoOwner} from '../support/profile-fixture.js';
 import {asProfileOwner,requireMigratedProfileSchema,fixtureProfileRow} from '../support/migrated-database.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {withProfileTransaction,type ProfilePool} from '../../packages/db/src/profile-context.js';
@@ -28,7 +29,7 @@ async function fixture(options:{verify?:boolean;budget?:number;keyBudget?:number
  const workspace='ai-'+randomUUID(),variant=randomUUID(),product=randomUUID(),credentialKey='synthetic-ai-'+randomBytes(24).toString('hex');
  await fixtureProfileRow(admin,createdProfiles,workspace,{businessName:'Synthetic AI',timezone:'UTC',numbers:1,products:10,daily:10});
  await admin.query("INSERT INTO records(id,workspace_id,environment,kind,body) VALUES($1,$2,'REAL','product','{}')",[product,workspace]);await admin.query("INSERT INTO market_families(id,workspace_id,environment) VALUES($1,$2,'REAL')",[product,workspace]);await admin.query("INSERT INTO market_variants(id,workspace_id,environment,family_id,draft) VALUES($1,$2,'REAL',$3,'{}')",[variant,workspace,product]);
- await admin.query("INSERT INTO memberships(user_id,workspace_id,role) VALUES('synthetic-owner',$1,'owner')",[workspace]);
+ await admin.query("INSERT INTO memberships(user_id,workspace_id,role) VALUES('synthetic-owner',$1,'owner')",[workspace]);await fixtureCoOwner(admin,workspace);// V7 F2: a profile keeps an active owner
  const keyOperation={operationId:randomUUID(),environment:'REAL' as const,provider:'openai' as const,expectedRevision:0,key:credentialKey};
  const saved=await withProfileTransaction(api,workspace,db=>storeAiCredential(db,authority(workspace),keyOperation,key));
  const period=randomUUID();await withProfileTransaction(api,workspace,async db=>{const base=new Date((await db.query('SELECT clock_timestamp() AS now')).rows[0].now).getTime(),boundary=base+(options.crossBoundary||options.gap?30000:86400000);const input={periodId:period,environment:'REAL' as const,startsAt:new Date(base-86400000).toISOString(),endsAt:new Date(boundary).toISOString(),profileLimitMicrousd:options.budget??10000,keyLimits:[{credentialId:saved.credentialId,limitMicrousd:options.keyBudget??options.budget??10000}]};await configureAiBudget(db,authority(workspace),input);expect(await configureAiBudget(db,authority(workspace),input)).toMatchObject({effect:'EXISTING_MATCH'});if(options.crossBoundary||options.gap)await configureAiBudget(db,authority(workspace),{...input,periodId:randomUUID(),startsAt:new Date(boundary+(options.gap?1000:0)).toISOString(),endsAt:new Date(boundary+2*86400000).toISOString()});});
