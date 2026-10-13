@@ -79,6 +79,14 @@ def private_write(path, value):
         os.close(descriptor)
 
 
+def started(value):
+    """Docker StartedAt (nanoseconds, Z) as an aware datetime; None when absent."""
+    match = re.fullmatch(r'(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?(Z|[+-]\d\d:\d\d)', str(value or ''))
+    if not match or match[1].startswith('0001-'):
+        return None
+    return dt.datetime.fromisoformat(match[1] + '.' + (match[2] or '0')[:6].ljust(6, '0') + ('+00:00' if match[3] == 'Z' else match[3]))
+
+
 def validate_snapshot(snapshot, states, current_ids, now=None):
     now = now or dt.datetime.now(UTC)
     observed = dt.datetime.fromisoformat(snapshot['captured_at'].replace('Z', '+00:00'))
@@ -94,8 +102,12 @@ def validate_snapshot(snapshot, states, current_ids, now=None):
         raise RuntimeError('OWNERSHIP_TOPOLOGY_INVALID')
     current = states.get(previous['id'])
     if previous['id'] in current_ids:
-        # No replacement happened; its existing ownership does not need a handoff.
-        return False
+        # Same container. A restart replaces its whole process tree: when Docker
+        # reports it running with a strictly later StartedAt, the captured
+        # instance (and every owner lease it held) no longer exists. Otherwise
+        # no replacement happened and the existing ownership needs no handoff.
+        before, after = started(previous.get('started_at')), started((current or {}).get('started_at'))
+        return bool(current and current.get('running') and before and after and after > before)
     if current and (current['running'] or current['networks'] or current['restart'] not in ('no', '')):
         raise RuntimeError('OLD_OWNER_ISOLATION_NOT_VERIFIED')
     return True

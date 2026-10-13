@@ -81,17 +81,49 @@ def slot(number, state, account=None):
     return {'id': 'slot-%d' % number, 'slot': number, 'state': state, 'account_id': account, 'readback': {'verified': True}}
 
 
+class FakeOwnership:
+    """Synthetic channel container inventory and reviewed attestation calls."""
+    def __init__(self):
+        self.containers = [{'id': 'c' * 64, 'running': True, 'started_at': '2026-10-13T05:00:00.1Z'}]
+        self.hold = False
+        self.calls = []
+
+    def database(self, release, sql):
+        self.calls.append(('database',))
+        return 't' if self.hold else 'f'
+
+    def container_ids(self, release):
+        return [c['id'] for c in self.containers]
+
+    def inspect(self, cid):
+        return next(dict(c) for c in self.containers if c['id'] == cid)
+
+    def capture(self, release, path):
+        self.calls.append(('capture', path))
+        Path(path).write_text(json.dumps({'containers': [dict(c) for c in self.containers], 'owners': []}))
+        os.chmod(path, 0o600)
+
+    def attest(self, release, path):
+        self.calls.append(('attest', path, os.environ.get('COMMERCE_OWNERSHIP_HISTORY_DIR')))
+        return {'receipts_inserted': 2, 'replacement': True}
+
+
 class SupervisorTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.dir.cleanup)
         self.state = mod.State(os.path.join(self.dir.name, 'state.json'))
         self.now = NOW
+        self.release = os.path.join(self.dir.name, 'release.env')
+        Path(self.release).write_text('X=1\n')
+        os.chmod(self.release, 0o600)
+        self.ownership = FakeOwnership()
+        self.config = {'measure_seconds': 45, 'release_env': self.release, 'state_file': os.path.join(self.dir.name, 'state.json')}
 
     def supervisor(self, admin, profiles=None):
         self.platform = FakePlatform(profiles or [{'id': A, 'state': 'ACTIVE', 'limits': {'numbers': 3}}])
-        return mod.Supervisor({'measure_seconds': 45}, platform=self.platform, administrator=lambda token: admin,
-                              state=self.state, clock=lambda: self.now)
+        return mod.Supervisor(self.config, platform=self.platform, administrator=lambda token: admin,
+                              state=self.state, clock=lambda: self.now, ownership=self.ownership)
 
     def test_requests_one_reviewed_spare_and_backs_off(self):
         admin = FakeAdmin([slot(1, 'CONNECTED', 'acc-1')], containers={1: container(True)})
@@ -145,7 +177,7 @@ class SupervisorTests(unittest.TestCase):
         admins = {'cos_a': failing, 'cos_b': healthy}
         platform = FakePlatform([{'id': 'a', 'state': 'ACTIVE', 'limits': {'numbers': 2}}, {'id': 'b', 'state': 'ACTIVE', 'limits': {'numbers': 2}}])
         platform.agent_token = lambda workspace, now: 'cos_' + workspace
-        sup = mod.Supervisor({}, platform=platform, administrator=lambda token: admins[token], state=self.state, clock=lambda: self.now)
+        sup = mod.Supervisor(self.config, platform=platform, administrator=lambda token: admins[token], state=self.state, clock=lambda: self.now, ownership=self.ownership)
         report = sup.cycle()
         self.assertEqual(report['errors'][0]['code'], 'ADMINISTRATION_RECONCILIATION_REQUIRED')
         self.assertIn(('measure',), healthy.calls)
@@ -184,6 +216,32 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(len([c for c in admin.calls if c[0] == 'compose']), 5)
         exhausted = [e for e in self.state.data['events'] if e['kind'] == 'GATEWAY_RESTART_EXHAUSTED']
         self.assertEqual(len(exhausted), 1)
+
+    def test_restarted_channel_worker_is_attested_once_and_never_during_a_release_hold(self):
+        sup = self.supervisor(FakeAdmin([]))
+        self.assertNotIn('channel_handoff', sup.cycle())
+        self.assertEqual([c[0] for c in self.ownership.calls if c[0] != 'database'], ['capture'])
+        snapshot = Path(self.dir.name, 'ownership', 'channel-snapshot.json')
+        self.assertEqual(os.stat(snapshot.parent).st_mode & 0o777, 0o700)
+        # The same container restarted: newer StartedAt, running.
+        self.ownership.containers[0]['started_at'] = '2026-10-13T05:59:00.2Z'
+        report = sup.cycle()
+        self.assertEqual(report['channel_handoff'], 2)
+        attests = [c for c in self.ownership.calls if c[0] == 'attest']
+        self.assertEqual(attests, [('attest', str(snapshot), str(snapshot.parent))])
+        self.assertEqual(sum(1 for e in self.state.data['events'] if e['kind'] == 'CHANNEL_WORKER_RESTART_ATTESTED'), 1)
+        sup.cycle()
+        self.assertEqual(len([c for c in self.ownership.calls if c[0] == 'attest']), 1)
+        # A replacement container that is not running yet is not attested.
+        self.ownership.containers = [{'id': 'd' * 64, 'running': False, 'started_at': '2026-10-13T06:00:00Z'}]
+        sup.cycle()
+        self.assertEqual(len([c for c in self.ownership.calls if c[0] == 'attest']), 1)
+        # During a release hold the installer owns the handoff: nothing captured or attested.
+        self.ownership.containers = [{'id': 'e' * 64, 'running': True, 'started_at': '2026-10-13T06:01:00Z'}]
+        self.ownership.hold = True
+        before = list(self.ownership.calls)
+        sup.cycle()
+        self.assertEqual([c for c in self.ownership.calls[len(before):] if c[0] != 'database'], [])
 
     def test_never_starts_sessions_or_deletes_volumes(self):
         source = (ROOT / 'scripts/gateway_supervisor.py').read_text()

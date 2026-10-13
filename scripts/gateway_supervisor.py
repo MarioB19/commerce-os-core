@@ -38,6 +38,9 @@ ROOT = Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location('number_capacity_administrator', ROOT / 'scripts/number-capacity-administrator.py')
 capacity = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(capacity)
+_receipts_spec = importlib.util.spec_from_file_location('ownership_isolation_receipts', ROOT / 'scripts/ownership-isolation-receipts.py')
+receipts = importlib.util.module_from_spec(_receipts_spec)
+_receipts_spec.loader.exec_module(receipts)
 
 # PREPARING/DRAINING belong to a claimed operation; AVAILABLE has no gateway yet.
 RESTARTABLE_STATES = {'PREPARED', 'RESERVED', 'QR_PENDING', 'CONNECTED'}
@@ -143,11 +146,12 @@ class PlatformClient:
 
 
 class Supervisor:
-    def __init__(self, config, platform=None, administrator=None, state=None, clock=utc_now):
+    def __init__(self, config, platform=None, administrator=None, state=None, clock=utc_now, ownership=None):
         self.config = config
         self.platform = platform or PlatformClient(config['api_origin'], capacity.private_file(config['platform_token_file']).read_text().strip())
         self.administrator = administrator or self._administrator
         self.state = state or State(config['state_file'])
+        self.ownership = ownership or receipts
         self.clock = clock
         self.measured = {}
 
@@ -162,9 +166,41 @@ class Supervisor:
             raise SupervisorError('PRIVATE_GATEWAY_CONFIGURATION_REQUIRED')
         return admin
 
+    def channel_watch(self, report):
+        """RNF-02.c: a crashed channel worker restarts with a new owner identity.
+        Each cycle captures the running channel container and the owners of its
+        current instance (the reviewed installer capture). When that container
+        is replaced or restarted (newer StartedAt), the reviewed attestation
+        proves the captured instance is gone and records isolation receipts, so
+        the new instance takes over the same leases with fencing instead of
+        waiting for a release. Never during a release hold: the installer owns
+        that handoff. No session, message or container is touched here."""
+        release = str(capacity.private_file(self.config['release_env']))
+        directory = Path(self.config['state_file']).parent / 'ownership'
+        directory.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(directory, 0o700)
+        snapshot = directory / 'channel-snapshot.json'
+        if self.ownership.database(release, "SELECT COALESCE(bool_or(release_hold),false) FROM operational_settings WHERE environment='REAL';") == 't':
+            return
+        current = [self.ownership.inspect(item) for item in self.ownership.container_ids(release)]
+        if snapshot.exists() and current and all(item and item.get('running') for item in current):
+            previous = (json.loads(snapshot.read_text()).get('containers') or [None])[0]
+            replaced = previous and (previous['id'] not in [item['id'] for item in current]
+                                     or any(item['id'] == previous['id'] and item.get('started_at') != previous.get('started_at') for item in current))
+            if replaced:
+                os.environ['COMMERCE_OWNERSHIP_HISTORY_DIR'] = str(directory)
+                result = self.ownership.attest(release, str(snapshot))
+                report['channel_handoff'] = int(result.get('receipts_inserted', 0))
+                self.state.event('CHANNEL_WORKER_RESTART_ATTESTED', receipts=report['channel_handoff'])
+        self.ownership.capture(release, str(snapshot))
+
     def cycle(self):
         now = self.clock()
         report = {'profiles': 0, 'applied': 0, 'reconciled': 0, 'spares_requested': 0, 'restarted': 0, 'errors': []}
+        try:
+            self.channel_watch(report)
+        except Exception as error:
+            report['errors'].append({'code': safe_code(error, 'CHANNEL_WATCH_FAILED')})
         for profile in self.platform.profiles():
             report['profiles'] += 1
             try:

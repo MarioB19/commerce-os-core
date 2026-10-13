@@ -22,6 +22,12 @@ import {randomUUID} from 'node:crypto';
  * removal shows its impact before the last button. Legacy setup endpoints
  * remain for compatibility; these add no new authority over sending. */
 const idOf=(req:FastifyRequest)=>z.object({id:z.uuid()}).parse(req.params).id;
+/** The installation quota guard takes a non-blocking global lock (0079) and
+ * fails fast when another admission overlaps. Number registration and removal
+ * are rare and human-paced: they wait for it first, so two profiles adding
+ * numbers at once are serialized instead of one failing. Re-entrant per
+ * transaction, so the guard's own try-lock then succeeds. */
+const awaitQuotaTurn=(c:QueryExecutor)=>c.query('SELECT pg_advisory_xact_lock(743912014::bigint)');
 const manage=(req:FastifyRequest)=>{const p=principal(req);assertPermission(p,'channels:manage');return p;};
 const quickSchema=z.object({alias:z.string().trim().min(2).max(100),country:z.enum(Object.keys(numberCountries) as [NumberCountry,...NumberCountry[]]),phone:z.string().trim().min(4).max(32).optional()}).strict();
 const nextAction:Record<NumberLinkState,{code:string;label:string}|null>={REMOVED:null,REMOVING:null,PHONE_MISMATCH:{code:'unlink',label:'Desvincular y volver a intentar'},
@@ -62,11 +68,18 @@ async function finalizeRemoval(req:FastifyRequest,c:QueryExecutor,account:Domain
  const inflight=(await c.query("SELECT 1 FROM outbox WHERE workspace_id=$1 AND environment=$2 AND account_id=$3 AND status IN('SENDING','UNKNOWN') LIMIT 1",[account.workspace_id,account.environment,account.id])).rowCount;
  const unlinked=!ownership||!!account.body.unlinked_at;
  if(pending||inflight||!unlinked||!['NEW','DISCONNECTED','STOPPED'].includes(String(account.body.status??'NEW')))return account;
+ await awaitQuotaTurn(c);
  await c.query('UPDATE session_ownership SET frozen=true,updated_at=now() WHERE workspace_id=$1 AND account_id=$2',[account.workspace_id,account.id]);
  await c.query("UPDATE operation_authorizations SET revoked_at=COALESCE(revoked_at,now()) WHERE workspace_id=$1 AND environment=$2 AND scope->'account_ids' ? $3",[account.workspace_id,account.environment,account.id]);
  const deleted=await putRecord(c,{id:account.id,workspaceId:account.workspace_id,environment:account.environment,kind:'channel_account',version:account.version,
   body:{...account.body,deleted_at:new Date().toISOString(),deleted_by:account.body.removal_requested_by??principal(req).user.id,sending_enabled:false,active_authorization_id:null,identity_verified:false}});
- await audit(c,req,'channel.deleted',account.id,{reason:'Eliminación solicitada desde Números',history_preserved:true,v7_removal:true},account.environment);
+ // The physical slot returns to this same profile only (its gateway volume may
+ // still hold this profile's media): a verified gateway becomes a prepared
+ // spare, an unprovisioned reservation becomes available. Another profile can
+ // receive it only through the reviewed drain that wipes the session state.
+ const released=(await c.query(`UPDATE number_capacity_slots SET account_id=NULL,state=CASE WHEN readback->>'verified'='true' THEN 'PREPARED' ELSE 'AVAILABLE' END,version=version+1,updated_at=now()
+  WHERE workspace_id=$1 AND environment=$2 AND account_id=$3 AND state NOT IN('DRAINING','PREPARING') RETURNING slot,state`,[account.workspace_id,account.environment,account.id])).rows;
+ await audit(c,req,'channel.deleted',account.id,{reason:'Eliminación solicitada desde Números',history_preserved:true,v7_removal:true,slot_released_to_profile:released.map(r=>Number(r.slot))},account.environment);
  return deleted;
 }
 async function removalImpact(c:QueryExecutor,account:DomainRecord){
@@ -124,6 +137,7 @@ export async function numberLinkRoutes(app:FastifyInstance){
   try{phone=input.phone?normalizePhone(input.country,input.phone):undefined;}catch(error){if(error instanceof PhoneError)throw fail(400,error.message,'Revisa el país y el número.');throw error;}
   const result=await mutate(req,'number.quick',async c=>{
    await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`number-create:${p.workspace_id}:${environment}`]);
+   await awaitQuotaTurn(c);
    if((await c.query("SELECT 1 FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='channel_account' AND NOT body?'deleted_at' AND lower(body->>'name')=lower($3)",[p.workspace_id,environment,input.alias])).rowCount)throw fail(409,'ALIAS_ALREADY_USED','Ya tienes un número con ese nombre.');
    const fingerprint=phone?phoneFingerprint(phone.digits):undefined;
    if(fingerprint&&(await c.query("SELECT 1 FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='channel_account' AND NOT body?'deleted_at' AND body->>'declared_phone_fingerprint'=$3",[p.workspace_id,environment,fingerprint])).rowCount)throw fail(409,'NUMBER_ALREADY_REGISTERED','Ese número ya está registrado en tu perfil.');

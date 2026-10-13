@@ -46,6 +46,19 @@ class IsolationTests(unittest.TestCase):
 
     def test_unchanged_container_needs_no_handoff(self):
         self.assertFalse(self.evaluate(self.container, [self.container['id']]))
+        started = {**self.container, 'started_at': '2026-09-06T11:00:00.123456789Z'}
+        self.snapshot['containers'] = [started]
+        self.assertFalse(self.evaluate(started, [started['id']]))
+
+    def test_restarted_container_ends_the_captured_instance(self):
+        # V7 F3 (RNF-02.c): the same container restarted (newer StartedAt, running)
+        # no longer runs the captured process; its owners can be handed over.
+        before = {**self.container, 'started_at': '2026-09-06T11:00:00.123456789Z'}
+        self.snapshot['containers'] = [before]
+        self.assertTrue(self.evaluate({**before, 'started_at': '2026-09-06T11:58:00.000000001Z'}, [before['id']]))
+        for after in [{**before, 'running': False, 'started_at': '2026-09-06T11:58:00Z'},
+                      {**before, 'started_at': '2026-09-06T10:00:00Z'}, {**before, 'started_at': None}]:
+            self.assertFalse(self.evaluate(after, [before['id']]))
 
     def test_first_install_has_no_previous_owner_to_attest(self):
         self.snapshot['containers'] = []
