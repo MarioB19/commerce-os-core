@@ -1,6 +1,8 @@
-import {afterAll,expect,it} from 'vitest';
+import {afterAll,beforeEach,expect,it} from 'vitest';
 import {randomUUID} from 'node:crypto';
 import {pool,withTransaction} from '../../packages/db/src/index.js';
+import {fixtureProfiles} from '../support/profile-fixture.js';
+import {disposeAllFixtureProfiles} from '../support/migrated-database.js';
 import {createWarmupSimulation,readWarmupSimulation,type WarmupSimulationInput} from '../../packages/db/src/warmup-simulation.js';
 import {processWarmupSimulations} from '../../apps/automation-worker/src/warmup-simulation.js';
 import {processInbound} from '../../apps/automation-worker/src/inbound.js';

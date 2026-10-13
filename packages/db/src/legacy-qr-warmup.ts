@@ -1,7 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import type {ProfileExecutor} from './profile-context.js';
-import {currentProfileExecutor} from './profile-query-routing.js';
+import {recordProfileExecutor} from './profile-record-context.js';
 import type {QueryExecutor} from './index.js';
 import {decrypt,hash,stableJson} from './index.js';
 import {canonicalIdentity} from '../../messaging/src/security.js';
@@ -82,7 +82,9 @@ export type LegacyQrAuthority={kind:'LEGACY'}|{kind:'ADOPTED';adoptionId:string;
 /** A missing adoption is the only legacy result. A stale, revoked or changed
  * adoption never falls back to the pool's temporal permission. */
 export async function currentLegacyQrAuthority(db:ProfileExecutor,environment:Environment,accountId:string):Promise<LegacyQrAuthority>{
- await lockedContinuousWorkerProfile(db);accountId=id.parse(accountId);await lock(db,environment,accountId);let previous=await latest(db,environment,accountId);if(!previous)return{kind:'LEGACY'};
+ accountId=id.parse(accountId);await lock(db,environment,accountId);let previous=await latest(db,environment,accountId);if(!previous)return{kind:'LEGACY'};
+ // Only an existing adoption needs the live worker profile (role/state lock).
+ await lockedContinuousWorkerProfile(db);
  try{
   const prior=legacyQrSnapshotSchema.parse(previous.snapshot),review=await snapshot(db,environment,accountId,prior);
   const comparable=(s:LegacyQrSnapshot)=>{const{stateVersion:_state,grantId:_grant,connectionId:_connection,...rest}=s;return rest;};
@@ -98,7 +100,9 @@ export async function currentLegacyQrAuthority(db:ProfileExecutor,environment:En
 export async function legacyPoolAuthorities(executor:QueryExecutor,workspaceId:string,environment:Environment,accountIds:readonly string[]){
  const result=new Map<string,LegacyQrAuthority>();
  if(!(await executor.query("SELECT to_regclass('public.warmup_continuity_adoptions') AS present")).rows[0]?.present)return result;
- const db=(executor as ProfileExecutor).workspaceId===workspaceId?executor as ProfileExecutor:currentProfileExecutor(workspaceId);
+ // Worker transactions planning one explicit pool bind to that pool's own
+ // profile (never a convenience selection); an established scope must match.
+ const db=(executor as ProfileExecutor).workspaceId===workspaceId?executor as ProfileExecutor:await recordProfileExecutor(executor,workspaceId,env.parse(environment));
  need(db,'QR_ADOPTION_PROFILE_CONTEXT_REQUIRED');
  for(const accountId of accountIds)result.set(accountId,await currentLegacyQrAuthority(db,environment,accountId));return result;
 }
@@ -117,10 +121,13 @@ export async function bindLegacyWarmupEffectOrigins(db:QueryExecutor,scope:{work
 /** Pure native readback for the final gate. This does not relink old effects or
  * grant permission; the gate still revalidates each fixed source and readiness. */
 export async function readLegacyWarmupEffectOrigins(db:ProfileExecutor,environment:Environment,effectId:string){
- await lockedContinuousWorkerProfile(db);env.parse(environment);effectId=id.parse(effectId);
- return(await db.query(`SELECT o.*,a.snapshot,a.policy_version,a.pool_id,a.profile_id,a.episode_id FROM warmup_effect_origins o
+ env.parse(environment);effectId=id.parse(effectId);
+ const rows=(await db.query(`SELECT o.*,a.snapshot,a.policy_version,a.pool_id,a.profile_id,a.episode_id FROM warmup_effect_origins o
  LEFT JOIN warmup_continuity_adoptions a ON a.id=o.adoption_id AND a.workspace_id=o.workspace_id AND a.environment=o.environment
  WHERE o.workspace_id=$1 AND o.environment=$2 AND o.effect_id=$3 ORDER BY o.participant_id`,[db.workspaceId,environment,effectId])).rows;
+ // Historical effects have no origins; bound origins need the live worker profile.
+ if(rows.length)await lockedContinuousWorkerProfile(db);
+ return rows;
 }
 
 /** Final-gate authority only; health/readiness/rates/causal receipts stay in the

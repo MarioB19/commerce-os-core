@@ -88,7 +88,8 @@ it('re-reserves both endpoints across minute boundaries without erasing earlier 
 });
 it.each([{tail:'SENT',days:0,plan:'MISSED'},{tail:'DELIVERED',days:1,plan:'COMPLETED'}])('requires fully ACKed conversation ($tail) and never advances while paused',async expected=>{
  const f=await fixture();await f.plan();const all=await f.effects(),today=localWindow(f.profile,new Date()).date;
- await pool.query("UPDATE warmup_plans SET local_date=($2::date-1) WHERE workspace_id=$1",[f.workspace,today]);await pool.query("UPDATE warmup_conversations SET local_date=($2::date-1) WHERE workspace_id=$1",[f.workspace,today]);
+ // Simulated day change: the V7 origin guard forbids moving a plan's day, so the fixture shifts it with triggers bypassed.
+ await withTransaction(async c=>{await c.query("SET LOCAL session_replication_role=replica");await c.query("UPDATE warmup_plans SET local_date=($2::date-1) WHERE workspace_id=$1",[f.workspace,today]);});await pool.query("UPDATE warmup_conversations SET local_date=($2::date-1) WHERE workspace_id=$1",[f.workspace,today]);
  await pool.query("UPDATE outbox SET status='DELIVERED' WHERE workspace_id=$1",[f.workspace]);await pool.query("UPDATE outbox SET status=$2 WHERE id=$1",[all.at(-1)!.id,expected.tail]);
  await withTransaction(c=>evaluateWarmupPool(c,{...f.group,paused:true},new Date()));expect((await f.state()).effective_days).toBe(0);
  await withTransaction(c=>evaluateWarmupPool(c,f.group,new Date()));expect((await f.state()).effective_days).toBe(expected.days);
