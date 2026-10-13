@@ -320,7 +320,10 @@ export function createNumberLabDriver(options:{controlPool:ProfilePool;seedPool:
      if(reading.state==='SUCCEEDED'){
       const asset=await getRecord(db,db.workspaceId,'asset',r.body.asset_id),order=await getRecord(db,db.workspaceId,'order',r.body.order_id),sim=await getRecord(db,db.workspaceId,'simulation',i.runId);
       need(asset&&order&&sim,'LAB_RECEIPT_CHANGED');
-      const prepared=prepareLabReceiptAssessment({policy,receipt:r,asset,order,release,observedAt:new Date(sim.body.virtual_now).toISOString(),duplicate:!!r.body.duplicate_of,document:reading.value,cause:attemptId});
+      // RF-09.d: the lab copy of this release's collection (public fields only).
+      const collection=(await db.query("SELECT body FROM records WHERE workspace_id=$1 AND environment='SIMULATION' AND kind='bank_profile' AND body->'lab_source'->>'id'=$2 AND body->>'lab_release_id'=$3 LIMIT 1",[db.workspaceId,release.configuration.collection.id,release.id])).rows[0];
+      const prepared=prepareLabReceiptAssessment({policy,receipt:r,asset,order,release,observedAt:new Date(sim.body.virtual_now).toISOString(),duplicate:!!r.body.duplicate_of,document:reading.value,cause:attemptId,
+       expected:{reference:collection?.body.expected_reference,concept:collection?.body.expected_concept}});
       await applyReceiptAssessment(db,r,prepared,attemptId);
       const after=await getRecord(db,db.workspaceId,'receipt',r.id);need(after,'LAB_RECEIPT_CHANGED');
       await putRecord(db,{id:after.id,workspaceId:db.workspaceId,environment:'SIMULATION',kind:'receipt',version:after.version,body:{...after.body,lab_assessment:prepared.laboratory}});

@@ -152,6 +152,10 @@ export function collectionInstructions(input:{bank:Body;secret:Body|null;price:s
  const labels=new Map<string,string>((Array.isArray(b.methods?.links)?b.methods.links:[]).map((link:Body)=>[String(link.id),String(link.label)]));
  for(const link of Array.isArray(s.links)?s.links:[])if(typeof link.url==='string')lines.push(`${labels.get(String(link.id))??'Pago en línea'}: ${link.url}`);
  if(typeof s.instructions==='string'&&s.instructions.trim())lines.push(s.instructions.trim());
+ // RF-09.d: what the buyer must write; the receipt rules compare against it.
+ const words=String(b.language??'es').startsWith('pt')?['Referência','Descrição']:String(b.language??'es').startsWith('en')?['Reference','Concept']:['Referencia','Concepto'];
+ if(typeof b.expected_reference==='string'&&b.expected_reference.trim())lines.push(`${words[0]}: ${b.expected_reference.trim()}`);
+ if(typeof b.expected_concept==='string'&&b.expected_concept.trim())lines.push(`${words[1]}: ${b.expected_concept.trim()}`);
  return lines.join('\n')+amount;
 }
 

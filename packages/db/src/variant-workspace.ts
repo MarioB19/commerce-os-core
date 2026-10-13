@@ -180,7 +180,7 @@ function mergeCollection(document:VariantDocument,previous:CollectionSecret,inpu
   const url=link.url==='keep'?previous.links.find(l=>l.id===id)?.url:link.url;need(url,'COLLECTION_LINK_MISSING',400);
   secret.links.push({id,url});links.push({id,label:link.label,provider:link.provider,host:new URL(url).hostname});
  }
- return{secret,collection:{spei,links,instructions:input.instructions,legacy_profile_id:null}};
+ return{secret,collection:{spei,links,instructions:input.instructions,expected_reference:input.expected_reference??null,expected_concept:input.expected_concept??null,legacy_profile_id:null}};
 }
 export async function saveVariantSection(db:ProfileExecutor,environment:Environment,id:string,input:unknown,actor:Actor){
  const q=variantSectionInputSchema.parse(input),old=await variantRow(db,environment,id,true);
@@ -286,6 +286,7 @@ export async function publishVariant(db:ProfileExecutor,environment:Environment,
    const c=doc.collection;
    const row=await create(db,environment,'bank_profile',{name:`Cobro · ${productName} · ${doc.name}`,bank:c.spei?.bank??c.links[0]?.label??'Pago en línea',spei_bank:c.spei?.bank??null,currency,
     methods:{spei:!!c.spei,links:c.links.map(l=>({id:l.id,label:l.label,provider:l.provider}))},last4:c.spei?.last4??null,variant_id:old.id,status:'PUBLISHED',
+    expected_reference:c.expected_reference??null,expected_concept:c.expected_concept??null,language:doc.locale.language,
     secret_ciphertext:encrypt({spei:secret.spei?{holder:secret.spei.holder,clabe:secret.spei.clabe}:undefined,links:secret.links,instructions:c.instructions})});
    collectionId=row.id;m.collection={id:row.id,hash:collectionHash};
   }

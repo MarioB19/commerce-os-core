@@ -4142,7 +4142,7 @@ input:not([type="checkbox"]):not([type="radio"]),select,textarea{min-height:44px
 .variant-form h2{font-size:1.1rem;margin:.5rem 0 0}
 .variant-form h3{font-size:1rem;margin:.25rem 0 0}
 .variant-field{display:grid;gap:.25rem}
-.variant-field input,.variant-field select,.variant-field textarea,.variant-market-fields select,.variant-grid input,.variant-filter input{min-height:44px;padding:.5rem .6rem;border:1px solid var(--border,#dce3ee);border-radius:.5rem;font:inherit;background:#fff;width:100%;box-sizing:border-box}
+.variant-field input,.variant-field select,.variant-field textarea,.variant-market-fields select,.variant-grid input,.variant-filter input,.variant-filter select{min-height:44px;padding:.5rem .6rem;border:1px solid var(--border,#dce3ee);border-radius:.5rem;font:inherit;background:#fff;width:100%;box-sizing:border-box}
 .variant-field textarea{min-height:4.5rem}
 .variant-grid{display:grid;gap:.6rem;grid-template-columns:repeat(auto-fit,minmax(12rem,1fr))}
 .variant-grid label{display:grid;gap:.25rem}

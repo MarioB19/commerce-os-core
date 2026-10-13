@@ -61,11 +61,16 @@ export const variantOfferSchema=z.object({
 export const paymentLinkProviders=['whop','hotmart','stripe','mercado_pago','other'] as const;
 export const paymentLinkProviderLabels:Record<typeof paymentLinkProviders[number],string>={whop:'Whop',hotmart:'Hotmart',stripe:'Stripe',mercado_pago:'Mercado Pago',other:'Otro proveedor'};
 const linkId=z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/);
+const expectedText=z.string().trim().min(1).max(120);
 /** Public description only. SPEI and URLs are kept in the encrypted column. */
 export const variantCollectionSchema=z.object({
  spei:z.object({bank:label,last4:z.string().regex(/^[0-9]{4}$/)}).strict().nullable(),
  links:z.array(z.object({id:linkId,label,provider:z.enum(paymentLinkProviders),host:z.string().max(253)}).strict()).max(5),
  instructions:text(2000),
+ // RF-09.d: what the buyer must write in the transfer (shown to them; not secret).
+ // Receipt rules EXACT/CONTAINS compare against these; absent, they go to review.
+ expected_reference:expectedText.nullable().optional(),
+ expected_concept:expectedText.nullable().optional(),
  // A migrated bank profile is reused unchanged until the operator edits Cobro.
  legacy_profile_id:z.string().uuid().nullable(),
 }).strict();
@@ -101,6 +106,8 @@ export const collectionInputSchema=z.object({
  spei:z.union([z.object({bank:label,holder:label,clabe}).strict(),z.literal('keep'),z.null()]),
  links:z.array(z.object({id:linkId.optional(),label,provider:z.enum(paymentLinkProviders),url:z.union([httpsPaymentUrlSchema,z.literal('keep')])}).strict()).max(5),
  instructions:text(2000),
+ expected_reference:expectedText.nullable().optional(),
+ expected_concept:expectedText.nullable().optional(),
 }).strict();
 export type CollectionInput=z.infer<typeof collectionInputSchema>;
 

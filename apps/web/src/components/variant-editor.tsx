@@ -17,6 +17,17 @@ const message=errorText;
 interface Material {id:string;version:number;name:string;kind:string;mime_type:string|null;size_bytes:number;status:string;status_label:string;host:string|null;deliverable:boolean;archived:boolean;used_by_variants:number}
 interface SectionProps {variant:VariantView;fence:ProfileFence;manage:boolean;owner:boolean;materials:Material[];reloadMaterials:()=>Promise<void>;save:(path:string,value:unknown)=>Promise<boolean>}
 
+/** RF-06.d: number → variants, optionally only the numbers selling one offer. */
+function InverseView({rows}:{rows:{account_id:string;name:string;sells:{product:string;variant:string;offer_id:string|null}[]}[]}){
+ const [offer,setOffer]=useState('');
+ const offers=[...new Map(rows.flatMap(n=>n.sells).filter(s=>s.offer_id).map(s=>[s.offer_id as string,`${s.product} · ${s.variant}`])).entries()];
+ const shown=offer?rows.map(n=>({...n,sells:n.sells.filter(s=>s.offer_id===offer)})).filter(n=>n.sells.length>0):rows;
+ return <>
+  {offers.length>1&&<label className="variant-filter">Oferta <select value={offer} onChange={e=>setOffer(e.target.value)}><option value="">Todas</option>{offers.map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></label>}
+  {shown.length?<ul className="variant-list">{shown.map(n=><li key={n.account_id}><strong>{n.name}</strong> <Sells items={n.sells.map(s=>`${s.product} · ${s.variant}`)} empty="sin variantes"/></li>)}</ul>:<p>Ningún número vende esa oferta.</p>}
+ </>;
+}
+
 export function VariantEditor({productId,variantId,section,selection,role,state}:{productId:string;variantId:string;section:VariantTab;selection:ProfileFence;role:ProfileRole;state:ProfileState}){
  const manage=role!=='viewer'&&state==='ACTIVE';
  const [variant,setVariant]=useState<VariantView|null>(),[error,setError]=useState(''),[notice,setNotice]=useState(''),[materials,setMaterials]=useState<Material[]>([]),[busy,setBusy]=useState(false),[copy,setCopy]=useState(false);
@@ -237,11 +248,13 @@ function CollectionSection({variant,manage,save}:SectionProps){
  const [spei,setSpei]=useState<'keep'|'new'|'none'>(c.spei?'keep':'none'),[bank,setBank]=useState(''),[holder,setHolder]=useState(''),[clabe,setClabe]=useState('');
  const [links,setLinks]=useState(c.links.map(l=>({id:l.id,label:l.label,provider:l.provider,host:l.host,url:'keep'})));
  const [instructions,setInstructions]=useState(c.instructions),[error,setError]=useState('');
- useEffect(()=>{setSpei(c.spei?'keep':'none');setLinks(c.links.map(l=>({id:l.id,label:l.label,provider:l.provider,host:l.host,url:'keep'})));setInstructions(c.instructions);setBank('');setHolder('');setClabe('');},[variant.version]);
+ const [reference,setReference]=useState(c.expected_reference??''),[concept,setConcept]=useState(c.expected_concept??'');
+ useEffect(()=>{setSpei(c.spei?'keep':'none');setLinks(c.links.map(l=>({id:l.id,label:l.label,provider:l.provider,host:l.host,url:'keep'})));setInstructions(c.instructions);setReference(c.expected_reference??'');setConcept(c.expected_concept??'');setBank('');setHolder('');setClabe('');},[variant.version]);
  async function submit(e:FormEvent){e.preventDefault();setError('');
   if(spei==='none'&&!links.length){setError('Configura SPEI, un enlace de pago o ambos.');return;}
   const ok=await save('collection',{spei:spei==='keep'?'keep':spei==='new'?{bank:bank.trim(),holder:holder.trim(),clabe}:null,
-   links:links.map(l=>({...(l.id?{id:l.id}:{}),label:l.label.trim(),provider:l.provider,url:l.url})),instructions});
+   links:links.map(l=>({...(l.id?{id:l.id}:{}),label:l.label.trim(),provider:l.provider,url:l.url})),instructions,
+   expected_reference:reference.trim()||null,expected_concept:concept.trim()||null});
   if(ok){setBank('');setHolder('');setClabe('');}
  }
  return <form onSubmit={submit} className="variant-form" aria-label="Cobro">
@@ -270,6 +283,8 @@ function CollectionSection({variant,manage,save}:SectionProps){
    {manage&&links.length<5&&<Button type="button" variant="secondary" onClick={()=>setLinks(x=>[...x,{id:undefined as unknown as string,label:'Pagar en línea',provider:'other',host:'',url:''}])}>Agregar enlace</Button>}
   </fieldset>
   <Field label="Indicaciones para el cliente (opcional)"><textarea rows={2} maxLength={2000} value={instructions} disabled={!manage} onChange={e=>setInstructions(e.target.value)}/></Field>
+  <Field label="Referencia que debe escribir el cliente (opcional)" hint="Las reglas de comprobantes «exacta» o «contiene» la comparan con la del comprobante. Sin ella, ese comprobante pasa a revisión."><input maxLength={120} value={reference} disabled={!manage} onChange={e=>setReference(e.target.value)}/></Field>
+  <Field label="Concepto que debe escribir el cliente (opcional)"><input maxLength={120} value={concept} disabled={!manage} onChange={e=>setConcept(e.target.value)}/></Field>
   {error&&<p role="alert">{error}</p>}
   {manage&&<div className="variant-actions"><Button>Guardar cobro</Button></div>}
  </form>;
@@ -393,7 +408,7 @@ function NumbersSection({variant,fence,manage,onChanged}:SectionProps&{onChanged
      :<span className="variant-toggle"><span>No</span>{manage&&variant.published&&<Button size="sm" disabled={!!busy} onClick={()=>void sell(r,true)}>{busy===r.account_id?'Asignando…':r.same_product?'Vender esta variante (reemplaza la configuración anterior)':'Vender en este número'}</Button>}</span>}</td></tr>)}</tbody></table>}
   <p className="variant-hint">Asignar es permanente: el número vende esta variante hasta que lo quites o lo pauses. Las pausas, bajas y protecciones siempre se respetan.</p>
   <details className="variant-advanced" onToggle={e=>{if((e.target as HTMLDetailsElement).open&&!inverse)variantRequest<NonNullable<typeof inverse>>(fence,'GET','/v2/number-variants').then(setInverse).catch(()=>undefined);}}><summary>Vista inversa: número → variantes</summary>
-   {!inverse?<p role="status">Consultando…</p>:<ul className="variant-list">{inverse.map(n=><li key={n.account_id}><strong>{n.name}</strong> <Sells items={n.sells.map(s=>`${s.product} · ${s.variant}`)} empty="sin variantes"/></li>)}</ul>}
+   {!inverse?<p role="status">Consultando…</p>:<InverseView rows={inverse}/>}
   </details>
   {confirm&&<Dialog.Root open onOpenChange={o=>{if(!o)setConfirm(null);}}><Dialog.Portal><Dialog.Overlay className="profile-switch-overlay"/><Dialog.Content className="profile-switch-dialog variant-dialog">
    <Dialog.Title>Dejar de vender en {confirm.row.name}</Dialog.Title>

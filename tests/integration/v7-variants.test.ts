@@ -48,7 +48,7 @@ it('builds, publishes, sells and copies a variant without mixing markets or prof
  v=data(await call(A,'PUT',`/v2/variants/${v.id}/offer`,{expected_version:v.version,value:{name:'Curso sintético',price_minor:9700,tiers:[],fulfillment:[{asset_id:asset,release_on:'receipt_approved'}],billing_delay_seconds:1800,positive_payment_unlocks_all:false,legacy:{}}}));
  // Cobro: SPEI and a link; neither CLABE nor URL ever comes back.
  const account18=clabe('01218000011835971');
- const saved=await call(A,'PUT',`/v2/variants/${v.id}/collection`,{expected_version:v.version,value:{spei:{bank:'Banco sintético',holder:'Titular sintético',clabe:account18},links:[{label:'Pago con tarjeta',provider:'stripe',url:'https://pay.example.com/curso?ref=abc'}],instructions:'Envía tu comprobante por aquí.'}});
+ const saved=await call(A,'PUT',`/v2/variants/${v.id}/collection`,{expected_version:v.version,value:{spei:{bank:'Banco sintético',holder:'Titular sintético',clabe:account18},links:[{label:'Pago con tarjeta',provider:'stripe',url:'https://pay.example.com/curso?ref=abc'}],instructions:'Envía tu comprobante por aquí.',expected_reference:'CURSO97',expected_concept:'Pago curso'}});
  v=data(saved);expect(saved.body).not.toContain(account18);expect(saved.body).not.toContain('ref=abc');expect(saved.body).not.toContain('Titular sintético');
  expect(v.document.collection).toMatchObject({spei:{bank:'Banco sintético',last4:account18.slice(-4)},links:[{label:'Pago con tarjeta',provider:'stripe',host:'pay.example.com'}]});
  expect((await call(A,'PUT',`/v2/variants/${v.id}/collection`,{expected_version:v.version,value:{spei:{bank:'X',holder:'Y',clabe:'012180000118359710'},links:[],instructions:''}})).statusCode).toBe(400);
@@ -66,6 +66,8 @@ it('builds, publishes, sells and copies a variant without mixing markets or prof
  expect(JSON.stringify(bank)).not.toContain(account18);
  const text=collectionInstructions({bank,secret:JSON.parse(decrypt(bank.secret_ciphertext)),price:'97.00',currency:'MXN'})!;
  expect(text).toContain(`CLABE ${account18}`);expect(text).toContain('Pago con tarjeta: https://pay.example.com/curso?ref=abc');expect(text).toContain('97.00 MXN');
+ // RF-09.d: the buyer sees what to write, and the receipt rules compare against it.
+ expect(bank).toMatchObject({expected_reference:'CURSO97',expected_concept:'Pago curso',language:'es-MX'});expect(text).toContain('Referencia: CURSO97');expect(text).toContain('Concepto: Pago curso');
 
  // Números: one human act; the number follows the variant.
  const number=await inProfile(A,async c=>(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','channel_account',$2) RETURNING *",[A,{name:'Ventas MX',provider:'simulator',status:'WORKING'}])).rows[0]);
