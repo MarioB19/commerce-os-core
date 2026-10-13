@@ -42,7 +42,7 @@ export function VariantEditor({productId,variantId,section,selection,role,state}
   <nav aria-label="Ruta" className="variant-breadcrumb"><a href="/products">Productos</a> › <a href={`/products/${productId}`}>{variant.product.name}</a> › <span>{d.name}</span></nav>
   <div className="variant-heading"><h1 id="variant-title">{variant.product.name} · {d.name}</h1>
    <span className={`number-status variant-state-${stateTone(variant.state)}`}>{variant.state_label}</span>
-   {manage&&!variant.archived&&<Button disabled={!canPublish||busy} onClick={()=>void publish()}>{busy?'Guardando…':variant.published?'Publicar cambios':'Publicar variante'}</Button>}
+   {manage&&!variant.archived&&(variant.unpublished_changes||!variant.published)&&<Button disabled={!canPublish||busy} onClick={()=>void publish()}>{busy?'Guardando…':variant.published?'Publicar cambios':'Publicar variante'}</Button>}
   </div>
   <p className="variant-hint">{languageLabel(d.locale.language)} · {d.locale.currency} · {d.locale.timezone}. Los cambios se aplican a conversaciones nuevas; las conversaciones en curso conservan su configuración.</p>
   {variant.unpublished_changes&&variant.published&&<p className="variant-pending" role="status">Tienes cambios guardados sin publicar.</p>}
