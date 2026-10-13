@@ -6,7 +6,7 @@ const ops=AUTOMATION_LOOP_NAMES.indexOf('operations_monitor');
 function fixture(){let now=Date.parse('2026-10-09T05:00:00Z');const monitor=new AutomationLoopMonitor(()=>now),handles=AUTOMATION_LOOP_NAMES.map(name=>monitor.add(name,async()=>{}));return{monitor,handles,now:()=>now,advance:(ms:number)=>{now+=ms;},run:()=>Promise.all(handles.map(handle=>handle.run())),body:()=>({service:'automation-worker',source:'AUTOMATION_LOOP_PROGRESS',status:monitor.snapshot().ready?'OK':'BLOCKED',observed_at:new Date(now).toISOString(),expires_at:new Date(now+45_000).toISOString(),loops:monitor.snapshot().loops})};}
 it('requires all twelve registrations and completed first iterations; polling is counted without effects',async()=>{
  const empty=new AutomationLoopMonitor();expect(empty.snapshot().ready).toBe(false);
- const f=fixture();expect(f.monitor.snapshot().loops).toHaveLength(13);expect(f.monitor.snapshot().ready).toBe(false);
+ const f=fixture();expect(f.monitor.snapshot().loops).toHaveLength(14);expect(f.monitor.snapshot().ready).toBe(false);
  await f.run();expect(f.monitor.snapshot().ready).toBe(true);expect(f.monitor.snapshot().loops.every(loop=>loop.attempts===1&&loop.successes===1&&loop.failures===0)).toBe(true);
  f.advance(1);await f.run();expect(f.monitor.snapshot().loops.every(loop=>loop.attempts===2&&loop.successes===2)).toBe(true);
  expect(automationLoopMetrics(f.monitor.snapshot())).toContain('commerce_automation_loop_successes_total{loop="automation_inbound"} 2');

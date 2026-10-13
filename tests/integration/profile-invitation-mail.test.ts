@@ -12,6 +12,7 @@ import {queueProfileInvitation,cancelProfileInvitation,listProfileInvitations} f
 import {dispatchProfileInvitationMail,readProfileInvitationMail,invitationMailMonths} from '../../packages/db/src/profile-invitation-mail.js';
 import {invitationLinkDigest} from '../../packages/db/src/profile-invitation-acceptance.js';
 import {mailPayloadSchema} from '../../packages/contracts/src/profile-invitation-mail.js';
+import {processInvitationMail,appEngineTransport} from '../../apps/automation-worker/src/invitation-mail.js';
 // V7 F2: an installation admits three profiles and 20 numbers; each fresh
 // fixture profile is sealed and the oldest are disposed to make room.
 const createdProfiles:string[]=[];
@@ -52,6 +53,21 @@ describe('invitation mail native PostgreSQL custody and synthetic local HTTP',()
  });
  beforeEach(async()=>{await admin.query('TRUNCATE profile_invitation_mail_attempts');clockBase=(await admin.query('SELECT clock_timestamp() AS now')).rows[0].now.getTime();clockStart=performance.now();});
  afterAll(async()=>{if(server)await new Promise<void>(resolve=>server!.close(()=>resolve()));await api?.end();await worker?.end();if(admin){try{await admin.query(`DROP ROLE IF EXISTS "${apiLogin}";DROP ROLE IF EXISTS "${mailLogin}"`);}finally{await admin.end();}}vi.unstubAllEnvs();});
+ it('V7 F1: the dispatcher discovers only identifiers of queued jobs and sends each once',async()=>{
+  const j=await job();
+  await expect(api.query('SELECT * FROM public.queued_profile_invitation_mail(5)')).rejects.toMatchObject({code:'42501'});
+  const listed=(await worker.query('SELECT * FROM public.queued_profile_invitation_mail(20)')).rows;
+  expect(listed).toContainEqual({workspace_id:j.workspaceId,job_id:j.jobId});
+  expect(Object.keys(listed[0]).sort()).toEqual(['job_id','workspace_id']);
+  const sent:string[]=[];
+  const result=await processInvitationMail({pool:worker as never,key,now:nativeClock,transport:{send:async(body,fence)=>{fence();sent.push(open(body).recipient);return accepted(body);}}});
+  expect(result.skipped).toBeNull();expect(sent).toContain(j.email);
+  expect((await worker.query('SELECT * FROM public.queued_profile_invitation_mail(20)')).rows).not.toContainEqual({workspace_id:j.workspaceId,job_id:j.jobId});
+  const again=await processInvitationMail({pool:worker as never,key,now:nativeClock,transport:{send:async()=>{throw Error('NO_SECOND_SEND');}}});
+  expect(again.results?.every(r=>r.state!=='ACCEPTED')??true).toBe(true);expect(sent.filter(r=>r===j.email)).toHaveLength(1);
+  expect(()=>appEngineTransport('https://mail.example.invalid')).toThrow('MAIL_SERVICE_ORIGIN_INVALID');
+  expect(()=>appEngineTransport('http://x.appspot.com')).toThrow('MAIL_SERVICE_ORIGIN_INVALID');
+ });
  it('gives a non-superuser worker only closed function execution, no raw tables or helper',async()=>{
   expect((await worker.query('SELECT rolsuper,rolbypassrls FROM pg_roles WHERE rolname=current_user')).rows[0]).toEqual({rolsuper:false,rolbypassrls:false});
   for(const table of ['profile_invitations','profile_invitation_mail_jobs','profile_invitation_mail_attempts','memberships'])await expect(worker.query('SELECT * FROM '+table)).rejects.toMatchObject({code:'42501'});

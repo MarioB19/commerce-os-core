@@ -97,7 +97,31 @@ base son puntos únicos de falla; F1 entrega recuperación medida, no failover.
 - **Reversible.** Sin `INGRESS_RELAY_URL` en el channel-worker no se configura
   el relay; sin `INGRESS_PUBSUB_SUBSCRIPTION` el ciclo no hace nada.
 
-## 4. Pendiente de esta ADR (se completa en las siguientes entregas de F1)
+## 4. Correo transaccional en App Engine (ADR-V7-13)
 
-Identidad de la VM, recursos GCP declarativos, presupuesto, correo App Engine
-(ADR-V7-13), arranque durable y orquestación de la ventana (Fase C).
+- **Servicio** (`infra/mail-appengine/`): Python 3.12 estándar, F1, 0–1
+  instancias, un solo hilo (los plazos usan señales), identidad propia
+  `commerce-v7-mail@`. Usa los módulos ya revisados
+  `scripts/gcp_mail_dispatch.py`/`gcp_mail_native.py`: verifica el token de
+  identidad Google de la cuenta de la VM (audiencia = URL del servicio), abre
+  el sobre AES-GCM con la llave de Secret Manager, deduplica en un diario GCS
+  con CAS de generación y hace una sola llamada a la Mail API desde
+  `invitations@<proyecto>.appspotmail.com`. Un control `mail/control.json`
+  (`enabled:true`) permite detenerlo sin redeploy. `scripts/v7_mail_appengine.py
+  stage` arma el directorio de despliegue con configuración cerrada (sin
+  valores secretos) y hashes.
+- **Despachador** (ciclo `invitation_mail` del automation-worker): con
+  `MAIL_DISPATCH_DATABASE_URL` (login del rol `commerce_mail_dispatch`),
+  `MAIL_SERVICE_ORIGIN` y `MAIL_ENVELOPE_KEY`. Descubre sólo identificadores
+  de trabajos en cola (`queued_profile_invitation_mail`, migración 0112) y usa
+  `dispatchProfileInvitationMail` (reserva con cuotas 8/min, 100/día y
+  presupuesto mensual, reclamo, un POST, cierre). Una respuesta perdida queda
+  `UNCERTAIN` y nunca se reenvía. Aceptación del API no es recepción: se
+  verifica en un buzón controlado.
+- **Pendiente:** avisos de número al dueño por correo (RF-07.e) con su propia
+  plantilla y reserva; hoy el aviso existe en la app y el MCP.
+
+## 5. Pendiente de esta ADR (se completa en las siguientes entregas de F1)
+
+Identidad de la VM, recursos GCP declarativos, presupuesto, arranque durable y
+orquestación de la ventana (Fase C).

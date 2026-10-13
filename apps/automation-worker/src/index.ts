@@ -1,3 +1,4 @@
+import {processInvitationMail} from './invitation-mail.js';
 import {consumeIngressRelay} from './ingress-relay-consumer.js';
 import {collectOperationalAlerts,deliverOperationalAlerts} from './operations-monitor.js';
 import {processWarmup} from './warmup.js';
@@ -37,7 +38,9 @@ const numberLab=loop('number_lab',500,()=>processNumberLabOperations(laboratory)
 const resultProjections=loop('result_projections',60000,()=>processResultProjections());
 // V7 F1 (ADR-V7-08): replay relayed webhooks; a no-op without INGRESS_PUBSUB_SUBSCRIPTION.
 const ingressRelay=loop('ingress_relay',1000,()=>consumeIngressRelay());
-const loops=[commands,materialize,workflows,insights,agents,receipts,variantReceipts,numberLab,resultProjections,ingressRelay,warmup,operations];
+// V7 F1 (ADR-V7-13): queued invitations through the App Engine mail service; a no-op until configured.
+const invitationMail=loop('invitation_mail',15000,()=>processInvitationMail());
+const loops=[commands,materialize,workflows,insights,agents,receipts,variantReceipts,numberLab,resultProjections,ingressRelay,invitationMail,warmup,operations];
 for(const item of loops)item.start();
 const service=await workerService('automation-worker',Number(process.env.PORT??process.env.AUTOMATION_PORT??3003),inbound.run,250,{progress:()=>monitor.snapshot(),metrics:()=>automationLoopMetrics(monitor.snapshot()),heartbeat:()=>persistAutomationHeartbeat(instance,monitor.snapshot())});
 const bus=new PostgresJobBus();await bus.start();await bus.work('automation.wake',async()=>{await service.run();});

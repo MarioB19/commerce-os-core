@@ -126,7 +126,7 @@ describe('V7 retirement export on the V5 schema before the one-transaction V7 pu
     try{for(const name of names){const sql=await migrationSql(name.slice(0,4));await c.query(sql);await c.query('INSERT INTO schema_migrations(name,sha256) VALUES($1,$2)',[name,hash(sql)]);}await c.query('COMMIT');}
     catch(error){await c.query('ROLLBACK');throw error;}
    }finally{c.release();}
-   expect((await pool.query("SELECT max(name) m,count(*)::int n FROM schema_migrations")).rows[0]).toEqual({m:'0111_v7_platform_recovery.sql',n:111});
+   expect((await pool.query("SELECT max(name) m,count(*)::int n FROM schema_migrations")).rows[0]).toEqual({m:'0112_v7_invitation_mail_queue.sql',n:112});
    expect((await pool.query("SELECT to_regclass('public.creative_voice_brief_versions') IS NULL gone")).rows[0].gone).toBe(true);
    const rows=(await readFile(join(directory,'creative_voice_brief_versions.jsonl.enc'),'utf8')).split('\n').filter(Boolean).map(line=>JSON.parse(decrypt(line)));
    expect(rows).toEqual([expect.objectContaining({id:version,brief_id:brief,body:{script:'synthetic <&> text'}})]);
