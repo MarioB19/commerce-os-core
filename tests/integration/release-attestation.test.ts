@@ -1,10 +1,13 @@
-import {it,expect,afterAll} from 'vitest';
+import {it,expect,afterAll,beforeAll} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import {execFileSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
 import {pool,putRecord,withTransaction} from '../../packages/db/src/index.js';
 import {writeOperationalSettings,readOperationalSettings} from '../../packages/db/src/operational-settings.js';
 import {defaultOperationalSettings} from '../../packages/contracts/src/index.js';
-const workspace='release-'+randomUUID();
+const workspace='release-'+randomUUID(),holdWorkspace='release-hold-'+randomUUID();
+// V7 F2: fixture workspaces are adopted profiles.
+beforeAll(()=>fixtureProfiles(workspace,holdWorkspace));
 afterAll(async()=>pool.end());
 it('executes the installer freeze and attestation SQL with real constraints and audit records',async()=>{
  const account=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'channel_account',body:{provider:'waha',name:'Synthetic release session'}});
@@ -44,7 +47,7 @@ print(json.dumps(queries))`;
 });
 
 it('holds a compatible release without revoking grants and queues only a fenced health read',async()=>{
- const ws='release-hold-'+randomUUID(),account=await putRecord(pool,{workspaceId:ws,environment:'REAL',kind:'channel_account',body:{provider:'waha',name:'Synthetic continuity session',sending_enabled:true}});
+ const ws=holdWorkspace,account=await putRecord(pool,{workspaceId:ws,environment:'REAL',kind:'channel_account',body:{provider:'waha',name:'Synthetic continuity session',sending_enabled:true}});
  const policy=await withTransaction(c=>writeOperationalSettings(c,ws,'REAL',0,{...defaultOperationalSettings,dispatch_frozen:false,real_sends_enabled:true,allow_real_operations:true},'fixture'));
  await pool.query("INSERT INTO session_ownership(account_id,workspace_id,owner_id,generation,lease_expires_at,frozen) VALUES($1,$2,'old-continuity-owner',4,now()+interval '1 minute',false)",[account.id,ws]);
  const explicitlyFrozen=await putRecord(pool,{workspaceId:ws,environment:'REAL',kind:'channel_account',body:{provider:'waha',name:'Synthetic explicit freeze'}});

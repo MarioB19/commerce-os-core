@@ -3,9 +3,11 @@ import {randomUUID,randomBytes} from 'node:crypto';
 import {pool,putRecord,hash} from '../../packages/db/src/index.js';
 import {createApp} from '../../apps/api/src/app.js';
 import {costSummary} from '../../apps/api/src/costs.js';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 afterAll(async()=>pool.end());
 it('separates persisted costs, uncertainty and currencies; does not attribute global Intelligence or diagnostics to a product',async()=>{
  const workspace='v5-costs-'+randomUUID(),base={workspaceId:workspace,environment:'SIMULATION' as const};
+ await fixtureProfiles(workspace);// V7 F2: the fixture workspace is an adopted profile.
  const a=await putRecord(pool,{...base,kind:'product',body:{name:'Synthetic A'}}),b=await putRecord(pool,{...base,kind:'product',body:{name:'Synthetic B'}});
  const contact=await putRecord(pool,{...base,kind:'contact',body:{name:'Synthetic contact'}}),account=await putRecord(pool,{...base,kind:'channel_account',body:{name:'Virtual',provider:'simulator'}});
  const ca=await putRecord(pool,{...base,kind:'conversation',body:{product_id:a.id,contact_id:contact.id,account_id:account.id}}),cb=await putRecord(pool,{...base,kind:'conversation',body:{product_id:b.id,contact_id:contact.id,account_id:account.id}});

@@ -4,7 +4,9 @@ import {warmupProfileSchema} from '../../domain/src/warmup/policy.js';
 export type WarmupSimulationInput={seed:number;at:string;participants:2|3;fault:'none'|'delay'|'duplicate'|'out_of_order'|'accepted_timeout'|'rejected'|'peer_disconnected'};
 /** Virtual participants are provider fixtures, never sales contacts or real identities. */
 export async function createWarmupSimulation(c:QueryExecutor,workspace:string,input:WarmupSimulationInput){
- const id=uuid(),execution=workspace+':warmup:'+id,now=new Date(input.at),profile=warmupProfileSchema.parse({name:'Laboratorio conversacional',mode:'inbound-light',policy_version:'inbound-light/v1',timezone:'UTC',start_hour:0,end_hour:23,weekend_factor:1,jitter_seconds:0,rate_per_minute:2});
+ // V7 F2: the run executes inside the requesting profile (SIMULATION), keyed by
+ // run id; a derived workspace would be a fourth profile outside the quotas.
+ const id=uuid(),execution=workspace,now=new Date(input.at),profile=warmupProfileSchema.parse({name:'Laboratorio conversacional',mode:'inbound-light',policy_version:'inbound-light/v1',timezone:'UTC',start_hour:0,end_hour:23,weekend_factor:1,jitter_seconds:0,rate_per_minute:2});
  await c.query("INSERT INTO warmup_simulation_runs(id,workspace_id,execution_workspace,seed,virtual_now,input) VALUES($1,$2,$3,$4,$5,$6)",[id,workspace,execution,input.seed,now,input]);
  const p=(await c.query("INSERT INTO warmup_profiles(workspace_id,environment,config) VALUES($1,'SIMULATION',$2) RETURNING id",[execution,profile])).rows[0];
  const group=(await c.query("INSERT INTO warmup_pools(workspace_id,environment,profile_id,enabled,allow_small_pool_concentration) VALUES($1,'SIMULATION',$2,true,true) RETURNING *",[execution,p.id])).rows[0],ids:string[]=[];
@@ -23,6 +25,6 @@ export async function createWarmupSimulation(c:QueryExecutor,workspace:string,in
 }
 export async function readWarmupSimulation(c:QueryExecutor,id:string,workspace:string){
  const run=(await c.query('SELECT * FROM warmup_simulation_runs WHERE id=$1 AND workspace_id=$2',[id,workspace])).rows[0];if(!run)return null;
- const turns=(await c.query(`SELECT t.position,t.id turn_id,t.sender_id,t.recipient_id,t.received_envelope_id,t.received_at,o.id effect_id,o.status,o.provider_message_id,o.attempts,o.result FROM warmup_turns t JOIN outbox o ON o.id=t.effect_id WHERE t.workspace_id=$1 ORDER BY t.conversation_id,t.position`,[run.execution_workspace])).rows;
+ const turns=(await c.query(`SELECT t.position,t.id turn_id,t.sender_id,t.recipient_id,t.received_envelope_id,t.received_at,o.id effect_id,o.status,o.provider_message_id,o.attempts,o.result FROM warmup_turns t JOIN outbox o ON o.id=t.effect_id JOIN warmup_conversations v ON v.id=t.conversation_id WHERE t.workspace_id=$1 AND v.simulation_run_id=$2 ORDER BY t.conversation_id,t.position`,[run.execution_workspace,run.id])).rows;
  return{run_id:run.id,seed:run.seed,virtual_now:run.virtual_now,status:run.status,version:run.version,fault:run.input.fault,turns,external_effects:0,real_observation:false,temporal_observation:'VIRTUAL_ONLY',internal_criteria_met:false,cost_minor:0,result:run.result};
 }

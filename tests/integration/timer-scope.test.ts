@@ -1,19 +1,26 @@
-import {afterAll,afterEach,describe,expect,it,vi} from 'vitest';
+import {afterAll,afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {randomUUID} from 'node:crypto';
 import {pool,putRecord,getRecord,withTransaction} from '../../packages/db/src/index.js';
 import type {DomainRecord,Environment} from '../../packages/contracts/src/index.js';
 import {advanceWorkflow,processTimers} from '../../apps/automation-worker/src/workflows.js';
+import {fixtureProfiles} from '../support/profile-fixture.js';
+import {disposeAllFixtureProfiles} from '../support/migrated-database.js';
 
 afterAll(async()=>pool.end());
 afterEach(()=>vi.restoreAllMocks());
+// V7 F2: every case writes to its own synthetic workspaces, which must be
+// adopted profiles; an installation admits three, so each case starts clean.
+beforeEach(()=>disposeAllFixtureProfiles(pool));
 
 // Observe the real PostgreSQL selector result, including candidates that a
 // later locked recheck would reject. Other integration fixtures may be due.
 function selectedTimers(){
  const selected=new Set<string>();
- const original=pool.query.bind(pool);
- vi.spyOn(pool,'query').mockImplementation(((...args:any[])=>{
-  const pending=(original as any)(...args);
+ // The routed pool delegates to the native pg query; observe that one so the
+ // observer does not re-enter the router.
+ const original=(Object.getPrototypeOf(pool) as {query:(...args:any[])=>any}).query;
+ vi.spyOn(pool,'query').mockImplementation((function(this:unknown,...args:any[]){
+  const pending=original.apply(this,args);
   if(typeof args[0]==='string'&&args[0].startsWith('SELECT t.id FROM timers t')){
    return pending.then((result:any)=>{for(const row of result.rows)selected.add(row.id);return result;});
   }
@@ -23,9 +30,11 @@ function selectedTimers(){
 }
 
 async function record(workspace:string,kind:string,body:Record<string,any>,environment:Environment='SIMULATION'){
+ await fixtureProfiles(workspace);
  return putRecord(pool,{workspaceId:workspace,environment,kind,body});
 }
 async function timer(workspace:string,conversation:DomainRecord,dueAt:string,environment:Environment='SIMULATION'){
+ await fixtureProfiles(workspace);
  return (await pool.query(`INSERT INTO timers(workspace_id,environment,conversation_id,kind,due_at,logical_key)
   VALUES($1,$2,$3,'wait',$4,$5) RETURNING *`,[workspace,environment,conversation.id,dueAt,randomUUID()])).rows[0];
 }

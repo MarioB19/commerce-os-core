@@ -1,5 +1,5 @@
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
-import {fixtureProfiles} from '../support/profile-fixture.js';
+import {fixtureProfiles,fixtureCoOwner} from '../support/profile-fixture.js';
 import {randomUUID,randomBytes} from 'node:crypto';
 import {mkdtemp,readFile,rm,stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -16,7 +16,7 @@ let app:FastifyInstance,cookie:string,userId:string;
 const expires=()=>new Date(Date.now()+86400000).toISOString();
 function call(method:any,path:string,body?:any,token?:string,key=randomUUID()) {return app.inject({method,url:path,headers:{...(token?{authorization:'Bearer '+token}:{cookie,origin}),'idempotency-key':key},...(body===undefined?{}:{payload:body})});}
 async function issue(allowed_environments=['REAL','SIMULATION']) {const r=await call('POST','/v1/personal-access-tokens',{environment:allowed_environments[0],name:'Synthetic personal API',allowed_environments,expires_at:expires(),reason:'Explicit synthetic owner delegation',confirmation:'CREATE_OWNER_API_TOKEN'});expect(r.statusCode).toBe(201);return r.json().data;}
-beforeAll(async()=>{app=await createApp();const password=randomBytes(24).toString('base64url');userId=(await provisionUser({name:'Synthetic owner',email,password,workspace_id:workspace,role:'owner'})).id;const login=await app.inject({method:'POST',url:'/api/auth/sign-in/email',headers:{origin},payload:{email,password}});expect(login.statusCode).toBe(200);cookie=(Array.isArray(login.headers['set-cookie'])?login.headers['set-cookie']:[login.headers['set-cookie']]).filter(Boolean).map(x=>String(x).split(';')[0]).join('; ');});
+beforeAll(async()=>{app=await createApp();const password=randomBytes(24).toString('base64url');userId=(await provisionUser({name:'Synthetic owner',email,password,workspace_id:workspace,role:'owner'})).id;/* V7 F2: a second owner lets cases downgrade this one (last-owner rule) */await fixtureCoOwner(pool,workspace);const login=await app.inject({method:'POST',url:'/api/auth/sign-in/email',headers:{origin},payload:{email,password}});expect(login.statusCode).toBe(200);cookie=(Array.isArray(login.headers['set-cookie'])?login.headers['set-cookie']:[login.headers['set-cookie']]).filter(Boolean).map(x=>String(x).split(';')[0]).join('; ');});
 afterAll(async()=>{await app.close();await pool.end();});
 
 describe('Personal owner API access',()=>{

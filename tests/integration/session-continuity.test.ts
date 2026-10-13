@@ -1,6 +1,6 @@
 import {consumeProviderObservations} from '../../apps/channel-worker/src/observations.js';
-import {beforeAll,afterAll,it,expect} from 'vitest';
-import {fixtureProfiles} from '../support/profile-fixture.js';
+import {beforeAll,beforeEach,afterAll,it,expect} from 'vitest';
+import {fixtureProfiles,releaseFixtureNumbers} from '../support/profile-fixture.js';
 import {randomUUID,randomBytes} from 'node:crypto';
 import {createApp} from '../../apps/api/src/app.js';
 import {provisionUser} from '../../apps/api/src/auth.js';
@@ -12,9 +12,12 @@ import {superviseSessions} from '../../apps/channel-worker/src/session-superviso
 import {collectSessionAlerts} from '../../apps/automation-worker/src/session-alerts.js';
 import {SimulatorProvider,type HealthSignal} from '../../packages/messaging/src/index.js';
 import type {DomainRecord} from '../../packages/contracts/src/index.js';
-const workspace='continuity-'+randomUUID(),origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0]!;
+const workspace='continuity-'+randomUUID(),outsider='other-'+workspace,origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0]!;
 // V7 F2: fixture workspaces are adopted profiles (max three per installation).
-beforeAll(()=>fixtureProfiles(workspace));
+beforeAll(()=>fixtureProfiles({id:workspace,numbers:19},{id:outsider,numbers:1}));
+// V7 F2: the installation admits 20 connected numbers; each case starts with
+// the earlier synthetic numbers' quota reservations released.
+beforeEach(()=>releaseFixtureNumbers(pool));
 let app:Awaited<ReturnType<typeof createApp>>,cookie:string,user:string;
 const request=(method:any,url:string,body?:any,key=randomUUID())=>app.inject({method,url:url+(url.includes('?')?'&':'?')+'environment=REAL',payload:body,headers:{cookie,origin,'idempotency-key':key}});
 const signals=(state='WORKING',fingerprint='fixture-identity',at=new Date()):HealthSignal[]=>[{dimension:'session',status:state==='WORKING'?'OK':'BLOCKED',value:state,source:'provider_read',scope:'account',availability:'supported',observedAt:at.toISOString(),expiresAt:new Date(at.getTime()+60000).toISOString()},...(state==='WORKING'?[{dimension:'transport' as const,status:'OK' as const,value:{identity_fingerprint:fingerprint},source:'provider_read' as const,scope:'account' as const,availability:'supported' as const,observedAt:at.toISOString(),expiresAt:new Date(at.getTime()+60000).toISOString()}]:[])];
@@ -37,7 +40,7 @@ it('backfills conservative state, validates scope, revisions and primary declara
  const response=await request('POST',url+'/primary-usage',body,key);expect(response.statusCode,response.body).toBe(200);expect((await request('POST',url+'/primary-usage',body,key)).json()).toEqual(response.json());expect((await request('POST',url+'/primary-usage',body)).statusCode).toBe(409);
  expect((await request('POST',url+'/primary-usage',{...body,expected_version:2,used_at:new Date(Date.now()+86400000).toISOString()})).statusCode).toBe(400);
  expect((await request('PATCH',url+'/session',{expected_version:2,responsible_user_id:'other-workspace',reason:'bad scope'})).statusCode).toBe(400);
- const outside=await putRecord(pool,{workspaceId:'other-'+workspace,environment:'REAL',kind:'channel_account',body:{provider:'cloud'}});expect((await request('GET',`/v1/channel-accounts/${outside.id}/session`)).statusCode).toBe(404);
+ const outside=await putRecord(pool,{workspaceId:outsider,environment:'REAL',kind:'channel_account',body:{provider:'cloud'}});expect((await request('GET',`/v1/channel-accounts/${outside.id}/session`)).statusCode).toBe(404);
  const saved=await session(a);expect(saved.primary_usage_source).toBe('operator_confirmation');expect(saved.primary_usage_recorded_by).toBe(user);expect((await getRecord(pool,workspace,'channel_account',a.id))!.body.sending_enabled).toBe(false);
 });
 it('observations require identity, preserve expected identity and reject older or future observations',async()=>{
@@ -141,7 +144,9 @@ it('deduplicates per-account maintenance alerts and preserves unknown notificati
 });
 it('polls 20 accounts fairly with bounded concurrency, including absent owners, without provider mutations',async()=>{
  // Existing fixtures are marked recently polled to isolate this synthetic scale sample.
- await pool.query('UPDATE channel_sessions SET last_health_at=now()');const accounts=[];for(let i=0;i<20;i++)accounts.push(await account());
+ await pool.query('UPDATE channel_sessions SET last_health_at=now()');
+ // The whole platform allocation (20 numbers) goes to this profile for the sample.
+ await fixtureProfiles({id:workspace,numbers:20},{id:outsider,numbers:0});const accounts=[];for(let i=0;i<20;i++)accounts.push(await account());
  let active=0,peak=0;const seen=new Set<string>();const start=performance.now();
  await collectHealth(a=>{const p=new SimulatorProvider();p.health=async()=>{active++;peak=Math.max(peak,active);await new Promise(r=>setTimeout(r,8));active--;seen.add(a.id);return signals();};p.lifecycle=async()=>{throw Error('NO_MUTATIONS_EXPECTED');};return p;});
  expect(accounts.every(a=>seen.has(a.id))).toBe(true);expect(peak).toBeLessThanOrEqual(4);expect(seen.size).toBe(20);expect(performance.now()-start).toBeLessThan(90000);

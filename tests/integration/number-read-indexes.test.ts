@@ -1,5 +1,6 @@
 import {afterAll,expect,it} from 'vitest';
-import {fixtureProfiles} from '../support/profile-fixture.js';
+import {fixtureProfiles,retireRealAccountOn} from '../support/profile-fixture.js';
+import {disposeAllFixtureProfiles} from '../support/migrated-database.js';
 import {randomUUID} from 'node:crypto';
 import {pool,putRecord} from '../../packages/db/src/index.js';
 import {capacityReserve,readCapacitySnapshot} from '../../apps/api/src/number-capacity.js';
@@ -20,7 +21,8 @@ it('keeps cross-workspace physical reservations global while excluding SIM, dele
   const occupied=await putRecord(c,{workspaceId:other,environment:'REAL',kind:'channel_account',body:{name:'Global physical fixture',provider:'waha',gateway_ref:'waha-'+String(free).padStart(2,'0'),status:'DISCONNECTED',sending_enabled:false}});
   const sim=await putRecord(c,{workspaceId:other,environment:'SIMULATION',kind:'channel_account',body:{name:'SIM fixture',provider:'simulator'}});
   const cloud=await putRecord(c,{workspaceId:other,environment:'REAL',kind:'channel_account',body:{name:'Cloud fixture',provider:'cloud'}});
-  const deleted=await putRecord(c,{workspaceId:other,environment:'REAL',kind:'channel_account',body:{name:'Deleted fixture',provider:'waha',deleted_at:new Date().toISOString()}});
+  // V7 F2: a deleted REAL number is admitted first and retired through the quota path.
+  const deleted=await putRecord(c,{workspaceId:other,environment:'REAL',kind:'channel_account',body:{name:'Deleted fixture',provider:'waha'}});await retireRealAccountOn(c,other,deleted.id);
   const snapshot=await readCapacitySnapshot(c,workspace,'REAL');
   expect(snapshot.hostMappings.find(row=>row.account_id===occupied.id)).toMatchObject({workspace_id:other,physical_slot:free});
   expect(snapshot.hostMappings.filter(row=>[sim.id,cloud.id,deleted.id].includes(row.account_id))).toEqual([]);
@@ -32,7 +34,7 @@ it('keeps cross-workspace physical reservations global while excluding SIM, dele
 it('selects only the last webhook for the exact account and preserves expired or absent UNKNOWN',async()=>{
  const c=await pool.connect();await c.query('BEGIN');
  try {
-  const workspace='webhook-index-'+randomUUID();await fixtureProfiles(workspace);// V7 F2: adopted profile
+  const workspace='webhook-index-'+randomUUID();await disposeAllFixtureProfiles(pool);await fixtureProfiles(workspace,workspace+'-other');// V7 F2: adopted profiles
   const account=await putRecord(c,{workspaceId:workspace,environment:'REAL',kind:'channel_account',body:{name:'Webhook fixture',provider:'waha'}});
   const other=await putRecord(c,{workspaceId:workspace+'-other',environment:'REAL',kind:'channel_account',body:{name:'Other workspace webhook fixture',provider:'waha'}});
   expect((await channelReception(c,account)).webhook.state).toBe('UNKNOWN');

@@ -31,10 +31,13 @@ afterAll(async()=>{
  await adminPool.query(`DROP ROLE IF EXISTS "${login}"`);
  await adminPool.end();
 });
-async function asRole<T>(role:string,work:(client:pg.PoolClient)=>Promise<T>){
+async function asRole<T>(role:string,work:(client:pg.PoolClient)=>Promise<T>,context=true){
  if(!['commerce_api','commerce_channel','commerce_automation','commerce_ingress','commerce_maintenance'].includes(role))throw Error('SYNTHETIC_ROLE_REQUIRED');
  const client=await pool.connect();
- try{await client.query('BEGIN');await client.query('SET LOCAL ROLE '+role);return await work(client);}
+ try{await client.query('BEGIN');await client.query('SET LOCAL ROLE '+role);
+  // V7 F2: the API role only writes inside an authenticated profile context.
+  if(role==='commerce_api'&&context)await client.query("SELECT pg_catalog.set_config('app.workspace_id',$1,true),pg_catalog.set_config('app.environment','SIMULATION',true)",[workspace]);
+  return await work(client);}
  finally{await client.query('ROLLBACK');client.release();}
 }
 
@@ -63,6 +66,10 @@ it.each(['commerce_api','commerce_channel'])('preserves %s denial for metric ins
  const expected=role==='commerce_api'?'WRITE_OWNER_API':'WRITE_OWNER_CHANNEL';
  await expect(asRole(role,c=>putRecord(c,{workspaceId:workspace,environment:'SIMULATION',kind:'operational_metric',body:{key:'private_storage_disk'}}))).rejects.toThrow(expected);
  await expect(asRole(role,c=>c.query('UPDATE records SET body=body||$2::jsonb WHERE id=$1',[metricId,{available_bytes:0}]))).rejects.toThrow(expected);
+});
+
+it('denies commerce_api record writes outside a profile context (V7 F2)',async()=>{
+ await expect(asRole('commerce_api',c=>putRecord(c,{workspaceId:workspace,environment:'SIMULATION',kind:'product',body:{name:'Synthetic contextless product'}}),false)).rejects.toThrow(/CONTEXT_REQUIRED|row-level security/);
 });
 
 it.each(['commerce_ingress','commerce_maintenance'])('does not grant %s record writes',async role=>{

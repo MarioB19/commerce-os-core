@@ -49,13 +49,19 @@ export async function releaseFixtureNumbers(db:QueryExecutor){
  * its profile's context: ownership frozen, channel paused, stopped and
  * unverified first, then `deleted_at`. V7 refuses any other retirement. */
 export async function retireRealAccount(workspace:string,accountId:string,deletedAt=new Date().toISOString()){
- await withTransaction(async c=>{
-  await c.query("SELECT pg_catalog.set_config('app.workspace_id',$1,true),pg_catalog.set_config('app.environment','REAL',true)",[workspace]);
-  await c.query('UPDATE session_ownership SET frozen=true WHERE account_id=$1 AND workspace_id=$2',[accountId,workspace]);
-  await c.query("INSERT INTO manual_controls(workspace_id,scope_type,scope_id,paused,reason,actor_id) VALUES($1,'channel_account',$2,true,'Synthetic retirement','fixture') ON CONFLICT (workspace_id,scope_type,scope_id) DO UPDATE SET paused=true",[workspace,accountId]);
-  await c.query("UPDATE records SET body=body||jsonb_build_object('status','STOPPED','sending_enabled',false,'identity_verified',false,'unlinked_at',$3::text)-'active_authorization_id',version=version+1 WHERE id=$1 AND workspace_id=$2 AND kind='channel_account'",[accountId,workspace,deletedAt]);
-  await c.query("UPDATE records SET body=body||jsonb_build_object('deleted_at',$3::text),version=version+1 WHERE id=$1 AND workspace_id=$2 AND kind='channel_account'",[accountId,workspace,deletedAt]);
- });
+ await withTransaction(c=>retireRealAccountOn(c,workspace,accountId,deletedAt));
+}
+
+/** retireRealAccount inside the caller's open transaction; the caller's
+ * profile context is restored afterwards. */
+export async function retireRealAccountOn(c:QueryExecutor,workspace:string,accountId:string,deletedAt=new Date().toISOString()){
+ const previous=(await c.query("SELECT current_setting('app.workspace_id',true) AS workspace,current_setting('app.environment',true) AS environment")).rows[0] as {workspace:string|null;environment:string|null};
+ await c.query("SELECT pg_catalog.set_config('app.workspace_id',$1,true),pg_catalog.set_config('app.environment','REAL',true)",[workspace]);
+ await c.query('UPDATE session_ownership SET frozen=true WHERE account_id=$1 AND workspace_id=$2',[accountId,workspace]);
+ await c.query("INSERT INTO manual_controls(workspace_id,scope_type,scope_id,paused,reason,actor_id) VALUES($1,'channel_account',$2,true,'Synthetic retirement','fixture') ON CONFLICT (workspace_id,scope_type,scope_id) DO UPDATE SET paused=true",[workspace,accountId]);
+ await c.query("UPDATE records SET body=body||jsonb_build_object('status','STOPPED','sending_enabled',false,'identity_verified',false,'unlinked_at',$3::text)-'active_authorization_id',version=version+1 WHERE id=$1 AND workspace_id=$2 AND kind='channel_account'",[accountId,workspace,deletedAt]);
+ await c.query("UPDATE records SET body=body||jsonb_build_object('deleted_at',$3::text),version=version+1 WHERE id=$1 AND workspace_id=$2 AND kind='channel_account'",[accountId,workspace,deletedAt]);
+ await c.query("SELECT pg_catalog.set_config('app.workspace_id',$1,true),pg_catalog.set_config('app.environment',$2,true)",[previous.workspace??'',previous.environment??'']);
 }
 
 /** A REAL connected number admitted and then retired (see retireRealAccount).

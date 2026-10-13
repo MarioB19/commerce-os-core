@@ -2,6 +2,8 @@ import type {DomainRecord} from '../../packages/contracts/src/index.js';
 import {afterAll,expect,it} from 'vitest';
 import {randomUUID} from 'node:crypto';
 import {pool,putRecord,getRecord,withTransaction,hash,encrypt,stableJson,readOperationalSettings} from '../../packages/db/src/index.js';
+import {fixtureProfiles} from '../support/profile-fixture.js';
+import {disposeAllFixtureProfiles} from '../support/migrated-database.js';
 import {warmupProfileSchema,localWindow} from '../../packages/domain/src/warmup/policy.js';
 import {reserveWarmupRate,commercialWarmupGuard} from '../../packages/db/src/warmup.js';
 import {planWarmupPool,reconcileWarmupPool,evaluateWarmupPool,processWarmup} from '../../apps/automation-worker/src/warmup.js';
@@ -15,6 +17,8 @@ afterAll(async()=>pool.end());
 const owner='warmup-fixture-owner';
 async function fixture(count=2,contentCount=2){
  const workspace='warmup-runtime-'+randomUUID(),now=new Date(),offset=now.getUTCHours()-12,zone=`Etc/GMT${offset>=0?'+':''}${offset}`;
+ // V7 F2: each case owns a fresh adopted profile; earlier cases' fixtures are disposed.
+ await disposeAllFixtureProfiles(pool);await fixtureProfiles(workspace);
  const profile=warmupProfileSchema.parse({policy_version:'legacy-30d/v1',name:'Synthetic own-pool profile',timezone:zone,start_hour:0,end_hour:23,profile_wait_hours:12,weekend_factor:1});
  const p=(await pool.query("INSERT INTO warmup_profiles(workspace_id,environment,config) VALUES($1,'SIMULATION',$2) RETURNING *",[workspace,profile])).rows[0];
  const group=(await pool.query("INSERT INTO warmup_pools(workspace_id,environment,profile_id,enabled,allow_small_pool_concentration) VALUES($1,'SIMULATION',$2,true,true) RETURNING *",[workspace,p.id])).rows[0];

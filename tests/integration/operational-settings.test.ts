@@ -1,6 +1,6 @@
 import {explicitFixtureEnvironment} from './explicit-fixture-environment.js';
 import {afterAll,beforeAll,describe,expect,it,beforeEach} from 'vitest';
-import {fixtureProfiles} from '../support/profile-fixture.js';
+import {fixtureProfiles,releaseFixtureNumbers} from '../support/profile-fixture.js';
 import {disposeAllFixtureProfiles} from '../support/migrated-database.js';
 import {randomBytes,randomUUID} from 'node:crypto';
 import type {FastifyInstance} from 'fastify';
@@ -119,6 +119,9 @@ describe('Exclusive ownership after recreation',()=>{
  it('records a late lifecycle outcome without overwriting a newer generation',async()=>{
   // A global worker can reach a different account before this race fixture.
   // Only the target account may open its controlled provider-completion gate.
+  // V7 F2: earlier synthetic numbers release their reservations so three
+  // profiles can share the installation's 20 numbers.
+  await releaseFixtureNumbers(pool);
   const foreignWorkspace='foreign-lifecycle-'+randomUUID();await fixtureProfiles(foreignWorkspace);
   const foreign=await putRecord(pool,{workspaceId:foreignWorkspace,environment:'SIMULATION',kind:'channel_account',body:{provider:'simulator',status:'NEW',sending_enabled:false}});
   const foreignCommand=(await pool.query("INSERT INTO commands(workspace_id,environment,kind,resource_id,actor_id,payload,idempotency_key) VALUES($1,'SIMULATION','channel_command',$2,'synthetic',$3,gen_random_uuid()::text) RETURNING id",[foreignWorkspace,foreign.id,{type:'connect'}])).rows[0];

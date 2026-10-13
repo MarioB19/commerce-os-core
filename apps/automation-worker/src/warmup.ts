@@ -198,7 +198,8 @@ export async function planWarmupPool(c:QueryExecutor,pool:Body,now=new Date()){
   }
   if(!selected)break;
   const {a,b,content,start,gap}=selected,conversationId=uuid();
-  const simulation=(await c.query('SELECT id FROM warmup_simulation_runs WHERE execution_workspace=$1',[pool.workspace_id])).rows[0];
+  // A laboratory pool names its run; other SIMULATION pools follow the number clock.
+  const simulation=(await c.query("SELECT id FROM warmup_simulation_runs WHERE execution_workspace=$1 AND (id::text=$2 OR ($2::text IS NULL AND (execution_workspace<>workspace_id OR input->>'scenario'='numbers-lifecycle'))) ORDER BY created_at LIMIT 1",[pool.workspace_id,auth?.scope?.simulation_run_id??null])).rows[0];
   await c.query('INSERT INTO warmup_conversations(id,workspace_id,environment,initiator_id,peer_id,content_id,local_date,pool_id,simulation_run_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',[conversationId,pool.workspace_id,pool.environment,a.account_id,b.account_id,content.id,window.date,pool.id,simulation?.id??null]);
   let predecessor:string|null=null;
   for(const [position,turnContent] of (content.body.turns as Body[]).entries()){
@@ -227,7 +228,7 @@ async function runWindow(pool:Body,kind:'daily'|'health'|'reconcile',window:stri
  catch(error){await query("UPDATE warmup_schedule_runs SET status='FAILED',finished_at=$4,result=$5 WHERE pool_id=$1 AND kind=$2 AND window_key=$3",[pool.id,kind,window,now,{error:error instanceof Error&&/^[A-Z_]+$/.test(error.message)?error.message:'WARMUP_COORDINATOR_FAILED'}]);throw error;}
 }
 export async function processWarmup(at=new Date()){
- const pools=(await query("SELECT p.* FROM warmup_pools p WHERE COALESCE(to_jsonb(p)->>'continuity_mode','LEGACY')='LEGACY' AND NOT EXISTS(SELECT 1 FROM warmup_simulation_runs r WHERE r.execution_workspace=p.workspace_id AND r.input->>'scenario' IS DISTINCT FROM 'numbers-lifecycle') ORDER BY p.created_at")).rows;
+ const pools=(await query("SELECT p.* FROM warmup_pools p WHERE COALESCE(to_jsonb(p)->>'continuity_mode','LEGACY')='LEGACY' AND NOT EXISTS(SELECT 1 FROM warmup_simulation_runs r WHERE r.execution_workspace=p.workspace_id AND r.execution_workspace<>r.workspace_id AND r.input->>'scenario' IS DISTINCT FROM 'numbers-lifecycle') AND NOT EXISTS(SELECT 1 FROM operation_authorizations a WHERE a.id=p.authorization_id AND a.scope ? 'simulation_run_id') ORDER BY p.created_at")).rows;
  for(const pool of pools){
   try{const now=pool.environment==='SIMULATION'?await numberNow({query} as QueryExecutor,pool.workspace_id,pool.environment):at;const profile=await profileFor({query} as QueryExecutor,pool.profile_id);
   await runWindow(pool,'health',String(Math.floor(now.getTime()/900000)),now,(c,p)=>evaluateWarmupPool(c,p,now));
