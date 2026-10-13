@@ -17,6 +17,7 @@ import {resultsRoutes} from './results.js';
 import {resultGoalRoutes} from './result-goals.js';
 import {platformProfileRoutes,type PlatformRouteDependencies} from './platform-profiles.js';
 import {profileIntegrationRoutes,type IntegrationRouteDependencies} from './profile-integrations.js';
+import {profileReadRoutes} from './profile-reads.js';
 
 export interface ProfileRuntimeDependencies {
  request?:ProfileRequestDependencies;
@@ -41,7 +42,7 @@ export async function profileRuntimeRoutes(app:FastifyInstance,deps:ProfileRunti
  await app.register(async integrations=>{await profileIntegrationRoutes(integrations,{...deps.integrations,request:deps.integrations?.request??deps.request});});
  for(const routes of [profileOverviewRoutes,profileSettingsRoutes,profileEmployeeRoutes,
   profileInvitationRoutes,profileTokenRoutes,profileCatalogRoutes,marketVariantRoutes,
-  continuousAuthorizationRoutes,paymentsRegisterRoutes,receiptPolicyRoutes,resultsRoutes,resultGoalRoutes]){
+  continuousAuthorizationRoutes,paymentsRegisterRoutes,receiptPolicyRoutes,resultsRoutes,resultGoalRoutes,profileReadRoutes]){
   await app.register(async family=>{await routes(family,deps.request);});
  }
 }

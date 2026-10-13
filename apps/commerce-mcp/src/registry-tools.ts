@@ -98,6 +98,21 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
   fromUnion(resultsCommandSchema,{options:'opciones',report:'resumen'},()=>true,i=>c.results(i)));
  tool('goals_manage','Metas','Lista, consulta y edita metas con UUID de operación; si el resultado no es concluyente, consulta la operación.',
   fromUnion(resultsCommandSchema,{goals:'listar',goal:'leer',progress:'avance',create:'crear',update:'editar',reconcile:'consultar_operacion'},op=>!['create','update'].includes(op),i=>c.results(i)));
+ tool('home_get','Inicio del perfil','Resumen de Inicio: números conectados y aptos para atender (con causas), ventas de hoy, pendientes y siguiente paso.',{
+  resumen:v('GET',empty,()=>'/v2/home')(c.v2),
+ });
+ const usage=(pick:(u:any)=>unknown):ManageAction=>({schema:empty,read:true,run:async()=>pick(await c.v2('GET','/v2/usage'))});
+ tool('usage_read','Uso del perfil','Uso observado junto a los límites configurados del perfil; nunca un pronóstico.',{
+  conversaciones:usage(u=>({timezone:u.timezone,conversationsToday:u.conversationsToday})),numeros:usage(u=>({numbers:u.numbers})),
+  almacenamiento:usage(u=>({storage:u.storage})),costo_ia:usage(u=>({aiCost:u.aiCost})),cuotas:usage(u=>u),
+ });
+ tool('audit_read','Auditoría del perfil','Acciones sensibles del perfil (quién, qué, cuándo) sin contenido de conversaciones ni secretos. Exportar requiere permiso de Dueño.',{
+  listar:v('GET',z.object({before:z.iso.datetime({offset:true}).optional(),limit:z.number().int().min(1).max(200).optional()}).strict(),i=>'/v2/audit'+query(i))(c.v2),
+  exportar:v('GET',empty,()=>'/v2/audit/export?format=json')(c.v2),
+ });
+ tool('operations_get','Resultado de una operación','Consulta el resultado registrado de una operación propia por su UUID antes de repetirla.',{
+  leer_resultado:v('GET',z.object({operationId:z.uuid()}).strict(),i=>'/v2/operations/'+id(i.operationId))(c.v2),
+ });
  const command=continuityRequestSchema.options.find(o=>(o.shape.operation as z.ZodLiteral<string>).value==='command')!;
  const {operation:_operation,action:_action,...commandShape}=command.shape as Record<string,z.ZodType>;
  const human=(action:'pause'|'resume'|'revoke'):ManageAction=>({schema:z.object(commandShape).strict(),read:false,destructive:action!=='resume',run:i=>c.continuity({...i,operation:'command',action})});
