@@ -5,6 +5,7 @@ import {authorizeProfileAction,type ProfileAuthority} from '../../domain/src/cor
 import {withProfileTransaction,type ProfileExecutor,type ProfilePool} from './profile-context.js';
 import {currentProfileExecutor} from './profile-query-routing.js';
 import type {LabCapturedConfiguration} from './number-lab-snapshot.js';
+import {compileNumberLabConfiguration} from '../../domain/src/laboratory/configuration-plan.js';
 const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 function need(ok:unknown,code:string):asserts ok{if(!ok)throw Error(code);}
 const iso=(v:unknown)=>new Date(v instanceof Date?v.getTime():String(v)).toISOString();
@@ -75,6 +76,19 @@ export async function numberLabRunScope(db:ProfileExecutor,a:ProfileAuthority,ru
  const value=openLabValue({workspaceId:db.workspaceId,runId,purpose:'snapshot'},r.snapshot_ciphertext,key) as {snapshot:unknown;estimate:LabEstimate};const snapshot=validateLabSnapshot(value.snapshot);need(labHash(snapshot)===r.snapshot_sha256,'LAB_SNAPSHOT_CHANGED');
  return{captured_at:snapshot.captured_at,ai_configuration_version:snapshot.ai_configuration_version,variants:snapshot.candidates.map(c=>({variant_id:c.release.variant_id,release_id:c.release.id,revision:c.release.revision,amount_minor:c.release.amount_minor,currency:c.release.locale.currency})),
   estimate:{maximum_microusd:value.estimate.maximum_microusd,maximum_ai_calls:value.estimate.maximum_ai_calls,mode:value.estimate.mode}};}
+/** V7 RF-19.c: a file material this run captured, for the private in-chat
+ * preview. The chat names the laboratory copy (its engine id); the sealed plan
+ * maps it back to the captured REAL asset. Only assets in the run's capture are
+ * eligible; the caller serves bytes only while REAL still holds the captured ones. */
+export async function numberLabRunMaterial(db:ProfileExecutor,a:ProfileAuthority,runId:string,labMaterialId:string,key:Uint8Array){await authorize(db,a,false);need(uuid.test(runId)&&uuid.test(labMaterialId),'LAB_RUN_ID');
+ const r=(await db.query('SELECT snapshot_ciphertext,snapshot_sha256 FROM commerce_number_lab.runs WHERE workspace_id=$1 AND id=$2',[db.workspaceId,runId])).rows[0];if(!r)return null;
+ const value=openLabValue({workspaceId:db.workspaceId,runId,purpose:'snapshot'},r.snapshot_ciphertext,key) as {snapshot:unknown;records:LabCapturedConfiguration['records']};
+ need(labHash(validateLabSnapshot(value.snapshot))===r.snapshot_sha256,'LAB_SNAPSHOT_CHANGED');
+ const plan=compileNumberLabConfiguration(value,runId);
+ const record=plan.variants.flatMap(v=>v.records).find(x=>x.kind==='asset'&&x.id===labMaterialId),body=record?.body as Record<string,unknown>|undefined;
+ if(!record||body?.kind!=='file'||typeof body.sha256!=='string'||typeof body.mime_type!=='string')return null;
+ return{source_id:record.source.id,revision:record.source.revision,sha256:body.sha256,size_bytes:Number(body.size_bytes),mime_type:body.mime_type,name:String(body.name??'Material').slice(0,160)};
+}
 export async function readNumberLabOperation(db:ProfileExecutor,a:ProfileAuthority,runId:string,operationId:string,key:Uint8Array){await authorize(db,a,false);need(uuid.test(runId)&&uuid.test(operationId),'LAB_OPERATION_ID');const o=(await db.query('SELECT * FROM commerce_number_lab.operations WHERE workspace_id=$1 AND run_id=$2 AND id=$3',[db.workspaceId,runId,operationId])).rows[0];await authorize(db,a,false);return o?presentOperation(o,key):null;}
 /** Dedicated lab-control pool, not the API or canonical-engine pool. A claim is
  * usable only after withProfileTransaction confirms COMMIT. No IO inside TX. */

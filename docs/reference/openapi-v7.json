@@ -1715,6 +1715,33 @@
     }
    }
   },
+  "/v2/number-tests/{id}/materials/{material}": {
+   "get": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "id",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "in": "path",
+      "name": "material",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Default Response"
+     }
+    }
+   }
+  },
   "/v2/number-variants": {
    "get": {
     "responses": {

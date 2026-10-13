@@ -18,17 +18,18 @@ en `apps/ingress` (otro servicio) y no forman parte de este documento.
 |---|---|---|
 | Identidad | `/api/auth/*`, `/v1/me`, `/v2/me*`, `/v2/invitation-acceptance*`, `/v2/invitation-registration` | 9 |
 | Salud y documentación | `/livez`, `/readyz`, `/health/live`, `/health/ready`, `/healthz/platform`, `/api/version`, `/v1/openapi.json` | 7 |
-| Archivos (bytes) | `/v2/materials/{id}/content`, `/v2/materials/{id}/parts/{n}`, `/v2/receipts/{id}/document`, `/v2/help/download` | 4 |
+| Archivos (bytes) | `/v2/materials/{id}/content`, `/v2/materials/{id}/parts/{n}`, `/v2/receipts/{id}/document`, `/v2/help/download`, `/v2/number-tests/{id}/materials/{material}` | 5 |
 | Webhooks | (en ingress, fuera de este documento) | 0 |
 | **Negocio** | todo lo demás, incluidas las rutas de plataforma y de operación | **163** |
-| Total publicado | | 183 |
+| Total publicado | | 184 |
 
 Antes de F8: 554 operaciones (F0, producción V5: 386; las rutas V7 se sumaron
 a las V5 durante F2–F7). Tras F8-B/C: 457. Tras F8-D: 178 (159 de negocio). Con la
 lectura de Meta por perfil (RF-11, `POST /v2/campaigns/sync`): 179 (160 de negocio).
 Con la salud de plataforma de F1 (`GET /healthz/platform`, sin contenido, para el monitor
 externo): 180 (160 de negocio). Con los ciclos de seguimiento por variante (RF-10.c:
-listar, previsualizar y reprogramar): **183 (163 de negocio)**.
+listar, previsualizar y reprogramar): 183 (163 de negocio). Con la vista previa privada
+de materiales dentro del chat de «Probar número» (RF-19.c, bytes): **184 (163 de negocio)**.
 
 ## Referencia generada (RF-16.b)
 

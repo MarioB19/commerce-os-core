@@ -2,7 +2,7 @@
 
 > Generada por `scripts/api-reference.ts` desde el código (OpenAPI de la app y registro MCP tipado). No se edita a mano: CI falla si difiere del código.
 
-Contenido: `f47a684663393b75` · 183 operaciones HTTP en 161 rutas · 40 herramientas MCP (presupuesto 40).
+Contenido: `97efabd73ceff507` · 184 operaciones HTTP en 162 rutas · 40 herramientas MCP (presupuesto 40).
 
 ## Herramientas MCP
 
@@ -359,6 +359,7 @@ Contenido: `f47a684663393b75` · 183 operaciones HTTP en 161 rutas · 40 herrami
 | POST | `/v2/number-tests` | autenticado |
 | GET | `/v2/number-tests/{id}` | autenticado |
 | POST | `/v2/number-tests/{id}/actions` | autenticado |
+| GET | `/v2/number-tests/{id}/materials/{material}` | autenticado |
 | POST | `/v2/number-tests/estimate` | autenticado |
 | GET | `/v2/number-tests/latest` | autenticado |
 

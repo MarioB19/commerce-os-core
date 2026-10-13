@@ -28,14 +28,19 @@ function need(v:unknown,code:string):asserts v{if(!v)throw Error(code);}
  * own records (inbound messages and outbox effects of the run's conversation).
  * Text is the synthetic test conversation; no REAL data exists in the engine. */
 export const transcriptEntrySchema=z.object({at:z.string().max(40),from:z.enum(['customer','business']),kind:z.string().max(20),text:z.string().max(4000).nullable(),
- material:z.string().max(160).nullable(),status:z.string().max(20).nullable(),purpose:z.string().max(40).nullable()}).strict();
+ material:z.string().max(160).nullable(),status:z.string().max(20).nullable(),purpose:z.string().max(40).nullable(),
+ // RF-19.c: a file material carries its id and type so the chat can preview it
+ // privately (GET /v2/number-tests/:id/materials/:material); links stay names.
+ material_id:z.uuid().nullable().optional(),mime:z.string().max(100).nullable().optional()}).strict();
+const previewMime=/^(?:image\/(?:png|jpeg|webp)|audio\/(?:mpeg|ogg|mp4|wav)|video\/mp4|application\/pdf)$/;
 async function readTranscript(db:ProfileExecutor,conversationId:string){
  const inbound=(await db.query(`SELECT created_at,body FROM records WHERE workspace_id=$1 AND environment='SIMULATION' AND kind='message' AND body->>'conversation_id'=$2 AND body->>'direction'='INBOUND' ORDER BY created_at DESC,id LIMIT 200`,[db.workspaceId,conversationId])).rows;
- const outbound=(await db.query(`SELECT o.created_at,o.status,o.payload,a.body->>'name' AS material FROM outbox o LEFT JOIN records a ON a.workspace_id=o.workspace_id AND a.environment=o.environment AND a.kind='asset' AND a.id::text=o.payload->>'asset_id'
+ const outbound=(await db.query(`SELECT o.created_at,o.status,o.payload,a.body->>'name' AS material,a.id::text AS material_id,a.body->>'kind' AS material_kind,a.body->>'mime_type' AS mime FROM outbox o LEFT JOIN records a ON a.workspace_id=o.workspace_id AND a.environment=o.environment AND a.kind='asset' AND a.id::text=o.payload->>'asset_id'
   WHERE o.workspace_id=$1 AND o.environment='SIMULATION' AND o.conversation_id::text=$2 ORDER BY o.created_at DESC LIMIT 200`,[db.workspaceId,conversationId])).rows;
  const at=(v:unknown)=>new Date(v as string).toISOString(),clip=(v:unknown)=>typeof v==='string'?v.slice(0,4000):null;
  const entries=[...inbound.map(r=>({at:at(r.created_at),from:'customer' as const,kind:String(r.body.kind??'text').slice(0,20),text:clip(r.body.text),material:null,status:null,purpose:null})),
-  ...outbound.map(r=>({at:at(r.created_at),from:'business' as const,kind:String(r.payload?.kind??'text').slice(0,20),text:clip(r.payload?.text),material:typeof r.material==='string'?r.material.slice(0,160):null,status:String(r.status).slice(0,20),purpose:typeof r.payload?.purpose==='string'?r.payload.purpose.slice(0,40):null}))]
+  ...outbound.map(r=>({at:at(r.created_at),from:'business' as const,kind:String(r.payload?.kind??'text').slice(0,20),text:clip(r.payload?.text),material:typeof r.material==='string'?r.material.slice(0,160):null,status:String(r.status).slice(0,20),purpose:typeof r.payload?.purpose==='string'?r.payload.purpose.slice(0,40):null,
+   ...(r.material_kind==='file'&&typeof r.mime==='string'&&previewMime.test(r.mime)?{material_id:String(r.material_id),mime:r.mime}:{})}))]
   .sort((x,y)=>x.at.localeCompare(y.at)).slice(-200);
  const timers=(await db.query(`SELECT due_at,payload->>'purpose' AS purpose FROM timers WHERE workspace_id=$1 AND environment='SIMULATION' AND conversation_id::text=$2 AND status='PENDING' ORDER BY due_at LIMIT 10`,[db.workspaceId,conversationId])).rows
   .map(r=>({due_at:at(r.due_at),purpose:typeof r.purpose==='string'?r.purpose.slice(0,40):null}));

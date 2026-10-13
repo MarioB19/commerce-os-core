@@ -1,6 +1,6 @@
 import {afterAll,beforeAll,expect,it} from 'vitest';
-import {randomUUID,randomBytes} from 'node:crypto';
-import {mkdtemp,mkdir,rm,realpath} from 'node:fs/promises';
+import {randomUUID,randomBytes,createHash} from 'node:crypto';
+import {mkdtemp,mkdir,rm,realpath,rename} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import pg from 'pg';
@@ -203,4 +203,63 @@ it('asks which variant when a number sells several and keeps the chosen one for 
  expect(view.operations.every((o:{state:string})=>o.state==='APPLIED')).toBe(true);
  expect(view.conversation.transcript.at(-1)).toMatchObject({from:'business',purpose:'collection'});
  expect(view.selected_variant_id).toBe(b.id);
+},240000);
+
+it('previews a file the business sent inside the test chat, privately and only while it is the captured one (RF-19.c)',async()=>{
+ // A voice note as the first reminder: OGG bytes uploaded like any material.
+ const bytes=Buffer.concat([Buffer.from('OggS'),randomBytes(70_000)]),sha=createHash('sha256').update(bytes).digest('hex');
+ const audio=data(await call('owner','POST','/v2/materials?environment=REAL',{kind:'file',name:'Nota de voz',mime_type:'audio/ogg',size_bytes:bytes.length,sha256:sha}),201);
+ data(await call('owner','PUT',`/v2/materials/${audio.id}/parts/1?environment=REAL`,{base64:bytes.toString('base64')}));
+ expect(data(await call('owner','POST',`/v2/materials/${audio.id}/complete?environment=REAL`,{})).status).toBe('READY');
+ const link=data(await call('owner','POST','/v2/materials?environment=REAL',{name:'Acceso audio',kind:'link',url:'https://example.com/audio'}),201).id as string;
+ let v=data(await call('owner','POST','/v2/products',{name:'Audiolibro',variant:{name:'México',locale:MX}}),201).variant;
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/offer`,{expected_version:v.version,value:{...v.document.offer,price_minor:5900,fulfillment:[{asset_id:link,release_on:'receipt_approved'}]}}));
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/collection`,{expected_version:v.version,value:{spei:{bank:'Banco sintético',holder:'Titular sintético',clabe:clabe('01218000011835971')},links:[],instructions:''}}));
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/remarketing`,{expected_version:v.version,value:{schema_version:1,policy_id:'remarketing-3-slot',policy_revision:1,window:{start_hour:0,end_hour:24},
+  slots:[1,2,3].map((position,i)=>({id:'slot-'+position,position,enabled:position===1,delay:{quantity:[2,8,24][i],unit:'hours'},
+   stages:{awaiting_agreement:position===1?{medium:'audio',asset_id:audio.id,text:'Te dejo una nota de voz'}:{medium:'text',text:'Hola ('+position+')'},awaiting_payment:{medium:'text',text:'Pago ('+position+')'}}}))}}));
+ data(await call('owner','POST',`/v2/variants/${v.id}/publish`,{expected_version:v.version,document_sha256:v.document_sha256}));
+ const number=await withTransaction(async c=>{await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','REAL',true)",[P]);
+  return(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','channel_account',$2) RETURNING id",[P,{name:'Ventas audio',provider:'waha',gateway_ref:'lab-'+randomUUID(),status:'WORKING',sending_enabled:true,identity_verified:true}])).rows[0].id as string;});
+ data(await call('owner','POST',`/v2/variants/${v.id}/numbers`,{account_id:number,sell:true}));
+ const estimate=data(await call('owner','POST','/v2/number-tests/estimate',{account_id:number,mode:'CHAT'}));
+ const run=data(await call('owner','POST','/v2/number-tests',{account_id:number,mode:'CHAT',accepted_maximum_microusd:estimate.maximum_microusd}),201);
+ const step=async(action:unknown)=>{const before=data(await call('owner','GET',`/v2/number-tests/${run.run_id}`));
+  data(await call('owner','POST',`/v2/number-tests/${run.run_id}/actions`,{expected_version:before.run.version,action}),202);await tick();
+  const after=data(await call('owner','GET',`/v2/number-tests/${run.run_id}`));expect(after.pending).toBe(false);return after;};
+ await step({type:'message',text:'Hola, quiero el audiolibro'});await step({type:'continue'});
+ const view=await step({type:'advance',hours:2});
+ const sent=view.conversation.transcript.at(-1);
+ expect(sent).toMatchObject({from:'business',purpose:'remarketing',material:'Nota de voz',mime:'audio/ogg'});
+ // The chat names the laboratory copy, never the REAL asset id.
+ expect(sent.material_id).toMatch(/^[a-f0-9-]{36}$/);expect(sent.material_id).not.toBe(audio.id);
+ // Text and link entries carry no preview handle.
+ expect(view.conversation.transcript.filter((e:{material_id?:string})=>e.material_id)).toHaveLength(1);
+
+ const url=`/v2/number-tests/${run.run_id}/materials/${sent.material_id}?environment=REAL`;
+ const whole=await call('operator','GET',url);
+ expect(whole.statusCode,whole.body).toBe(200);
+ expect(whole.headers['content-type']).toContain('audio/ogg');
+ expect(whole.headers['cache-control']).toBe('no-store');
+ expect(String(whole.headers['content-disposition'])).toMatch(/^inline;/);
+ expect(String(whole.headers['content-security-policy'])).toContain("default-src 'none'");
+ expect(createHash('sha256').update(whole.rawPayload).digest('hex')).toBe(sha);
+ // Seeking in the player uses one byte range.
+ const part=await app.inject({method:'GET',url,headers:{origin,cookie:cookies.operator!,range:'bytes=0-3'}});
+ expect(part.statusCode).toBe(206);expect(part.rawPayload.toString()).toBe('OggS');
+ // Only materials this run captured: not another of the profile's files, not an unknown id, not another run.
+ expect((await call('operator','GET',`/v2/number-tests/${run.run_id}/materials/${link}?environment=REAL`)).statusCode).toBe(404);
+ expect((await call('operator','GET',`/v2/number-tests/${run.run_id}/materials/${audio.id}?environment=REAL`)).statusCode).toBe(404);
+ expect((await call('operator','GET',`/v2/number-tests/${run.run_id}/materials/${randomUUID()}?environment=REAL`)).statusCode).toBe(404);
+ expect((await call('operator','GET',`/v2/number-tests/${randomUUID()}/materials/${sent.material_id}?environment=REAL`)).statusCode).toBe(404);
+ // Without a session nothing is served (no public links).
+ expect((await app.inject({method:'GET',url,headers:{origin}})).statusCode).toBe(401);
+ // If the stored bytes stop matching the capture, the preview is refused (409), never other content.
+ const key=await withTransaction(async c=>{await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','REAL',true)",[P]);
+  return String((await c.query("SELECT body->>'storage_key' k FROM records WHERE workspace_id=$1 AND environment='REAL' AND id=$2",[P,audio.id])).rows[0].k);});
+ const stored=join(process.env.PRIVATE_STORAGE_DIR!,'assets',key+'.enc'),aside=stored+'.aside';
+ await rename(stored,aside);
+ try{const refused=await call('operator','GET',url);expect(refused.statusCode).toBe(409);expect(refused.json().error?.code??refused.json().code).toBe('LAB_MATERIAL_CHANGED');}
+ finally{await rename(aside,stored);}
+ expect((await call('operator','GET',url)).statusCode).toBe(200);
 },240000);

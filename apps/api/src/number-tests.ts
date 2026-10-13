@@ -4,7 +4,10 @@ import {withProfileRequest,type ProfileRequestDependencies} from './profile-requ
 import type {ProfileExecutor} from '../../../packages/db/src/profile-context.js';
 import type {ProfileAuthority} from '../../../packages/domain/src/core/profile-authorization.js';
 import {captureNumberLab} from '../../../packages/db/src/number-lab-snapshot.js';
-import {numberLabKeys,startNumberLab,enqueueNumberLab,readNumberLab,readNumberLabStartOperation,listNumberLabOperations,latestNumberLab,numberLabRunScope} from '../../../packages/db/src/number-laboratory.js';
+import {numberLabKeys,startNumberLab,enqueueNumberLab,readNumberLab,readNumberLabStartOperation,listNumberLabOperations,latestNumberLab,numberLabRunScope,numberLabRunMaterial} from '../../../packages/db/src/number-laboratory.js';
+import {materialBytes} from '../../../packages/db/src/profile-materials.js';
+import {sendPrivateFile} from './file-response.js';
+import {createHash} from 'node:crypto';
 import {estimateNumberLab,labHash} from '../../../packages/domain/src/laboratory/number-lab.js';
 import {numberLabActionSchema} from '../../../packages/contracts/src/number-laboratory.js';
 import {laboratoryAiConfiguration,laboratoryGrants,type VariantAiSelection} from '../../../packages/ai-providers/src/variant-ai.js';
@@ -35,9 +38,10 @@ const messages:Record<string,string>={
  LAB_RUN_NOT_FOUND:'No encontramos esa prueba en este perfil.',LAB_RUN_UNAVAILABLE:'La prueba terminó o venció. Inicia otra.',
  LAB_VERSION_CHANGED:'La prueba avanzó. Actualiza antes de continuar.',LAB_OPERATION_ADMISSION:'La prueba avanzó. Actualiza antes de continuar.',
  LAB_OPERATION_PENDING:'Espera a que termine la acción anterior.',LAB_OPERATION_CONFLICT:'Esa operación ya se usó con otros datos.',
+ LAB_MATERIAL_NOT_FOUND:'Ese material no forma parte de esta prueba.',LAB_MATERIAL_CHANGED:'El material cambió después de iniciar la prueba. Inicia otra para verlo.',
  LAB_CATALOG_AMBIGUOUS:'El número tiene asignaciones ambiguas. Revisa sus variantes.',LAB_SOURCE_LIMIT:'La configuración del número es demasiado grande para una prueba.',
 };
-const status:Record<string,number>={LAB_NOT_INSTALLED:503,LAB_ACCOUNT_NOT_FOUND:404,LAB_RUN_NOT_FOUND:404};
+const status:Record<string,number>={LAB_NOT_INSTALLED:503,LAB_ACCOUNT_NOT_FOUND:404,LAB_RUN_NOT_FOUND:404,LAB_MATERIAL_NOT_FOUND:404};
 function fail(code:string,statusCode=409):never{throw Object.assign(new Error(code),{code,statusCode,publicMessage:messages[code]});}
 async function mapped<T>(work:()=>Promise<T>):Promise<T>{
  try{return await work();}catch(error){
@@ -144,6 +148,18 @@ export async function numberTestRoutes(app:FastifyInstance,deps?:ProfileRequestD
    const run=await latestNumberLab(db,profile.authority,q.account_id??null);return run?view(db,profile.authority,run.run_id):null;},deps))};});
  app.get('/v2/number-tests/:id',async req=>{const {id}=runParam.parse(req.params);
   return{data:await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:read',mutation:false},({db,profile})=>view(db,profile.authority,id),deps))};});
+ // RF-19.c: the chat previews a file the business sent, read privately with the
+ // profile fence. Only a material the run captured is served, and only while
+ // the REAL material still holds exactly the captured bytes (else 409).
+ app.get('/v2/number-tests/:id/materials/:material',async(req,reply)=>{const {id,material}=z.object({id:z.string().uuid(),material:z.string().uuid()}).strict().parse(req.params);
+  const file=await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:read',mutation:false},async({db,profile})=>{
+   if(!await readNumberLab(db,profile.authority,id))fail('LAB_RUN_NOT_FOUND',404);
+   const captured=await numberLabRunMaterial(db,profile.authority,id,material,numberLabKeys().control);if(!captured)fail('LAB_MATERIAL_NOT_FOUND',404);
+   const current=await materialBytes(db,'REAL',captured.source_id).catch(()=>fail('LAB_MATERIAL_CHANGED'));
+   if(current.bytes.length!==captured.size_bytes||createHash('sha256').update(current.bytes).digest('hex')!==captured.sha256)fail('LAB_MATERIAL_CHANGED');
+   return{bytes:current.bytes,mime:captured.mime_type,name:captured.name};},deps));
+  return sendPrivateFile(req,reply,file);
+ });
  app.post('/v2/number-tests/:id/actions',{bodyLimit:16384},async(req,reply)=>{const {id}=runParam.parse(req.params),q=actionSchema.parse(req.body),operationId=operationKey(req);
   const data=await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:run',mutation:true},async({db,profile})=>{
    if(!await readNumberLab(db,profile.authority,id))fail('LAB_RUN_NOT_FOUND',404);

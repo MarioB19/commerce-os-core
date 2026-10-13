@@ -3,7 +3,7 @@ import {z} from 'zod';
 import {withProfileRequest,type ProfileRequestDependencies} from './profile-request.js';
 import {marketOperation} from '../../../packages/db/src/market-variants.js';
 import {MaterialError,listMaterials,readMaterial,createMaterial,putMaterialPart,completeMaterial,cancelMaterial,archiveMaterial,materialBytes,MATERIAL_PART_BYTES} from '../../../packages/db/src/profile-materials.js';
-import {assetFilename,byteRange} from './file-response.js';
+import {sendPrivateFile} from './file-response.js';
 
 /** V7 F4 /v2/materials (RF-06.c): list, upload in parts, preview, cancel and
  * remove from new configurations. Same service for UI, API and MCP. */
@@ -42,11 +42,6 @@ export async function profileMaterialRoutes(app:FastifyInstance,deps?:ProfileReq
   return{data:await write(req,req.body,(db,e,actor)=>archiveMaterial(db,e,id,expected_version,actor))};});
  app.get('/v2/materials/:id/content',async(req,reply)=>{const {id}=idParam.parse(req.params);
   const file=await read(req,(db,e)=>materialBytes(db,e,id));
-  reply.header('Content-Security-Policy',"default-src 'none'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'");
-  const filename=assetFilename(file.name,file.mime);
-  reply.header('Content-Disposition',`inline; filename="material"; filename*=UTF-8''${encodeURIComponent(filename).replace(/'/g,'%27')}`).header('Accept-Ranges','bytes').type(file.mime);
-  let range;try{range=byteRange(req.headers.range,file.bytes.length);}catch{return reply.code(416).header('Content-Range',`bytes */${file.bytes.length}`).send();}
-  if(range){reply.code(206).header('Content-Range',`bytes ${range.start}-${range.end}/${file.bytes.length}`).header('Content-Length',range.end-range.start+1);return reply.send(file.bytes.subarray(range.start,range.end+1));}
-  return reply.header('Content-Length',file.bytes.length).send(file.bytes);
+  return sendPrivateFile(req,reply,file);
  });
 }

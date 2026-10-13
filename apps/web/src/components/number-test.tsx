@@ -10,7 +10,7 @@ import {Button} from './ui/button.js';
  * Nothing reaches WhatsApp, sales, payments or the number's quota. */
 interface Estimate {mode:'CHAT'|'AUTOMATIC';maximum_microusd:number;maximum_ai_calls:number;valid_until:string;captured_at:string;note:string;
  variants:{variant_id:string;name:string;provider:string;model:string;cases:number;maximum_microusd:number}[]}
-interface Entry {at:string;from:'customer'|'business';kind:string;text:string|null;material:string|null;status:string|null;purpose:string|null}
+interface Entry {at:string;from:'customer'|'business';kind:string;text:string|null;material:string|null;status:string|null;purpose:string|null;material_id?:string|null;mime?:string|null}
 interface View {run:{run_id:string;account_id:string;state:string;state_label:string;version:number;virtual_now:string;created_at:string;expires_at:string};
  captured:{captured_at:string;estimate:{maximum_microusd:number;maximum_ai_calls:number}}|null;
  variants:{variant_id:string;name:string;revision:number;amount_minor:number;currency:string}[];selected_variant_id:string|null;
@@ -23,6 +23,25 @@ const usd=(micro:number)=>new Intl.NumberFormat('es-MX',{style:'currency',curren
 const clock=(iso:string,timezone:string)=>{try{return new Intl.DateTimeFormat('es-MX',{dateStyle:'medium',timeStyle:'short',timeZone:timezone}).format(new Date(iso));}catch{return iso;}};
 const purposeLabels:Record<string,string>={remarketing:'Seguimiento',collection:'Cobro',seller_reply:'Vendedor IA',fulfillment:'Entrega',commercial:'Mensaje del flujo'};
 const actionLabel=(a:View['operations'][number]['action'])=>a.type==='message'?'Mensaje del cliente':a.type==='advance'?`Reloj +${a.hours} h`:a.type==='continue'?'Continuar':a.type==='select_variant'?'Elegir variante':a.type;
+
+/** RF-19.c: a file the business sent, previewed inside the chat as the customer
+ * would see it. Read privately with the profile fence and kept only in memory. */
+function LabMaterial({runId,entry,selection}:{runId:string;entry:Entry;selection:ProfileFence}){
+ const [url,setUrl]=useState<string|null>(null),[failed,setFailed]=useState(false),[open,setOpen]=useState(!/^(?:video|application)\//.test(entry.mime??''));
+ useEffect(()=>{if(!open||!entry.material_id)return;const c=new AbortController();let made:string|null=null;setFailed(false);
+  fetch(`/v2/number-tests/${runId}/materials/${entry.material_id}?environment=REAL`,{credentials:'include',cache:'no-store',redirect:'error',signal:c.signal,headers:{'X-Commerce-Profile-Id':selection.workspaceId,'X-Commerce-Profile-Version':String(selection.version)}})
+   .then(async r=>{if(!r.ok)throw Error('file');made=URL.createObjectURL(await r.blob());setUrl(made);}).catch(()=>{if(!c.signal.aborted)setFailed(true);});
+  return()=>{c.abort();if(made)URL.revokeObjectURL(made);setUrl(null);};
+ },[open,runId,entry.material_id,selection.workspaceId,selection.version]);
+ const name=entry.material??'Material',mime=entry.mime??'';
+ if(!open)return <button type="button" className="number-test-material" onClick={()=>setOpen(true)}>📎 {name} · Ver</button>;
+ if(failed)return <span className="number-test-material">📎 {name} (no se pudo abrir; si cambió el material, reinicia la prueba)</span>;
+ if(!url)return <span className="number-test-material" role="status">📎 {name}…</span>;
+ if(mime.startsWith('image/'))return <img className="number-test-media" src={url} alt={name}/>;
+ if(mime.startsWith('audio/'))return <audio className="number-test-media" controls src={url} aria-label={name}/>;
+ if(mime.startsWith('video/'))return <video className="number-test-media" controls src={url} aria-label={name}/>;
+ return <a className="number-test-material" href={url} target="_blank" rel="noreferrer">📎 {name} · Abrir PDF</a>;
+}
 
 export function NumberTest({accountId,selection,role,state,timezone}:{accountId:string;selection:ProfileFence;role:ProfileRole;state:ProfileState;timezone:string}){
  const canRun=role!=='viewer'&&state==='ACTIVE';
@@ -75,7 +94,7 @@ export function NumberTest({accountId,selection,role,state,timezone}:{accountId:
     {view.conversation.transcript.map((m,i)=><li key={i} className={`number-test-bubble from-${m.from}`}>
      {m.from==='business'&&m.purpose&&<span className="number-test-tag">{purposeLabels[m.purpose]??m.purpose}</span>}
      {m.text&&<span className="number-test-text">{m.text}</span>}
-     {m.material&&<span className="number-test-material">📎 {m.material}</span>}
+     {m.material_id&&m.mime?<LabMaterial runId={view.run.run_id} entry={m} selection={selection}/>:m.material&&<span className="number-test-material">📎 {m.material}</span>}
      <span className="number-test-meta">{m.from==='customer'?'Cliente':'Negocio'}</span>
     </li>)}
    </ol>

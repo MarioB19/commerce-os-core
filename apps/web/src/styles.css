@@ -4219,6 +4219,9 @@ input:not([type="checkbox"]):not([type="radio"]),select,textarea{min-height:44px
 .number-test-text{white-space:pre-wrap}
 .number-test-tag{justify-self:start;font-size:.72rem;font-weight:600;padding:.05rem .45rem;border-radius:999px;background:var(--ux-state-neutral-bg,#f0f3f7);color:var(--ux-state-neutral-fg,#4a596e)}
 .number-test-material{font-size:.85rem;color:var(--ux-state-info-fg,#244f9e)}
+button.number-test-material{background:none;border:0;padding:0;text-align:left;cursor:pointer;text-decoration:underline}
+.number-test-media{display:block;max-width:min(100%,280px);max-height:240px;border-radius:8px}
+audio.number-test-media{width:min(100%,280px)}
 .number-test-meta{font-size:.72rem;color:var(--text-secondary,#52617b)}
 .number-test-next{margin:0;font-weight:600}
 .number-test-composer{display:flex;gap:.5rem}

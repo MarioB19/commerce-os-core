@@ -7,7 +7,7 @@ describe('generated API/MCP reference',()=>{
  it('matches the committed docs/reference files exactly',async()=>{
   const spec=await currentSpec();
   expect(await referenceDrift(renderReference(spec))).toEqual([]);
-  expect(operations(spec)).toHaveLength(183);
+  expect(operations(spec)).toHaveLength(184);
  },60_000);
  it('fails on an intentionally broken contract in a fixture (route, schema or MCP action)',async()=>{
   const spec=await currentSpec();
