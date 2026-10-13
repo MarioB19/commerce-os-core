@@ -14,7 +14,7 @@ producción V5 `80a6d6e` (rama `main`) y el árbol V7 antes de F8.
 | — identidad / salud y docs / archivos | — | 9 / 6 / 4 | ídem |
 | Relaciones del catálogo compuesto | 227 (hasta 0108) | 188 (0109 en adelante) | `commerceProfileRowPolicy` sobre el catálogo migrado |
 | Tablas retiradas con exportación | — | 39 + 4 funciones | `packages/db/src/retired-tables.ts`, `0109_v7_retire_modules.sql` |
-| Ciclos del automation-worker | 15 (árbol V7 antes de F8; V5 en producción: 12) | 12 | `apps/automation-worker/src/index.ts` (la lectura de Meta V7 corre dentro del ciclo de insights) |
+| Ciclos del automation-worker | 15 (árbol V7 antes de F8; V5 en producción: 12) | 12 (13 desde F1: `ingress_relay`, inactivo sin suscripción) | `apps/automation-worker/src/index.ts` (la lectura de Meta V7 corre dentro del ciclo de insights) |
 | Apps | 8 | 6 | se retiran `commerce-desktop` y `commerce-worker` |
 | Paquetes | 12 | 9 | se retiran `creative-contracts`, `creative-engine`, `intelligence`, `provider-broker`; se añade `ai-providers` |
 | Fuente web (sin pruebas) | 62 archivos, 15 428 líneas | 51 archivos, 7 537 líneas | `apps/web/src` |

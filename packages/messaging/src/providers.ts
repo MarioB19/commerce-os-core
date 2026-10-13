@@ -99,11 +99,14 @@ export class WahaProvider implements MessagingProvider {
         if(action!=='start'||!(error instanceof ProviderError)||error.httpStatus!==404)throw error;
         await this.request('/api/sessions','POST',{name:this.config.session,start:false,config:this.config.webhook?reconcileWebhook({},this.config.webhook):{webhooks:[]}});
       }
-      if(existing&&this.config.webhook&&!webhookConfiguration(existing.config,this.config.webhook).matches){
+      // A stopped session restarts anyway: add a missing relay then, never by restarting a live one.
+      const observed=existing&&this.config.webhook?webhookConfiguration(existing.config,this.config.webhook):undefined;
+      if(existing&&this.config.webhook&&observed&&(!observed.matches||(existing.status==='STOPPED'&&observed.relay_matches===false))){
         // WAHA restarts active sessions on PUT; do not issue a second restart or logout.
         await this.request(path,'PUT',{name:this.config.session,config:reconcileWebhook(existing.config,this.config.webhook)});
         const updated=await this.request(path);
-        if(!webhookConfiguration(updated.config,this.config.webhook).matches)throw new ProviderError('WEBHOOK_UPDATE_UNCONFIRMED');
+        const confirmed=webhookConfiguration(updated.config,this.config.webhook);
+        if(!confirmed.matches||confirmed.relay_matches===false)throw new ProviderError('WEBHOOK_UPDATE_UNCONFIRMED');
         if(existing.status!=='STOPPED')return{status:sessionStatus(updated.status)};
       }else if(existing&&action==='start'&&['STARTING','SCAN_QR_CODE','WORKING'].includes(existing.status))return{status:sessionStatus(existing.status)};
     }

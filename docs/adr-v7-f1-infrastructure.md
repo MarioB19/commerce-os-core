@@ -69,8 +69,35 @@ base son puntos únicos de falla; F1 entrega recuperación medida, no failover.
   `/healthz/platform` después de `enable`. No se crea otro uptime check: el
   costo de checkers adicionales no está reservado.
 
-## 3. Pendiente de esta ADR (se completa en las siguientes entregas de F1)
+## 3. Ingress durable (ADR-V7-08)
 
-Identidad de la VM, recursos GCP declarativos, presupuesto, ingress durable
-(ADR-V7-08), correo App Engine (ADR-V7-13), arranque durable y orquestación de
-la ventana (Fase C).
+- **Dos rutas, una inserción.** WAHA conserva su callback al ingress del host
+  (`http://ingress:3002/webhooks/waha/<perfil>/<cuenta>`) y suma uno al relay
+  de Cloud Run (`https://…/relay/<token>/waha/<perfil>/<cuenta>`) con la misma
+  llave HMAC. Las dos terminan en el mismo `INSERT … ON CONFLICT DO NOTHING`
+  de `inbound_envelopes`; la segunda copia es un duplicado sin efecto.
+- **Relay** (`infra/ingress-relay/relay.mjs`, un archivo sin dependencias):
+  valida el token del camino en tiempo constante, exige cuerpo JSON ≤1 MiB y
+  encabezados HMAC sha512, publica los bytes exactos con perfil, cuenta y HMAC
+  como atributos y clave de orden `<perfil>/<cuenta>`, y responde 200 sólo con
+  `messageId` confirmado; si no, 503 y WAHA reintenta. No ve secretos de cuenta,
+  base de datos ni contenido decodificado. Cloud Run us-east1, mínimo 0/máximo
+  2, identidad propia con sólo `pubsub.publisher` sobre su tema.
+- **Consumidor** (`apps/automation-worker/src/ingress-relay-consumer.ts`, ciclo
+  `ingress_relay`): sólo con `INGRESS_PUBSUB_SUBSCRIPTION`. Jala hasta 20
+  mensajes con la identidad de la VM, los reenvía al ingress del host (que
+  verifica el HMAC con el secreto de la cuenta) y confirma en 200 o rechazos
+  definitivos (400/401/404/413/415); cualquier otro resultado es nack, con
+  reintento de Pub/Sub y cola de mensajes muertos tras 10 intentos. Dentro de
+  una clave de orden nada se confirma después de un reintento.
+- **Sin reinicios extra.** `reconcileWebhook` añade el relay; la salud sólo
+  exige el callback principal (`relay_matches` es informativo). Una sesión
+  viva nunca se reinicia para añadirlo: se añade cuando la sesión estaba
+  detenida y va a arrancar (por ejemplo, al reanudar tras la ventana).
+- **Reversible.** Sin `INGRESS_RELAY_URL` en el channel-worker no se configura
+  el relay; sin `INGRESS_PUBSUB_SUBSCRIPTION` el ciclo no hace nada.
+
+## 4. Pendiente de esta ADR (se completa en las siguientes entregas de F1)
+
+Identidad de la VM, recursos GCP declarativos, presupuesto, correo App Engine
+(ADR-V7-13), arranque durable y orquestación de la ventana (Fase C).

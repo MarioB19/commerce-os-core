@@ -1,3 +1,4 @@
+import {consumeIngressRelay} from './ingress-relay-consumer.js';
 import {collectOperationalAlerts,deliverOperationalAlerts} from './operations-monitor.js';
 import {processWarmup} from './warmup.js';
 import {processProfileQrWarmup} from './profile-warmup.js';
@@ -34,7 +35,9 @@ const laboratory=(()=>{try{return numberLabRuntimeFromEnv();}catch(error){proces
 const numberLab=loop('number_lab',500,()=>processNumberLabOperations(laboratory));
 // V7 F7: Resultados projections with the reviewed commerce_results login (no-op without it).
 const resultProjections=loop('result_projections',60000,()=>processResultProjections());
-const loops=[commands,materialize,workflows,insights,agents,receipts,variantReceipts,numberLab,resultProjections,warmup,operations];
+// V7 F1 (ADR-V7-08): replay relayed webhooks; a no-op without INGRESS_PUBSUB_SUBSCRIPTION.
+const ingressRelay=loop('ingress_relay',1000,()=>consumeIngressRelay());
+const loops=[commands,materialize,workflows,insights,agents,receipts,variantReceipts,numberLab,resultProjections,ingressRelay,warmup,operations];
 for(const item of loops)item.start();
 const service=await workerService('automation-worker',Number(process.env.PORT??process.env.AUTOMATION_PORT??3003),inbound.run,250,{progress:()=>monitor.snapshot(),metrics:()=>automationLoopMetrics(monitor.snapshot()),heartbeat:()=>persistAutomationHeartbeat(instance,monitor.snapshot())});
 const bus=new PostgresJobBus();await bus.start();await bus.work('automation.wake',async()=>{await service.run();});
