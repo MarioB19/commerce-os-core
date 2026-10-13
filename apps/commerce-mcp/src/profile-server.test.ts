@@ -149,4 +149,25 @@ describe('V7 F3 number tools',()=>{
    expect(seen[3]!.body).toEqual({decision:'APPROVED',expected_version:3});
   }finally{await client.close();await server.close();}
  });
+ it('tests a number by task: estimate first, start with the accepted ceiling, then queued actions (MCP-EMU)',async()=>{
+  const seen:{method:string;url:string;key:string|null;body:unknown}[]=[],accountId='88888888-8888-4888-8888-888888888888',runId='99999999-9999-4999-8999-999999999999',operationId='77777777-7777-4777-8777-777777777777';
+  const {client,server}=await connect(async(input,init)=>{seen.push({method:String(init?.method??'GET'),url:String(input).replace('https://commerce.example.test',''),key:new Headers(init?.headers).get('idempotency-key'),body:init?.body?JSON.parse(String(init.body)):undefined});
+   return json(200,{data:{maximum_microusd:51200,run:{account_id:accountId,run_id:runId,version:2}}});});
+  try{
+   const estimate=await client.callTool({name:'number_test_manage',arguments:{action:'estimar',accountId}});
+   expect(JSON.stringify(estimate.structuredContent)).toContain('51200');
+   await client.callTool({name:'number_test_manage',arguments:{action:'crear',operationId,accountId,acceptedMaximumMicrousd:51200}});
+   await client.callTool({name:'number_test_manage',arguments:{action:'mensaje',operationId,runId,expectedVersion:1,text:'Hola'}});
+   await client.callTool({name:'number_test_manage',arguments:{action:'avanzar_reloj',operationId,runId,expectedVersion:2,hours:8}});
+   await client.callTool({name:'number_test_manage',arguments:{action:'continuar',operationId,runId,expectedVersion:3}});
+   await client.callTool({name:'number_test_manage',arguments:{action:'leer',runId}});
+   await client.callTool({name:'number_test_manage',arguments:{action:'ultima',accountId}});
+   const bad=await client.callTool({name:'number_test_manage',arguments:{action:'avanzar_reloj',operationId,runId,expectedVersion:2,hours:5}});
+   expect(bad.isError).toBe(true);
+   expect(seen.map(x=>[x.method,x.url])).toEqual([['POST','/v2/number-tests/estimate'],['POST','/v2/number-tests'],['POST',`/v2/number-tests/${runId}/actions`],['POST',`/v2/number-tests/${runId}/actions`],
+    ['POST',`/v2/number-tests/${runId}/actions`],['GET',`/v2/number-tests/${runId}`],['GET',`/v2/number-tests/latest?account_id=${accountId}`]]);
+   expect(seen[1]).toMatchObject({key:operationId,body:{account_id:accountId,mode:'CHAT',accepted_maximum_microusd:51200}});
+   expect(seen.slice(2,5).map(x=>x.body)).toEqual([{expected_version:1,action:{type:'message',text:'Hola'}},{expected_version:2,action:{type:'advance',hours:8}},{expected_version:3,action:{type:'continue'}}]);
+  }finally{await client.close();await server.close();}
+ });
 });

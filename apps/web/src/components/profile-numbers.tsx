@@ -12,7 +12,7 @@ import {Button} from './ui/button';
  * worker, ownership or release-authorization steps are shown. */
 const action=z.object({code:z.string(),label:z.string()}).nullable();
 const linkSchema=z.object({id:z.string(),version:z.number(),alias:z.string(),masked_number:z.string().nullable(),state:z.string(),label:z.string(),qr_available:z.boolean(),next_action:action,confirmed_at:z.string().nullable()});
-const rowSchema=linkSchema.extend({status:z.object({code:z.string(),label:z.string()}),products:z.array(z.string()),warmup:z.object({day:z.number(),of:z.number()}).nullable(),last_test:z.object({at:z.string(),ok:z.boolean()}).nullable()});
+const rowSchema=linkSchema.extend({status:z.object({code:z.string(),label:z.string()}),products:z.array(z.string()),warmup:z.object({day:z.number(),of:z.number()}).nullable(),last_test:z.object({at:z.string(),ok:z.boolean(),run_id:z.string().optional()}).nullable()});
 const overviewSchema=z.object({numbers:z.array(rowSchema),limit:z.number().nullable()});
 const qrSchema=z.object({mimeType:z.literal('image/png'),data:z.string(),expiresAt:z.string()});
 const impactSchema=z.object({products:z.array(z.string()),open_conversations:z.number(),pending_followups:z.number(),deliveries_to_confirm:z.number()});
@@ -38,7 +38,7 @@ export function ProfileNumbers({selection,role,state}:{selection:ProfileFence;ro
    <div className="profile-number-title"><strong>{n.alias}</strong>{n.masked_number&&<span> · {n.masked_number}</span>}<span className={`number-status number-status-${tone(n.status.code)}`}>{n.status.label}</span></div>
    <p className="profile-number-products">{n.products.length?n.products.join(' · '):'Sin variantes asignadas'}</p>
    {n.warmup&&<p className="profile-number-warmup"><progress max={n.warmup.of} value={n.warmup.day} aria-label={`Calentamiento: día ${n.warmup.day} de ${n.warmup.of}`}/> Día {n.warmup.day} de {n.warmup.of}</p>}
-   <p className="profile-number-test">Última prueba: {n.last_test?(n.last_test.ok?'correcta':'con problemas'):'sin probar'}</p>
+   <p className="profile-number-test">Última prueba: {n.last_test?`${new Date(n.last_test.at).toLocaleDateString('es-MX',{day:'numeric',month:'short'})}, ${n.last_test.ok?'sin problemas':'con problemas'}`:'sin probar'} · <a href={`/numbers/${n.id}/test`}>{n.last_test?'Ver o probar de nuevo':'Probar número'}</a></p>
    {manage&&<div className="profile-number-actions">
     {n.next_action&&['link','qr','unlink'].includes(n.next_action.code)&&<Button variant="secondary" onClick={()=>setLinking(n.id)}>{n.next_action.label}</Button>}
     {n.state==='CONNECTED'&&<Button variant="secondary" onClick={()=>void pause(n,n.status.code!=='PAUSED_BY_YOU')}>{n.status.code==='PAUSED_BY_YOU'?'Reanudar':'Pausar'}</Button>}

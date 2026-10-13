@@ -33,7 +33,7 @@ export const mcpRegistry:readonly McpRegistryEntry[]=Object.freeze([
  tool('campaigns_read','profile','/v2/campaigns',['campaigns:read'],[],['portafolios','cuentas','campanas','anuncios','resultados','sincronizar_lectura']),
  tool('results_read','profile','/v2/results',['results:read'],['opciones','resumen'],['embudo','series','comparar','exportar']),
  tool('goals_manage','profile','/v2/goals',['goals:read','goals:write'],['listar','leer','avance','crear','editar','consultar_operacion'],['eliminar']),
- tool('number_test_manage','profile','/v2/number-tests',['tests:read','tests:run'],[],['crear','leer','ultima','mensaje','seleccionar','adjuntar','avanzar_reloj','continuar','reiniciar','ejecutar_suite','informe']),
+ tool('number_test_manage','profile','/v2/number-tests',['tests:read','tests:run'],['estimar','crear','leer','ultima','mensaje','seleccionar','avanzar_reloj','continuar','reiniciar'],['adjuntar','ejecutar_suite','informe']),
  tool('operations_get','profile','/v2/operations',['operations:read'],['leer_resultado'],['efectos']),
  tool('alerts_manage','profile','/v2/alerts',['alerts:read','alerts:write'],['listar','leer','acusar'],['configurar_preferencias']),
  tool('help_read','profile','/v2/help',['help:read'],[],['guia','receta','referencia','descargar']),

@@ -153,6 +153,13 @@ export async function resolveCommercialRoute(c:QueryExecutor,account:DomainRecor
  // Generic replies/payment evidence cannot be assigned by latest selection when two journeys exist.
  if(journeys.filter(j=>j.body.status==='OPEN'||!j.body.status).length>1&&(input.media||/^(si|sí|ya pagu[eé]|pagado|listo|acepto|\$?\d+(?:[.,]\d+)?)$/i.test(input.text?.trim()??'')))return{state:'PRODUCT_SELECTION_REQUIRED',reason:'ORDER_CONTEXT_REQUIRED',sources,choices:current,options:routeOptions};
  if(chat.selected_assignment_id){const selected=current.find(a=>a.id===chat.selected_assignment_id);if(selected&&Date.parse(chat.selection_at)<=Date.parse(input.providerAt))return{state:'RESOLVED',source:'EXPLICIT_OPERATOR_CHOICE',product_id:selected.product_id,assignment:selected,journey:journeys.find(j=>j.body.assignment_id===selected.id&&j.body.assignment_revision===selected.revision),choices:current,options:routeOptions};}
+ // V7 F6 (RF-19.f, continuity): with no new evidence, the chat's only open
+ // journey continues. An entry by advertisement or by a test selection leaves
+ // no written choice; without this a generic reply ("Sí, acepto") on a number
+ // that sells several products would ask the customer to choose again.
+ const open=journeys.filter(j=>(j.body.status==='OPEN'||!j.body.status)&&j.body.routing_state!=='PRODUCT_SELECTION_REQUIRED');
+ if(open.length===1&&open[0]!.id===chat.active_journey_id){const journey=open[0]!,assignment=current.find(a=>a.id===journey.body.assignment_id&&a.revision===journey.body.assignment_revision);
+  if(assignment)return{state:'RESOLVED',source:'OPEN_JOURNEY_CONTINUITY',product_id:assignment.product_id,assignment,journey,choices:current,options:routeOptions};}
  const options=[...current.map(a=>({product_id:a.product_id,assignment:a,binding:undefined as DomainRecord|undefined})),...[...legacy].map(([product_id,{binding}])=>({product_id,assignment:undefined,binding}))];
  if(options.length===1){const selected=options[0]!;return{state:'RESOLVED',source:'SINGLE_UNAMBIGUOUS_ROUTE',...selected,journey:journeys.find(j=>j.body.product_id===selected.product_id&&(!selected.assignment||j.body.assignment_revision===selected.assignment.revision)),choices:current,options:routeOptions};}
  if(!assignments.length&&!options.length){const offerId=input.trustedOfferId??account.body.offer_version_id;const offer=offerId?await getRecord(c,account.workspace_id,'offer',offerId):undefined;if(offer?.body.product_id)return{state:'RESOLVED',source:'LEGACY_SINGLE_ASSIGNMENT',product_id:offer.body.product_id,journey:journeys.find(j=>j.body.product_id===offer.body.product_id),choices:current,options:routeOptions};}

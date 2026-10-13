@@ -3,7 +3,7 @@ import type {ProfileExecutor,ProfilePool} from '../../db/src/profile-context.js'
 import {withProfileTransaction} from '../../db/src/profile-context.js';
 import {currentProfileExecutor} from '../../db/src/profile-query-routing.js';
 import {currentWorkerProfile} from '../../db/src/profile-worker-scope.js';
-import type {ProfileAuthority} from '../../domain/src/core/profile-authorization.js';
+import {authorizeProfileAction,type ProfileAuthority} from '../../domain/src/core/profile-authorization.js';
 import {resolveModel,quote} from './catalog.js';
 import {configureAiGrant} from './configuration.js';
 import {modelFromRow,PostgresAiPorts} from './persistence.js';
@@ -56,11 +56,12 @@ export async function variantAiStatus(db:ProfileExecutor,environment:Environment
 }
 /** Owner act (interactive): one grant per task for the resolved model, valid
  * until that price version expires. Existing matching grants are kept. */
-export async function authorizeVariantAi(db:ProfileExecutor,authority:ProfileAuthority,environment:Environment,variantId:string,selection:VariantAiSelection){
+export async function authorizeVariantAi(db:ProfileExecutor,authority:ProfileAuthority,environment:Environment,variantId:string,selection:VariantAiSelection,only?:readonly AiTask[]){
  const {config,keys}=await profileConfiguration(db,environment,variantId,selection),models=await catalog(db),now=Date.now();
  const minted:{task:AiTask;grant_id:string;provider:Provider;model:string}[]=[];
  if(!config)return{minted,status:await variantAiStatus(db,environment,variantId,selection)};
  for(const [task,spec] of Object.entries(aiTasks) as [AiTask,typeof aiTasks[AiTask]][]){
+  if(only&&!only.includes(task))continue;
   const resolved=resolveModel(config,variantId,spec.capability as Capability,models.map(m=>m.model),now);if(resolved.state!=='MODEL')continue;
   const m=resolved.model,row=models.find(x=>x.model.provider===m.provider&&x.model.model===m.model)!.row,credential=keys.find(k=>k.provider===m.provider);if(!credential)continue;
   const existing=(await db.query(`SELECT id FROM ai_runtime_grants WHERE workspace_id=$1 AND environment=$2 AND variant_id=$3 AND task=$4 AND provider=$5 AND model=$6 AND model_revision=$7 AND price_version=$8
@@ -72,6 +73,34 @@ export async function authorizeVariantAi(db:ProfileExecutor,authority:ProfileAut
   minted.push({task,grant_id:grantId,provider:m.provider,model:m.model});
  }
  return{minted,status:await variantAiStatus(db,environment,variantId,selection)};
+}
+
+/** V7 F6 (RF-19): the configuration «Probar número» prices with — the same
+ * resolution as each variant's seller (its own selection, then the profile
+ * default) — and the protected catalogue. Null without a default model. */
+export async function laboratoryAiConfiguration(db:ProfileExecutor,selections:Readonly<Record<string,VariantAiSelection>>){
+ const prefs=(await db.query("SELECT version,default_provider,default_model FROM ai_profile_preferences WHERE workspace_id=$1 AND environment='REAL'",[db.workspaceId])).rows[0];
+ const keys=(await db.query(`SELECT provider FROM ai_credentials WHERE workspace_id=$1 AND environment='REAL' AND enabled AND state='VERIFIED'`,[db.workspaceId])).rows as {provider:Provider}[];
+ const variants:Record<string,Selection>={};for(const [id,s] of Object.entries(selections))if(s.primary)variants[id]=s.primary;
+ const fallback=Object.values(selections).map(s=>s.fallback).filter((s):s is Selection=>!!s);
+ const first=Object.values(variants)[0];const base=prefs?.default_provider?{provider:prefs.default_provider as Provider,model:String(prefs.default_model)}:first;
+ const models=(await catalog(db)).map(m=>m.model as Model);
+ return{version:Number(prefs?.version??0),models,config:base&&prefs?{profileId:db.workspaceId,version:Number(prefs.version),default:base,variants,capabilityFallbacks:fallback,configuredProviders:[...new Set(keys.map(k=>k.provider))]}:null};
+}
+/** Laboratory grants (task laboratory.chat) per variant whose model matches the
+ * one the run was priced with. Missing ones are minted only by an interactive
+ * owner (integrations:write); otherwise the caller is told who must confirm. */
+export async function laboratoryGrants(db:ProfileExecutor,authority:ProfileAuthority,cases:readonly {variant_id:string;quote:{provider:string;model:string;modelRevision:string;priceVersion:string}}[],selections:Readonly<Record<string,VariantAiSelection>>){
+ const grants:Record<string,string>={},missing:string[]=[];
+ let owner=true;try{authorizeProfileAction(authority,{scope:'integrations:write',workspaceId:db.workspaceId,mutation:true,interactiveOnly:true});}catch{owner=false;}
+ const find=async(variantId:string,q:{provider:string;model:string;modelRevision:string;priceVersion:string})=>(await db.query(`SELECT id FROM ai_runtime_grants WHERE workspace_id=$1 AND environment='REAL' AND variant_id=$2 AND task='laboratory.chat'
+  AND provider=$3 AND model=$4 AND model_revision=$5 AND price_version=$6 AND NOT is_test AND revoked_at IS NULL AND expires_at>clock_timestamp()+interval '10 minutes' ORDER BY expires_at DESC,id LIMIT 1`,[db.workspaceId,variantId,q.provider,q.model,q.modelRevision,q.priceVersion])).rows[0]?.id as string|undefined;
+ for(const variantId of [...new Set(cases.map(c=>c.variant_id))]){
+  const q=cases.find(c=>c.variant_id===variantId)!.quote;let id=await find(variantId,q);
+  if(!id&&owner){await authorizeVariantAi(db,authority,'REAL',variantId,selections[variantId]??{primary:null,fallback:null},['laboratory.chat']).catch(e=>{if(!(e instanceof AiError))throw e;});id=await find(variantId,q);}
+  if(id)grants[variantId]=id;else missing.push(variantId);
+ }
+ return{grants,missing};
 }
 
 const adapters:{[P in Provider]:new(ports:ConstructorParameters<typeof OpenAIAdapter>[0])=>ProviderAdapter}={openai:OpenAIAdapter,anthropic:AnthropicAdapter,google:GoogleAdapter};

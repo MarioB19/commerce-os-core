@@ -1,4 +1,4 @@
-import {createCipheriv,createDecipheriv,randomBytes,randomUUID} from 'node:crypto';
+import {createCipheriv,createDecipheriv,hkdfSync,randomBytes,randomUUID} from 'node:crypto';
 import {numberLabStartSchema,numberLabOperationSchema,labCiphertextSchema,type NumberLabOperation,type NumberLabAction} from '../../contracts/src/number-laboratory.js';
 import {labHash,labCanonical,validateLabSnapshot,type LabEstimate} from '../../domain/src/laboratory/number-lab.js';
 import {authorizeProfileAction,type ProfileAuthority} from '../../domain/src/core/profile-authorization.js';
@@ -9,6 +9,15 @@ const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 function need(ok:unknown,code:string):asserts ok{if(!ok)throw Error(code);}
 const iso=(v:unknown)=>new Date(v instanceof Date?v.getTime():String(v)).toISOString();
 const amount=(v:unknown)=>{const n=Number(v);need(Number.isSafeInteger(n)&&n>=0,'LAB_INVALID_COUNT');return n;};
+/** V7 F6: keys of the laboratory, derived from the private data key (no new
+ * secret to custody). `control` seals runs/operations/results, `files` the
+ * lab copies of materials; `source` is the existing private-store key. */
+export function numberLabKeys(secret=process.env.PRIVATE_DATA_KEY??process.env.DATA_ENCRYPTION_KEY??process.env.ENCRYPTION_KEY){
+ need(typeof secret==='string'&&secret.length>0,'LAB_KEY_REQUIRED');
+ const raw=Buffer.from(secret,/^[a-f0-9]{64}$/i.test(secret)?'hex':'base64');need(raw.length===32,'LAB_KEY_REQUIRED');
+ const derive=(info:string)=>new Uint8Array(hkdfSync('sha256',raw,Buffer.from('commerce-os'),Buffer.from(info),32));
+ return{control:derive('commerce.number-lab.control.v1'),files:derive('commerce.number-lab.files.v1'),transport:derive('commerce.number-lab.transport.v1'),source:new Uint8Array(raw)};
+}
 export interface LabCipherBinding {workspaceId:string;runId:string;purpose:'snapshot'|'action'|'result';operationId?:string}
 function aad(b:LabCipherBinding){need(typeof b.workspaceId==='string'&&b.workspaceId.length>0&&b.workspaceId.length<=256&&!b.workspaceId.includes('\0')&&uuid.test(b.runId)&&['snapshot','action','result'].includes(b.purpose)&&(b.purpose==='snapshot'?b.operationId===undefined:typeof b.operationId==='string'&&uuid.test(b.operationId)),'LAB_CIPHER_SCOPE');return Buffer.from(labCanonical({protocol:'commerce.number-lab.v1',...b}));}
 export function sealLabValue(binding:LabCipherBinding,value:unknown,key:Uint8Array){
@@ -52,6 +61,20 @@ export async function enqueueNumberLab(db:ProfileExecutor,a:ProfileAuthority,run
  await authorize(db,a,true);const row=(await db.query('INSERT INTO commerce_number_lab.operations(workspace_id,run_id,id,actor_id,request_sha256,expected_version,action_ciphertext) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[db.workspaceId,runId,input.operation_id,a.membership.userId,request,input.expected_version,ciphertext])).rows[0];await authorize(db,a,true);return{...presentOperation(row,key),created:true};
 }
 export async function readNumberLab(db:ProfileExecutor,a:ProfileAuthority,runId:string){await authorize(db,a,false);need(uuid.test(runId),'LAB_RUN_ID');const r=(await db.query('SELECT * FROM commerce_number_lab.runs WHERE workspace_id=$1 AND id=$2',[db.workspaceId,runId])).rows[0];await authorize(db,a,false);return r?presentLabRun(r):null;}
+/** V7 F6 (RF-19.a/o): a run's operations in order, each with its action and
+ * settled result (the transcript travels inside the encrypted result). */
+export async function listNumberLabOperations(db:ProfileExecutor,a:ProfileAuthority,runId:string,key:Uint8Array){await authorize(db,a,false);need(uuid.test(runId),'LAB_RUN_ID');
+ const rows=(await db.query('SELECT * FROM commerce_number_lab.operations WHERE workspace_id=$1 AND run_id=$2 ORDER BY created_at,id LIMIT 500',[db.workspaceId,runId])).rows;await authorize(db,a,false);
+ return rows.map(o=>({...presentOperation(o,key),action:numberLabOperationSchema.shape.action.parse(openLabValue({workspaceId:String(o.workspace_id),runId:String(o.run_id),purpose:'action',operationId:String(o.id)},o.action_ciphertext,key))}));}
+/** The newest run of the profile, optionally of one number (RF-19.n «última prueba»). */
+export async function latestNumberLab(db:ProfileExecutor,a:ProfileAuthority,accountId:string|null){await authorize(db,a,false);need(accountId===null||uuid.test(accountId),'LAB_ACCOUNT_ID');
+ const r=(await db.query('SELECT * FROM commerce_number_lab.runs WHERE workspace_id=$1 AND ($2::uuid IS NULL OR source_account_id=$2::uuid) ORDER BY created_at DESC,id LIMIT 1',[db.workspaceId,accountId])).rows[0];await authorize(db,a,false);return r?presentLabRun(r):null;}
+/** Variants and releases the run was captured with (never the live catalogue). */
+export async function numberLabRunScope(db:ProfileExecutor,a:ProfileAuthority,runId:string,key:Uint8Array){await authorize(db,a,false);need(uuid.test(runId),'LAB_RUN_ID');
+ const r=(await db.query('SELECT snapshot_ciphertext,snapshot_sha256 FROM commerce_number_lab.runs WHERE workspace_id=$1 AND id=$2',[db.workspaceId,runId])).rows[0];if(!r)return null;
+ const value=openLabValue({workspaceId:db.workspaceId,runId,purpose:'snapshot'},r.snapshot_ciphertext,key) as {snapshot:unknown;estimate:LabEstimate};const snapshot=validateLabSnapshot(value.snapshot);need(labHash(snapshot)===r.snapshot_sha256,'LAB_SNAPSHOT_CHANGED');
+ return{captured_at:snapshot.captured_at,ai_configuration_version:snapshot.ai_configuration_version,variants:snapshot.candidates.map(c=>({variant_id:c.release.variant_id,release_id:c.release.id,revision:c.release.revision,amount_minor:c.release.amount_minor,currency:c.release.locale.currency})),
+  estimate:{maximum_microusd:value.estimate.maximum_microusd,maximum_ai_calls:value.estimate.maximum_ai_calls,mode:value.estimate.mode}};}
 export async function readNumberLabOperation(db:ProfileExecutor,a:ProfileAuthority,runId:string,operationId:string,key:Uint8Array){await authorize(db,a,false);need(uuid.test(runId)&&uuid.test(operationId),'LAB_OPERATION_ID');const o=(await db.query('SELECT * FROM commerce_number_lab.operations WHERE workspace_id=$1 AND run_id=$2 AND id=$3',[db.workspaceId,runId,operationId])).rows[0];await authorize(db,a,false);return o?presentOperation(o,key):null;}
 /** Dedicated lab-control pool, not the API or canonical-engine pool. A claim is
  * usable only after withProfileTransaction confirms COMMIT. No IO inside TX. */

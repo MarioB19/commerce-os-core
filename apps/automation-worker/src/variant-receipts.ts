@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import type pg from 'pg';
-import {createDatabaseWorkerRuntime,decrypt} from '@commerce/db';
+import {createDatabaseWorkerRuntime,decrypt,runtimeRoleLogin} from '@commerce/db';
 import {withWorkerProfilePhase} from '../../../packages/db/src/profile-worker-scope.js';
 import {withProfileTransaction} from '../../../packages/db/src/profile-context.js';
 import {PostgresReceiptDocumentAi,type ReceiptAiDocument} from '../../../packages/ai-providers/src/receipt-document.js';
@@ -61,6 +61,8 @@ type Workers=ReturnType<typeof createDatabaseWorkerRuntime>;
 export async function processVariantReceipts(limit=3,deps:{workers?:Workers;aiPool?:pg.Pool|null;custodyKey?:Uint8Array;fetcher?:typeof fetch;media?:ReceiptMediaBroker}={}){
  const aiPool=deps.aiPool!==undefined?deps.aiPool:profileAiPool();let custodyKey:Uint8Array|null=deps.custodyKey??null;
  if(aiPool&&!custodyKey){try{custodyKey=aiCredentialKey();}catch{custodyKey=null;}}
+ // Profile-scoped jobs need the reviewed runtime login (production); skipped otherwise.
+ if(!deps.workers&&!runtimeRoleLogin)return 0;
  const runtime=deps.workers??createDatabaseWorkerRuntime('commerce_automation','REAL');let processed=0;
  let profiles:Awaited<ReturnType<Workers['discover']>>;
  try{profiles=await runtime.discover();}catch(error){process.stderr.write(`variant_receipts_discovery_failed ${code(error)}\n`);return 0;}

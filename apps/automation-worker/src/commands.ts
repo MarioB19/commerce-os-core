@@ -43,7 +43,7 @@ export async function applyCommand(client:QueryExecutor,cmd:Body):Promise<Body>{
   // number-flow laboratory always supplies an explicit first turn.
   const initialMessage=supplied||'Hola, quiero información';
   const identity=`opaque:sim-${simulation.id}`;let conversation=await materializeMessage(client,account,{key:`simulation:${cmd.id}`,type:'message',providerAt:simulation.body.virtual_now,identity,text:initialMessage,kind:'text',payload:{simulation:true}},cmd.id,p.offer_version_id,p.workflow_version_id,p.contact_name??'Contacto simulado');if(!conversation)throw new Error('SIMULATION_CONVERSATION_CONFLICT');
-  conversation=await save(client,conversation,{...conversation.body,simulation_id:simulation.id,flow_test_single_step:p.flow_test_mode==='ROUTING_SELECTION',ai_pending:false});simulation=await save(client,simulation,{...simulation.body,status:'RUNNING',conversation_id:conversation.id});await advanceWorkflow(client,conversation);return{simulation_id:simulation.id,conversation_id:conversation.id};
+  conversation=await save(client,conversation,{...conversation.body,simulation_id:simulation.id,flow_test_single_step:p.flow_test_mode==='ROUTING_SELECTION',...(simulation.body.lab_run_id?{flow_test_pause:'BETWEEN_VISIBLE'}:{}),ai_pending:false});simulation=await save(client,simulation,{...simulation.body,status:'RUNNING',conversation_id:conversation.id});await advanceWorkflow(client,conversation);return{simulation_id:simulation.id,conversation_id:conversation.id};
  }
  if(cmd.kind==='simulation_advance'){
   if(cmd.environment!=='SIMULATION')throw new Error('SIMULATION_ENVIRONMENT_REQUIRED');
@@ -58,7 +58,7 @@ export async function applyCommand(client:QueryExecutor,cmd:Body):Promise<Body>{
     if(journey.body.account_id!==account.id||journey.body.contact_id!==contact.id||journey.body.simulation_id&&journey.body.simulation_id!==simulation.id)throw new Error('SIMULATION_SCOPE_INVALID');
     // Routing may create another journey. Attach it before the command commits,
     // so dispatch never depends on a later UI action to repair simulation scope.
-    if(journey.body.simulation_id!==simulation.id){journey=await save(client,journey,{...journey.body,simulation_id:simulation.id,flow_test_single_step:simulation.body.mode==='NUMBER_FLOW_TEST_V1',commercial_classification:'TEST',ai_pending:false});}
+    if(journey.body.simulation_id!==simulation.id){journey=await save(client,journey,{...journey.body,simulation_id:simulation.id,flow_test_single_step:simulation.body.mode==='NUMBER_FLOW_TEST_V1',...(simulation.body.lab_run_id?{flow_test_pause:'BETWEEN_VISIBLE'}:{}),commercial_classification:'TEST',ai_pending:false});}
     if(simulation.body.conversation_id!==journey.id){simulation=await get('simulation',simulation.id);simulation=await save(client,simulation,{...simulation.body,conversation_id:journey.id,status:'RUNNING'});}
     if(!journey.body.flow_state)await advanceWorkflow(client,journey);
    }

@@ -151,6 +151,25 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
   revisar:P('POST',operation.extend({receiptId:z.uuid(),decision:z.enum(['APPROVED','REJECTED']),expectedVersion:z.number().int().positive(),reason:z.string().max(300).optional()}).strict(),
    i=>'/v2/receipts/'+id(i.receiptId)+'/decision',i=>({decision:i.decision,expected_version:i.expectedVersion,...(i.reason?{reason:i.reason}:{})})),
  });
+ // V7 F6 (RF-19.a/l): «Probar número» by task. The estimate comes first and the
+ // start accepts its ceiling; nothing in a test reaches WhatsApp or REAL data.
+ const runId=z.object({runId:z.uuid()}).strict();
+ const step=(action:(i:any)=>unknown,extra:z.ZodRawShape={})=>P('POST',operation.extend({runId:z.uuid(),expectedVersion:z.number().int().positive(),...extra}).strict(),
+  i=>'/v2/number-tests/'+id(i.runId)+'/actions',i=>({expected_version:i.expectedVersion,action:action(i)}));
+ tool('number_test_manage','Probar número','Prueba un número como lo vería un cliente, con la configuración vigente fijada al iniciar. Primero estima el costo máximo de IA (lo paga la clave del perfil); crear acepta ese máximo. Cada acción se aplica en segundo plano: lee la prueba para ver la conversación y el siguiente paso. Nada se envía por WhatsApp ni cuenta como venta.',{
+  estimar:{schema:z.object({accountId:z.uuid(),mode:z.enum(['CHAT']).optional()}).strict(),read:true,run:i=>c.variant('POST','/v2/number-tests/estimate',{account_id:i.accountId,mode:i.mode??'CHAT'},crypto.randomUUID())},
+  crear:P('POST',operation.extend({accountId:z.uuid(),acceptedMaximumMicrousd:z.number().int().positive()}).strict(),()=>'/v2/number-tests',i=>({account_id:i.accountId,mode:'CHAT',accepted_maximum_microusd:i.acceptedMaximumMicrousd})),
+  leer:P('GET',runId,i=>'/v2/number-tests/'+id(i.runId)),
+  ultima:P('GET',z.object({accountId:z.uuid().optional()}).strict(),i=>'/v2/number-tests/latest'+(i.accountId?'?account_id='+id(i.accountId):'')),
+  mensaje:step(i=>({type:'message',text:i.text}),{text:z.string().trim().min(1).max(4096)}),
+  seleccionar:step(i=>({type:'select_variant',variant_id:i.variantId,origin:i.entry??'EXPLICIT'}),{variantId:z.uuid(),entry:z.enum(['EXPLICIT','ADVERTISEMENT']).optional()}),
+  avanzar_reloj:step(i=>({type:'advance',hours:i.hours}),{hours:z.union([z.literal(2),z.literal(8),z.literal(24)])}),
+  continuar:step(()=>({type:'continue'})),
+  // A new test of the same number with the configuration current now.
+  reiniciar:{schema:operation.extend({runId:z.uuid(),acceptedMaximumMicrousd:z.number().int().positive()}).strict(),read:false,run:async i=>{
+   const v=await c.variant('GET','/v2/number-tests/'+id(i.runId)) as {run:{account_id:string}};
+   return c.variant('POST','/v2/number-tests',{account_id:v.run.account_id,mode:'CHAT',accepted_maximum_microusd:i.acceptedMaximumMicrousd},i.operationId);}},
+ });
  tool('payments_manage','Pagos','Consulta y exporta el registro de pagos con los mismos filtros de la aplicación; no aprueba pagos.',
   fromUnion(paymentsCommandSchema,{options:'opciones',list:'listar',export:'exportar'},()=>true,async i=>{const r=await c.payments(i);if(r.operation!=='export')return r;const {bytes,...meta}=r;return{...meta,bytesBase64:Buffer.from(bytes).toString('base64')};}));
  tool('results_read','Resultados','Resultados del perfil sin mezclar monedas; sin datos no equivale a cero.',

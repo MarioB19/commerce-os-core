@@ -109,7 +109,7 @@ async function processAgentsImpl(store:AgentStore,limit:number,override?:SalesAi
     if((await readOperationalSettings(pool,snapshot.conv.workspace_id,snapshot.conv.environment)).version!==snapshot.operationalRevision)throw new Error('CONFIGURATION_CHANGED');
     try{const r=await seller.propose({workspaceId:snapshot.conv.workspace_id,variantId,conversationId:snapshot.conv.id,attemptId:snapshot.run.id,instructions:sellerInstructions(snapshot.sellerSnapshot),context:snapshot.context as unknown as Record<string,unknown>});
      output={proposal:r.proposal,usage:{...r.usage,provider:r.provider,model:r.model,cost_microusd:r.cost_microusd,attempt_id:r.attempt_id}};}
-    catch(error){throw new Error(error instanceof AiError?'AI_'+error.code:'AI_REQUEST_FAILED');}
+    catch(error){throw new Error(error instanceof AiError?'AI_'+error.code:'AI_REQUEST_FAILED',{cause:error});}
    }else{const configured=await configuredAi(snapshot.agent,snapshot.conv.workspace_id,snapshot.conv.environment,override);if((await readOperationalSettings(pool,snapshot.conv.workspace_id,snapshot.conv.environment)).version!==snapshot.operationalRevision)throw new Error('CONFIGURATION_CHANGED');output=await configured.provider.propose({...configured.agent,knowledge:'',instructions:sellerInstructions(snapshot.sellerSnapshot)},snapshot.context);}
   }catch(error){failure=error instanceof Error&&/^[A-Z_0-9]+$/.test(error.message)?error.message:'AI_REQUEST_FAILED';}
   const nativeFields=nativeAi?{provider:nativeAi.provider,model:nativeAi.model,lab_ai:{attempt_id:nativeAi.attemptId,execution_environment:nativeAi.executionEnvironment,operation_class:nativeAi.operationClass,

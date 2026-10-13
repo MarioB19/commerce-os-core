@@ -4205,3 +4205,25 @@ input:not([type="checkbox"]):not([type="radio"]),select,textarea{min-height:44px
 .receipt-amount{display:grid;gap:.2rem;font-size:.85rem;color:#5f6778}
 .receipt-amount input{width:9rem;padding:.45rem .6rem;border:1px solid #c9d0dc;border-radius:.45rem;font:inherit;color:#1c2333}
 .receipt-actions{align-items:end}
+/* V7 F6 «Probar número» (RF-19): a chat in the browser, isolated from WhatsApp. */
+.number-test{display:grid;gap:.85rem;max-width:46rem}
+.number-test-isolation{margin:0;padding:.6rem .8rem;border-radius:var(--ux-radius-sm,8px);background:var(--ux-state-info-bg,#edf3ff);color:var(--ux-state-info-fg,#244f9e);font-size:.9rem}
+.number-test-start{display:grid;gap:.6rem;padding:1rem;border:1px solid var(--border,#dce3ee);border-radius:var(--ux-radius-md,12px);background:var(--surface,#fff)}
+.number-test-start h2{margin:0;font-size:1.05rem}
+.number-test-variants{margin:0;padding-left:1.1rem;color:var(--text-secondary,#52617b);font-size:.9rem}
+.number-test-chat{list-style:none;margin:0;padding:.85rem;display:flex;flex-direction:column;gap:.5rem;min-height:14rem;max-height:60vh;overflow-y:auto;border:1px solid var(--border,#dce3ee);border-radius:var(--ux-radius-md,12px);background:var(--surface-subtle,#f8faff)}
+.number-test-empty{color:var(--text-secondary,#52617b);text-align:center;margin:auto}
+.number-test-bubble{display:grid;gap:.2rem;max-width:min(85%,32rem);padding:.55rem .75rem;border-radius:.9rem;background:var(--surface,#fff);border:1px solid var(--border,#dce3ee);overflow-wrap:anywhere}
+.number-test-bubble.from-customer{align-self:flex-end;background:var(--ux-state-ready-bg,#e9f6f0);border-color:transparent;border-bottom-right-radius:.25rem}
+.number-test-bubble.from-business{align-self:flex-start;border-bottom-left-radius:.25rem}
+.number-test-text{white-space:pre-wrap}
+.number-test-tag{justify-self:start;font-size:.72rem;font-weight:600;padding:.05rem .45rem;border-radius:999px;background:var(--ux-state-neutral-bg,#f0f3f7);color:var(--ux-state-neutral-fg,#4a596e)}
+.number-test-material{font-size:.85rem;color:var(--ux-state-info-fg,#244f9e)}
+.number-test-meta{font-size:.72rem;color:var(--text-secondary,#52617b)}
+.number-test-next{margin:0;font-weight:600}
+.number-test-composer{display:flex;gap:.5rem}
+.number-test-composer input{flex:1;min-width:0;padding:.6rem .75rem;border:1px solid #c9d0dc;border-radius:.5rem;font:inherit}
+.number-test-tools,.number-test-select{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
+.number-test-history ol{margin:.4rem 0 0;padding-left:1.2rem;font-size:.9rem;color:var(--text-secondary,#52617b)}
+.link-button{background:none;border:0;padding:0;color:var(--color-primary,#1d4ed8);text-decoration:underline;cursor:pointer;font:inherit}
+@media (max-width:480px){.number-test-chat{max-height:55vh;padding:.6rem}.number-test-bubble{max-width:92%}}

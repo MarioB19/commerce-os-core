@@ -22,12 +22,14 @@ import {ProfileIntegrations} from './profile-integrations.js';
 import {ProfileOnboarding} from './profile-onboarding.js';
 import {ProfileHome} from './profile-home.js';
 import {ReceiptQueue} from './receipt-queue.js';
+import {NumberTest} from './number-test.js';
 
 /** Closed set: unreviewed V1 pages are never offered by this profile entrypoint. */
 export const profileApplicationPaths=['/','/home','/login','/products','/sales/inbox','/sales/orders','/sales/receipts','/sales/payments','/sales/payments/rules','/results','/results/goals','/settings/profile','/settings/employees','/account/integrations','/numbers','/account/tokens','/account/security'] as const;
 const uuidPattern='[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 const productPath=new RegExp(`^/products/(${uuidPattern})(?:/variants)?$`,'i');
 const variantEditorPath=new RegExp(`^/products/(${uuidPattern})/variants/(${uuidPattern})(?:/(sale|offer|collection|remarketing|numbers))?$`,'i');
+const numberTestPath=new RegExp(`^/numbers/(${uuidPattern})/test$`,'i');
 const productVariantPath={test:(path:string)=>productPath.test(path)||variantEditorPath.test(path)};
 /** RF-17.a: at most six destinations, identical on desktop and mobile;
  * configuration lives in the account menu. */
@@ -35,12 +37,12 @@ export const profileSections=[
  {label:'Inicio',href:'/home',active:(path:string)=>['/','/home','/login'].includes(path)},
  {label:'Productos',href:'/products',active:(path:string)=>path==='/products'||productVariantPath.test(path)},
  {label:'Ventas',href:'/sales/inbox',active:(path:string)=>path.startsWith('/sales/')},
- {label:'Números',href:'/numbers',active:(path:string)=>path==='/numbers'},
+ {label:'Números',href:'/numbers',active:(path:string)=>path==='/numbers'||numberTestPath.test(path)},
  // Until F7 moves it, Campañas opens the reviewed read-only campaign dashboard.
  {label:'Campañas',href:'/campaigns',active:(path:string)=>path==='/campaigns'},
  {label:'Resultados',href:'/results',active:(path:string)=>path.startsWith('/results')},
 ] as const;
-export const isProfileApplicationPath=(path:string)=>profileApplicationPaths.some(value=>value===path)||productVariantPath.test(path);
+export const isProfileApplicationPath=(path:string)=>profileApplicationPaths.some(value=>value===path)||productVariantPath.test(path)||numberTestPath.test(path);
 export function ProfileApplication({path,login}:{path:string;login:(retry:()=>void)=>ReactNode}){
  const view=useRef<ReturnType<typeof createProfileApplication>|null>(null),[state,setState]=useState<ProfileApplicationState>({status:'LOADING'}),[confirmSwitch,setConfirmSwitch]=useState(false),[logoutError,setLogoutError]=useState(''),[leaving,setLeaving]=useState(false);
  const heading=useRef<HTMLHeadingElement>(null);
@@ -81,6 +83,8 @@ function ProfilePage({path,data}:{path:string;data:ProfileBrowserBootstrap}){
  if(path==='/settings/profile')return <ProfileSettings selection={selection} role={profile.role}/>;
  if(path==='/account/integrations')return <ProfileIntegrations selection={selection} role={profile.role} state={profile.state}/>;
  if(path==='/numbers')return <ProfileNumbers selection={selection} role={profile.role} state={profile.state}/>;
+ const testedNumber=numberTestPath.exec(path)?.[1]?.toLowerCase();
+ if(testedNumber)return <NumberTest key={testedNumber} accountId={testedNumber} selection={selection} role={profile.role} state={profile.state} timezone={profile.timezone}/>;
  if(path==='/settings/employees')return profile.role==='owner'?<><ProfileEmployees selection={selection} role={profile.role} state={profile.state} currentUserId={data.user.id}/><ProfileInvitations selection={selection} role={profile.role} state={profile.state}/></>:<p role="alert">No tienes permiso para gestionar empleados.</p>;
  if(path==='/account/tokens')return profile.role==='owner'?<ProfileTokens selection={selection} role={profile.role} state={profile.state}/>:<p role="alert">No tienes permiso para gestionar accesos MCP.</p>;
  if(path==='/results'||path==='/results/goals')return <Results selection={selection} timezone={profile.timezone} role={profile.role} profileState={profile.state}/>;

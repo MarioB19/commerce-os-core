@@ -7,6 +7,8 @@ import {PostgresJobBus,workerService} from '@commerce/jobs';
 import {recoverAutomation,processInbound,processCommands,processSimulationScripts,processNewWorkflows,processTimers,processCampaigns,projectCampaignResults,processAgents,processReceiptAnalyses,materializeInboundMedia,materializeFailedInboundMedia} from './runtime.js';
 import {processInsightJobs,scheduleRecentInsights} from './meta-insights.js';
 import {materializeEffectResults} from './effect-results.js';
+import {processVariantReceipts} from './variant-receipts.js';
+import {numberLabRuntimeFromEnv,processNumberLabOperations} from './number-lab-runner.js';
 import {randomUUID} from 'node:crypto';
 import {AutomationLoopMonitor,automationLoopMetrics} from './loop-monitor.js';
 import {persistAutomationHeartbeat} from './heartbeat.js';
@@ -28,8 +30,13 @@ const operations=loop('operations_monitor',60000,async()=>{await collectOperatio
 const agents=loop('automation_agents',500,()=>processAgents());
 const intelligence=loop('intelligence',5000,()=>processIntelligenceQueue());
 const receipts=loop('automation_receipts',500,()=>processReceiptAnalyses());
-const loops=[commands,materialize,workflows,campaigns,insights,agents,receipts,warmup,warmupSimulation,operations,intelligence];
+// V7 F5: receipts of published variants, read with each variant's own grant and the business's key.
+const variantReceipts=loop('automation_variant_receipts',1000,()=>processVariantReceipts());
+// V7 F6 «Probar número»: only with the laboratory logins configured; otherwise a no-op.
+const laboratory=(()=>{try{return numberLabRuntimeFromEnv();}catch(error){process.stderr.write(`number_lab_configuration_failed ${error instanceof Error&&/^[A-Z0-9_]+$/.test(error.message)?error.message:'UNEXPECTED'}\n`);return null;}})();
+const numberLab=loop('number_lab',500,()=>processNumberLabOperations(laboratory));
+const loops=[commands,materialize,workflows,campaigns,insights,agents,receipts,variantReceipts,numberLab,warmup,warmupSimulation,operations,intelligence];
 for(const item of loops)item.start();
 const service=await workerService('automation-worker',Number(process.env.PORT??process.env.AUTOMATION_PORT??3003),inbound.run,250,{progress:()=>monitor.snapshot(),metrics:()=>automationLoopMetrics(monitor.snapshot()),heartbeat:()=>persistAutomationHeartbeat(instance,monitor.snapshot())});
 const bus=new PostgresJobBus();await bus.start();await bus.work('automation.wake',async()=>{await service.run();});
-for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{inbound.stop();for(const item of loops)item.stop();void Promise.all([bus.stop(),service.close()]).then(()=>process.exit(0));});
+for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{inbound.stop();for(const item of loops)item.stop();void Promise.all([bus.stop(),service.close(),laboratory?.close()]).then(()=>process.exit(0));});

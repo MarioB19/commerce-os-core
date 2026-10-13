@@ -111,7 +111,12 @@ async function overviewRow(c:QueryExecutor,account:DomainRecord){
   else if(warming)status={code:'WARMING',label:`Calentando, día ${progress?.day??1} de 15`};
   else status={code:'READY_TO_ASSIGN',label:'Listo para asignar'};
  }
- return{...base,status,products,warmup:warming?{day:progress?.day??1,of:15}:null,last_test:null};
+ // RF-19.n: the latest «Probar número» of this number, informative only (it never gates selling).
+ const lab=account.environment==='REAL'?(await c.query(`SELECT r.id::text AS run_id,r.created_at,count(o.id)::int AS actions,count(o.id) FILTER(WHERE o.state IN('FAILED','UNKNOWN'))::int AS problems
+  FROM commerce_number_lab.runs r LEFT JOIN commerce_number_lab.operations o ON o.workspace_id=r.workspace_id AND o.run_id=r.id
+  WHERE r.workspace_id=$1 AND r.source_account_id=$2 GROUP BY r.id,r.created_at ORDER BY r.created_at DESC,r.id LIMIT 1`,[account.workspace_id,account.id])).rows[0]:undefined;
+ return{...base,status,products,warmup:warming?{day:progress?.day??1,of:15}:null,
+  last_test:lab&&lab.actions>0?{at:new Date(lab.created_at).toISOString(),ok:lab.problems===0,run_id:String(lab.run_id)}:null};
 }
 
 export async function numberLinkRoutes(app:FastifyInstance){

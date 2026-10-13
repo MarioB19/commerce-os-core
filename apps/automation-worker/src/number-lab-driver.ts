@@ -24,6 +24,25 @@ import {processNumberLabWorkflows} from './workflows.js';
 const inputSchema=z.object({workspaceId:z.string().min(1).max(256),runId:z.uuid(),operationId:z.uuid()}).strict();
 type Input=z.infer<typeof inputSchema>;
 function need(v:unknown,code:string):asserts v{if(!v)throw Error(code);}
+/** V7 F6 (RF-19.g): what the person reads in the test chat, from the engine's
+ * own records (inbound messages and outbox effects of the run's conversation).
+ * Text is the synthetic test conversation; no REAL data exists in the engine. */
+export const transcriptEntrySchema=z.object({at:z.string().max(40),from:z.enum(['customer','business']),kind:z.string().max(20),text:z.string().max(4000).nullable(),
+ material:z.string().max(160).nullable(),status:z.string().max(20).nullable(),purpose:z.string().max(40).nullable()}).strict();
+async function readTranscript(db:ProfileExecutor,conversationId:string){
+ const inbound=(await db.query(`SELECT created_at,body FROM records WHERE workspace_id=$1 AND environment='SIMULATION' AND kind='message' AND body->>'conversation_id'=$2 AND body->>'direction'='INBOUND' ORDER BY created_at DESC,id LIMIT 200`,[db.workspaceId,conversationId])).rows;
+ const outbound=(await db.query(`SELECT o.created_at,o.status,o.payload,a.body->>'name' AS material FROM outbox o LEFT JOIN records a ON a.workspace_id=o.workspace_id AND a.environment=o.environment AND a.kind='asset' AND a.id::text=o.payload->>'asset_id'
+  WHERE o.workspace_id=$1 AND o.environment='SIMULATION' AND o.conversation_id::text=$2 ORDER BY o.created_at DESC LIMIT 200`,[db.workspaceId,conversationId])).rows;
+ const at=(v:unknown)=>new Date(v as string).toISOString(),clip=(v:unknown)=>typeof v==='string'?v.slice(0,4000):null;
+ const entries=[...inbound.map(r=>({at:at(r.created_at),from:'customer' as const,kind:String(r.body.kind??'text').slice(0,20),text:clip(r.body.text),material:null,status:null,purpose:null})),
+  ...outbound.map(r=>({at:at(r.created_at),from:'business' as const,kind:String(r.payload?.kind??'text').slice(0,20),text:clip(r.payload?.text),material:typeof r.material==='string'?r.material.slice(0,160):null,status:String(r.status).slice(0,20),purpose:typeof r.payload?.purpose==='string'?r.payload.purpose.slice(0,40):null}))]
+  .sort((x,y)=>x.at.localeCompare(y.at)).slice(-200);
+ const timers=(await db.query(`SELECT due_at,payload->>'purpose' AS purpose FROM timers WHERE workspace_id=$1 AND environment='SIMULATION' AND conversation_id::text=$2 AND status='PENDING' ORDER BY due_at LIMIT 10`,[db.workspaceId,conversationId])).rows
+  .map(r=>({due_at:at(r.due_at),purpose:typeof r.purpose==='string'?r.purpose.slice(0,40):null}));
+ const flow=(await db.query(`SELECT body->'flow_state'->>'status' AS status,body->'flow_state'->>'waiting_for' AS waiting_for,body->>'ai_status' AS ai_status FROM records WHERE workspace_id=$1 AND environment='SIMULATION' AND kind='conversation' AND id::text=$2`,[db.workspaceId,conversationId])).rows[0];
+ const word=(v:unknown)=>typeof v==='string'&&/^[A-Za-z_]{1,40}$/.test(v)?v:null;
+ return{entries,timers,flow:{status:word(flow?.status),waiting_for:word(flow?.waiting_for),ai_status:word(flow?.ai_status)}};
+}
 const outcomeSchema=z.object({schema_version:z.literal(1),stage:z.enum(['ACTION_APPLIED','SETTLED']),
  action_sha256:z.string().regex(/^[a-f0-9]{64}$/),operation_state:z.enum(['APPLIED','FAILED']),run_state:z.enum(['RUNNING','PARTIAL']),
  result:z.object({execution_environment:z.literal('SIMULATION'),operation_class:z.literal('TEST'),simulation_id:z.uuid(),
@@ -32,6 +51,7 @@ const outcomeSchema=z.object({schema_version:z.literal(1),stage:z.enum(['ACTION_
   reason:z.string().regex(/^[A-Z_]+$/).nullable(),workflow_phase:z.enum(['PENDING','APPLIED','NOT_REQUIRED']),
   transport_phase:z.literal('APPLIED').optional(),transport_result:z.object({projected:z.number().int().min(0),sent:z.number().int().nonnegative(),inbound:z.number().int().nonnegative(),observations:z.number().int().nonnegative(),statuses:z.record(z.string(),z.number().int().nonnegative())}).strict().optional(),
   pending:z.array(z.enum(['WORKFLOWS','AI','TRANSPORT','ATTACHMENTS','AUTOMATIC_REPORT'])).max(5),
+  transcript:z.array(transcriptEntrySchema).max(200).optional(),flow:z.object({status:z.string().max(40).nullable(),waiting_for:z.string().max(40).nullable(),ai_status:z.string().max(40).nullable()}).strict().optional(),timers:z.array(z.object({due_at:z.string().max(40),purpose:z.string().max(40).nullable()}).strict()).max(10).optional(),
   ai_phase:z.enum(['APPLIED','NOT_REQUIRED']).optional(),ai_result:z.object({processed:z.number().int().min(0).max(5),run_id:z.uuid().nullable(),status:z.enum(['RUNNING','AWAITING_EFFECT','COMPLETED','FAILED','DISCARDED']).nullable(),provider_state:z.enum(['SUCCEEDED','REJECTED','UNCERTAIN']).nullable(),human_review:z.boolean(),dependency:z.string().regex(/^[A-Z_]+$/).max(128).nullable().optional()}).strict().optional(),ai_network:z.literal('PROFILE_AI_ONLY').optional(),external_effects:z.literal(0)}).strict()}).strict();
 type Outcome=z.infer<typeof outcomeSchema>;
 type Captured=Awaited<ReturnType<typeof captureControl>>;
@@ -203,17 +223,24 @@ export function createNumberLabDriver(options:{controlPool:ProfilePool;seedPool:
    if(transport&&applied.operation_state==='APPLIED'&&applied.result.conversation_id){
     const variant=c.plan.variants.find(v=>v.variant_id===applied.result.variant_id&&v.release_id===applied.result.release_id);need(variant,'LAB_DISPATCH_RELEASE_CHANGED');
     const dispatchHandle=()=>createNumberLabDispatch({...transport,binding:{...binding,accountId:c.plan.account_id,conversationId:applied.result.conversation_id!,variantId:variant.variant_id},materials:variant.materials.map(m=>({...m,kind:z.enum(['file','link','access']).parse(m.kind)}))});
-    const sent=await dispatchNumberLabOutbox(await runtime.lease(binding),dispatchHandle(),20);
-    const inbound=await processNumberLabInbound(await runtime.lease(binding),dispatchHandle(),100);
-    const observations=await consumeNumberLabObservations(await runtime.lease(binding),dispatchHandle(),100);
-    const projected=await materializeNumberLabEffectResults(await runtime.lease(binding),dispatchHandle(),100);
+    let sent=0,inbound=0,observations=0,projected=0;
+    const pump=async()=>{sent+=await dispatchNumberLabOutbox(await runtime.lease(binding),dispatchHandle(),20);
+     inbound+=await processNumberLabInbound(await runtime.lease(binding),dispatchHandle(),100);
+     observations+=await consumeNumberLabObservations(await runtime.lease(binding),dispatchHandle(),100);
+     projected+=await materializeNumberLabEffectResults(await runtime.lease(binding),dispatchHandle(),100);};
+    await pump();
+    // As the production worker's next ticks would: what the simulated ACKs
+    // unlock (confirmed follow-ups, the next flow unit) runs before the
+    // tester sees the conversation. Bounded; single-step pauses still hold.
+    for(let round=0;round<3;round++){const w=await processNumberLabWorkflows(await runtime.lease(binding),25);if(!w.workflows&&!w.timers)break;await pump();}
     const statuses=await withNumberLabEngine(await runtime.lease(binding),p=>p.transaction(async db=>Object.fromEntries((await db.query("SELECT status,count(*)::int n FROM outbox WHERE workspace_id=$1 AND environment='SIMULATION' AND conversation_id=$2 GROUP BY status",[p.workspaceId,applied.result.conversation_id])).rows.map(r=>[r.status,r.n]))));
     transportResult={sent,inbound,observations,projected,statuses};
    }
+   const view=applied.result.conversation_id?await withNumberLabEngine(await runtime.lease(binding),p=>p.transaction(db=>readTranscript(db,applied.result.conversation_id!))):undefined;
    await readControl(options.controlPool,key,installed,i,true);
    const transportComplete=!!transportResult&&Object.keys(transportResult.statuses).every(status=>['DELIVERED','READ','FAILED','CANCELLED'].includes(status));
    const final=outcomeSchema.parse({...applied,stage:'SETTLED',run_state:applied.operation_state==='FAILED'?'PARTIAL':'RUNNING',result:{...applied.result,
-    ...(applied.result.workflow_phase==='PENDING'?{state:'WORKFLOWS_APPLIED',workflow_phase:'APPLIED'}:{}),...(aiPhase?{ai_phase:aiPhase,ai_result:aiResult,ai_network:'PROFILE_AI_ONLY'}:{}),...(transportResult?{transport_phase:'APPLIED',transport_result:transportResult}:{}),pending:applied.result.pending.filter(p=>p!=='WORKFLOWS'&&(!aiPhase||p!=='AI')&&(!transportComplete||p!=='TRANSPORT'))}});
+    ...(applied.result.workflow_phase==='PENDING'?{state:'WORKFLOWS_APPLIED',workflow_phase:'APPLIED'}:{}),...(aiPhase?{ai_phase:aiPhase,ai_result:aiResult,ai_network:'PROFILE_AI_ONLY'}:{}),...(transportResult?{transport_phase:'APPLIED',transport_result:transportResult}:{}),...(view?{transcript:view.entries,timers:view.timers,flow:view.flow}:{}),pending:applied.result.pending.filter(p=>p!=='WORKFLOWS'&&(!aiPhase||p!=='AI')&&(!transportComplete||p!=='TRANSPORT'))}});
    await withNumberLabEngine(await runtime.lease(binding),p=>p.transaction(db=>writeReceipt(db,i,c,final,key)));
    return settle(i,c);
   },

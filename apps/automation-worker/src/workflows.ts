@@ -191,7 +191,11 @@ export async function advanceWorkflow(client:QueryExecutor,original:DomainRecord
   // Flow-test chat advances expose one visible unit at a time. The durable
   // node cursor is already moved below, so resuming is deterministic and does
   // not replay the effect that was just proposed.
-  if(conversation.body.flow_test_single_step===true&&state.status==='RUNNING'&&next&&['message','bank_instructions','fulfillment','post_receipt'].includes(node.type)){
+  // In «Probar número» (V7 F6, RF-19.b/j) a pause only separates two visible
+  // units: before a wait (commitment, receipt, reply) the flow runs on, so the
+  // customer answers the question just shown exactly as in production.
+  const visible=['message','bank_instructions','fulfillment','post_receipt'],betweenVisible=conversation.body.flow_test_pause==='BETWEEN_VISIBLE';
+  if(conversation.body.flow_test_single_step===true&&state.status==='RUNNING'&&next&&visible.includes(node.type)&&(!betweenVisible||visible.includes(String(def.flow.nodes.find(n=>n.id===next)?.type)))){
    state.status='WAITING';state.waiting_for='simulation_continue';state.waiting_node_id=node.id;
   }
   await event(client,conversation,'workflow.node_executed',{node_id:node.id,node_type:node.type,step:state.steps,workflow_version_id:def.versionId,status:state.status},nodeKey);

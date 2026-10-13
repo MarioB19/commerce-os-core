@@ -34,5 +34,7 @@ export const aiTasks={
  'sales.chat':{capability:'chat',label:'Responder en la conversación'},
  'receipt.document':{capability:'vision',label:'Leer comprobantes de pago'},
  'audio.transcribe':{capability:'audio',label:'Transcribir notas de voz'},
+ // V7 F6 (RF-19): the seller in «Probar número»; same model, SIMULATION only.
+ 'laboratory.chat':{capability:'chat',label:'Responder en «Probar número»'},
 } as const;
 export type AiTask=keyof typeof aiTasks;
