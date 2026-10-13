@@ -19,6 +19,7 @@ import {numberCountries,type NumberCountry} from '../../../packages/domain/src/n
 import type {ReceiptPolicyClient} from '../../../packages/commerce-client/src/receipt-policies.js';
 import type {ResultsClient} from '../../../packages/commerce-client/src/results.js';
 import {humanAction,registerManageTool,type ManageAction} from './manage-tool.js';
+import {helpMarkdown} from '../../../packages/contracts/src/help.js';
 
 export interface ProfileRegistryClients {v2:ProfileV2Client;v1:ProfileV1Client;catalog:ProfileCatalogReader;variant:ProfileVariantClient;continuity:ContinuityClient;payments:PaymentsClient;receiptPolicies:ReceiptPolicyClient;results:ResultsClient}
 const id=(v:string)=>encodeURIComponent(v);
@@ -126,17 +127,21 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
  });
  // One tool per variant section (Inventario V7): read, save, check what is
  // missing, publish the variant, history. Same service as the application.
- const sectionTool=(name:string,title:string,description:string,path:string,value:z.ZodType,publish:boolean)=>tool(name,title,description,{
+ const sectionTool=(name:string,title:string,description:string,path:string,value:z.ZodType,publish:boolean,extra:Record<string,ManageAction>={})=>tool(name,title,description,{
   leer:P('GET',variantId,i=>'/v2/variants/'+id(i.variantId)+'/'+path),
   guardar:P('PUT',operation.extend({variantId:z.uuid(),expectedVersion:z.number().int().positive(),value}).strict(),i=>'/v2/variants/'+id(i.variantId)+'/'+path,i=>({expected_version:i.expectedVersion,value:i.value})),
   validar:{schema:variantId,read:true,run:async i=>{const v=await c.variant('GET','/v2/variants/'+id(i.variantId)) as {state:string;state_label:string;missing:unknown[];unpublished_changes:boolean};return{state:v.state,state_label:v.state_label,missing:v.missing,unpublished_changes:v.unpublished_changes};}},
   ...(publish?{publicar:P('POST',operation.extend({variantId:z.uuid(),expectedVersion:z.number().int().positive(),documentSha256:z.string().regex(/^[a-f0-9]{64}$/)}).strict(),i=>'/v2/variants/'+id(i.variantId)+'/publish',i=>({expected_version:i.expectedVersion,document_sha256:i.documentSha256}))}:{}),
   historial:P('GET',variantId,i=>'/v2/variants/'+id(i.variantId)+'/history'),
+  ...extra,
  });
  sectionTool('offers_manage','Oferta y materiales de la variante','Precio, tiers y qué recibe el cliente y cuándo. Guardar deja un borrador; publicar aplica a conversaciones nuevas.','offer',variantOfferSchema,true);
  sectionTool('sales_flows_manage','Flujo de venta de la variante','Flujo base (venta por conversación o guiado) con sus mensajes en lenguaje de operación.','sales-flow',z.record(z.string(),z.unknown()),true);
  sectionTool('sellers_manage','Vendedor de la variante','Nombre, instrucciones, conocimiento y límites del vendedor; el idioma es el de la variante.','seller',variantSellerSchema,true);
- sectionTool('remarketing_manage','Remarketing de la variante','Hasta tres seguimientos (texto, audio o video) para quien no acepta o no paga, con horario permitido en la zona de la variante. Se detienen si la persona compra, responde o pide la baja. Guardar deja un borrador; publicar aplica a conversaciones nuevas.','remarketing',remarketingPolicySchema.nullable(),true);
+ sectionTool('remarketing_manage','Remarketing de la variante','Hasta tres seguimientos (texto, audio o video) para quien no acepta o no paga, con horario permitido en la zona de la variante. Se detienen si la persona compra, responde o pide la baja. Guardar deja un borrador; publicar aplica a conversaciones nuevas.','remarketing',remarketingPolicySchema.nullable(),true,{
+  // RF-10.e: what the follow-ups did in a period (cycles, sent, replies, sales and revenue recovered).
+  resultados:P('GET',z.object({variantId:z.uuid(),from:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),to:z.string().regex(/^\d{4}-\d{2}-\d{2}$/)}).strict(),i=>'/v2/variants/'+id(i.variantId)+'/remarketing/results?from='+i.from+'&to='+i.to),
+ });
  sectionTool('collections_manage','Cobro de la variante','SPEI y/o enlace de pago. Los datos se guardan cifrados y nunca se devuelven completos.','collection',collectionInputSchema,false);
  tool('receipt_rules_manage','Reglas de comprobantes','Consulta o guarda las reglas de validación de comprobantes del perfil o de una variante.',
   fromUnion(receiptPolicyCommand,{get_profile:'leer_perfil',get_variant:'leer_variante',save_profile:'guardar_perfil',save_variant:'guardar_variante',reconcile:'consultar_operacion'},op=>op.startsWith('get')||op==='reconcile',i=>c.receiptPolicies(i)));
@@ -170,12 +175,26 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
    const v=await c.variant('GET','/v2/number-tests/'+id(i.runId)) as {run:{account_id:string}};
    return c.variant('POST','/v2/number-tests',{account_id:v.run.account_id,mode:'CHAT',accepted_maximum_microusd:i.acceptedMaximumMicrousd},i.operationId);}},
  });
+ // V7 F7 (RF-11, RF-09.k): read only; spend, conversations and the sales they brought.
+ const period=z.object({from:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),to:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),currency:z.string().regex(/^[A-Z]{3}$/).optional()}).strict();
+ const campaigns=(pick:(v:any)=>unknown):ManageAction=>({schema:period,read:true,run:async i=>{const raw=await c.variant('GET','/v2/campaigns?from='+i.from+'&to='+i.to+(i.currency?'&currency='+i.currency:'')) as any;const v=raw&&typeof raw==='object'&&'data' in raw?raw.data:raw;return pick(v);}});
+ tool('campaigns_read','Campañas (sólo lectura)','Gasto, conversaciones, ventas e ingresos atribuidos por campaña y anuncio, cruzados con la hoja de pagos. Sólo lee: no crea, pausa ni cambia presupuesto.',{
+  cuentas:campaigns(v=>({connected:v.connected,accounts:v.accounts})),
+  resultados:campaigns(v=>({connected:v.connected,summary:v.report?.summary??null,quality:v.report?.quality??null})),
+  campanas:campaigns(v=>({connected:v.connected,campaigns:v.report?.groups.campaigns??[]})),
+  anuncios:campaigns(v=>({connected:v.connected,ads:v.report?.groups.ads??[]})),
+ });
  tool('payments_manage','Pagos','Consulta y exporta el registro de pagos con los mismos filtros de la aplicación; no aprueba pagos.',
   fromUnion(paymentsCommandSchema,{options:'opciones',list:'listar',export:'exportar'},()=>true,async i=>{const r=await c.payments(i);if(r.operation!=='export')return r;const {bytes,...meta}=r;return{...meta,bytesBase64:Buffer.from(bytes).toString('base64')};}));
  tool('results_read','Resultados','Resultados del perfil sin mezclar monedas; sin datos no equivale a cero.',
   fromUnion(resultsCommandSchema,{options:'opciones',report:'resumen'},()=>true,i=>c.results(i)));
  tool('goals_manage','Metas','Lista, consulta y edita metas con UUID de operación; si el resultado no es concluyente, consulta la operación.',
   fromUnion(resultsCommandSchema,{goals:'listar',goal:'leer',progress:'avance',create:'crear',update:'editar',reconcile:'consultar_operacion'},op=>!['create','update'].includes(op),i=>c.results(i)));
+ // V7 F7 (RF-16.d): the in-app help, the same text for people and assistants.
+ tool('help_read','Ayuda','Guía de Commerce OS en español: empezar a vender, día a día, probar números, operar con IA, buenas prácticas de WhatsApp, privacidad, términos y API.',{
+  guia:v('GET',z.object({section:z.string().regex(/^[a-z-]{2,40}$/).optional()}).strict(),i=>'/v2/help'+(i.section?'?section='+i.section:''))(c.v2),
+  descargar:{schema:empty,read:true,run:async()=>({format:'text/markdown',markdown:helpMarkdown()})},
+ });
  tool('home_get','Inicio del perfil','Resumen de Inicio: números conectados y aptos para atender (con causas), ventas de hoy, pendientes y siguiente paso.',{
   resumen:v('GET',empty,()=>'/v2/home')(c.v2),
  });

@@ -122,8 +122,8 @@ export function ProductDetail({productId,selection,role,state}:{productId:string
    <table className="variant-table"><thead><tr><th scope="col">Mercado</th><th scope="col">Idioma</th><th scope="col">Moneda</th><th scope="col">Operación</th><th scope="col"><span className="sr-only">Acciones</span></th></tr></thead>
     <tbody>{product.variants.map(v=><tr key={v.id}><td data-label="Mercado">{v.name}</td><td data-label="Idioma">{languageLabel(v.locale.language)}</td><td data-label="Moneda">{v.locale.currency}</td>
      <td data-label="Operación"><span className={`number-status variant-state-${stateTone(v.state)}`}>{v.state_label}</span></td>
-     <td className="variant-row-actions"><a href={variantPath(product.id,v.id)}>Abrir<span className="sr-only"> {v.name}</span></a>{manage&&v.state!=='ARCHIVED'&&<Button size="sm" variant="secondary" onClick={()=>setCopy(v)}>Duplicar a otro país</Button>}</td></tr>)}</tbody></table>
-   <p className="variant-hint">Totales por moneda: consúltalos en <a href="/results">Resultados</a>; nunca se suman monedas distintas.</p>
+     <td className="variant-row-actions"><a href={variantPath(product.id,v.id)}>Abrir<span className="sr-only"> {v.name}</span></a><a href={`/results?family_id=${product.id}&variant_id=${v.id}`}>Resultados<span className="sr-only"> de {v.name}</span></a>{manage&&v.state!=='ARCHIVED'&&<Button size="sm" variant="secondary" onClick={()=>setCopy(v)}>Duplicar a otro país</Button>}</td></tr>)}</tbody></table>
+   <p className="variant-hint">Totales del producto, por moneda: <a href={`/results?family_id=${product.id}`}>ver resultados del producto</a>. Nunca se suman monedas distintas.</p>
    {manage&&<details className="variant-advanced" open={editing} onToggle={e=>setEditing((e.target as HTMLDetailsElement).open)}><summary>Editar producto</summary>
     <form onSubmit={save} className="variant-form"><label>Nombre<input required maxLength={160} value={name} onChange={e=>setName(e.target.value)}/></label>
      <label>Descripción<textarea maxLength={4000} rows={3} value={description} onChange={e=>setDescription(e.target.value)}/></label>

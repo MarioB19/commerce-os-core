@@ -38,7 +38,7 @@ describe('Deployed automation bundle under production permissions',()=>{
   for(const name of ['automation_inbound','intelligence','automation_commands'])expect(later.loops.find((loop:any)=>loop.name===name).successes).toBeGreaterThan(ready.loops.find((loop:any)=>loop.name===name).successes);
   let heartbeat:any;const heartbeatDeadline=Date.now()+20000;
   while(Date.now()<heartbeatDeadline){heartbeat=(await databasePool.query("SELECT body FROM records WHERE workspace_id=$1 AND kind='service_heartbeat' AND body->>'service'='automation-worker' ORDER BY updated_at DESC LIMIT 1",[workspace])).rows[0]?.body;if(heartbeat?.status==='OK')break;await new Promise(resolve=>setTimeout(resolve,100));}
-  expect(heartbeat,stderr).toMatchObject({status:'OK',source:'AUTOMATION_LOOP_PROGRESS',service:'automation-worker'});expect(heartbeat.loops).toHaveLength(14);
+  expect(heartbeat,stderr).toMatchObject({status:'OK',source:'AUTOMATION_LOOP_PROGRESS',service:'automation-worker'});expect(heartbeat.loops).toHaveLength(15);
   expect((await databasePool.query("SELECT count(*)::int n FROM records WHERE workspace_id=$1 AND kind='operational_metric'",[workspace])).rows[0].n).toBeGreaterThan(0);
   expect((await databasePool.query('SELECT count(*)::int n FROM outbox WHERE workspace_id=$1',[workspace])).rows[0].n).toBe(0);
   expect(stderr).not.toMatch(/BetterAuth|default secret|job_bus_error|_failed|tick failed|EXTERNAL_REQUEST_FORBIDDEN/);expect(stdout).not.toContain('BetterAuth');

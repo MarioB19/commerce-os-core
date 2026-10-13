@@ -1,4 +1,4 @@
-export const AUTOMATION_LOOP_NAMES=['automation_inbound','automation_commands','automation_results','automation_workflows','automation_campaigns','automation_warmup','automation_warmup_simulation','automation_meta_insights','operations_monitor','automation_agents','intelligence','automation_receipts','automation_variant_receipts','number_lab'] as const;
+export const AUTOMATION_LOOP_NAMES=['automation_inbound','automation_commands','automation_results','automation_workflows','automation_campaigns','automation_warmup','automation_warmup_simulation','automation_meta_insights','operations_monitor','automation_agents','intelligence','automation_receipts','automation_variant_receipts','number_lab','result_projections'] as const;
 export type AutomationLoopName=typeof AUTOMATION_LOOP_NAMES[number];
 export const AUTOMATION_LOOP_DEADLINE_MS=180_000;
 type ProgressBody=Record<string,unknown>;

@@ -149,6 +149,18 @@ describe('V7 F3 number tools',()=>{
    expect(seen[3]!.body).toEqual({decision:'APPROVED',expected_version:3});
   }finally{await client.close();await server.close();}
  });
+ it('reads help, campaigns and follow-up results with the same routes as the application (RF-16.d, RF-11, RF-10.e)',async()=>{
+  const seen:string[]=[],variantId='55555555-5555-4555-8555-555555555555';
+  const {client,server}=await connect(async(input,init)=>{const url=String(input).replace('https://commerce.example.test','');seen.push(String(init?.method??'GET')+' '+url);
+   return json(200,{data:url.startsWith('/v2/campaigns')?{connected:true,accounts:[{id:'act_1'}],report:{summary:{spend_minor:2000},quality:{status:'OK'},groups:{campaigns:[{name:'C'}],ads:[]}}}:url.startsWith('/v2/help')?{version:'x',sections:[]}:{entered:1}});});
+  try{
+   const guide=await client.callTool({name:'help_read',arguments:{action:'guia',section:'empezar'}});expect(guide.isError).toBeFalsy();
+   const md=await client.callTool({name:'help_read',arguments:{action:'descargar'}});expect(JSON.stringify(md.structuredContent)).toContain('Empieza a vender');
+   const camp=await client.callTool({name:'campaigns_read',arguments:{action:'campanas',from:'2026-10-01',to:'2026-10-12'}});expect(JSON.stringify(camp.structuredContent)).toContain('"name":"C"');
+   await client.callTool({name:'remarketing_manage',arguments:{action:'resultados',variantId,from:'2026-10-01',to:'2026-10-12'}});
+   expect(seen).toEqual(['GET /v2/help?section=empezar','GET /v2/campaigns?from=2026-10-01&to=2026-10-12',`GET /v2/variants/${variantId}/remarketing/results?from=2026-10-01&to=2026-10-12`]);
+  }finally{await client.close();await server.close();}
+ });
  it('tests a number by task: estimate first, start with the accepted ceiling, then queued actions (MCP-EMU)',async()=>{
   const seen:{method:string;url:string;key:string|null;body:unknown}[]=[],accountId='88888888-8888-4888-8888-888888888888',runId='99999999-9999-4999-8999-999999999999',operationId='77777777-7777-4777-8777-777777777777';
   const {client,server}=await connect(async(input,init)=>{seen.push({method:String(init?.method??'GET'),url:String(input).replace('https://commerce.example.test',''),key:new Headers(init?.headers).get('idempotency-key'),body:init?.body?JSON.parse(String(init.body)):undefined});

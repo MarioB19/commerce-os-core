@@ -23,9 +23,11 @@ import {ProfileOnboarding} from './profile-onboarding.js';
 import {ProfileHome} from './profile-home.js';
 import {ReceiptQueue} from './receipt-queue.js';
 import {NumberTest} from './number-test.js';
+import {Campaigns} from './campaigns.js';
+import {Help} from './help.js';
 
 /** Closed set: unreviewed V1 pages are never offered by this profile entrypoint. */
-export const profileApplicationPaths=['/','/home','/login','/products','/sales/inbox','/sales/orders','/sales/receipts','/sales/payments','/sales/payments/rules','/results','/results/goals','/settings/profile','/settings/employees','/account/integrations','/numbers','/account/tokens','/account/security'] as const;
+export const profileApplicationPaths=['/','/home','/login','/products','/sales/inbox','/sales/orders','/sales/receipts','/sales/payments','/sales/payments/rules','/results','/results/goals','/settings/profile','/settings/employees','/account/integrations','/numbers','/account/tokens','/account/security','/campaigns','/help'] as const;
 const uuidPattern='[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 const productPath=new RegExp(`^/products/(${uuidPattern})(?:/variants)?$`,'i');
 const variantEditorPath=new RegExp(`^/products/(${uuidPattern})/variants/(${uuidPattern})(?:/(sale|offer|collection|remarketing|numbers))?$`,'i');
@@ -41,6 +43,7 @@ export const profileSections=[
  // Until F7 moves it, Campañas opens the reviewed read-only campaign dashboard.
  {label:'Campañas',href:'/campaigns',active:(path:string)=>path==='/campaigns'},
  {label:'Resultados',href:'/results',active:(path:string)=>path.startsWith('/results')},
+ {label:'Ayuda',href:'/help',active:(path:string)=>path==='/help'},
 ] as const;
 export const isProfileApplicationPath=(path:string)=>profileApplicationPaths.some(value=>value===path)||productVariantPath.test(path)||numberTestPath.test(path);
 export function ProfileApplication({path,login}:{path:string;login:(retry:()=>void)=>ReactNode}){
@@ -88,6 +91,8 @@ function ProfilePage({path,data}:{path:string;data:ProfileBrowserBootstrap}){
  if(path==='/settings/employees')return profile.role==='owner'?<><ProfileEmployees selection={selection} role={profile.role} state={profile.state} currentUserId={data.user.id}/><ProfileInvitations selection={selection} role={profile.role} state={profile.state}/></>:<p role="alert">No tienes permiso para gestionar empleados.</p>;
  if(path==='/account/tokens')return profile.role==='owner'?<ProfileTokens selection={selection} role={profile.role} state={profile.state}/>:<p role="alert">No tienes permiso para gestionar accesos MCP.</p>;
  if(path==='/results'||path==='/results/goals')return <Results selection={selection} timezone={profile.timezone} role={profile.role} profileState={profile.state}/>;
+ if(path==='/campaigns')return <Campaigns selection={selection} timezone={profile.timezone}/>;
+ if(path==='/help')return <Help/>;
  if(path==='/sales/receipts')return <ReceiptQueue selection={selection} role={profile.role} state={profile.state} timezone={profile.timezone}/>;
  if(['/sales/inbox','/sales/orders'].includes(path))return <ProfileSales key={path} resource={path==='/sales/inbox'?'conversations':'orders'} selection={selection} actorId={data.user.id} role={profile.role} profileState={profile.state} timezone={profile.timezone}/>;
  if(path==='/sales/payments/rules')return <ReceiptPolicies selection={selection} actorId={data.user.id} environment="REAL" role={profile.role} profileState={profile.state} variant={null}/>;

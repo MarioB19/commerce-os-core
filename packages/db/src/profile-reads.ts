@@ -61,9 +61,17 @@ export async function readProfileUsage(db:ProfileExecutor,authority:ProfileAutho
    COALESCE((SELECT sum(a.charged_microusd) FROM ai_attempt_allocations x JOIN ai_attempts a USING(workspace_id,environment,attempt_id) WHERE x.workspace_id=p.workspace_id AND x.environment=p.environment AND x.period_id=p.id),0)::text AS used,
    COALESCE((SELECT sum(a.charged_microusd) FROM ai_attempt_allocations x JOIN ai_attempts a USING(workspace_id,environment,attempt_id) WHERE x.workspace_id=p.workspace_id AND x.environment=p.environment AND x.period_id=p.id AND a.is_test),0)::text AS tests
   FROM ai_budget_periods p WHERE p.workspace_id=$1 AND p.environment='REAL' AND p.starts_at<=clock_timestamp() AND p.ends_at>clock_timestamp()`,[db.workspaceId])).rows[0];
+ // V7 F7 (RF-14.d, RF-19.l): the same period by provider, model and use; tests
+ // of numbers and key checks are their own categories, never mixed with sales.
+ const breakdown=ai?(await db.query(`SELECT a.provider,a.model,a.task,CASE WHEN a.lab_binding_id IS NOT NULL THEN 'NUMBER_TEST' WHEN a.is_test THEN 'KEY_CHECK' ELSE 'OPERATION' END AS category,
+   count(*)::int attempts,COALESCE(sum(a.measured_cost_microusd),0)::text measured,count(*) FILTER(WHERE a.measured_cost_microusd IS NULL AND a.state IN('INTENT','UNCERTAIN','SUCCEEDED'))::int unknown,COALESCE(sum(a.charged_microusd),0)::text charged
+  FROM ai_attempt_allocations x JOIN ai_attempts a USING(workspace_id,environment,attempt_id) JOIN ai_budget_periods p ON p.workspace_id=x.workspace_id AND p.environment=x.environment AND p.id=x.period_id
+  WHERE x.workspace_id=$1 AND x.environment='REAL' AND p.starts_at<=clock_timestamp() AND p.ends_at>clock_timestamp()
+  GROUP BY 1,2,3,4 ORDER BY sum(a.charged_microusd) DESC,1,2,3,4 LIMIT 50`,[db.workspaceId])).rows:[];
  return{timezone:tz,numbers:{used:n(row.numbers),limit:row.number_limit},products:{used:n(row.products),limit:row.product_limit},
   conversationsToday:{used:n(row.conversations_today),limit:row.daily_conversation_limit},storage:{assets:n(row.assets),bytes:n(row.asset_bytes)},
-  aiCost:ai?{startsAt:iso(ai.starts_at),endsAt:iso(ai.ends_at),limitMicrousd:n(ai.profile_limit_microusd),usedMicrousd:n(ai.used),testMicrousd:n(ai.tests)}:null};
+  aiCost:ai?{startsAt:iso(ai.starts_at),endsAt:iso(ai.ends_at),limitMicrousd:n(ai.profile_limit_microusd),usedMicrousd:n(ai.used),testMicrousd:n(ai.tests),
+   breakdown:breakdown.map(r=>({provider:String(r.provider),model:String(r.model),task:String(r.task),category:r.category as 'OPERATION'|'NUMBER_TEST'|'KEY_CHECK',attempts:Number(r.attempts),measuredMicrousd:n(r.measured),unknownAttempts:Number(r.unknown),chargedMicrousd:n(r.charged)}))}:null};
 }
 
 /** Sensitive actions only (RNF-04.b): actor, action, object and a reviewed

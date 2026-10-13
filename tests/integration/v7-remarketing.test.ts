@@ -98,8 +98,17 @@ it('schedules text reminders inside the variant hours and stops them when the cu
  expect(sent).toHaveLength(1);expect(sent[0].payload.kind).toBe('text');expect(sent[0].payload.asset_id).toBeUndefined();expect(sent[0].payload.text).toBe('Recordatorio 1: ¿te interesa el curso?');
  expect(await inProfile(async c=>(await c.query("SELECT status FROM commercial_remarketing_attempts WHERE workspace_id=$1 AND conversation_id=$2",[P,second.id])).rows.map(r=>r.status))).toEqual(['PROPOSED']);
 
+ // The provider accepts the reminder (as the dispatcher records it).
+ await inProfile(c=>c.query("UPDATE outbox SET status='SENT',provider_message_id='accepted:'||id::text,result=jsonb_build_object('accepted_at',now()),updated_at=now() WHERE workspace_id=$1 AND conversation_id=$2 AND payload->>'purpose'='remarketing'",[P,second.id]));
  // The customer replies: the pending reminder is cancelled with its reason.
  await withRole('commerce_automation',()=>withTransaction(c=>materializeMessage(c,number,{key:randomUUID(),type:'message',providerAt:new Date().toISOString(),identity:'opaque:rem-2',kind:'text',text:'Lo pienso',payload:{}},randomUUID())));
  const after=await timersOf(second.id);
  expect(after.find(t=>t.id===due[1].id).status).toBe('CANCELLED');
+ // RF-10.e: the variant's follow-up results for the day.
+ const today=new Date().toISOString().slice(0,10);
+ const results=data(await call('GET',`/v2/variants/${v.id}/remarketing/results?from=${today}&to=${today}`));
+ expect(results).toMatchObject({entered:2,reached:1,messages:{sent:1,uncertain:0},replied:1,opted_out:0,recovered_sales:0,recovered_revenue:[]});
+ expect(results.entered_by_stage).toEqual({AGREEMENT:2,COLLECTION:0});
+ // An earlier period is empty.
+ expect(data(await call('GET',`/v2/variants/${v.id}/remarketing/results?from=2020-01-01&to=2020-01-31`))).toMatchObject({entered:0,reached:0,replied:0});
 },180000);

@@ -276,7 +276,7 @@ function CollectionSection({variant,manage,save}:SectionProps){
 }
 
 // ------------------------------------------------------------------ Remarketing
-function RemarketingSection({variant,manage,materials,save}:SectionProps){
+function RemarketingSection({variant,fence,manage,materials,save}:SectionProps){
  const r=variant.document.remarketing,[policy,setPolicy]=useState(r);
  useEffect(()=>setPolicy(r),[variant.version]);
  const base=()=>({schema_version:1 as const,policy_id:'remarketing-3-slot' as const,policy_revision:1,window:{start_hour:9,end_hour:21},
@@ -317,7 +317,28 @@ function RemarketingSection({variant,manage,materials,save}:SectionProps){
    {manage&&<div className="variant-actions"><Button>Guardar remarketing</Button><Button type="button" variant="ghost" onClick={()=>setPolicy(null)}>Quitar seguimientos</Button></div>}
   </>}
   {!policy&&r&&manage&&<div className="variant-actions"><Button>Guardar sin seguimientos</Button></div>}
+  {r&&<RemarketingResults variant={variant} fence={fence}/>}
  </form>;
+}
+/** RF-10.e: what the follow-ups of this variant did in the last 30 days. */
+interface RemarketingResultsView {entered:number;reached:number;replied:number;recovered_sales:number;opted_out:number;messages:{sent:number;uncertain:number};recovered_revenue:{currency:string;revenue_minor:string;sales:number}[]}
+function RemarketingResults({variant,fence}:{variant:VariantView;fence:ProfileFence}){
+ const [data,setData]=useState<RemarketingResultsView|null>(null),[error,setError]=useState('');
+ useEffect(()=>{const c=new AbortController(),to=new Date().toISOString().slice(0,10),from=new Date(Date.now()-29*86400000).toISOString().slice(0,10);
+  variantRequest<RemarketingResultsView>(fence,'GET',`/v2/variants/${variant.id}/remarketing/results?from=${from}&to=${to}`,undefined,undefined,c.signal).then(setData).catch(e=>{if(!c.signal.aborted)setError(message(e,'No se pudieron consultar los resultados.'));});
+  return()=>c.abort();},[fence,variant.id]);
+ return <section className="variant-card remarketing-results" aria-label="Resultados de los seguimientos"><h3>Últimos 30 días</h3>
+  {error&&<p role="alert">{error}</p>}{!data&&!error&&<p role="status">Consultando…</p>}
+  {data&&(data.entered===0&&data.reached===0?<p className="variant-hint">Todavía nadie entró a seguimiento con esta variante.</p>:<dl>
+   <div><dt>Entraron a seguimiento</dt><dd>{data.entered}</dd></div>
+   <div><dt>Recibieron seguimiento</dt><dd>{data.reached} · {data.messages.sent} mensaje{data.messages.sent===1?'':'s'}{data.messages.uncertain?` · ${data.messages.uncertain} sin confirmar`:''}</dd></div>
+   <div><dt>Respondieron</dt><dd>{data.replied}</dd></div>
+   <div><dt>Compraron después</dt><dd>{data.recovered_sales}</dd></div>
+   <div><dt>Pidieron la baja</dt><dd>{data.opted_out}</dd></div>
+   <div><dt>Ingresos recuperados</dt><dd>{data.recovered_revenue.length?data.recovered_revenue.map(x=>formatMoney(Number(x.revenue_minor),x.currency)).join(' · '):formatMoney(0,variant.document.locale.currency)}</dd></div>
+  </dl>)}
+  <p className="variant-hint">«Respondieron» y «compraron» cuentan sólo hasta 7 días después de recibir un seguimiento. <a href={`/results?family_id=${variant.product.id}&variant_id=${variant.id}&touch=REMARKETING`}>Ver en Resultados</a></p>
+ </section>;
 }
 
 // ------------------------------------------------------------------ Números

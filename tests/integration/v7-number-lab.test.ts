@@ -162,6 +162,9 @@ it('tests a number through the API and the laboratory worker without touching RE
  expect(view.conversation.transcript.at(-1)).toMatchObject({from:'business',purpose:'seller_reply',text:'¡Hola! El curso cuesta 97 pesos. ¿Te interesa?'});
  const attempts=await withTransaction(async c=>(await c.query("SELECT environment,state,lab_binding_id IS NOT NULL AS lab,charged_microusd FROM ai_attempts WHERE workspace_id=$1 AND lab_binding_id IS NOT NULL",[P])).rows);
  expect(attempts).toEqual([expect.objectContaining({environment:'REAL',lab:true,state:'SUCCEEDED'})]);
+ // The month's AI shows the test apart from sales (RF-14.d, RF-19.l).
+ const usage=data(await call('owner','GET','/v2/usage'));
+ expect(usage.aiCost.breakdown).toEqual(expect.arrayContaining([expect.objectContaining({task:'laboratory.chat',category:'NUMBER_TEST',attempts:1,provider:'anthropic'}),expect.objectContaining({task:'credential.verify',category:'KEY_CHECK'})]));
 
  // «Última prueba» of the number (RF-19.n) and nothing REAL changed (RF-19.k).
  expect(data(await call('operator','GET',`/v2/number-tests/latest?account_id=${number}`)).run.run_id).toBe(run.run_id);

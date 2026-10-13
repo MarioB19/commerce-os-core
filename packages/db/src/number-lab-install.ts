@@ -12,11 +12,13 @@ import pg from 'pg';
  * Idempotent: an existing installation is verified, never rebuilt or reseeded.
  * Passwords are generated here and returned once for the root-owned env file;
  * they are never logged. Requires a connection that may CREATE DATABASE/ROLE. */
-const ROOT=new URL('../',import.meta.url);
+// Sources live in packages/db; a bundled installer passes that directory.
+const defaultRoot=new URL('../',import.meta.url);
 const TRANSITIONS=['001_profile_identity.sql','010_continuous_authorization.sql','012_continuous_effects.sql'];
 const COMPONENTS=['021_number_lab_engine.sql','021_number_lab_materialization.sql','021_number_lab_driver.sql','021_number_lab_transport.sql'];
 export interface LabEngineSource {name:string;sql:string}
-export async function numberLabEngineSources():Promise<LabEngineSource[]>{
+export async function numberLabEngineSources(root:URL=defaultRoot):Promise<LabEngineSource[]>{
+ const ROOT=root.href.endsWith('/')?root:new URL(root.href+'/');
  const migrations=(await readdir(new URL('migrations/',ROOT))).filter(n=>/^\d{4}_.+\.sql$/.test(n)&&n<'0069').sort();
  if(migrations.length!==68)throw new Error('LAB_ENGINE_MIGRATIONS_CHANGED');
  const sources:LabEngineSource[]=[];
@@ -32,8 +34,8 @@ export function numberLabEngineSha256(sources:LabEngineSource[]){
 export interface LabInstallation {database:string;installationId:string;engineSha256:string;created:boolean;
  logins?:{engine:{user:string;password:string};seed:{user:string;password:string};control:{user:string;password:string};source:{user:string;password:string}}}
 const ident=(v:string)=>{if(!/^[a-z][a-z0-9_]{2,62}$/.test(v))throw new Error('LAB_IDENTIFIER_INVALID');return '"'+v+'"';};
-export async function installNumberLabEngine(adminUrl:string,options:{database?:string;suffix?:string}={}):Promise<LabInstallation>{
- const sources=await numberLabEngineSources(),engineSha256=numberLabEngineSha256(sources);
+export async function installNumberLabEngine(adminUrl:string,options:{database?:string;suffix?:string;sourcesRoot?:URL}={}):Promise<LabInstallation>{
+ const sources=await numberLabEngineSources(options.sourcesRoot),engineSha256=numberLabEngineSha256(sources);
  const main=new pg.Client({connectionString:adminUrl});await main.connect();
  try{
   const existing=(await main.query("SELECT datname FROM pg_database WHERE datname ~ '^commerce_lab_engine_[a-z0-9_]+$' ORDER BY datname")).rows.map(r=>String(r.datname));

@@ -10,7 +10,11 @@ if(process.env.IDENTITY_TEST_SMTP==='true'){
  process.env.PUBLIC_WEB_ORIGIN=process.env.E2E_BASE_URL??'http://127.0.0.1:5173';
 }
 // Production JS/assets, local HTTP cookies for browser tests. Production Compose uses HTTPS/Secure cookies.
-const children=['api','ingress','automation-worker','channel-worker'].map((app,i)=>spawn(process.execPath,[`dist/apps/${app}/index.js`],{stdio:'inherit',env:{...process.env,HOST:'127.0.0.1',PORT:String(process.env[['API_PORT','INGRESS_PORT','AUTOMATION_PORT','CHANNEL_PORT'][i]]??(Number(process.env.API_PORT??3001)+i))}}));
+// Local only, opt-in: each service with its own runtime login, as in production
+// (commerce_<service>_login assumes its reviewed role), e.g. API_DATABASE_URL.
+const roleLogins=process.env.LOCAL_ROLE_LOGINS==='true';
+const loginUrl=(app)=>roleLogins?process.env[{api:'API',ingress:'INGRESS','automation-worker':'AUTOMATION','channel-worker':'CHANNEL'}[app]+'_DATABASE_URL']:undefined;
+const children=['api','ingress','automation-worker','channel-worker'].map((app,i)=>spawn(process.execPath,[`dist/apps/${app}/index.js`],{stdio:'inherit',env:{...process.env,...(loginUrl(app)?{DATABASE_URL:loginUrl(app),...(app==='automation-worker'?{JOB_SCHEMA:'pgboss_automation'}:app==='channel-worker'?{JOB_SCHEMA:'pgboss_channel'}:{})}:{}),HOST:'127.0.0.1',PORT:String(process.env[['API_PORT','INGRESS_PORT','AUTOMATION_PORT','CHANNEL_PORT'][i]]??(Number(process.env.API_PORT??3001)+i))}}));
 children.push(spawn('pnpm',['--filter','@commerce/web','preview','--host','127.0.0.1','--port',process.env.WEB_PORT??'5173','--strictPort'],{stdio:'inherit',env:process.env}));
 let stopping=false;function stop(code=0){if(stopping)return;stopping=true;children.forEach(c=>c.kill('SIGTERM'));setTimeout(()=>process.exit(code),1000).unref();}
 for(const c of children)c.on('exit',code=>{if(!stopping)stop(code||1);});

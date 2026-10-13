@@ -9,6 +9,7 @@ import {processInsightJobs,scheduleRecentInsights} from './meta-insights.js';
 import {materializeEffectResults} from './effect-results.js';
 import {processVariantReceipts} from './variant-receipts.js';
 import {numberLabRuntimeFromEnv,processNumberLabOperations} from './number-lab-runner.js';
+import {processResultProjections} from './result-projection-runner.js';
 import {randomUUID} from 'node:crypto';
 import {AutomationLoopMonitor,automationLoopMetrics} from './loop-monitor.js';
 import {persistAutomationHeartbeat} from './heartbeat.js';
@@ -35,7 +36,9 @@ const variantReceipts=loop('automation_variant_receipts',1000,()=>processVariant
 // V7 F6 «Probar número»: only with the laboratory logins configured; otherwise a no-op.
 const laboratory=(()=>{try{return numberLabRuntimeFromEnv();}catch(error){process.stderr.write(`number_lab_configuration_failed ${error instanceof Error&&/^[A-Z0-9_]+$/.test(error.message)?error.message:'UNEXPECTED'}\n`);return null;}})();
 const numberLab=loop('number_lab',500,()=>processNumberLabOperations(laboratory));
-const loops=[commands,materialize,workflows,campaigns,insights,agents,receipts,variantReceipts,numberLab,warmup,warmupSimulation,operations,intelligence];
+// V7 F7: Resultados projections with the reviewed commerce_results login (no-op without it).
+const resultProjections=loop('result_projections',60000,()=>processResultProjections());
+const loops=[commands,materialize,workflows,campaigns,insights,agents,receipts,variantReceipts,numberLab,resultProjections,warmup,warmupSimulation,operations,intelligence];
 for(const item of loops)item.start();
 const service=await workerService('automation-worker',Number(process.env.PORT??process.env.AUTOMATION_PORT??3003),inbound.run,250,{progress:()=>monitor.snapshot(),metrics:()=>automationLoopMetrics(monitor.snapshot()),heartbeat:()=>persistAutomationHeartbeat(instance,monitor.snapshot())});
 const bus=new PostgresJobBus();await bus.start();await bus.work('automation.wake',async()=>{await service.run();});

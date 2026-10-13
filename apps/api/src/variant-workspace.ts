@@ -6,6 +6,7 @@ import {VariantError,listProducts,createProduct,editProduct,productDependencies,
  saveVariantSection,reviewVariant,publishVariant,duplicateVariant,setVariantArchived,variantHistory,variantNumbers,variantNumberImpact,
  setVariantNumber,numberVariantsView,numberAssignmentHistory} from '../../../packages/db/src/variant-workspace.js';
 import {adoptLegacyProduct} from '../../../packages/db/src/variant-migration.js';
+import {variantRemarketingResults} from '../../../packages/db/src/remarketing-results.js';
 import {variantAiStatus,authorizeVariantAi,aiStatusLabel} from '../../../packages/ai-providers/src/variant-ai.js';
 import {AiError} from '../../../packages/ai-providers/src/contracts.js';
 import {variantSellerSchema,variantSaleSchema,type VariantSection} from '../../../packages/contracts/src/variants.js';
@@ -76,6 +77,9 @@ export async function variantWorkspaceRoutes(app:FastifyInstance,deps?:ProfileRe
  app.get('/v2/variants',async req=>({data:await read(req,'variants:read',({db,environment})=>listVariants(db,environment,rest(req)))}));
  app.post('/v2/variants',{bodyLimit:8192},async(req,reply)=>{const data=await write(req,'variants:write',req.body,({db,environment,actor})=>createVariant(db,environment,req.body,actor));reply.code(201);return{data};});
  app.get('/v2/variants/:id',async req=>{const {id}=idParam.parse(req.params);return{data:await read(req,'variants:read',({db,environment})=>readVariant(db,environment,id))};});
+ // V7 F7 (RF-10.e): what this variant's follow-ups achieved in a period.
+ app.get('/v2/variants/:id/remarketing/results',async req=>{const {id}=idParam.parse(req.params);
+  return{data:await read(req,'remarketing:read',({db,environment})=>variantRemarketingResults(db,environment,id,rest(req)))};});
  app.get('/v2/variants/:id/history',async req=>{const {id}=idParam.parse(req.params);return{data:await read(req,'variants:read',({db,environment})=>variantHistory(db,environment,id))};});
  app.post('/v2/variants/:id/review',{bodyLimit:2048},async req=>{const {id}=idParam.parse(req.params);return{data:await write(req,'variants:write',req.body,({db,environment,actor})=>reviewVariant(db,environment,id,req.body,actor))};});
  app.post('/v2/variants/:id/publish',{bodyLimit:2048},async req=>{const {id}=idParam.parse(req.params);return{data:await write(req,'variants:write',req.body,async({db,environment,actor,profile})=>{

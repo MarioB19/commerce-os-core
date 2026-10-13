@@ -7,7 +7,7 @@ import {resultsReport} from '../../../packages/db/src/results.js';
 import {readResultGoal} from '../../../packages/db/src/result-goals.js';
 import {resultGoalProgress} from '../../../packages/domain/src/sales/results.js';
 import type {ProfileExecutor} from '../../../packages/db/src/profile-context.js';
-async function report(db:ProfileExecutor,input:unknown){try{return await resultsReport(db,input);}catch(error){if(error instanceof Error&&error.message==='RESULT_PROJECTION_NOT_READY')throw Object.assign(error,{statusCode:503});throw error;}}
+async function report(db:ProfileExecutor,input:unknown){try{return await resultsReport(db,input);}catch(error){if(error instanceof Error&&error.message==='RESULT_PROJECTION_NOT_READY')throw Object.assign(error,{statusCode:503,code:'RESULT_PROJECTION_NOT_READY',publicMessage:'Tus resultados se están preparando. Vuelve a consultarlos en un minuto.'});throw error;}}
 /** Composition remains inside the same selected, authorized database context. */
 export async function resultsRoutes(app:FastifyInstance,deps?:ProfileRequestDependencies){
  app.addHook('onRequest',async(_req,reply)=>{reply.header('Cache-Control','no-store').header('Vary','Cookie, Authorization, X-Commerce-Profile-Id, X-Commerce-Profile-Version');});
