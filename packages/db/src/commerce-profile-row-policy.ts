@@ -79,6 +79,8 @@ const platformTables=['platform_admins','platform_operations','platform_tokens']
 // boundary. A catalog through 0108 (or 0109-0110) does not have them yet.
 const addedAfterRetirement=['platform_backup_runs'];
 // V7 RF-19.d: laboratory example receipts (0113), preserved only when present.
+// V7 RF-07.e: owner alert mail (0116), profile scoped, preserved only when present.
+const profileAddedAfterRetirement=['owner_alert_mail_attempts','owner_alert_mail_jobs'];
 const laboratoryAddedAfterRetirement=['commerce_number_lab.attachments','commerce_number_lab.retention_receipts','commerce_number_lab.suites','commerce_number_lab.suite_cases'];
 // V7 F2 profile integrations (0101): reviewed profile and environment guards in
 // the migration; only the API and the closed AI/platform readers reach rows.
@@ -89,7 +91,7 @@ const retiredByV7=new Set<string>(V7_RETIRED_TABLES);
 const historicalTableNames=[...environmentTables,...sharedProfileTables,...globalIdentityTables,...privateLaboratoryTables,...quotaTables,...privacyFenceTables,...retiredTables,...privacyComponentTables,...privacyReferenceTables,...cutoverTables,...platformTables,...integrationTables,'profile_cutover_historical_tables','profiles','schema_migrations','ai_model_prices','manual_controls'].sort();
 /** Metadata inventory only, for composition/review. Does not grant access.
  * The current schema (0109 onward); the historical one adds V7_RETIRED_TABLES. */
-export const commerceProfileRowTableNames:readonly string[]=Object.freeze([...historicalTableNames.filter(name=>!retiredByV7.has(name)),...addedAfterRetirement,...laboratoryAddedAfterRetirement]);
+export const commerceProfileRowTableNames:readonly string[]=Object.freeze([...historicalTableNames.filter(name=>!retiredByV7.has(name)),...addedAfterRetirement,...profileAddedAfterRetirement,...laboratoryAddedAfterRetirement]);
 export const commerceProfileHistoricalRowTableNames:readonly string[]=Object.freeze(historicalTableNames);
 function check(value:unknown,code:string):asserts value{if(!value)throw Error(code);}
 
@@ -111,6 +113,7 @@ export function commerceProfileRowPolicy(catalog:ProfileCatalog):ProfileRowIsola
  };
  for(const name of live(environmentTables))scoped(name,'workspace_id','environment');
  for(const name of live(sharedProfileTables))scoped(name,'workspace_id',null);
+ for(const name of profileAddedAfterRetirement)if(rows.has(name))scoped(name,'workspace_id',null);
  scoped('profiles','id',null);
  for(const name of globalIdentityTables)add(name,{mode:'preserve',reason:'Global authenticated identity, separate from profile authority; identity pool and ACL review remain required.'});
  add('schema_migrations',{mode:'preserve',reason:'Global immutable migration metadata; no tenant business payload or profile authority.'});

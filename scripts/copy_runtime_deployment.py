@@ -535,7 +535,7 @@ V7_PROFILE_MIGRATION_NAMES = frozenset({
     '0100_v7_platform_admin.sql', '0101_v7_profile_integrations.sql', '0102_v7_platform_tokens.sql', '0103_v7_capacity_agent_tokens.sql', '0104_v7_number_identity_claims.sql',
     '0105_v7_variant_documents.sql', '0106_v7_ai_price_catalog.sql', '0107_v7_ai_budget_continuity.sql',
     '0108_v7_number_lab_queue.sql', '0109_v7_retire_modules.sql', '0110_v7_meta_profile_sync.sql',
-    '0111_v7_platform_recovery.sql', '0112_v7_invitation_mail_queue.sql', '0113_v7_number_lab_attachments.sql', '0114_v7_number_lab_retention.sql', '0115_v7_number_lab_suites.sql'})
+    '0111_v7_platform_recovery.sql', '0112_v7_invitation_mail_queue.sql', '0113_v7_number_lab_attachments.sql', '0114_v7_number_lab_retention.sql', '0115_v7_number_lab_suites.sql', '0116_v7_owner_alert_mail.sql'})
 V7_PROFILE_MIGRATION_TOTAL = 68 + len(V7_PROFILE_MIGRATION_NAMES)
 
 

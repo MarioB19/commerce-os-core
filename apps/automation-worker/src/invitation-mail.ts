@@ -2,6 +2,8 @@ import pg from 'pg';
 import {dispatchProfileInvitationMail,type InvitationMailResult} from '../../../packages/db/src/profile-invitation-mail.js';
 import type {InvitationMailTransport} from '../../../packages/contracts/src/profile-invitation-mail.js';
 import type {ProfilePool} from '../../../packages/db/src/profile-context.js';
+import {dispatchOwnerAlertMail} from '../../../packages/db/src/owner-alert-mail.js';
+import {pool as automationPool} from '@commerce/db';
 
 /** V7 F1 (ADR-V7-13): send queued profile invitations through the App Engine
  * mail service. The dedicated commerce_mail_dispatch login only discovers job
@@ -26,7 +28,9 @@ export function appEngineTransport(origin:string,fetchImpl:typeof fetch=fetch):I
  }};
 }
 
-export type InvitationMailPorts={pool:ProfilePool&{query:pg.Pool['query']};key:Uint8Array;transport:InvitationMailTransport;now?:()=>Date};
+export type InvitationMailPorts={pool:ProfilePool&{query:pg.Pool['query']};key:Uint8Array;transport:InvitationMailTransport;now?:()=>Date;
+ /** RF-07.e: the automation pool that queues owner alert mail (default: this worker's pool). */
+ queue?:{query:pg.Pool['query']}};
 let configured:InvitationMailPorts|undefined;
 function fromEnvironment():InvitationMailPorts|undefined{
  const database=process.env.MAIL_DISPATCH_DATABASE_URL,origin=process.env.MAIL_SERVICE_ORIGIN,key=process.env.MAIL_ENVELOPE_KEY;
@@ -48,5 +52,13 @@ export async function processInvitationMail(ports?:InvitationMailPorts){
    const code=(error as {message?:string}).message??'';results.push({state:'DEFERRED',code:/^[A-Z0-9_]+$/.test(code)?code:'MAIL_RESERVATION_REFUSED'});
   }
  }
- return{skipped:null,jobs:jobs.length,results};
+ // RF-07.e: incidents and recoveries for the owners, then their mail.
+ let queued=0;try{queued=Number((await (active.queue??automationPool).query('SELECT public.queue_owner_alert_mail($1) AS n',[50])).rows[0]?.n??0);}catch{/* queued on a later pass */}
+ const alerts=(await active.pool.query('SELECT workspace_id,job_id FROM public.queued_owner_alert_mail($1)',[5])).rows as {workspace_id:string;job_id:string}[];
+ const alertResults:{state:string;code?:string}[]=[];
+ for(const job of alerts){
+  try{alertResults.push({state:(await dispatchOwnerAlertMail(active.pool,{workspaceId:job.workspace_id,jobId:job.job_id},{key:active.key,transport:active.transport,...(active.now?{now:active.now}:{})})).state});}
+  catch(error){const code=(error as {message?:string}).message??'';alertResults.push({state:'DEFERRED',code:/^[A-Z0-9_]+$/.test(code)?code:'MAIL_RESERVATION_REFUSED'});}
+ }
+ return{skipped:null,jobs:jobs.length,results,alerts:{queued,jobs:alerts.length,results:alertResults}};
 }

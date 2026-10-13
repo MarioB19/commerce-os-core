@@ -222,3 +222,39 @@ class DispatchTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+def alert_payload(event='OPENED', at=NOW, attempt=ATTEMPT):
+    return {'schema_version':1,'event_id':'55555555-5555-4555-8555-555555555555',
+        'workspace_id':'33333333-3333-4333-8333-333333333333','entity_id':'66666666-6666-4666-8666-666666666666',
+        'entity_version':1 if event=='OPENED' else 2,'template':m.ALERT_TEMPLATE,'recipient':'owner@example.invalid','recipient_hmac':'b'*64,
+        'alert_kind':'SESSION_QR_REQUIRED','alert_event':event,'dispatched_at':at.isoformat(),
+        'authorized_until':(at+timedelta(seconds=120)).isoformat(),'budget_reservation_id':attempt}
+
+
+class OwnerAlertTests(DispatchTests.__base__):
+    """V7 RF-07.e: the owner's incident and recovery mail on the same dispatcher."""
+    setUp=DispatchTests.setUp
+    raw=DispatchTests.raw
+    send=DispatchTests.send
+
+    def test_incident_and_recovery_are_fixed_wording_with_a_link_and_one_send_each(self):
+        sent=[]
+        self.provider.side_effect=lambda **kw:sent.append(kw)
+        self.assertEqual(self.send(self.raw(alert_payload('OPENED'))),{'attempt_id':ATTEMPT,'state':'ACCEPTED','delivery_proven':False})
+        other='77777777-7777-4777-8777-777777777777'
+        self.assertEqual(self.send(m.seal(alert_payload('RESOLVED',attempt=other),other,KEY,bytes(range(12))))['state'],'ACCEPTED')
+        self.assertEqual([s['subject'] for s in sent],['Un número necesita QR','Resuelto: Un número necesita QR'])
+        self.assertIn('https://commerce.example/numbers',sent[0]['body']);self.assertNotIn('?',sent[0]['body'])
+        self.assertEqual({s['recipient'] for s in sent},{'owner@example.invalid'})
+        # The same incident event cannot be mailed twice, even with a new attempt.
+        third='88888888-8888-4888-8888-888888888888'
+        with self.assertRaises(m.MailError):
+            self.send(m.seal(alert_payload('OPENED',attempt=third),third,KEY,bytes(range(12))))
+        self.assertEqual(len(sent),2)
+
+    def test_alert_payload_is_closed(self):
+        for change in ({'alert_kind':'CUSTOMER_PHONE'},{'entity_version':2},{'link_token':'x'},{'alert_event':'OTHER'}):
+            with self.assertRaises(m.MailError):
+                self.send(self.raw({**alert_payload(),**change}))
+        self.provider.assert_not_called()

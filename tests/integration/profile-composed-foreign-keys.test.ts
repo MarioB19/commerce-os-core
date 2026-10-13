@@ -35,9 +35,9 @@ describe('complete composed V7 FK proposal over the native schema',()=>{
   expect(raw.slice(raw.indexOf('-- Local proposal only'))).toBe(historicalPlan.sql);
   expect(historical.tables.length+historical.non_public_tables!.length).toBe(227);expect(historicalPlan.changes).toHaveLength(145);
   // After 0109 the same proposal minus the keys of the dropped tables (no kept table referenced them).
-  // 0111 adds platform_backup_runs (no foreign keys); 0113–0115 add laboratory
-  // tables whose keys are already composed by workspace.
-  expect(catalog.tables.length+catalog.non_public_tables!.length).toBe(227-V7_RETIRED_TABLES.length+5);
+  // 0111 adds platform_backup_runs (no foreign keys); 0113–0116 add laboratory
+  // and owner-alert mail tables whose keys are already composed by workspace or global.
+  expect(catalog.tables.length+catalog.non_public_tables!.length).toBe(227-V7_RETIRED_TABLES.length+7);
   expect(plan.changes.map(c=>c.foreign_key_name)).toEqual(historicalPlan.changes.filter(c=>live(c.original)).map(c=>c.foreign_key_name));
   expect([...historical.foreign_keys].some(k=>!retired.has(k.table)&&retired.has(k.referenced_table))).toBe(false);
   expect(plan.changes.filter(c=>c.original.on_delete==='c').map(c=>c.source_table)).toEqual(['health_observation_index','outbox_gate_schedule']);expect(plan.changes.some(c=>c.source_table.startsWith('commerce_number_lab.'))).toBe(false);
@@ -48,7 +48,7 @@ describe('complete composed V7 FK proposal over the native schema',()=>{
  it('keeps every original key, its actions and validation next to its validated composed key',async()=>{
   const installed=(await admin.query("SELECT conname,convalidated FROM pg_constraint WHERE contype='f' AND conname LIKE 'profile_scope_f_%'")).rows as {conname:string;convalidated:boolean}[];
   expect(installed.map(r=>r.conname).sort()).toEqual(plan.changes.map(c=>c.foreign_key_name).sort());expect(installed.every(r=>r.convalidated)).toBe(true);
-  const keys=[...catalog.foreign_keys,...catalog.non_public_foreign_keys!];expect([...historical.foreign_keys,...historical.non_public_foreign_keys!]).toHaveLength(538);expect(keys).toHaveLength([...historical.foreign_keys,...historical.non_public_foreign_keys!].filter(live).length+5);/* +5: 0113–0115 laboratory keys, already composed */const native=new Map(keys.map(k=>[k.table+'.'+k.name,k]));for(const change of plan.changes){const k=native.get(change.original.table+'.'+change.original.name);expect(k?.validated).toBe(true);expect(change.original).toMatchObject(k!);}
+  const keys=[...catalog.foreign_keys,...catalog.non_public_foreign_keys!];expect([...historical.foreign_keys,...historical.non_public_foreign_keys!]).toHaveLength(538);expect(keys).toHaveLength([...historical.foreign_keys,...historical.non_public_foreign_keys!].filter(live).length+9);/* +9: 0113–0116 keys, already composed or global */const native=new Map(keys.map(k=>[k.table+'.'+k.name,k]));for(const change of plan.changes){const k=native.get(change.original.table+'.'+change.original.name);expect(k?.validated).toBe(true);expect(change.original).toMatchObject(k!);}
   const output=process.env.PROFILE_FK_CATALOG_PATH;if(output){if(!isAbsolute(output)||!relative(process.cwd(),resolve(output)).startsWith('../'))throw Error('PROFILE_FK_EXTERNAL_PATH_REQUIRED');await writeFile(output,JSON.stringify({schema_version:1,state:'LOCAL_MIGRATED_COMPOSED_FK_CATALOG',catalog_sha256:plan.catalog_sha256,policy_sha256:plan.policy_sha256,changes:plan.changes.length,catalog,production_affected:false},null,2)+'\n',{flag:'wx',mode:0o600});}
  });
  it('blocks a new cross-profile relation even through an owner that bypasses row policies',async()=>{await transaction(async c=>{const id=await health(c);await expect(c.query('UPDATE health_observation_index SET workspace_id=$2 WHERE record_id=$1',[id,b])).rejects.toMatchObject({code:'23503'});});});

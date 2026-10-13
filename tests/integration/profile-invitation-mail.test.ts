@@ -11,7 +11,7 @@ import {withProfileSessionTransaction} from '../../packages/db/src/profile-sessi
 import {queueProfileInvitation,cancelProfileInvitation,listProfileInvitations} from '../../packages/db/src/profile-invitation.js';
 import {dispatchProfileInvitationMail,readProfileInvitationMail,invitationMailMonths} from '../../packages/db/src/profile-invitation-mail.js';
 import {invitationLinkDigest} from '../../packages/db/src/profile-invitation-acceptance.js';
-import {mailPayloadSchema} from '../../packages/contracts/src/profile-invitation-mail.js';
+import {mailPayloadSchema,ownerAlertMailPayloadSchema} from '../../packages/contracts/src/profile-invitation-mail.js';
 import {processInvitationMail,appEngineTransport} from '../../apps/automation-worker/src/invitation-mail.js';
 // V7 F2: an installation admits three profiles and 20 numbers; each fresh
 // fixture profile is sealed and the oldest are disposed to make room.
@@ -67,6 +67,28 @@ describe('invitation mail native PostgreSQL custody and synthetic local HTTP',()
   expect(again.results?.every(r=>r.state!=='ACCEPTED')??true).toBe(true);expect(sent.filter(r=>r===j.email)).toHaveLength(1);
   expect(()=>appEngineTransport('https://mail.example.invalid')).toThrow('MAIL_SERVICE_ORIGIN_INVALID');
   expect(()=>appEngineTransport('http://x.appspot.com')).toThrow('MAIL_SERVICE_ORIGIN_INVALID');
+ });
+ it('V7 RF-07.e: mails the verified owners once when a number needs them and once when it recovers',async()=>{
+  const j=await job();await admin.query('UPDATE "user" SET "emailVerified"=true WHERE id=$1',[j.userId]);
+  const alert=async(kind:string)=>(await admin.query("INSERT INTO operational_alerts(workspace_id,environment,dedupe_key,kind,severity,summary_code) VALUES($1,'REAL',$2,$3,'WARNING',$3) RETURNING id",[j.workspaceId,'synthetic:'+randomUUID(),kind])).rows[0].id as string;
+  const qr=await alert('SESSION_QR_REQUIRED');await alert('EFFECT_UNKNOWN');
+  const sent:{recipient:string;kind:string;event:string}[]=[];
+  const transport={send:async(body:Uint8Array,fence:()=>void)=>{fence();const envelope=JSON.parse(Buffer.from(body).toString()),cipher=Buffer.from(envelope.ciphertext,'base64url'),d=createDecipheriv('aes-256-gcm',key,Buffer.from(envelope.nonce,'base64url'));
+   d.setAAD(Buffer.from('commerce-mail-v1:'+envelope.attempt_id));d.setAuthTag(cipher.subarray(-16));const p=ownerAlertMailPayloadSchema.parse(JSON.parse(Buffer.concat([d.update(cipher.subarray(0,-16)),d.final()]).toString()));
+   if(p.workspace_id===j.workspaceId)sent.push({recipient:p.recipient,kind:p.alert_kind,event:p.alert_event});return accepted(body);}};
+  const send=async()=>{for(let i=0;i<4;i++)await processInvitationMail({pool:worker as never,key,now:nativeClock,transport});};
+  await send();
+  // One mail for the incident, to the verified owner only; nothing for a notice that is not mailable.
+  expect(sent).toEqual([{recipient:j.userId+'@example.invalid',kind:'SESSION_QR_REQUIRED',event:'OPENED'}]);
+  expect((await admin.query('SELECT status FROM operational_alerts WHERE id=$1',[qr])).rows[0].status).toBe('ACCEPTED');
+  await send();expect(sent).toHaveLength(1);
+  // The recovery is mailed once too; the notice in the app stays independent of the mail.
+  await admin.query('UPDATE operational_alerts SET resolved_at=clock_timestamp() WHERE id=$1',[qr]);
+  await send();await send();
+  expect(sent).toEqual([{recipient:j.userId+'@example.invalid',kind:'SESSION_QR_REQUIRED',event:'OPENED'},{recipient:j.userId+'@example.invalid',kind:'SESSION_QR_REQUIRED',event:'RESOLVED'}]);
+  // Closed functions only: the API role cannot reserve, the dispatcher cannot read jobs.
+  await expect(api.query('SELECT public.reserve_owner_alert_mail($1,$2,$3)',[j.workspaceId,randomUUID(),randomUUID()])).rejects.toMatchObject({code:'42501'});
+  await expect(worker.query('SELECT * FROM owner_alert_mail_jobs')).rejects.toMatchObject({code:'42501'});
  });
  it('gives a non-superuser worker only closed function execution, no raw tables or helper',async()=>{
   expect((await worker.query('SELECT rolsuper,rolbypassrls FROM pg_roles WHERE rolname=current_user')).rows[0]).toEqual({rolsuper:false,rolbypassrls:false});

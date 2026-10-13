@@ -18,6 +18,18 @@ from zoneinfo import ZoneInfo
 MAX_BODY = 16 * 1024
 MAX_ROWS = 4096
 TEMPLATE = 'profile-invitation-v1'
+ALERT_TEMPLATE = 'owner-alert-v1'
+# V7 RF-07.e: the owner's incident/recovery mail. Fixed wording per kind; the
+# message never names a customer, a phone or a secret, only where to act.
+ALERT_TEXT = {
+    'SESSION_QR_REQUIRED': ('Un número necesita QR', 'Un número de tu perfil necesita volver a vincularse con QR.', '/numbers'),
+    'SESSION_AUTH_REVOKED': ('Se revocó la vinculación de un número', 'WhatsApp revocó la vinculación de un número de tu perfil.', '/numbers'),
+    'SESSION_PASSKEY_REQUIRED': ('Un número pide confirmación', 'WhatsApp pide una confirmación en el teléfono de un número de tu perfil.', '/numbers'),
+    'SESSION_IDENTITY_CONFLICT': ('Cambió el teléfono de un número', 'El teléfono vinculado a un número de tu perfil cambió.', '/numbers'),
+    'SESSION_RECOVERY_EXHAUSTED': ('Un número no se pudo reconectar', 'Un número de tu perfil no se pudo reconectar automáticamente.', '/numbers'),
+    'REAL_POLICY_FROZEN': ('Envíos detenidos', 'La plataforma detuvo los envíos de tu perfil.', '/home'),
+    'CHANNEL_WORKER_UNAVAILABLE': ('Servicio de envío no disponible', 'El servicio que envía tus mensajes no está disponible.', '/home'),
+}
 STATES = {'INTENT', 'ACCEPTED', 'REJECTED', 'UNKNOWN'}
 
 
@@ -123,6 +135,8 @@ def validate_identity(claims, config, now):
 
 
 def validate_payload(value, attempt_id, now):
+    if type(value) is dict and value.get('template') == ALERT_TEMPLATE:
+        return validate_alert_payload(value, attempt_id, now)
     exact(value, 'schema_version event_id workspace_id entity_id entity_version template recipient recipient_hmac '
           'link_token dispatched_at link_expires_at authorized_until budget_reservation_id', 'MAIL_PAYLOAD_FIELDS')
     need(type(value['schema_version']) is int and value['schema_version'] == 1 and value['template'] == TEMPLATE,
@@ -153,6 +167,53 @@ def validate_payload(value, attempt_id, now):
          'MAIL_AUTHORIZATION_EXPIRED')
     return value
 
+
+
+
+def validate_common(value, attempt_id):
+    identifier(attempt_id)
+    for key in ('event_id', 'entity_id', 'budget_reservation_id'):
+        identifier(value[key])
+    workspace = value['workspace_id']
+    need(type(workspace) is str and '\0' not in workspace and
+         0 < len(workspace.encode('utf-16-le', errors='surrogatepass')) // 2 <= 256,
+         'MAIL_WORKSPACE_INVALID')
+    need(value['budget_reservation_id'] == attempt_id, 'MAIL_BUDGET_ATTEMPT_CHANGED')
+    digest(value['recipient_hmac'])
+    recipient = value['recipient']
+    need(type(recipient) is str and len(recipient.encode()) <= 254 and re.fullmatch(
+        r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+        r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+", recipient), 'MAIL_RECIPIENT_INVALID')
+    local = recipient.split('@')[0]
+    need(not local.startswith('.') and not local.endswith('.') and '..' not in local, 'MAIL_RECIPIENT_INVALID')
+
+
+def validate_alert_payload(value, attempt_id, now):
+    exact(value, 'schema_version event_id workspace_id entity_id entity_version template recipient recipient_hmac '
+          'alert_kind alert_event dispatched_at authorized_until budget_reservation_id', 'MAIL_PAYLOAD_FIELDS')
+    need(type(value['schema_version']) is int and value['schema_version'] == 1 and value['template'] == ALERT_TEMPLATE,
+         'MAIL_TEMPLATE_INVALID')
+    validate_common(value, attempt_id)
+    need(value['alert_kind'] in ALERT_TEXT and value['alert_event'] in ('OPENED', 'RESOLVED'), 'MAIL_ALERT_INVALID')
+    need(type(value['entity_version']) is int and value['entity_version'] == (1 if value['alert_event'] == 'OPENED' else 2),
+         'MAIL_VERSION_INVALID')
+    start, limit = utc(value['dispatched_at']), utc(value['authorized_until'])
+    need(start <= now < limit <= start + timedelta(seconds=120), 'MAIL_AUTHORIZATION_EXPIRED')
+    return value
+
+
+def compose(config, payload):
+    """Subject and plain-text body of one authorized mail (fixed wording)."""
+    if payload['template'] == ALERT_TEMPLATE:
+        title, text, path = ALERT_TEXT[payload['alert_kind']]
+        if payload['alert_event'] == 'RESOLVED':
+            return ('Resuelto: ' + title, 'Se resolvió este aviso de tu perfil de Commerce OS: ' + text[0].lower() + text[1:] +
+                    '\n\nNo necesitas hacer nada.\n\n' + config['origin'] + path)
+        return (title, text + '\n\nRevísalo en Commerce OS: ' + config['origin'] + path +
+                '\n\nTambién verás este aviso al entrar a la aplicación.')
+    link = config['origin'] + '/accept-invitation#' + payload['link_token']
+    return ('Invitación a Commerce OS', 'Te invitaron a un perfil de Commerce OS.\n\n' + link +
+            '\n\nEl enlace vence en 24 horas. Si no lo esperabas, ignora este correo.')
 
 def seal(payload, attempt_id, key, nonce):
     """Trusted outbox encryption only. Nonce comes from the OS CSPRNG per call."""
@@ -279,10 +340,9 @@ class DispatchService:
         try:
             self.fence(payload)
             now = utc(self.clock()); validate_payload(payload, attempt_id, now); validate_identity(claims, self.config, now)
-            link = self.config['origin'] + '/accept-invitation#' + payload['link_token']
-            body = 'Te invitaron a un perfil de Commerce OS.\n\n' + link + '\n\nEl enlace vence en 24 horas. Si no lo esperabas, ignora este correo.'
+            subject, body = compose(self.config, payload)
             self.provider(sender=self.config['sender'], recipient=payload['recipient'],
-                          subject='Invitación a Commerce OS', body=body)
+                          subject=subject, body=body)
             state = 'ACCEPTED'
         except Exception:
             state = 'UNKNOWN'

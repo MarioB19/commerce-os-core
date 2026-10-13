@@ -17,3 +17,14 @@ export interface InvitationMailTransport {
   * after credentials/local work and before its wire call. Never retry. */
  send(envelope:Uint8Array,beforeSend:()=>void):Promise<unknown>;
 }
+/** V7 RF-07.e: the owner's incident/recovery mail (same envelope and transport). */
+export const ownerAlertMailKinds=['SESSION_QR_REQUIRED','SESSION_AUTH_REVOKED','SESSION_PASSKEY_REQUIRED','SESSION_IDENTITY_CONFLICT','SESSION_RECOVERY_EXHAUSTED','REAL_POLICY_FROZEN','CHANNEL_WORKER_UNAVAILABLE'] as const;
+export const ownerAlertMailPayloadSchema=z.object({schema_version:z.literal(1),event_id:uuid,workspace_id:profileIdSchema,entity_id:uuid,entity_version:z.union([z.literal(1),z.literal(2)]),template:z.literal('owner-alert-v1'),recipient:mailRecipientSchema,recipient_hmac:digest,
+ alert_kind:z.enum(ownerAlertMailKinds),alert_event:z.enum(['OPENED','RESOLVED']),dispatched_at:z.iso.datetime(),authorized_until:z.iso.datetime(),budget_reservation_id:uuid}).strict().superRefine((v,ctx)=>{
+ const start=Date.parse(v.dispatched_at),end=Date.parse(v.authorized_until);
+ if(end<=start||end>start+120000)ctx.addIssue({code:'custom',message:'MAIL_LEASE_TIME_INVALID'});
+ if((v.alert_event==='OPENED')!==(v.entity_version===1))ctx.addIssue({code:'custom',message:'MAIL_EVENT_VERSION'});
+});
+export const ownerAlertMailLeaseSchema=z.object({attemptId:uuid,workspaceId:profileIdSchema,jobId:uuid,alertId:uuid,alertKind:z.enum(ownerAlertMailKinds),event:z.enum(['OPENED','RESOLVED']),recipient:mailRecipientSchema,recipientDigest:digest,
+ dispatchedAt:z.iso.datetime({offset:true}),authorizedUntil:z.iso.datetime({offset:true}),reservedMicroUsd:z.literal(15467),budgetMonths:z.array(z.string().regex(/^\d{4}-\d{2}$/)).min(1).max(2)}).strict();
+export type OwnerAlertMailPayload=z.infer<typeof ownerAlertMailPayloadSchema>;
