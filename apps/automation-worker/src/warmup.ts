@@ -1,4 +1,5 @@
 import {recordProfileExecutor} from '../../../packages/db/src/profile-record-context.js';
+import {bindRecordEnvironment} from '../../../packages/db/src/profile-environment.js';
 import {bindLegacyWarmupEffectOrigins,legacyPoolAuthorities,type LegacyQrAuthority} from '../../../packages/db/src/legacy-qr-warmup.js';
 import {readCurrentQrContinuity,continuousWarmupAuthorityBlock} from '../../../packages/db/src/continuous-warmup.js';
 import {enrollQrWarmupProfile} from '../../../packages/db/src/qr-warmup.js';
@@ -35,6 +36,7 @@ async function poolLock(c:QueryExecutor,poolId:string){await c.query('SELECT pg_
 
 /** Reconciles recorded dependencies only; never starts a session, resets a breaker, or sends HTTP. */
 export async function reconcileWarmupPool(c:QueryExecutor,pool:Body,now=new Date()){
+ await bindRecordEnvironment(c,pool.workspace_id,pool.environment);
  if(pool.continuity_mode==='QR_CONTINUOUS')qrContext(c,pool);
  const members=(await c.query('SELECT * FROM warmup_states WHERE pool_id=$1 ORDER BY account_id FOR UPDATE',[pool.id])).rows;
  for(const state of members){
@@ -86,6 +88,7 @@ export async function reconcileWarmupPool(c:QueryExecutor,pool:Body,now=new Date
 }
 
 export async function evaluateWarmupPool(c:QueryExecutor,pool:Body,now=new Date()){
+ await bindRecordEnvironment(c,pool.workspace_id,pool.environment);
  await correlateGroupEvents(c,pool.group_id??undefined);
  const states=(await c.query('SELECT * FROM warmup_states WHERE pool_id=$1 ORDER BY account_id FOR UPDATE',[pool.id])).rows;
  for(const state of states){
@@ -129,6 +132,7 @@ export async function evaluateWarmupPool(c:QueryExecutor,pool:Body,now=new Date(
 
 function windowEnd(profile:WarmupProfile,now:Date){let time=now.getTime();for(let i=0;i<1440&&localWindow(profile,new Date(time)).open;i++)time+=60000;return new Date(time);}
 export async function planWarmupPool(c:QueryExecutor,pool:Body,now=new Date()){
+ await bindRecordEnvironment(c,pool.workspace_id,pool.environment);
  if(pool.topology==='group')return planGroupPool(c,pool,now);
  if(!pool.enabled||pool.paused||pool.breaker_open)return{planned:0,reason:'POOL_DISABLED_OR_PAUSED'};
  const profile=await profileFor(c,pool.profile_id),window=localWindow(profile,now);

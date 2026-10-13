@@ -1,4 +1,5 @@
 import {recordProfileExecutor} from './profile-record-context.js';
+import {bindRecordEnvironment} from './profile-environment.js';
 import type {CanonicalEvent} from '../../messaging/src/types.js';
 import type {Environment,DomainRecord,Body} from '../../contracts/src/index.js';
 import {canonicalIdentity} from '../../messaging/src/security.js';
@@ -32,6 +33,7 @@ export async function warmupOverview(c:QueryExecutor,workspace:string,environmen
  return{installed:true,enabled:pool.enabled,pool:resourceIds?{id:pool.id,enabled:pool.enabled,paused:pool.paused,breaker_open:pool.breaker_open}:pool,accounts:states.map(({identity_id:_identity,...s})=>s),plans,pair_stats:pairStats,jobs,provider_verified:!!providerEvidence,provider_evidence:providerEvidence?{id:providerEvidence.id,observed_at:providerEvidence.observed_at,expires_at:providerEvidence.expires_at,source:providerEvidence.source}:null};
 }
 export async function commercialWarmupGuard(c:QueryExecutor,account:DomainRecord){
+ await bindRecordEnvironment(c,account.workspace_id,account.environment);
  const state=(await c.query("SELECT s.status,s.paused,s.confirmed_block,s.pool_id,s.profile_ready_at,p.enabled,p.paused AS pool_paused,p.breaker_open,to_jsonb(p)->>'continuity_mode' AS continuity_mode,i.address_fingerprint,i.address_ciphertext,to_jsonb(i)->>'qr_verified_at' qr_verified_at,to_jsonb(i)->>'qr_command_id' qr_command_id,to_jsonb(i)->>'qr_identity_fingerprint' qr_identity_fingerprint FROM warmup_states s JOIN warmup_pools p ON p.id=s.pool_id LEFT JOIN warmup_identities i ON i.id=s.identity_id AND i.account_id=s.account_id WHERE s.account_id=$1 AND s.workspace_id=$2 AND s.environment=$3 AND (s.enrolled_at IS NOT NULL OR p.enabled)",[account.id,account.workspace_id,account.environment])).rows[0];
  if(isStandard15dPolicy(account.body.number_policy_version)&&!state)return 'ACCOUNT_PREPARATION_REQUIRED';
  if(state&&account.environment==='REAL'&&account.body.provider==='waha'&&!warmupIdentityMatches(account,state))return 'WARMUP_REGISTERED_IDENTITY_CHANGED';

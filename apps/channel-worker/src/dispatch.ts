@@ -1,6 +1,5 @@
 import {recordProfileExecutor} from '../../../packages/db/src/profile-record-context.js';
-import {currentProfileExecutor} from '../../../packages/db/src/profile-query-routing.js';
-import {bindProfileEnvironment} from '../../../packages/db/src/profile-environment.js';
+import {bindRecordEnvironment} from '../../../packages/db/src/profile-environment.js';
 import {withNumberLabEngine,type NumberLabEngineLease} from '../../../packages/db/src/number-lab-engine-runtime.js';
 import type {ProfileQuery} from '../../../packages/db/src/profile-context.js';
 import {bindNumberLabDispatch,type NumberLabDispatch} from './catalog-simulator.js';
@@ -36,7 +35,7 @@ const cancelledGateReasons=new Set(['EFFECT_EXPIRED','CONTACT_SUPPRESSED','CONTR
 export async function gateDispatch(client:QueryExecutor,effect:Body,owner:string):Promise<{allowed:boolean;reason?:string;account?:DomainRecord;contact?:DomainRecord;leaseMs?:number}>{
  // Inside a profile scope, environment-bound tables (session ownership, custody)
  // are visible only with the effect's own environment bound to the transaction.
- const scoped=currentProfileExecutor(effect.workspace_id);if(scoped&&(effect.environment==='REAL'||effect.environment==='SIMULATION'))await bindProfileEnvironment(scoped,effect.environment);
+ await bindRecordEnvironment(client,effect.workspace_id,effect.environment);
  if(effect.kind==='warmup')return gateWarmupDispatch(client,effect,owner);
  const account=await getRecord(client,effect.workspace_id,'channel_account',effect.account_id),contact=await getRecord(client,effect.workspace_id,'contact',effect.contact_id),conversation=await getRecord(client,effect.workspace_id,'conversation',effect.conversation_id);
  const deny=(reason:string)=>({allowed:false,reason});if(!account||!contact||!conversation||account.environment!==effect.environment||contact.environment!==effect.environment||conversation.environment!==effect.environment)return deny('RESOURCE_SCOPE_INVALID');

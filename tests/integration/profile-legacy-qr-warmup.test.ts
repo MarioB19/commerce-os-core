@@ -16,6 +16,7 @@ import {hash,encrypt,decrypt,readOperationalSettings,writeOperationalSettings} f
 import {gateGroupDispatch} from '../../apps/channel-worker/src/warmup-group-dispatch.js';
 import {gateWarmupDispatch} from '../../apps/channel-worker/src/warmup.js';
 import {withProfileQueryRouting} from '../../packages/db/src/profile-query-routing.js';
+import {bindProfileEnvironment} from '../../packages/db/src/profile-environment.js';
 import {systemQrContents} from '../../packages/domain/src/warmup/qr-policy.js';
 
 const suffix=randomBytes(6).toString('hex'),roles=['commerce_api','commerce_channel','commerce_automation']as const;
@@ -230,11 +231,14 @@ describe('legacy QR adoption and reconnect, isolated PostgreSQL',()=>{
   const f=await groupFixture('direct');
   await admin.query("UPDATE operation_authorizations SET expires_at=clock_timestamp()+interval '500 milliseconds' WHERE id=$1",[f.auth]);
   const result=await tx(f.w,'commerce_channel',db=>withProfileQueryRouting(db,async()=>{
+   await bindProfileEnvironment(db,'REAL');
    expect((await db.query('SELECT * FROM read_locked_operation_authorization($1,$2,$3)',[f.auth,f.w,'REAL'])).rows).toHaveLength(1);
    await db.query('SELECT pg_sleep(0.7)');
    return gateWarmupDispatch(db,(await db.query('SELECT * FROM outbox WHERE id=$1',[f.effect.id])).rows[0],'legacy-group');
   }));
-  expect(result).toMatchObject({allowed:false,reason:'QR_EFFECT_LEGACY_EXPIRED'});
+  // The V7 reader (0083) compares expiry with clock_timestamp(), not the
+  // transaction start: the authorization read at the start is gone at the gate.
+  expect(result).toMatchObject({allowed:false,reason:'QR_EFFECT_LEGACY_CHANGED'});
  });
  it('reconnecting an adopted group participant never relinks an old effect or its source records',async()=>{
   const f=await groupFixture(),before=(await admin.query('SELECT * FROM warmup_effect_origins WHERE effect_id=$1 ORDER BY participant_id',[f.effect.id])).rows;

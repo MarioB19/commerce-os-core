@@ -115,9 +115,12 @@ describe('F5 policy023 canonical order and receipt workers',()=>{
   await tx(db=>policies.writeReceiptPolicy(db,'REAL',f.draft.id,{expectedRevision:1,override:{automaticApproval:false}},owner.user,randomUUID()));
   expect((await worker(db=>ensureOrder(db,f.conversation)))?.id).toBe(f.order.id);expect(await tx(db=>policies.readOrderReceiptPolicy(db,'REAL',f.order.id))).toEqual(first);
  });
- it('missing ALS authority rolls back the whole new order even with SQL context',async()=>{
+ it('without ALS a mismatched SQL context rolls back the whole new order; the record profile itself is bound',async()=>{
+  // V7 F2: worker paths bind the explicit record's own profile (bindRecordProfile);
+  // an established different context is never switched and aborts the order.
   const f=await fixture(),release=await publish(f.draft),id=await journey(release);await tx(db=>store.captureMarketJourney(db,'REAL',id,release.id));const c=await read(admin,id);
-  await expect(worker(db=>ensureOrder(db,c),false)).rejects.toThrow('RECEIPT_POLICY_PROFILE_CONTEXT_REQUIRED');expect((await admin.query("SELECT id FROM records WHERE workspace_id=$1 AND kind='order' AND body->>'conversation_id'=$2",[one,id])).rows).toEqual([]);
+  await expect(worker(async db=>{await db.query("SELECT set_config('app.environment','SIMULATION',true)");return ensureOrder(db,c);},false)).rejects.toThrow();expect((await admin.query("SELECT id FROM records WHERE workspace_id=$1 AND kind='order' AND body->>'conversation_id'=$2",[one,id])).rows).toEqual([]);
+  const order=await worker(db=>ensureOrder(db,c),false);expect(order?.body.receipt_policy_snapshot_sha256).toMatch(/^[a-f0-9]{64}$/);
  });
  it('uses immutable captured rules rather than a later variant edit',async()=>{
   const f=await prepared(false);await tx(db=>policies.writeReceiptPolicy(db,'REAL',f.draft.id,{expectedRevision:1,override:{automaticApproval:true}},owner.user,randomUUID()));const r=await receipt(f),result=await analyze(r,await observation());expect(result.body.status).toBe('HUMAN_REVIEW');expect(result.body.assessment.reasons).toContain('HUMAN_APPROVAL_REQUIRED');expect(await contributions(f.order.id)).toEqual([]);

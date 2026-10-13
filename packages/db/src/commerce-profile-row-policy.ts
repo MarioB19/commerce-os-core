@@ -59,8 +59,22 @@ const privateLaboratoryTables=['commerce_number_lab.runs','commerce_number_lab.o
 const quotaTables=['profile_quota_policy','profile_quota_load_admissions','profile_quota_coverage','profile_quota_entries'];
 const privacyFenceTables=['privacy_writer_epochs','privacy_writer_leases'];
 const retiredTables=['creative_devices','creative_pairings'];
+// V7 F2 closed components (0069-0095): each table keeps its reviewed owner-only
+// policies; no application role gains a row scope through this classification.
+const privacyComponentTables=[
+ 'financial_retention_attestations','financial_retention_corrections','financial_retention_installations',
+ 'privacy_asset_apply_admissions','privacy_asset_batches','privacy_asset_completions',
+ 'privacy_backup_attestations','privacy_backup_file_sets','privacy_backup_revocations',
+ 'privacy_backup_row_entries','privacy_backup_row_pages','privacy_backup_row_seals','privacy_backup_row_sets',
+ 'privacy_hold_events','privacy_jobs','privacy_minimized_assets','privacy_minimized_records',
+ 'privacy_opaque_implementations','privacy_opaque_passes','privacy_policy_adoptions',
+ 'privacy_record_apply_admissions','privacy_record_batches','privacy_record_completions',
+ 'privacy_result_confirmations','privacy_result_preservations','privacy_result_seals'
+];
+const privacyReferenceTables=['privacy_reference_epoch','privacy_reference_leases'];
+const cutoverTables=['profile_adoption_quarantine','profile_adoption_receipts','profile_role_adoptions'];
 /** Metadata inventory only, for composition/review. Does not grant access. */
-export const commerceProfileRowTableNames:readonly string[]=Object.freeze([...environmentTables,...sharedProfileTables,...globalIdentityTables,...privateLaboratoryTables,...quotaTables,...privacyFenceTables,...retiredTables,'profiles','schema_migrations','ai_model_prices','manual_controls'].sort());
+export const commerceProfileRowTableNames:readonly string[]=Object.freeze([...environmentTables,...sharedProfileTables,...globalIdentityTables,...privateLaboratoryTables,...quotaTables,...privacyFenceTables,...retiredTables,...privacyComponentTables,...privacyReferenceTables,...cutoverTables,'profile_cutover_historical_tables','profiles','schema_migrations','ai_model_prices','manual_controls'].sort());
 function check(value:unknown,code:string):asserts value{if(!value)throw Error(code);}
 
 /** Pure, complete classification for the composed V7 schema through030.
@@ -88,6 +102,10 @@ export function commerceProfileRowPolicy(catalog:ProfileCatalog):ProfileRowIsola
  add('manual_controls',{mode:'preserve',reason:'Reviewed020 separates record environments while preserving the workspace stop shared across both environments.'});
  for(const name of retiredTables){const row=rows.get(name),pol=catalog.policies.filter(p=>p.table===name);check(row?.rls&&row.force_rls&&pol.length===1&&pol[0]!.name==='retired_creative_custody'&&pol[0]!.command==='*'&&!pol[0]!.permissive&&pol[0]!.roles.length===1&&pol[0]!.roles[0]==='PUBLIC'&&pol[0]!.using==='false'&&pol[0]!.with_check==='false','COMMERCE_ROW_RETIRED_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Retired credentials remain administrative history under restrictive deny; no invented profile or environment.'});}
  for(const name of privateLaboratoryTables){const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_LAB_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Dedicated021 control is profile scoped with immutable source/budget REAL and execution SIMULATION dimensions; preserve its exact reviewed gates.'});}
+ for(const name of privacyComponentTables){const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_PRIVACY_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Closed V7 privacy and financial retention custody; only its reviewed owner roles reach rows, through exact profile-scoped policies and ports.'});}
+ for(const name of privacyReferenceTables){const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_PRIVACY_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Installation-wide privacy reference fence epoch and leases; no tenant business payload and no application role access.'});}
+ for(const name of cutoverTables){const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_CUTOVER_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Immutable V7 cutover adoption receipts; written once by the migration owner and closed to application roles.'});}
+ add('profile_cutover_historical_tables',{mode:'preserve',reason:'Global immutable list of historical table names used by the isolation model; no tenant data.'});
  check(Object.keys(result).length===rows.size,'COMMERCE_ROW_UNCLASSIFIED_RELATION');
  return{schema_version:1,tables:result};
 }

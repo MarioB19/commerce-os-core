@@ -34,7 +34,7 @@ describe('033 native minimization with canonical031/032 and permanent guards',()
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:4});
   // V7 F2: the canonical chain, its components and the isolation model are
-  // installed by the migrations (0069-0097); no transition source is applied here.
+  // installed by the migrations (0069-0099); no transition source is applied here.
   await requireMigratedProfileSchema(admin);
   for(const[id,email]of[[owner,'privacy@example.invalid'],[owner+'-backup','privacy-backup@example.invalid']])await admin.query('INSERT INTO "user"(id,name,email,"emailVerified","createdAt","updatedAt") VALUES($1,$2,$3,true,now(),now())',[id,'Synthetic privacy Owner',email]);
   for(const workspace of[w,other]){await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic privacy jobs','UTC',0,0,100)",[workspace]);for(const id of[owner,owner+'-backup'])await admin.query("INSERT INTO memberships(user_id,workspace_id,role,active) VALUES($1,$2,'owner',true)",[id,workspace]);await tx(admin,'NONE',c=>c.query('SELECT adopt_profile_quota_inventory($1,profile_quota_inventory($1))',[workspace]),workspace);}
@@ -71,7 +71,7 @@ describe('033 native minimization with canonical031/032 and permanent guards',()
  async function admission(c:pg.PoolClient,s:Staged,lease:string){
   // Explicit fixture-only final assembler. Production033 grants no INSERT or
   // mutating EXECUTE to any runtime role and does not claim full erasure.
-  await c.query('SET LOCAL ROLE postgres');await c.query("INSERT INTO privacy_record_apply_admissions(batch_id,job_id,workspace_id,journey_id,backend_pid,transaction_id,lease_id) VALUES($1,$1,$2,$3,pg_backend_pid(),pg_current_xact_id(),$4)",[s.job,s.j.w,s.j.id,lease]);await c.query('SET LOCAL ROLE commerce_privacy_job_worker');
+  await c.query('SET LOCAL ROLE NONE');await c.query("INSERT INTO privacy_record_apply_admissions(batch_id,job_id,workspace_id,journey_id,backend_pid,transaction_id,lease_id) VALUES($1,$1,$2,$3,pg_backend_pid(),pg_current_xact_id(),$4)",[s.job,s.j.w,s.j.id,lease]);await c.query('SET LOCAL ROLE commerce_privacy_job_worker');
  }
  async function apply(s:Staged,after?:(c:pg.PoolClient,lease:string)=>Promise<void>){return withPrivacyWriterFence(admin,s.j.w,async(c,lease)=>{await admission(c,s,lease);const result=(await c.query('SELECT apply_privacy_record_minimization($1,$2) r',[s.job,lease])).rows[0].r;if(after)await after(c,lease);return result;});}
  async function image(j:Source){return{current:(await admin.query("SELECT * FROM records WHERE workspace_id=$1 AND (id=$2::uuid OR body->>'conversation_id'=$2::text) ORDER BY id",[j.w,j.id])).rows,history:(await admin.query('SELECT v.* FROM record_versions v WHERE record_id=ANY($1::uuid[]) ORDER BY record_id,version',[[j.id,j.message,j.order,j.receipt].filter(Boolean)])).rows};}

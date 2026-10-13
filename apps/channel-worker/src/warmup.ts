@@ -1,4 +1,5 @@
 import {recordProfileExecutor} from '../../../packages/db/src/profile-record-context.js';
+import {bindRecordEnvironment} from '../../../packages/db/src/profile-environment.js';
 import {validateLegacyWarmupEffectOrigins} from '../../../packages/db/src/legacy-qr-warmup.js';
 import {readContinuousEffectAuthority} from '../../../packages/db/src/continuous-effect.js';
 import {readCurrentQrContinuity,continuousWarmupAuthorityBlock} from '../../../packages/db/src/continuous-warmup.js';
@@ -14,6 +15,7 @@ import {assertGatewayIsolation} from './providers.js';
 
 /** Own-pool traffic uses the same durable dispatcher, but never invents a sales contact. */
 export async function gateWarmupDispatch(c:QueryExecutor,effect:Body,owner:string):Promise<{allowed:boolean;reason?:string;account?:DomainRecord;contact?:DomainRecord;leaseMs?:number}>{
+ await bindRecordEnvironment(c,effect.workspace_id,effect.environment);
  if(effect.payload.group_protocol==='v1')return gateGroupDispatch(c,effect,owner);
  const deny=(reason:string)=>({allowed:false,reason});
  const turn=(await c.query(`SELECT t.*,v.content_id,v.local_date::text AS local_date,v.initiator_id,v.peer_id,p.id pool_id,p.profile_id,p.enabled,p.paused pool_paused,p.breaker_open,p.purpose,to_jsonb(p)->>'continuity_mode' AS continuity_mode,p.authorization_id pool_authorization_id FROM warmup_turns t JOIN warmup_conversations v ON v.id=t.conversation_id JOIN warmup_states s ON s.account_id=t.sender_id JOIN warmup_pools p ON p.id=s.pool_id WHERE t.id::text=$1 AND t.workspace_id=$2 AND t.environment=$3 FOR SHARE OF p`,[effect.payload.warmup_turn_id,effect.workspace_id,effect.environment])).rows[0];

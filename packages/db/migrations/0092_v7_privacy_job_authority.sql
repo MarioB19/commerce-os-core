@@ -52,6 +52,9 @@ DO $tables$ DECLARE t text;BEGIN
 END $tables$;
 GRANT SELECT(user_id,workspace_id,role,active,version),UPDATE(user_id) ON memberships TO commerce_privacy_job_owner;
 CREATE POLICY privacy_job_membership_reader ON memberships FOR SELECT TO commerce_privacy_job_owner USING(workspace_id=NULLIF(current_setting('app.workspace_id',true),''));
+-- FOR SHARE also evaluates UPDATE policies once memberships is under RLS
+-- (0096). Lock-only: the check rejects every real write.
+CREATE POLICY privacy_job_membership_lock ON memberships FOR UPDATE TO commerce_privacy_job_owner USING(workspace_id=NULLIF(current_setting('app.workspace_id',true),'')) WITH CHECK(false);
 GRANT SELECT ON records TO commerce_privacy_job_owner;
 CREATE POLICY privacy_job_source_reader ON records FOR SELECT TO commerce_privacy_job_owner USING(workspace_id=NULLIF(current_setting('app.workspace_id',true),'') AND environment='REAL' AND current_setting('app.environment',true)='REAL');
 GRANT EXECUTE ON FUNCTION privacy_writer_fence_assert(uuid),privacy_closure_proof(uuid,integer) TO commerce_privacy_job_owner;

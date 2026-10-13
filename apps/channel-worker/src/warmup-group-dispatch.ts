@@ -1,4 +1,5 @@
 import {recordProfileExecutor} from '../../../packages/db/src/profile-record-context.js';
+import {bindRecordEnvironment} from '../../../packages/db/src/profile-environment.js';
 import {validateLegacyWarmupEffectOrigins} from '../../../packages/db/src/legacy-qr-warmup.js';
 import {getRecord,decrypt,hash,stableJson,readOperationalSettings,pool,withTransaction,type QueryExecutor} from '@commerce/db';
 import {readEffectiveHealthBatch,currentEffectiveSignal,currentRestrictionClear,effectiveHealthBlockers} from '../../../packages/db/src/effective-health.js';
@@ -21,6 +22,7 @@ export async function refreshEffectGroup(effectId:string,factory:ProviderFactory
  let cursor=0;await Promise.all(Array.from({length:Math.min(4,required.length)},async()=>{while(cursor<required.length){const id=required[cursor++]!,member=await getRecord(pool,effect.workspace_id,'channel_account',id);if(!member||member.environment!==effect.environment)throw new Error('GROUP_ACCOUNT_SCOPE_INVALID');const observe=async()=>{const provider=await factory(member);if(!provider.group)throw new Error('GROUP_PROVIDER_UNSUPPORTED');return provider.group(decrypt(group.group_ciphertext));};const snapshot=member.environment==='REAL'?await withTransaction(async c=>{if((await readOperationalSettings(c,member.workspace_id,'REAL',{lock:'share'})).release_hold)throw new Error('RELEASE_HOLD_ACTIVE');return observe();}):await observe();await withTransaction(async c=>{if(member.environment==='REAL'&&(await readOperationalSettings(c,member.workspace_id,'REAL',{lock:'share'})).release_hold)throw new Error('RELEASE_HOLD_ACTIVE');return observeGroup(c,member,snapshot,now);});}}));
 }
 export async function gateGroupDispatch(c:QueryExecutor,effect:Body,owner:string):Promise<{allowed:boolean;reason?:string;account?:DomainRecord;contact?:DomainRecord;leaseMs?:number}>{
+ await bindRecordEnvironment(c,effect.workspace_id,effect.environment);
  const deny=(reason:string)=>({allowed:false,reason});
  const turn=(await c.query(`SELECT t.*,v.content_id,v.local_date::text AS local_date,v.pool_id,v.group_id,v.membership_version,v.member_ids,p.enabled,p.paused pool_paused,p.breaker_open,p.archived_at,p.authorization_id pool_authorization_id,p.profile_id,p.purpose FROM warmup_turns t JOIN warmup_conversations v ON v.id=t.conversation_id JOIN warmup_pools p ON p.id=v.pool_id WHERE t.id::text=$1 AND t.workspace_id=$2 AND t.environment=$3`,[effect.payload.warmup_turn_id,effect.workspace_id,effect.environment])).rows[0];
  if(!turn||turn.effect_id!==effect.id||turn.sender_id!==effect.account_id||turn.recipient_id!==effect.contact_id||turn.conversation_id!==effect.conversation_id)return deny('WARMUP_EFFECT_SCOPE_INVALID');

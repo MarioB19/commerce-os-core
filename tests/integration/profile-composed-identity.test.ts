@@ -1,13 +1,10 @@
-/** Real restricted login against the reviewed 42-source composition and its
- * generated RLS plan. No native adoption or HTTP mounting is implied. */
-import {readFile,readdir} from 'node:fs/promises';
+/** Real restricted login against the migrated V7 composition (0069-0099) and its
+ * native isolation model. No native adoption or HTTP mounting is implied. */
 import {createHash,randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
-import {readProfileCatalog} from '../../packages/db/src/profile-inventory.js';
-import {commerceProfileRowPolicy} from '../../packages/db/src/commerce-profile-row-policy.js';
-import {planProfileRowIsolation} from '../../packages/db/src/profile-row-isolation-plan.js';
+import {asProfileOwner,requireMigratedProfileSchema,sealFixtureProfiles} from '../support/migrated-database.js';
 import {listProfileChoicesFromSession,selectProfileFromSession} from '../../packages/db/src/profile-identity-bootstrap.js';
 import {withProfileSessionTransaction} from '../../packages/db/src/profile-session-transaction.js';
 import {withPersonalProfileTransaction} from '../../packages/db/src/profile-personal-token.js';
@@ -34,14 +31,11 @@ async function readPat(secret:string,environment:'REAL'|'SIMULATION'='SIMULATION
 describe('identity bootstrap and session/PAT authority under composed global RLS',()=>{
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:5,connectionTimeoutMillis:5000});
-  expect((await admin.query('SELECT count(*)::int n FROM schema_migrations')).rows[0].n).toBe(68);
-  const dir=new URL('../../packages/db/profile-transition/',import.meta.url),files=(await readdir(dir)).filter(p=>/^0(?:0[1-9]|1[0-9])_.*\.sql$/.test(p)).sort();expect(files).toHaveLength(19);
-  files.push('components/020_profile_identity_bootstrap.sql','components/020_derived_child_scopes.sql','components/020_ownership_scopes.sql','components/020_privileged_read_scopes.sql','components/020_meta_inventory_scopes.sql','components/020_idempotency_scopes.sql','components/020_manual_control_scopes.sql','components/020_global_quota_authority.sql','components/020_global_creative_budget_reader.sql','components/020_retired_creative_custody.sql','021_number_laboratory.sql','components/021_number_lab_ai_bridge.sql','components/021_number_lab_driver_control.sql','022_result_projections.sql','components/022_result_source_reader.sql','023_receipt_policies.sql','components/023_receipt_worker.sql','024_result_financial_context.sql','025_privacy_closure_proof.sql','026_result_rebuild_receipts.sql','027_result_latency_histograms.sql','029_commercial_resolution_receipts.sql','030_privacy_writer_fences.sql');expect(files).toHaveLength(42);
-  const c=await admin.connect();try{await c.query('BEGIN');for(const name of files){if(name==='components/020_idempotency_scopes.sql')await c.query('CREATE TEMP TABLE profile_idempotency_scope_adoptions(workspace_id text,actor_id text,operation text,key text,row_sha256 text,environment text,evidence_sha256 text) ON COMMIT DROP');await c.query(await readFile(new URL(name,dir),'utf8'));}await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
-  const catalog=await readProfileCatalog(admin,['commerce_api','commerce_ingress','commerce_automation','commerce_channel','commerce_maintenance','commerce_ai','commerce_mail_dispatch','commerce_number_lab','commerce_results']);const plan=planProfileRowIsolation(catalog,commerceProfileRowPolicy(catalog));await admin.query('BEGIN;'+plan.sql+'COMMIT;');
-  await admin.query("INSERT INTO profile_quota_policy(singleton,max_profiles,max_numbers,daily_conversations,calendar_timezone,adoption_sha256) VALUES(true,3,20,300,'UTC',repeat('a',64))");
+  // V7 F2: the canonical chain (0069-0099) installs the composition and the
+  // isolation model; no transition source or generated row plan is applied.
+  await requireMigratedProfileSchema(admin);
   await admin.query('INSERT INTO "user"(id,name,email) VALUES($1,$1,$1||\'@example.test\'),($2,$2,$2||\'@example.test\')',[user,outsider]);
-  for(const p of [one,two,foreign]){await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic profile','UTC',0,0,0)",[p]);for(const e of ['REAL','SIMULATION'])await admin.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,$2,'asset','{\"name\":\"Synthetic\"}')",[p,e]);}
+  for(const p of [one,two,foreign]){await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic profile','UTC',0,0,0)",[p]);await sealFixtureProfiles(admin,p);for(const e of ['REAL','SIMULATION'])await asProfileOwner(admin,p,c=>c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,$2,'asset','{\"name\":\"Synthetic\"}')",[p,e]),e);}
   await admin.query("INSERT INTO memberships(user_id,workspace_id,role) VALUES($1,$2,'operator'),($1,$3,'operator'),($4,$5,'owner')",[user,one,two,outsider,foreign]);
   const secret=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${secret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT;GRANT commerce_api TO "${login}"`);loginOid=(await admin.query('SELECT oid FROM pg_roles WHERE rolname=$1',[login])).rows[0].oid;
   url.username=login;url.password=secret;runtime=new pg.Pool({connectionString:url.toString(),max:5,connectionTimeoutMillis:5000});
@@ -59,11 +53,13 @@ describe('identity bootstrap and session/PAT authority under composed global RLS
  it('selects exact CAS independently per session and never falls back to first membership',async()=>{
   const a=await selected(one),b=await selected(two);expect((await listProfileChoicesFromSession(runtime,a.s)).find(p=>p.selected)?.id).toBe(one);expect((await listProfileChoicesFromSession(runtime,b.s)).find(p=>p.selected)?.id).toBe(two);
   await expect(identity(c=>selectProfileFromSession(c,a.s,two,0))).rejects.toThrow('PROFILE_SELECTION_CHANGED');await expect(identity(c=>selectProfileFromSession(c,a.s,foreign,1))).rejects.toThrow('PROFILE_MEMBERSHIP_REQUIRED');
-  await expect(readSession(await session(),{workspaceId:one,version:1})).rejects.toThrow('PROFILE_SELECTION_REQUIRED');
+  // V7 F2: under forced RLS a fence for an unselected profile reads as no row
+  // and is reported as a changed selection (profile-session.ts).
+  await expect(readSession(await session(),{workspaceId:one,version:1})).rejects.toThrow('PROFILE_SELECTION_CHANGED');
  });
  it('carries a selected session into both explicit environment scopes without data leakage',async()=>{
   const a=await selected(one);for(const e of ['REAL','SIMULATION'] as const)expect(await readSession(a.s,a.fence,e)).toEqual({profile:one,rows:[{workspace_id:one,environment:e}]});
-  await expect(readSession(a.s,{workspaceId:two,version:a.fence.version})).rejects.toThrow('PROFILE_SELECTION_REQUIRED');
+  await expect(readSession(a.s,{workspaceId:two,version:a.fence.version})).rejects.toThrow('PROFILE_SELECTION_CHANGED');
  });
  it('rejects stale session authority after a membership version change',async()=>{
   const a=await selected();await admin.query("UPDATE memberships SET role='viewer' WHERE user_id=$1 AND workspace_id=$2",[user,one]);try{await expect(readSession(a.s,a.fence)).rejects.toThrow('PROFILE_SESSION_ACCESS_CHANGED');}finally{await admin.query("UPDATE memberships SET role='operator' WHERE user_id=$1 AND workspace_id=$2",[user,one]);}

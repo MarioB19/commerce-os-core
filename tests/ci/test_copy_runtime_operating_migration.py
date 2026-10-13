@@ -1,4 +1,4 @@
-"""67→68 and V7 68→97 publication boundaries; synthetic services, real private plan writes."""
+"""67→68 and V7 68→99 publication boundaries; synthetic services, real private plan writes."""
 import contextlib
 import io
 import json
@@ -62,7 +62,7 @@ class OperatingMigration(unittest.TestCase):
             with self.assertRaisesRegex(ReleaseError,'MIGRATION_SET_INVALID'):
                 c.apply_reviewed_migrations(server, root, root, metadata, review, stage='OPERATING')
 
-    def test_v7_cutover_is_only_the_exact_68_to_97_operating_transition(self):
+    def test_v7_cutover_is_only_the_exact_68_to_99_operating_transition(self):
         v7 = history() | {name: 'd'*64 for name in c.V7_PROFILE_MIGRATION_NAMES}
         meta = {'migration_hashes': v7}
         self.assertEqual(c.reviewed_migration_names(meta), c.V7_PROFILE_MIGRATION_NAMES)
@@ -73,7 +73,7 @@ class OperatingMigration(unittest.TestCase):
             with self.assertRaises(ReleaseError): c.migration_stage_guard(applied, meta, stage='OPERATING')
         for kwargs in ({'initial': True}, {'stage': 'CORE_PREPARED'}, {'stage': 'UNKNOWN'}):
             with self.assertRaises(ReleaseError): c.migration_stage_guard(history(), meta, **kwargs)
-        renamed = dict(v7); renamed['0099_v7_arbitrary.sql'] = renamed.pop('0097_v7_service_token_profile_binding.sql')
+        renamed = dict(v7); renamed['0100_v7_arbitrary.sql'] = renamed.pop('0097_v7_service_token_profile_binding.sql')
         with self.assertRaises(ReleaseError): c.reviewed_migration_names({'migration_hashes': renamed})
         with self.assertRaises(ReleaseError): c.reviewed_migration_names({'migration_hashes': v7 | {'0098_extra.sql': 'f'*64}})
 
@@ -100,7 +100,7 @@ class OperatingMigration(unittest.TestCase):
                 self.assertEqual(sorted(arg for arg in args if ':/copy-sql/' in arg),
                                  sorted(str(root/'packages/db/migrations'/n)+':/copy-sql/'+n+':ro' for n in c.V7_PROFILE_MIGRATION_NAMES))
                 self.assertEqual(args[-1], c.BOUNDED_MIGRATION_JS)
-                self.assertIn('"0097_v7_service_token_profile_binding.sql"]', c.BOUNDED_MIGRATION_JS)
+                self.assertIn('"0099_v7_api_environment_guard.sql"]', c.BOUNDED_MIGRATION_JS)
 
     def test_installed_release_must_match_db_and_private_source(self):
         with tempfile.TemporaryDirectory() as tmp:

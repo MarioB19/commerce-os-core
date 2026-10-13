@@ -1,4 +1,5 @@
 import {bindLegacyWarmupEffectOrigins,legacyPoolAuthorities,type LegacyQrAuthority} from '../../../packages/db/src/legacy-qr-warmup.js';
+import {bindRecordEnvironment} from '../../../packages/db/src/profile-environment.js';
 import type {Body} from '@commerce/contracts';
 import {uuid,hash,stableJson,readOperationalSettings,type QueryExecutor} from '@commerce/db';
 import {profileFor} from '../../../packages/db/src/warmup.js';
@@ -8,6 +9,7 @@ import {isStandard15dPolicy,localWindow,warmupPolicy,dailyBudget} from '../../..
 import {groupDayFeasibility} from '../../../packages/domain/src/warmup/preparation.js';
 
 export async function planGroupPool(c:QueryExecutor,pool:Body,now:Date){
+ await bindRecordEnvironment(c,pool.workspace_id,pool.environment);
  const stop=(reason:string)=>({planned:0,reason});
  if(!pool.enabled||pool.paused||pool.breaker_open||pool.archived_at)return stop('PROGRAM_PAUSED');
  const profile=await profileFor(c,pool.profile_id),window=localWindow(profile,now);if(!window.open)return stop('QUIET_HOURS');

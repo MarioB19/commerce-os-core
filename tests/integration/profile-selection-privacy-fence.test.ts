@@ -1,11 +1,10 @@
-import {readFile,readdir} from 'node:fs/promises';
+import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {readProfileCatalog} from '../../packages/db/src/profile-inventory.js';
-import {commerceProfileRowPolicy} from '../../packages/db/src/commerce-profile-row-policy.js';
-import {planProfileRowIsolation} from '../../packages/db/src/profile-row-isolation-plan.js';
+import {requireMigratedProfileSchema,sealFixtureProfiles} from '../support/migrated-database.js';
 import {buildPrivacyWriterFencePlan,withPrivacyWriterFence} from '../../packages/db/src/privacy-writer-fence.js';
 import {privacyInventoryPolicy,buildPrivacyInventoryPlan} from '../../packages/db/src/privacy-inventory-plan.js';
 import {listProfileChoicesFromSession,selectProfileFromSession} from '../../packages/db/src/profile-identity-bootstrap.js';
@@ -16,14 +15,12 @@ async function select(session:{id:string;userId:string},workspace=w,version=0,ro
 describe('profile selection remains identity-only with native D18 fencing',()=>{
  beforeAll(async()=>{
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:4});
-  const dir=new URL('../../packages/db/profile-transition/',import.meta.url),files=(await readdir(dir)).filter(p=>/^0(?:0[1-9]|1[0-9])_.*\.sql$/.test(p)).sort();expect(files).toHaveLength(19);
-  files.push('components/020_profile_identity_bootstrap.sql','components/020_derived_child_scopes.sql','components/020_ownership_scopes.sql','components/020_privileged_read_scopes.sql','components/020_meta_inventory_scopes.sql','components/020_idempotency_scopes.sql','components/020_manual_control_scopes.sql','components/020_global_quota_authority.sql','components/020_global_creative_budget_reader.sql','components/020_retired_creative_custody.sql','021_number_laboratory.sql','components/021_number_lab_ai_bridge.sql','components/021_number_lab_driver_control.sql','022_result_projections.sql','components/022_result_source_reader.sql','023_receipt_policies.sql','components/023_receipt_worker.sql','024_result_financial_context.sql','025_privacy_closure_proof.sql','026_result_rebuild_receipts.sql','027_result_latency_histograms.sql','029_commercial_resolution_receipts.sql','030_privacy_writer_fences.sql','components/030_profile_selection_authority.sql');expect(files).toHaveLength(43);
-  const c=await admin.connect();try{await c.query('BEGIN');for(const name of files){if(name==='components/020_idempotency_scopes.sql')await c.query('CREATE TEMP TABLE profile_idempotency_scope_adoptions(workspace_id text,actor_id text,operation text,key text,row_sha256 text,environment text,evidence_sha256 text) ON COMMIT DROP');await c.query(await readFile(new URL(name,dir),'utf8'));}await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
-
-  await admin.query("INSERT INTO profile_quota_policy(singleton,max_profiles,max_numbers,daily_conversations,calendar_timezone,adoption_sha256) VALUES(true,3,20,300,'UTC',repeat('a',64))");
+  // V7 F2: the canonical chain (0069-0099) installs the profile, isolation and
+  // selection components; only the generated D18 writer fence is applied here.
+  await requireMigratedProfileSchema(admin);
   await admin.query(`INSERT INTO "user"(id,name,email) VALUES($1,$1,$1||'@example.test')`,[user]);
-  for(const p of [w,other]){await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic selection','UTC',0,0,0)",[p]);await admin.query("INSERT INTO memberships(user_id,workspace_id,role) VALUES($1,$2,'operator')",[user,p]);}
-  const catalog=await readProfileCatalog(admin,['commerce_api','commerce_ingress','commerce_automation','commerce_channel','commerce_maintenance','commerce_ai','commerce_mail_dispatch','commerce_number_lab','commerce_results','commerce_profile_bootstrap_owner','commerce_privacy_fence_owner','commerce_privacy_fence_worker']);await admin.query(planProfileRowIsolation(catalog,commerceProfileRowPolicy(catalog)).sql);await admin.query(buildPrivacyWriterFencePlan(catalog).sql);
+  for(const p of [w,other]){await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic selection','UTC',0,0,0)",[p]);await admin.query("INSERT INTO memberships(user_id,workspace_id,role) VALUES($1,$2,'operator')",[user,p]);}await sealFixtureProfiles(admin,w,other);
+  const catalog=await readProfileCatalog(admin,['commerce_api','commerce_ingress','commerce_automation','commerce_channel','commerce_maintenance','commerce_ai','commerce_mail_dispatch','commerce_number_lab','commerce_results','commerce_profile_bootstrap_owner','commerce_privacy_fence_owner','commerce_privacy_fence_worker']);await admin.query(buildPrivacyWriterFencePlan(catalog).sql);
   const first=randomBytes(32).toString('hex'),second=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${first}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;GRANT commerce_api TO "${login}";CREATE ROLE "${workerLogin}" LOGIN PASSWORD '${second}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;GRANT commerce_privacy_fence_worker TO "${workerLogin}"`);
   loginOid=(await admin.query('SELECT oid FROM pg_roles WHERE rolname=$1',[login])).rows[0].oid;workerOid=(await admin.query('SELECT oid FROM pg_roles WHERE rolname=$1',[workerLogin])).rows[0].oid;
   const a=new URL(url);a.username=login;a.password=first;api=new pg.Pool({connectionString:a.toString(),max:3});const b=new URL(url);b.username=workerLogin;b.password=second;worker=new pg.Pool({connectionString:b.toString(),max:2});

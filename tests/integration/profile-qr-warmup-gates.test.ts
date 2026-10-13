@@ -20,6 +20,9 @@ import {dailyBudget,localWindow} from '../../packages/domain/src/warmup/policy.j
 const suffix=randomBytes(6).toString('hex'),roles=['commerce_api','commerce_channel','commerce_automation']as const;
 type Role=typeof roles[number];let admin:pg.Pool;const pools=new Map<Role,pg.Pool>(),scoped=new Map<Role,ProfilePool>(),logins:string[]=[];
 const actor='qr_owner_'+suffix;let serial=0;
+// Plan origins are immutable (WARMUP_PLAN_ORIGIN_IMMUTABLE); a synthetic drift
+// fixture bypasses that trigger only to prove the gate's own budget recheck.
+async function replica(sql:string,params:unknown[]){const c=await admin.connect();try{await c.query('BEGIN');await c.query('SET LOCAL session_replication_role=replica');await c.query(sql,params);await c.query('COMMIT');}catch(error){await c.query('ROLLBACK');throw error;}finally{c.release();}}
 function tx<T>(workspace:string,role:Role,work:(db:ProfileExecutor)=>Promise<T>){return withProfileTransaction(scoped.get(role)!,workspace,work);}
 // V7 F2: an installation admits three profiles and 20 numbers; each case's fresh
 // profile is sealed and the oldest fixture profiles are disposed to make room.
@@ -120,7 +123,7 @@ describe('QR dispatch gates and inbound without a peer, real PostgreSQL',()=>{
  });
  it('requires member readiness and the existing plan rather than constructing another budget',async()=>{
   const f=await readyPair();await admin.query("UPDATE warmup_states SET profile_ready_at=clock_timestamp()+interval '1 hour' WHERE account_id=$1",[f.b.account]);expect(await f.gate()).toMatchObject({allowed:false,reason:'WARMUP_MEMBER_NOT_READY'});
-  await admin.query("UPDATE warmup_states SET profile_ready_at=clock_timestamp()-interval '1 minute' WHERE account_id=$1",[f.b.account]);await admin.query("UPDATE warmup_plans SET budget=jsonb_set(budget,'{max_messages}','999') WHERE account_id=$1",[f.b.account]);expect(await f.gate()).toMatchObject({allowed:false,reason:'WARMUP_PLAN_BUDGET_CHANGED'});
+  await admin.query("UPDATE warmup_states SET profile_ready_at=clock_timestamp()-interval '1 minute' WHERE account_id=$1",[f.b.account]);await replica("UPDATE warmup_plans SET budget=jsonb_set(budget,'{max_messages}','999') WHERE account_id=$1",[f.b.account]);expect(await f.gate()).toMatchObject({allowed:false,reason:'WARMUP_PLAN_BUDGET_CHANGED'});
  });
  it('does not count a future-ready peer or an old QR registration as eligible',async()=>{
   const f=await readyPair(),guard=()=>tx(f.w,'commerce_automation',db=>withProfileQueryRouting(db,async()=>commercialWarmupGuard(db,(await getRecord(db,f.w,'channel_account',f.a.account))!)));
@@ -129,7 +132,9 @@ describe('QR dispatch gates and inbound without a peer, real PostgreSQL',()=>{
   await enrollment(f.w,f.b.account);expect(await guard()).toBe('ACCOUNT_WARMING');await connection(f.w,f.a.account);expect(await guard()).toBe('ACCOUNT_WARMING');
  });
  it('refuses unscoped dispatch and foreign profile authority',async()=>{
-  const f=await readyPair();expect(await gateWarmupDispatch(admin,f.effect,'qr-gate')).toMatchObject({allowed:false,reason:'CONTINUITY_PROFILE_CONTEXT_REQUIRED'});
+  const f=await readyPair();// V7 F2: an unscoped worker binds the effect's own profile (bindRecordProfile);
+  // only the channel emitter role may then read continuous authority.
+  await expect(gateWarmupDispatch(admin,f.effect,'qr-gate')).rejects.toThrow('CONTINUITY_EMITTER_ROLE_REQUIRED');
   const other=await profile();await expect(tx(other,'commerce_channel',db=>withProfileQueryRouting(db,()=>gateWarmupDispatch(db,f.effect,'qr-gate')))).rejects.toThrow('PROFILE_QUERY_CONTEXT_MISMATCH');
  });
 

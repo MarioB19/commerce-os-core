@@ -47,7 +47,7 @@ describe('mounted V1 SQL catalog against restricted native authority',()=>{
   process.env.PRIVATE_DATA_KEY='42'.repeat(32);
   const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:5,connectionTimeoutMillis:5000});
   // V7 F2: the canonical chain, its components and the isolation model are
-  // installed by the migrations (0069-0097); no transition source is applied here.
+  // installed by the migrations (0069-0099); no transition source is applied here.
   await requireMigratedProfileSchema(admin);
   await admin.query('INSERT INTO "user"(id,name,email) VALUES($1,$1,$1||\'@example.test\'),($2,$2,$2||\'@example.test\')',[user,outsider]);
   for(const p of [one,two,foreign]){await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic profile','UTC',0,2,100)",[p]);for(const e of ['REAL','SIMULATION'])await admin.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,$2,'asset','{\"name\":\"Synthetic\"}')",[p,e]);}
