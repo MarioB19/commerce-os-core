@@ -80,7 +80,9 @@ BEGIN
   IF NOT was_enabled AND NOT EXISTS(SELECT 1 FROM pg_policy x WHERE x.polrelid=t.oid AND x.polpermissive AND 'commerce_api'::regrole=ANY(x.polroles)) THEN
    EXECUTE format('CREATE POLICY v7_api_profile ON public.%I AS PERMISSIVE TO commerce_api USING(%s) WITH CHECK(%s)',t.relname,ctx,ctx);
   END IF;
-  IF historical THEN
+  -- A historical table that already had reviewed RLS (integration_secrets:
+  -- field visibility per runtime role) keeps exactly its role policies.
+  IF historical AND NOT was_enabled THEN
    EXECUTE format('CREATE POLICY v7_worker_global ON public.%I AS PERMISSIVE TO commerce_worker_global USING(%s) WITH CHECK(%s)',t.relname,worker,worker);
    -- Reviewed V7 restrictive policies on historical tables keep binding every
    -- role inside a context; only a worker transaction without any profile
