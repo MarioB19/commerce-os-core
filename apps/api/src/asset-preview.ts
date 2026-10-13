@@ -5,7 +5,6 @@ import {decrypt,hash} from '@commerce/db';
 import {assertPermission} from '../../../packages/domain/src/core/permissions.js';
 import {parseStaticAccessReference} from '../../../packages/fulfillment/src/index.js';
 import {principal,scopedRecord,fail} from './context.js';
-import {assetAccess} from './creative-storage.js';
 
 const extensions:Record<string,string>={'audio/wav':'.wav','image/webp':'.webp','audio/mpeg':'.mp3','audio/ogg':'.ogg','audio/mp4':'.m4a','image/png':'.png','image/jpeg':'.jpg','application/pdf':'.pdf','video/mp4':'.mp4','text/plain':'.txt'};
 export function assetFilename(name:unknown,mime:string){
@@ -48,9 +47,8 @@ export async function assetPreviewRoutes(app:FastifyInstance,storageDir:string){
   if(requested&&!['inline','attachment'].includes(requested))throw fail(400,'INVALID_DISPOSITION');
   reply.header('Content-Security-Policy',"default-src 'none'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'");
   const disposition=requested==='inline'&&extensions[mime]?'inline':'attachment';
-  if(asset.body.storage_provider==='r2'){
-   const access=await assetAccess({workspaceId:asset.workspace_id,environment:asset.environment},asset.id,disposition);return reply.redirect(access.url);
-  }
+  // V7 F8: the external R2 library was retired; its records keep history but no content.
+  if(asset.body.storage_provider==='r2')throw fail(410,'ASSET_LIBRARY_RETIRED','La biblioteca externa se retiró; este material ya no se abre desde la aplicación.');
   const key=asset.body.storage_key??asset.id;if(!/^[a-f0-9-]{36}(?:-[a-f0-9]{64})?$/.test(key))throw fail(409,'ASSET_STORAGE_INVALID');
   const bytes=Buffer.from(decrypt(await readFile(join(storageDir,'assets',key+'.enc'),'utf8')),'base64');
   if(bytes.length!==asset.body.size_bytes||hash(bytes)!==asset.body.sha256)throw fail(409,'ASSET_INTEGRITY_FAILED');

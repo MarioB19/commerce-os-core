@@ -79,11 +79,11 @@ try {
  const accounts=(await request('/v1/channel-accounts?environment=SIMULATION')).data.data;
  const inbound=JSON.parse(compose(['exec','-T','ingress','node','--input-type=module','-e',`const body=JSON.stringify({id:'docker-fixture-'+Date.now(),identity:'opaque:docker-fixture',kind:'text',text:'Synthetic durable ingress'});const url='http://127.0.0.1:3002/webhooks/simulator/commerce/${accounts[0].id}';const send=()=>fetch(url,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+process.env.SIMULATOR_INGRESS_TOKEN},body}).then(r=>r.json());console.log(JSON.stringify([await send(),await send()]));`]));
  assert(inbound[0].ok&&inbound[0].duplicate===false&&inbound[1].duplicate===true,'restricted ingress commits and deduplicates envelope');
- const sim=await request('/v1/simulations','POST',{account_id:accounts[0].id,offer_version_id:product.data.data.initial_offer.id,contact_name:'Docker fixture'});
- assert(sim.status===202,'simulation durable command accepted');
- let conversation;
- for(let i=0;i<40;i++){const row=(await request(`/v1/simulations/${sim.data.data.id}`)).data.data;if(row.conversation_id){conversation=row.conversation_id;break;}await new Promise(resolve=>setTimeout(resolve,250));}
- assert(!!conversation,'restricted automation consumes simulation command');
+ // V7 F8: the product simulator API was retired; the automation worker proves it
+ // is consuming work through its persisted loop heartbeat instead.
+ let automation;
+ for(let i=0;i<120;i++){automation=(await request('/v1/readiness?environment=SIMULATION')).data?.data?.checks?.find(check=>check.key==='automation-worker');if(automation?.status==='VERIFIED')break;await new Promise(resolve=>setTimeout(resolve,500));}
+ assert(automation?.status==='VERIFIED','restricted automation reports every loop healthy');
  const command=await request(`/v1/channel-accounts/${accounts[0].id}/commands`,'POST',{type:'check_health'});
  let applied=false;
  for(let i=0;i<40;i++){const row=(await request(`/v1/commands/${command.data.data.id}`)).data.data;if(row.status==='APPLIED'){applied=true;break;}await new Promise(resolve=>setTimeout(resolve,250));}

@@ -13,16 +13,6 @@ import {
   runEvaluation,
   type EvaluationSnapshot,
 } from "./flow-evaluation.js";
-import {
-  documentOf,
-  connect,
-  insertStep,
-  deleteStep,
-  makeNode,
-  moveLinear,
-  organize,
-  edgesOf,
-} from "../../../../apps/web/src/lib/flow-graph.js";
 import { validateWorkflow, validateWorkflowDraft } from "./workflow.js";
 import type { DomainRecord } from "../../../contracts/src/index.js";
 const record = (kind: string, body: any, id = kind): DomainRecord => ({
@@ -202,7 +192,7 @@ describe("seller context and safe deterministic evaluation", () => {
     const flow = {
       name: "draft",
       entry_node_id: "x",
-      nodes: [makeNode("condition", "x")],
+      nodes: [{ id: "x", type: "condition", config: { field: "customer_text", operator: "contains", value: "" } }],
     };
     expect(validateWorkflowDraft(flow).valid).toBe(true);
     expect(validateWorkflow(flow).valid).toBe(false);
@@ -282,60 +272,6 @@ describe("seller context and safe deterministic evaluation", () => {
     expect(
       runEvaluation(f, newEvaluation(f), { type: "reply", text: "no" }).status,
     ).toBe("FINISHED");
-  });
-});
-describe("lossless graph editing", () => {
-  const initial = () =>
-    documentOf({
-      id: "f",
-      name: "Graph",
-      description: "kept",
-      max_steps: 500,
-      entry_node_id: "a",
-      nodes: [
-        { id: "a", type: "entry", config: { custom: 42 }, next: "b" },
-        { id: "b", type: "message", config: { text: "B" }, next: "c" },
-        { id: "c", type: "message", config: { text: "C" }, next: "end" },
-        { id: "end", type: "end", config: {} },
-      ],
-    });
-  it("positions and ordering never alter connections; preserves API-first fields", () => {
-    const doc = initial(),
-      before = edgesOf(doc.nodes);
-    doc.editor.positions = organize([...doc.nodes].reverse(), "a");
-    expect(edgesOf(doc.nodes)).toEqual(before);
-    expect(doc.max_steps).toBe(500);
-    expect(doc.nodes[0]?.config.custom).toBe(42);
-  });
-  it("inserts, reconnects, removes and restores exact graph snapshots", () => {
-    const doc = initial(),
-      inserted = insertStep(
-        doc,
-        makeNode("wait", "new"),
-        edgesOf(doc.nodes)[0],
-      );
-    expect(inserted.nodes[0]?.next).toBe("new");
-    expect(inserted.nodes.at(-1)?.next).toBe("b");
-    const removed = deleteStep(inserted, "b");
-    expect(removed.nodes.find((n) => n.id === "new")?.next).toBeUndefined();
-    expect(inserted.nodes.find((n) => n.id === "b")?.config.text).toBe("B");
-    expect(() => connect(doc, "c", "next", "a")).toThrow(/ciclo/);
-    expect(
-      moveLinear(doc, "c", "before").nodes.find((n) => n.id === "a")?.next,
-    ).toBe("c");
-  });
-  it("organizes 100 nodes without changing logic; enforces cardinality", () => {
-    const doc = initial();
-    doc.nodes = Array.from({ length: 100 }, (_, i) => ({
-      id: "n" + i,
-      type: i === 99 ? "end" : "message",
-      config: { text: "Synthetic" },
-      ...(i < 99 ? { next: "n" + (i + 1) } : {}),
-    }));
-    doc.entry_node_id = "n0";
-    expect(Object.keys(organize(doc.nodes, "n0"))).toHaveLength(100);
-    expect(() => insertStep(doc, makeNode("wait", "overflow"))).toThrow(/100/);
-    expect(() => connect(doc, "n99", "next", "n0")).toThrow();
   });
 });
 

@@ -1,4 +1,3 @@
-import {retirementRequest} from '../../apps/web/src/lib/catalog-retirement.js';
 import {beforeAll,afterAll,it,expect} from 'vitest';
 import {randomBytes,randomUUID} from 'node:crypto';
 import type {FastifyInstance} from 'fastify';
@@ -15,6 +14,11 @@ import {saveAssignment,assignmentInput} from '../../apps/api/src/product-assignm
 import {principalMap} from '../../apps/api/src/context.js';
 import type {FastifyRequest} from 'fastify';
 import type {Body,DomainRecord} from '../../packages/contracts/src/index.js';
+/** Request shape of the retired catalog screen (restore is the inverse of the archive flag). */
+function retirementRequest(kind:'workflows'|'agents',id:string,input:{expected_version:number;reason:string;currently_archived:boolean;dependency_hash?:string;handoff?:boolean}){
+ const {currently_archived,expected_version,reason,dependency_hash,handoff}=input;
+ return {path:`/${kind}/${id}/archive`,body:{expected_version,reason,archived:!currently_archived,...(!currently_archived?{dependency_hash,...(handoff?{existing_policy:'handoff' as const}:{})}:{})}};
+}
 const workspace='v5-routing-'+randomUUID(),base={workspaceId:workspace,environment:'SIMULATION' as const},origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0]!;
 let app:FastifyInstance,cookie:string,token:string;const products:Body[]=[],accounts:DomainRecord[]=[],relationships:Body[]=[];
 const request=(method:any,url:string,payload?:Body,key:string=randomUUID(),service=false)=>app.inject({method,url:url+(url.includes('?')?'&':'?')+'environment=SIMULATION',payload,headers:{origin,...(service?{authorization:'Bearer '+token}:{cookie}),'idempotency-key':key}});

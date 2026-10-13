@@ -1,10 +1,11 @@
-import {integrationPermission} from './integration-diagnostics.js';
-import type {FastifyInstance} from 'fastify';
+import type {FastifyInstance,FastifyRequest} from 'fastify';
 import {z} from 'zod';
 import {pool,withTransaction,stableJson,type QueryExecutor} from '../../../packages/db/src/index.js';
 import {bumpOperationalRevision,readOperationalSettings} from '../../../packages/db/src/operational-settings.js';
 import {integrationDefinitions,integrationMetadata,integrationPatchSchema,listIntegrationSettings,readIntegrationSettings,privateIntegrationDigest,publicSettingText,saveIntegrationSetting,splitIntegrationKey,type IntegrationPatch} from '../../../packages/db/src/integration-settings.js';
-import {audit,envOf,fail,parseBody,idempotencyActor} from './context.js';
+import {audit,envOf,fail,parseBody,idempotencyActor,principal,assertResource} from './context.js';
+/** Owner sessions, or a service token with the exact integrations scope. */
+export function integrationPermission(req:FastifyRequest,scope:'read'|'write'|'verify',key?:string){const p=principal(req);if(p.service){if(!p.scopes.includes(`integrations:${scope}`))throw fail(403,'INTEGRATION_SCOPE_REQUIRED');if(key)assertResource(p,key);}else if(p.role!=='owner')throw fail(403,'OWNER_REQUIRED');return p;}
 async function frozenProfileCanEnable(client:QueryExecutor,workspace:string,environment:string,key:string,patch:IntegrationPatch,commerciallyFrozen:boolean,accounts:{id:string;body:Record<string,unknown>}[]){
  if(environment!=='REAL'||!commerciallyFrozen||!accounts.length||!patch.enabled||patch.capacity_operation_id||Object.keys(patch.secrets).length||patch.clear_secrets.length)return false;
  await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`integration:${workspace}:${environment}:${key}`]);

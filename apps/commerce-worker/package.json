@@ -1,1 +1,0 @@
-{"name":"@commerce/worker","version":"0.1.1","private":true,"type":"module","scripts":{"doctor":"tsx src/cli.ts doctor","start":"tsx src/cli.ts start"}}

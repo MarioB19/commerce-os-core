@@ -8,14 +8,12 @@ import { integrationTestGroups, integrationGroupArgs } from './integration-test-
 import { captureIntegrationRoles, prepareIntegrationRoleCleanup, finishIntegrationRoleCleanup } from './integration-role-custody.mjs';
 import { assertSourceTreeUnchanged, sourceTreeSnapshot } from './source-tree-guard.mjs';
 
-export const calendarTest = 'tests/integration/numbers-mcp-stdio.test.ts';
-
 export function integrationGroups(args, entries, root = process.cwd()) {
   // Vitest owns the exact selection; partition only those files and retain all
-  // caller filters. Calendar workers and each profile transition get a fresh DB.
+  // caller filters. Every file, profile transitions included, gets a fresh DB.
   const groups = integrationTestGroups(root, entries);
   return groups.map(group => ({
-    name: group.length === 1 && group[0] === calendarTest ? 'mcp-calendar' : group.join(', '),
+    name: group.join(', '),
     args: integrationGroupArgs(args, groups, group),
   }));
 }

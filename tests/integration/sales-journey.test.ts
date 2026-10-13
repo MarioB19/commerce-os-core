@@ -4,6 +4,7 @@ import { randomUUID,randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { createApp } from '../../apps/api/src/app.js';
 import { provisionUser } from '../../apps/api/src/auth.js';
+import {startEngineSimulation,advanceEngineSimulation} from '../support/engine-simulation.js';
 import { pool,putRecord } from '../../packages/db/src/index.js';
 import { processChannelCommands,dispatchOutbox } from '../../apps/channel-worker/src/runtime.js';
 import {SimulatorProvider} from '../../packages/messaging/src/index.js';
@@ -55,7 +56,7 @@ describe('Integrated sales API and PostgreSQL automation',()=>{
    const amount=9900+i*5000;
    const product=await ok('POST','/v1/products',{name:`Producto ${i}`,initial_offer:{currency:'MXN',base_amount_minor:amount,billing_delay_seconds:30,receipt_policy_version_id:policy.id,fulfillment:[{asset_id:core.id,release_on:'commitment_accepted'},{asset_id:bonus.id,release_on:'receipt_approved'}]}});
    const account=await ok('POST','/v1/channel-accounts',{name:`Cuenta ${i}`,provider:'simulator'});
-   const sim=await ok('POST','/v1/simulations',{account_id:account.id,offer_version_id:product.initial_offer.id,contact_name:`Cliente sintético ${i}`});
+   const sim:any=await startEngineSimulation(workspace,'synthetic-journey-owner',{account_id:account.id,offer_version_id:product.initial_offer.id,contact_name:`Cliente sintético ${i}`});
    return {product,account,sim,core,bonus,amount};
   }));
   await processCommands(100);
@@ -71,7 +72,7 @@ describe('Integrated sales API and PostgreSQL automation',()=>{
   for(const [i,j]of journeys.entries()){
    // A new offer must not change this existing order or its delivery references.
    await ok('POST',`/v1/products/${j.product.id}/offers`,{currency:'MXN',base_amount_minor:55555,fulfillment:[]});
-   const advanced=await ok('POST',`/v1/simulations/${j.sim.id}/advance`,{seconds:31});await apply(advanced.id);await processTimers(100);
+   const advanced=await advanceEngineSimulation(workspace,'synthetic-journey-owner',j.sim.id,{seconds:31});await apply(advanced.id);await processTimers(100);
    const assetId=await evidence('receipt-'+i);
    const received=await ok('POST',`/v1/conversations/${j.sim.conversation_id}/commands`,{type:'receipt_received',asset_id:assetId,extraction:{is_receipt:true,amount_minor:j.amount-100,currency:'MXN',destination_suffix:null,bank:null,reference:`synthetic-${i}`,status:'completed',confidence:0.99,contradictions:[]}});
    const rr=await apply(received.id);

@@ -1,6 +1,5 @@
 import {describe,expect,it} from 'vitest';
 import {hostMetricsSchema,numberFlowTestResetSchema,numberFlowTestStartSchema} from '../../packages/contracts/src/numbers.js';
-import {orderFlowTranscript} from '../../apps/api/src/number-flow-tests.js';
 import {projectCapacityMetrics} from '../../apps/api/src/number-capacity.js';
 import {projectAssignmentAuthorization} from '../../apps/api/src/channel-setup.js';
 import {lifecycleSafety} from '../../apps/api/src/channel-command-safety.js';
@@ -12,14 +11,6 @@ describe('resilience contracts',()=>{
   expect(numberFlowTestResetSchema.parse({})).toEqual({start_mode:'EMPTY'});
   expect(numberFlowTestStartSchema.safeParse({contact_name:'Prueba',initial_message:'Hola'}).success).toBe(false);
   expect(numberFlowTestStartSchema.safeParse({contact_name:'Prueba',start_mode:'SEEDED',initial_message:'Hola'}).success).toBe(true);
- });
-
- it('orders mixed transcripts transitively while preserving durable outbound sequence',()=>{
-  const firstEffect={id:'effect-1',at:'2026-01-02T00:00:00.000Z',dispatch_sequence:1};
-  const customer={id:'message-1',at:'2026-01-01T12:00:00.000Z',dispatch_sequence:null};
-  const secondEffect={id:'effect-2',at:'2026-01-01T00:00:00.000Z',dispatch_sequence:2};
-  const inputs=[[firstEffect,customer,secondEffect],[firstEffect,secondEffect,customer],[customer,firstEffect,secondEffect],[customer,secondEffect,firstEffect],[secondEffect,firstEffect,customer],[secondEffect,customer,firstEffect]];
-  for(const input of inputs)expect(orderFlowTranscript(input).map(item=>item.id)).toEqual(['message-1','effect-1','effect-2']);
  });
 
  it('does not claim legacy reservations are provisioned, connected, measured or available',()=>{

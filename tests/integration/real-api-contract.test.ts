@@ -1,14 +1,10 @@
 import {afterAll,beforeAll,describe,expect,it} from 'vitest';
 import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomBytes,randomUUID} from 'node:crypto';
-import {execFile} from 'node:child_process';
-import {promisify} from 'node:util';
 import type {FastifyInstance} from 'fastify';
 import {createApp} from '../../apps/api/src/app.js';
 import {provisionUser} from '../../apps/api/src/auth.js';
 import {pool,putRecord,hash,encrypt} from '../../packages/db/src/index.js';
-import {createDefaultRemarketingPolicy} from '../../packages/domain/src/sales/remarketing.js';
-import {salesAgreementRecipeV1,salesAgreementWorkflowV1} from '../../packages/domain/src/sales/sales-recipe-v2.js';
 import {CommerceClient} from '../../scripts/commerce-client.mjs';
 const workspace='real-contract-'+randomUUID(),origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0]!;
 // V7 F2: fixture workspaces are adopted profiles (max three per installation).
@@ -78,17 +74,6 @@ describe('REAL API contract and scoped executable assistant client',()=>{
   const complete=await token(['workflows:read'],{resource_ids:[...sourceIds,agent.id,category.id]});expect(data(await request('GET','/v1/workflows/'+linkedFlow.id+'/seller',undefined,complete.token)).snapshot.agent_version_id).toBe(agent.id);
 
  });
- it('runs CLI over authenticated HTTP and leaves proposed messages inert',async()=>{
-  const conversation=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'conversation',body:{stage:'NEW'}});
-  const grant=await token(['sales:read','sales:propose','commands:read'],{resource_ids:[conversation.id]});
-  const child=await promisify(execFile)(process.execPath,['scripts/commerce-client.mjs','request','GET','/v1/conversations/'+conversation.id],{env:{...process.env,COMMERCE_API_URL:baseUrl,COMMERCE_SERVICE_TOKEN:grant.token}});
-  expect(JSON.parse(child.stdout).data.id).toBe(conversation.id);expect(child.stdout).not.toContain(grant.token);
-  const client=new CommerceClient({baseUrl,token:grant.token}),key=randomUUID();const input={expected_version:conversation.version,kind:'text',text:'Approved copy candidate',reason:'Operator review'};
-  const first=await client.request('POST',`/v1/conversations/${conversation.id}/proposals`,{key,body:input});const second=await client.request('POST',`/v1/conversations/${conversation.id}/proposals`,{key,body:input});expect(first.data.id).toBe(second.data.id);expect(first.data).toMatchObject({status:'DRAFT',external_effects:false});
-  await expect(client.request('POST',`/v1/conversations/${conversation.id}/commands`,{body:{type:'send_message',text:'Forbidden'}})).rejects.toMatchObject({status:403});
-  expect((await pool.query('SELECT count(*)::int n FROM commands WHERE workspace_id=$1',[workspace])).rows[0].n).toBe(0);
-  expect((await pool.query('SELECT count(*)::int n FROM outbox WHERE workspace_id=$1',[workspace])).rows[0].n).toBe(0);
- });
  it('revalidates a credential after a concurrent revocation wins its row lock',async()=>{
   const grant=await token(['products:write']),locker=await pool.connect();
   await locker.query('BEGIN');await locker.query('SELECT id FROM service_tokens WHERE id=$1 FOR UPDATE',[grant.id]);
@@ -112,97 +97,6 @@ describe('REAL API contract and scoped executable assistant client',()=>{
   expect(await client.follow(commandId,{timeoutMs:1000})).toMatchObject({status:'DELIVERED',portal_access:'NOT_OBSERVED'});
   const {materializeEffectResults}=await import('../../apps/automation-worker/src/effect-results.js');await materializeEffectResults(1000);
   expect((await pool.query("SELECT body FROM records WHERE workspace_id=$1 AND environment='SIMULATION' AND kind='message' AND body->>'effect_id'=$2",[workspace,effectId])).rows[0].body).toMatchObject({account_id:account.id,contact_id:contact.id,conversation_id:conversation.id,status:'DELIVERED'});
- });
- it('copies commercial versions and exact immutable file bytes into isolated simulation without real secrets',async()=>{
-  const bytes=Buffer.from('%PDF-1.4\nSynthetic fixture\n%%EOF');
-  const asset=data(await request('POST','/v1/assets/upload-intents',{environment:'REAL',name:'Fixture PDF',kind:'file',mime_type:'application/pdf',size_bytes:bytes.length,sha256:hash(bytes)}),201);
-  data(await request('PUT',`/v1/assets/${asset.id}/content`,{environment:'REAL',base64:bytes.toString('base64')}));
-  data(await request('POST',`/v1/assets/${asset.id}/complete`,{environment:'REAL'}));
-  const product=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'product',body:{name:'Versioned product',asset_ids:[asset.id]}});
-  const access=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'asset',body:{name:'Private portal',kind:'access',adapter:'link',status:'READY',delivery_ciphertext:encrypt({adapter:'link',delivery_reference:JSON.stringify({url:'https://example.invalid/real',code:'SECRET-REAL-CODE',instructions:'Private'})})}});
-  const offer=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'offer',body:{product_id:product.id,currency:'MXN',base_amount_minor:9700,status:'PUBLISHED',fulfillment:[{asset_id:asset.id,release_on:'receipt_approved'},{asset_id:access.id,release_on:'commitment_accepted'}]}});
-  const agent=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'agent',body:{name:'Seller snapshot',product_id:product.id,provider:'openai',model:'approved-source-model'}});
-  const flow=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'workflow',body:{name:'Immutable selected flow',agent_version_id:agent.id,product_id:product.id,offer_version_id:offer.id,status:'PUBLISHED',entry_node_id:'start',nodes:[{id:'start',type:'entry',config:{},next:'end'},{id:'end',type:'end',config:{}}]}});
-  const grant=await token(['workflows:read','simulations:run','assets:read','products:read'],{allowed_environments:['REAL','SIMULATION']});const client=new CommerceClient({baseUrl,token:grant.token,lab:true});
-  const before=(await pool.query("SELECT id,version,body FROM records WHERE workspace_id=$1 AND environment='REAL' ORDER BY id",[workspace])).rows;
-  const priorLabIds=new Set((await pool.query("SELECT id FROM records WHERE workspace_id=$1 AND environment='SIMULATION'",[workspace])).rows.map(r=>r.id));
-  const key=randomUUID(),snapshot=await client.request<{environment:string;workflow_version_id:string;materials:Array<{id:string;kind:string}>}>('POST','/v1/simulation-snapshots',{key,body:{workflow_version_id:flow.id,expected_version:flow.version}});
-  expect((await client.request('POST','/v1/simulation-snapshots',{key,body:{workflow_version_id:flow.id,expected_version:flow.version}})).data).toEqual(snapshot.data);
-  expect(snapshot.data.environment).toBe('SIMULATION');expect(snapshot.data.workflow_version_id).not.toBe(flow.id);
-  const clonedFile=snapshot.data.materials.find(a=>a.kind==='file')!;expect(clonedFile).toMatchObject({sha256:hash(bytes),size_bytes:bytes.length,content:'IMMUTABLE_FILE_REFERENCE'});
-  const downloaded=await request('GET',`/v1/assets/${clonedFile.id}/content?environment=SIMULATION`,undefined,grant.token);expect(downloaded.statusCode,downloaded.body).toBe(200);expect(downloaded.rawPayload).toEqual(bytes);
-  const lab=(await pool.query("SELECT id,kind,body FROM records WHERE workspace_id=$1 AND environment='SIMULATION'",[workspace])).rows.filter(r=>!priorLabIds.has(r.id));
-  expect(lab.find(r=>r.kind==='channel_account').body).toMatchObject({provider:'simulator',sending_enabled:false});
-  expect(lab.find(r=>r.kind==='agent').body).toMatchObject({provider:'deterministic',model:'deterministic-v1'});
-  expect(lab.some(r=>['contact','order','receipt'].includes(r.kind))).toBe(false);
-  const after=(await pool.query("SELECT id,version,body FROM records WHERE workspace_id=$1 AND environment='REAL' ORDER BY id",[workspace])).rows;expect(after).toEqual(before);
-  expect(JSON.stringify(snapshot)).not.toContain('SECRET-REAL-CODE');expect(JSON.stringify(snapshot)).not.toContain('storage_key');
-  await expect(new CommerceClient({baseUrl,token:grant.token}).request('POST','/v1/simulation-snapshots',{body:{workflow_version_id:flow.id,expected_version:flow.version}})).rejects.toMatchObject({code:'SIMULATION_ONLY'});
- });
- it('copies an explicitly selected published offer linked from the offer without changing REAL configuration',async()=>{
-  const product=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'product',body:{name:'Approved independent product'}});
-  const media:Awaited<ReturnType<typeof putRecord>>[]=[];for(const[name,mime_type]of [['Presentation audio','audio/mpeg'],['Pack image','image/png'],['Agreement audio','audio/mpeg'],['Collection audio','audio/mpeg']] as const)media.push(await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'asset',body:{name,kind:'link',mime_type,url:`https://example.invalid/${name.toLowerCase().replaceAll(' ','-')}`,status:'READY'}}));
-  const definition=salesAgreementWorkflowV1({presentation_audio_id:media[0]!.id,pack_image_id:media[1]!.id,agreement_audio_id:media[2]!.id,collection_audio_id:media[3]!.id},{offer:'Snapshot offer',agreement:'Snapshot agreement',payment:'Snapshot payment',thanks:'Snapshot thanks'});
-  const flow=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'workflow',body:{...definition,name:'Approved independent flow',product_id:product.id,status:'PUBLISHED'}});
-  const stage=(asset_id:string,text:string)=>({medium:'audio' as const,asset_id,text}),remarketing=createDefaultRemarketingPolicy([
-   {awaiting_agreement:stage(media[0]!.id,'Agreement reminder one'),awaiting_payment:stage(media[3]!.id,'Payment reminder one')},
-   {awaiting_agreement:stage(media[0]!.id,'Agreement reminder two'),awaiting_payment:stage(media[3]!.id,'Payment reminder two')},
-   {awaiting_agreement:stage(media[0]!.id,'Agreement reminder three'),awaiting_payment:stage(media[3]!.id,'Payment reminder three')},
-  ]);
-  const sales_flow={entry_aliases:['Approved independent product'],recipe:salesAgreementRecipeV1(),remarketing,content:{presentation:{audio_asset_id:media[0]!.id,pack_image_asset_id:media[1]!.id,offer_text:'Snapshot offer'},agreement:{audio_asset_id:media[2]!.id,prompt:'Snapshot agreement'},collection:{audio_asset_id:media[3]!.id,payment_instructions:'Snapshot payment'},closure:{receipt_thanks:'Snapshot thanks'}}};
-  const offer=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'offer',body:{name:'Approved linked offer',product_id:product.id,workflow_version_id:flow.id,currency:'MXN',base_amount_minor:9700,status:'PUBLISHED',fulfillment:[],sales_flow}});
-  const grant=await token(['workflows:read','simulations:run','offers:read'],{allowed_environments:['REAL','SIMULATION']}),client=new CommerceClient({baseUrl,token:grant.token,lab:true});
-  const before=(await pool.query("SELECT id,version,body FROM records WHERE workspace_id=$1 AND environment='REAL' ORDER BY id",[workspace])).rows;
-  const pendingBefore=(await pool.query('SELECT count(*)::int n FROM outbox WHERE workspace_id=$1',[workspace])).rows[0].n;
-  const key=randomUUID(),body={workflow_version_id:flow.id,expected_version:flow.version,offer_version_id:offer.id,expected_offer_version:offer.version};
-  const first=(await client.request<any>('POST','/v1/simulation-snapshots',{key,body})).data;
-  expect(first).toMatchObject({environment:'SIMULATION',external_effects:false,source:{workflow_version_id:flow.id,version:flow.version,offer_version_id:offer.id,offer_version:offer.version,offer_selection:'EXPLICIT'}});
-  expect((await client.request('POST','/v1/simulation-snapshots',{key,body})).data).toEqual(first);
-  const records=(await pool.query('SELECT id,kind,environment,body FROM records WHERE workspace_id=$1 AND id=ANY($2::uuid[])',[workspace,[first.workflow_version_id,first.offer_version_id,first.account_id,first.product_id]])).rows;
-  expect(records).toHaveLength(4);expect(records.every(r=>r.environment==='SIMULATION')).toBe(true);
-  expect(records.find(r=>r.kind==='workflow').body).toMatchObject({offer_version_id:first.offer_version_id,product_id:first.product_id});
-  const clonedOffer=records.find(r=>r.kind==='offer').body,mediaMap=new Map(first.materials.map((item:any)=>[item.source_asset_id,item.id]));
-  expect(clonedOffer).toMatchObject({workflow_version_id:first.workflow_version_id,product_id:first.product_id,base_amount_minor:9700});
-  expect(clonedOffer.sales_flow.content).toMatchObject({presentation:{audio_asset_id:mediaMap.get(media[0]!.id),pack_image_asset_id:mediaMap.get(media[1]!.id)},agreement:{audio_asset_id:mediaMap.get(media[2]!.id)},collection:{audio_asset_id:mediaMap.get(media[3]!.id)}});
-  const clonedMediaIds=[clonedOffer.sales_flow.content.presentation.audio_asset_id,clonedOffer.sales_flow.content.presentation.pack_image_asset_id,clonedOffer.sales_flow.content.agreement.audio_asset_id,clonedOffer.sales_flow.content.collection.audio_asset_id];
-  expect(clonedMediaIds.every((value:string)=>!media.some(item=>item.id===value))).toBe(true);
-  expect((await pool.query('SELECT count(*)::int n FROM records WHERE workspace_id=$1 AND environment=\'SIMULATION\' AND kind=\'asset\' AND id=ANY($2::uuid[])',[workspace,clonedMediaIds])).rows[0].n).toBe(4);
-  expect(records.find(r=>r.kind==='channel_account').body).toMatchObject({provider:'simulator',sending_enabled:false});
-  expect((await pool.query("SELECT id,version,body FROM records WHERE workspace_id=$1 AND environment='REAL' ORDER BY id",[workspace])).rows).toEqual(before);
-  expect((await pool.query('SELECT count(*)::int n FROM outbox WHERE workspace_id=$1',[workspace])).rows[0].n).toBe(pendingBefore);
-  const audit=(await pool.query("SELECT payload,environment FROM domain_events WHERE workspace_id=$1 AND event_type='simulation.snapshot_created' AND aggregate_id=$2",[workspace,first.workflow_version_id])).rows;
-  expect(audit).toHaveLength(1);expect(audit[0]).toMatchObject({environment:'SIMULATION',payload:{source_offer_id:offer.id,source_offer_version:offer.version,offer_selection:'EXPLICIT'}});
- });
- it('rejects explicit offer conflicts, unpublished or foreign references, missing grants and stale revisions without lab writes',async()=>{
-  const product=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'product',body:{name:'Snapshot boundaries'}});
-  const flow=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'workflow',body:{name:'Snapshot source',product_id:product.id,status:'PUBLISHED',nodes:[],entry_node_id:'unused'}});
-  const offer=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'offer',body:{name:'Explicit source',product_id:product.id,workflow_version_id:flow.id,status:'PUBLISHED'}});
-  const otherProduct=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'product',body:{name:'Other product'}}),otherFlow=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'workflow',body:{name:'Other exact flow',product_id:product.id,status:'PUBLISHED'}});
-  const draft=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'offer',body:{name:'Draft',product_id:product.id,workflow_version_id:flow.id,status:'DRAFT'}}),wrongProduct=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'offer',body:{name:'Other product offer',product_id:otherProduct.id,workflow_version_id:flow.id,status:'PUBLISHED'}}),wrongFlow=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'offer',body:{name:'Other exact workflow',product_id:product.id,workflow_version_id:otherFlow.id,status:'PUBLISHED'}});
-  const foreign=await putRecord(pool,{workspaceId:'foreign-snapshot-'+randomUUID(),environment:'REAL',kind:'offer',body:{name:'Foreign private source',status:'PUBLISHED'}}),simulated=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'offer',body:{name:'Already simulated',status:'PUBLISHED'}});
-  const grant=await token(['workflows:read','simulations:run','offers:read'],{allowed_environments:['REAL','SIMULATION']}),noOfferRead=await token(['workflows:read','simulations:run'],{allowed_environments:['REAL','SIMULATION']}),simOnly=await token(['workflows:read','simulations:run','offers:read'],{allowed_environments:['SIMULATION']});
-  const base={environment:'SIMULATION',workflow_version_id:flow.id,expected_version:flow.version,offer_version_id:offer.id,expected_offer_version:offer.version};
-  const before=(await pool.query("SELECT id,version,body FROM records WHERE workspace_id=$1 AND environment='SIMULATION' ORDER BY id",[workspace])).rows;
-  for(const[selected,code]of [[draft,'OFFER_NOT_PUBLISHED'],[wrongProduct,'OFFER_PRODUCT_MISMATCH'],[wrongFlow,'OFFER_WORKFLOW_MISMATCH'],[foreign,'NOT_FOUND'],[simulated,'NOT_FOUND']] as const){const response=await request('POST','/v1/simulation-snapshots',{...base,offer_version_id:selected.id,expected_offer_version:selected.version},grant.token);expect(response.statusCode,response.body).toBe(code==='NOT_FOUND'?404:409);expect(response.json().error.code).toBe(code);}
-  for(const[change,code]of [[{expected_version:999},'VERSION_CONFLICT'],[{expected_offer_version:999},'VERSION_CONFLICT'],[{environment:'REAL'},'SIMULATION_ONLY']] as const){expect((await request('POST','/v1/simulation-snapshots',{...base,...change},grant.token)).json().error.code).toBe(code);}
-  expect((await request('POST','/v1/simulation-snapshots',base,noOfferRead.token)).statusCode).toBe(403);
-  expect((await request('POST','/v1/simulation-snapshots',base,simOnly.token)).json().error.code).toBe('ENVIRONMENT_FORBIDDEN');
-  const{expected_offer_version:_,...withoutRevision}=base;expect((await request('POST','/v1/simulation-snapshots',withoutRevision,grant.token)).statusCode).toBe(400);
-  const{offer_version_id:__,...withoutOffer}=base;expect((await request('POST','/v1/simulation-snapshots',withoutOffer,grant.token)).statusCode).toBe(400);
-  const pinned=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'workflow',body:{...flow.body,offer_version_id:wrongFlow.id}});
-  expect((await request('POST','/v1/simulation-snapshots',{...base,workflow_version_id:pinned.id,expected_version:pinned.version},grant.token)).json().error.code).toBe('OFFER_CONFLICT');
-  expect((await pool.query("SELECT id,version,body FROM records WHERE workspace_id=$1 AND environment='SIMULATION' ORDER BY id",[workspace])).rows).toEqual(before);
- });
- it.each(['workflow','offer'] as const)('revalidates the explicit source %s revision after a concurrent archive releases its lock',async kind=>{
-  const product=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'product',body:{name:'Snapshot race product'}});
-  const flow=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'workflow',body:{name:'Snapshot race flow',product_id:product.id,status:'PUBLISHED'}}),offer=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'offer',body:{name:'Race offer',product_id:product.id,workflow_version_id:flow.id,status:'PUBLISHED'}});
-  const grant=await token(['workflows:read','simulations:run','offers:read'],{allowed_environments:['REAL','SIMULATION']}),locker=await pool.connect(),target=kind==='workflow'?flow:offer;
-  await locker.query('BEGIN');await locker.query('SELECT id FROM records WHERE id=$1 FOR UPDATE',[target.id]);
-  const lockerPid=(await locker.query('SELECT pg_backend_pid() pid')).rows[0].pid;
-  const pending=request('POST','/v1/simulation-snapshots',{environment:'SIMULATION',workflow_version_id:flow.id,expected_version:flow.version,offer_version_id:offer.id,expected_offer_version:offer.version},grant.token);
-  try{let waiting=false;for(let i=0;i<100;i++){const result=await pool.query("SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)) AND query LIKE '%records%FOR SHARE%'",[lockerPid]);if(result.rowCount){waiting=true;break;}await new Promise(resolve=>setTimeout(resolve,10));}expect(waiting).toBe(true);await putRecord(locker,{id:target.id,version:target.version,workspaceId:workspace,environment:'REAL',kind:target.kind,body:{...target.body,archived_at:new Date().toISOString(),archive_reason:'Concurrent archive regression'}});await locker.query('COMMIT');}finally{await locker.query('ROLLBACK');locker.release();}
-  const response=await pending;expect(response.statusCode,response.body).toBe(409);expect(response.json().error.code).toBe('VERSION_CONFLICT');
-  expect((await pool.query("SELECT count(*)::int n FROM records WHERE workspace_id=$1 AND environment='SIMULATION' AND body->'lab_source'->>'id'=$2",[workspace,flow.id])).rows[0].n).toBe(0);
  });
  it('reports scoped readiness from evidence without promoting configuration or human attestation to provider proof',async()=>{
   const a=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'channel_account',body:{name:'Scoped number',provider:'waha',status:'DISCONNECTED',sending_enabled:false}}),b=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'channel_account',body:{name:'Hidden number',provider:'waha',status:'DISCONNECTED'}});
@@ -255,10 +149,6 @@ describe('REAL API contract and scoped executable assistant client',()=>{
  it('documents defaults, scopes and idempotency on the actual route inventory',async()=>{
   const spec=(await app.inject({method:'GET',url:'/v1/openapi.json'})).json();
   expect(spec.paths['/v1/products'].get.parameters.find((p:any)=>p.name==='environment').schema.default).toBe('REAL');
-  expect(spec.paths['/v1/simulation-snapshots'].post['x-required-service-scopes']).toEqual(['simulations:run','workflows:read']);
-  expect(spec.paths['/v1/simulation-snapshots'].post.requestBody.content['application/json'].schema.properties).toMatchObject({offer_version_id:{type:'string',format:'uuid'},expected_offer_version:{type:'integer',minimum:1}});
-  expect(spec.paths['/v1/simulation-snapshots'].post['x-conditional-service-scopes']).toEqual({offer_version_id:{any_of:['offers:read','products:read']}});
-  expect(spec.paths['/v1/conversations/{id}/proposals'].post.requestBody.content['application/json'].schema.required).toContain('expected_version');
   expect(spec.paths['/v1/conversations/{id}/commands'].post.security).toEqual([{session:[]},{ownerPersonalToken:[]}]);
   expect(spec.paths['/v1/conversations/{id}/commands'].post['x-required-service-scopes']).toEqual(['human-only']);
  });
