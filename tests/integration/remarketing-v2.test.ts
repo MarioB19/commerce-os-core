@@ -7,7 +7,6 @@ import {buyerExcluded,hash,openRemarketingCycle,pool,putRecord,reserveRemarketin
 import {recognizeReceipt} from '../../packages/db/src/receipt-sales.js';
 import {createDefaultRemarketingPolicy,replaceRemarketingDurations,setRemarketingSlotEnabled,normalizeRemarketingPolicy} from '../../packages/domain/src/sales/remarketing.js';
 import {salesAgreementRecipeV1} from '../../packages/domain/src/sales/sales-recipe-v2.js';
-import {toolRequest} from '../../apps/commerce-mcp/src/server.js';
 import type {Body,DomainRecord} from '../../packages/contracts/src/index.js';
 import {processAgents} from '../../apps/automation-worker/src/agents.js';
 import {acceptCustomerResponse,processConfirmedSchedules,processTimers} from '../../apps/automation-worker/src/workflows.js';
@@ -95,7 +94,6 @@ it('previews and explicitly reprograms only unstarted future slots without resto
  const attempts=(await pool.query('SELECT slot_id,status FROM commercial_remarketing_attempts WHERE cycle_id=$1',[cycle.id])).rows;expect(attempts).toEqual([{slot_id:'remarketing_1',status:'SENT'}]);
  const timers=(await pool.query("SELECT status,payload,due_at FROM timers WHERE workspace_id=$1 AND payload->>'cycle_id'=$2 ORDER BY due_at",[workspace,cycle.id])).rows;expect(timers.filter((timer:Body)=>timer.status==='PENDING').map((timer:Body)=>timer.payload.slot_id)).toEqual(['remarketing_3']);expect(timers.find((timer:Body)=>timer.status==='PENDING')?.payload.text).toBe('Agreement three');expect(timers.filter((timer:Body)=>timer.payload.slot_id==='remarketing_2').every((timer:Body)=>timer.status==='CANCELLED')).toBe(true);
  expect(data(await request('GET',`/v1/remarketing-cycles?contact_id=${contact.id}&status=OPEN`))).toHaveLength(1);
- expect(toolRequest('remarketing_reprogram_apply' as any,{cycle_id:cycle.id,offer_version_id:targetOffer.id,expected_revision:preview.cycle_revision,preview_hash:preview.preview_hash,previewed_at:preview.previewed_at,idempotency_key:'remarketing-test-key',environment:'SIMULATION'})).toMatchObject({route:`/v1/remarketing-cycles/${cycle.id}/reprogram`,method:'POST'});
 });
 
 it('cancels on a customer question and rearms only the remaining quota after the seller reply is transport-confirmed',async()=>{

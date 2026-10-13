@@ -1,7 +1,7 @@
 import type {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {z} from 'zod';
 import {mcpRegistryEntry} from '../../../packages/contracts/src/mcp-registry.js';
-import {safeResult} from './server.js';
+import {safeResult} from './safe-result.js';
 
 /** One registry tool with closed actions (RF-15). The advertised schema is an
  * object with an `action` enum and the union of every action's fields; each

@@ -1,9 +1,6 @@
 import {describe,it,expect,vi} from 'vitest';
-import {Client} from '@modelcontextprotocol/sdk/client/index.js';
-import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js';
 import {sessionContinuity,personalContinuity} from './continuous-authorization.js';
 import {continuityRoute,continuityResult} from '../../contracts/src/continuous-consumer.js';
-import {createContinuityMcp} from '../../../apps/commerce-mcp/src/continuous-authorization.js';
 const id=(n:number)=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
 const state=()=>({id:id(1),workspaceId:'one',environment:'REAL',accountId:id(2),source:{kind:'COMMERCIAL_ASSIGNMENT',assignmentId:id(3),assignmentRevision:1,bindingId:id(4)},createdBy:'owner',createdAt:'2026-01-01T00:00:00Z',version:1,humanPaused:false,revokedAt:null,protections:[]});
 const command={operation:'command',purpose:'commercial',id:id(1),operationId:id(9),expectedVersion:1,action:'pause'};
@@ -52,15 +49,5 @@ describe('shared continuity transport',()=>{
  it('rejects duplicate or out of order pages and false next cursor',()=>{
   const request=continuityRoute({operation:'list',purpose:'commercial',limit:2}).value;
   for(const value of [{data:[state(),state()],nextAfterId:null},{data:[state()],nextAfterId:id(1)}])expect(()=>continuityResult(value,request,'one')).toThrow('CONTINUITY_PAGE_INVALID');
- });
- it('MCP exposes only fixed operations, rejects authority injection and keeps uncertain writes unreplayed',async()=>{
-  const call=vi.fn(async()=>{throw new Error('synthetic private transport failure');}),server=createContinuityMcp(call);
-  const client=new Client({name:'continuity-contract',version:'1'}),[ct,st]=InMemoryTransport.createLinkedPair();await server.connect(st);await client.connect(ct);
-  try{
-   expect((await client.listTools()).tools.map(t=>t.name).sort()).toEqual(['command','get','issue','list','receipt'].map(x=>'profile_continuity_'+x).sort());
-   const result=await client.callTool({name:'profile_continuity_command',arguments:{purpose:'commercial',id:id(1),operationId:id(9),expectedVersion:1,action:'pause'}});
-   expect(result.isError).toBe(true);expect(JSON.stringify(result)).not.toContain('private transport');expect(call).toHaveBeenCalledTimes(1);
-   const denied=await client.callTool({name:'profile_continuity_list',arguments:{purpose:'commercial',workspaceId:'two'}});expect(denied.isError).toBe(true);expect(call).toHaveBeenCalledTimes(1);
-  }finally{await client.close();await server.close();}
  });
 });

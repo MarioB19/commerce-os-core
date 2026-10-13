@@ -21,7 +21,7 @@ import {marketCopyReviewFields,type MarketRelease} from '../../packages/contract
 import {type MarketDraftFields} from '../../packages/contracts/src/market-variant-store.js';
 import {marketDraftViewSchema} from '../../packages/contracts/src/market-variant-client.js';
 import {personalMarketVariants,sessionMarketVariants} from '../../packages/commerce-client/src/market-variants.js';
-import {createMarketVariantsMcp} from '../../apps/commerce-mcp/src/market-variants.js';
+import {createProfileMcp} from '../../apps/commerce-mcp/src/profile-server.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 
 const suffix=randomBytes(8).toString('hex'),login='f4_variants_'+suffix;
@@ -188,13 +188,12 @@ describe('F4 persisted variants with native profile authority and restricted Pos
   const list=await client({operation:'list',environment:'REAL',family_id:f.product.id,limit:1});expect(list.data).toHaveLength(1);
   const browser=sessionMarketVariants({workspaceId:one,version:1},async(input,init)=>fetch(address+String(input),{...init,headers:{...init?.headers,cookie:owner.cookie,origin}}));
   expect((await browser({operation:'get',environment:'REAL',id:recovered.id})).data).toMatchObject({id:recovered.id,version:3,current_release_id:published.release.id});
-  const server=createMarketVariantsMcp(client),sdk=new Client({name:'synthetic-market-postgres-client',version:'1'}),[ct,st]=InMemoryTransport.createLinkedPair();
+  // V7 F8: the composed profile MCP reads the same published version with the same token.
+  const server=createProfileMcp(address,secret),sdk=new Client({name:'synthetic-market-postgres-client',version:'1'}),[ct,st]=InMemoryTransport.createLinkedPair();
   await server.connect(st);await sdk.connect(ct);
   try{
-   const result=await sdk.callTool({name:'market_variant_release',arguments:{environment:'REAL',id:published.release.id}});
-   expect(result.isError).not.toBe(true);expect(result.structuredContent).toEqual({data:published.release});
-   const count=posts,reconciled=await sdk.callTool({name:'market_variant_reconcile',arguments:{environment:'REAL',id:operation_id}});
-   expect(reconciled.structuredContent).toEqual({data:recovered});expect(posts).toBe(count);
+   const count=posts,result=await sdk.callTool({name:'variants_manage',arguments:{action:'version',releaseId:published.release.id}});
+   expect(result.isError).not.toBe(true);expect(result.structuredContent).toEqual(published.release);expect(posts).toBe(count);
   }finally{await sdk.close();await server.close();}
   await admin.query('UPDATE personal_access_tokens SET revoked_at=clock_timestamp() WHERE id=$1',[tokenId]);
   await expect(client({operation:'get',environment:'REAL',id:recovered.id})).rejects.toMatchObject({code:'MARKET_READ_UNCONFIRMED',status:401});

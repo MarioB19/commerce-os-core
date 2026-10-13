@@ -149,6 +149,34 @@ describe('V7 F3 number tools',()=>{
    expect(seen[3]!.body).toEqual({decision:'APPROVED',expected_version:3});
   }finally{await client.close();await server.close();}
  });
+ it('works conversations and orders with the application routes; an unconfirmed reply is read back, never resent (RF-15.a)',async()=>{
+  const seen:{method:string;url:string;key:string|null;auth:string|null;body:unknown}[]=[],conversationId='88888888-8888-4888-8888-888888888888',operationId='99999999-9999-4999-8999-999999999999',now='2026-10-13T12:00:00.000Z';
+  const row={id:conversationId,version:4,environment:'REAL',created_at:now,updated_at:now};
+  const command={id:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',workspace_id:'ws-1',environment:'REAL',kind:'conversation_command',resource_id:conversationId,actor_id:'u-1',idempotency_key:operationId,status:'APPLIED',payload:{},result:{},created_at:now,updated_at:now};
+  let replies=0;
+  const {client,server}=await connect(async(input,init)=>{const url=String(input).replace('https://commerce.example.test',''),method=String(init?.method??'GET');seen.push({method,url,key:new Headers(init?.headers).get('idempotency-key'),auth:new Headers(init?.headers).get('authorization'),body:init?.body?JSON.parse(String(init.body)):undefined});
+   if(url.startsWith('/v1/conversations?')||url.startsWith('/v1/orders?'))return json(200,{data:[row],meta:{total:1}});
+   if(url.startsWith('/v1/conversations/'+conversationId+'?'))return json(200,{data:{...row,messages:[]}});
+   if(url.endsWith('/commands')&&replies++===0)return new Response('',{status:502});
+   if(url.endsWith('/controls'))return json(202,{data:{command_id:command.id,workspace_id:'ws-1',environment:'REAL',scope_type:'conversation',scope_id:conversationId,paused:false,takeover:true,suppressed:false,version:2}});
+   if(url.startsWith('/v1/sales-operations/'))return json(200,{data:{key:operationId,operation:'conversation.command',resource_id:conversationId,command}});
+   return json(500,{});});
+  try{
+   const list=await client.callTool({name:'conversations_manage',arguments:{action:'listar',q:'Ana'}});expect(list.isError).toBeFalsy();
+   await client.callTool({name:'conversations_manage',arguments:{action:'leer',conversationId}});
+   await client.callTool({name:'orders_manage',arguments:{action:'listar'}});
+   const reply=await client.callTool({name:'conversations_manage',arguments:{action:'responder',operationId,conversationId,text:'Hola',expectedVersion:4}});
+   expect(reply.isError).toBeFalsy();expect(JSON.stringify(reply.structuredContent)).toContain('read_back');
+   const take=await client.callTool({name:'conversations_manage',arguments:{action:'tomar_control',operationId,conversationId,reason:'La atiendo yo'}});expect(take.isError).toBeFalsy();
+   expect(seen.map(x=>x.method+' '+x.url.split('?')[0])).toEqual(['GET /v1/conversations','GET /v1/conversations/'+conversationId,'GET /v1/orders','POST /v1/conversations/'+conversationId+'/commands','GET /v1/sales-operations/'+operationId,'POST /v1/conversations/'+conversationId+'/controls']);
+   expect(seen[0]!.url).toContain('q=Ana');expect(seen[0]!.url).toContain('environment=REAL');
+   expect(seen.every(x=>x.auth==='Bearer '+token)).toBe(true);
+   expect(seen.filter(x=>x.method==='POST').map(x=>x.key)).toEqual([operationId,operationId]);
+   expect(seen.filter(x=>x.url.endsWith('/commands'))).toHaveLength(1);
+   expect(seen[3]!.body).toEqual({type:'send_message',kind:'text',text:'Hola',expected_version:4,environment:'REAL'});
+   expect(seen[5]!.body).toEqual({takeover:true,reason:'La atiendo yo',environment:'REAL'});
+  }finally{await client.close();await server.close();}
+ });
  it('reads help, campaigns and follow-up results with the same routes as the application (RF-16.d, RF-11, RF-10.e)',async()=>{
   const seen:string[]=[],variantId='55555555-5555-4555-8555-555555555555';
   const {client,server}=await connect(async(input,init)=>{const url=String(input).replace('https://commerce.example.test','');seen.push(String(init?.method??'GET')+' '+url);

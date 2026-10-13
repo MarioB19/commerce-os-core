@@ -14,8 +14,8 @@ import {withProfileTransaction} from '../../packages/db/src/profile-context.js';
 import {withProfileSessionTransaction} from '../../packages/db/src/profile-session-transaction.js';
 import {withPersonalProfileTransaction} from '../../packages/db/src/profile-personal-token.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
-import {sessionProfileCatalog,personalProfileCatalog} from '../../packages/commerce-client/src/profile-catalog.js';
-import {createProfileCatalogMcp} from '../../apps/commerce-mcp/src/profile-catalog.js';
+import {sessionProfileCatalog} from '../../packages/commerce-client/src/profile-catalog.js';
+import {createProfileMcp} from '../../apps/commerce-mcp/src/profile-server.js';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js';
 
@@ -127,15 +127,15 @@ describe('commercial catalog HTTP on actual records with profile RLS and native 
  });
  it('runs MCP SDK through real HTTP and restricted PostgreSQL with one fixed PAT, including revocation',async()=>{
   const {user,cookie}=await account();await select(cookie,two);const t=await token(user);
-  const server=createProfileCatalogMcp(personalProfileCatalog(address,t.secret));
+  const server=createProfileMcp(address,t.secret),list=(args:Record<string,unknown>)=>client.callTool({name:'products_manage',arguments:{action:'listar',...args}});
   const client=new Client({name:'native-profile-catalog',version:'1'}),[ct,st]=InMemoryTransport.createLinkedPair();await server.connect(st);await client.connect(ct);
   try{
-   const result=await client.callTool({name:'profile_catalog_list',arguments:{resource:'products'}});
+   const result=await list({resource:'products'});
    expect(result.isError).not.toBe(true);expect((result.structuredContent as any).data.map((x:any)=>x.id)).toEqual([productOne]);
-   for(const args of [{resource:'products',environment:'SIMULATION'},{resource:'offers'},{resource:'products',profile_id:two}])expect((await client.callTool({name:'profile_catalog_list',arguments:args})).isError).toBe(true);
-   expect((await client.callTool({name:'profile_catalog_get',arguments:{resource:'products',id:productTwo}})).isError).toBe(true);
+   for(const args of [{resource:'products',environment:'SIMULATION'},{resource:'offers'},{resource:'products',profile_id:two}])expect((await list(args)).isError).toBe(true);
+   expect((await client.callTool({name:'products_manage',arguments:{action:'leer',resource:'products',id:productTwo}})).isError).toBe(true);
    await admin!.query('UPDATE personal_access_tokens SET revoked_at=clock_timestamp() WHERE id=$1',[t.id]);
-   const rejected=await client.callTool({name:'profile_catalog_list',arguments:{resource:'products'}});expect(rejected.isError).toBe(true);expect(JSON.stringify(rejected)).not.toContain(t.secret);
+   const rejected=await list({resource:'products'});expect(rejected.isError).toBe(true);expect(JSON.stringify(rejected)).not.toContain(t.secret);
   }finally{await client.close();await server.close();}
  });
 });

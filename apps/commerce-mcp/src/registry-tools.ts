@@ -18,10 +18,13 @@ import type {ProfileV1Client,ProfileV2Client,ProfileVariantClient} from '../../.
 import {numberCountries,type NumberCountry} from '../../../packages/domain/src/numbers/phone.js';
 import type {ReceiptPolicyClient} from '../../../packages/commerce-client/src/receipt-policies.js';
 import type {ResultsClient} from '../../../packages/commerce-client/src/results.js';
+import {ProfileSalesError,type ProfileSalesClient} from '../../../packages/commerce-client/src/profile-sales.js';
+import {profileSalesPointer,type ProfileSalesMutation} from '../../../packages/contracts/src/profile-sales-consumer.js';
+import {createHash} from 'node:crypto';
 import {humanAction,registerManageTool,type ManageAction} from './manage-tool.js';
 import {helpMarkdown} from '../../../packages/contracts/src/help.js';
 
-export interface ProfileRegistryClients {v2:ProfileV2Client;v1:ProfileV1Client;catalog:ProfileCatalogReader;variant:ProfileVariantClient;continuity:ContinuityClient;payments:PaymentsClient;receiptPolicies:ReceiptPolicyClient;results:ResultsClient}
+export interface ProfileRegistryClients {v2:ProfileV2Client;v1:ProfileV1Client;catalog:ProfileCatalogReader;variant:ProfileVariantClient;continuity:ContinuityClient;payments:PaymentsClient;receiptPolicies:ReceiptPolicyClient;results:ResultsClient;sales:ProfileSalesClient}
 const id=(v:string)=>encodeURIComponent(v);
 const query=(values:Record<string,unknown>)=>{const q=new URLSearchParams();for(const[k,v]of Object.entries(values))if(v!==undefined&&v!==null)q.set(k,String(v));const s=q.toString();return s?'?'+s:'';};
 function failure(action:string,error:unknown,input:unknown){
@@ -146,6 +149,40 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
  tool('receipt_rules_manage','Reglas de comprobantes','Consulta o guarda las reglas de validación de comprobantes del perfil o de una variante.',
   fromUnion(receiptPolicyCommand,{get_profile:'leer_perfil',get_variant:'leer_variante',save_profile:'guardar_perfil',save_variant:'guardar_variante',reconcile:'consultar_operacion'},op=>op.startsWith('get')||op==='reconcile',i=>c.receiptPolicies(i)));
  const receiptId=z.object({receiptId:z.uuid()}).strict();
+ // V7 F8 (RF-15.a): Ventas → Conversaciones y Pedidos by MCP, with the same
+ // routes, permissions and command shape as the application. A command with
+ // an unconfirmed outcome is read back once; repeating the same operationId
+ // never repeats the effect.
+ const sales=async(command:ProfileSalesMutation)=>{
+  try{return await c.sales.write(command);}
+  catch(error){
+   if(!(error instanceof ProfileSalesError)||error.code!=='SALES_UNCONFIRMED')throw error;
+   const pointer=profileSalesPointer.parse({operation:command.operation,operation_id:command.operation_id,resource_id:command.resource_id,environment:command.environment,request_sha256:createHash('sha256').update(JSON.stringify(command)).digest('hex')});
+   try{return{command_id:(await c.sales.reconcile(pointer)).id,read_back:true};}
+   catch{throw Object.assign(Error('SALES_UNCONFIRMED'),{code:'SALES_UNCONFIRMED'});}
+  }
+ };
+ const conversationId=z.object({conversationId:z.uuid()}).strict();
+ const reasoned=z.object({operationId:z.uuid(),conversationId:z.uuid(),reason:z.string().trim().min(3).max(2000)}).strict();
+ const control=(body:{paused?:boolean;takeover?:boolean;suppressed?:boolean}):ManageAction=>({schema:reasoned,read:false,run:i=>sales({operation:'conversation.controls',operation_id:i.operationId,resource_id:i.conversationId,environment:'REAL',body:{...body,reason:i.reason}})});
+ const listQuery=z.object({q:z.string().max(160).optional(),status:z.string().max(100).optional(),stage:z.string().max(100).optional(),limit:z.number().int().min(1).max(50).optional(),offset:z.number().int().min(0).max(10000).optional()}).strict();
+ tool('conversations_manage','Conversaciones','Conversaciones del perfil con su producto, etapa y mensajes. Responder envía un mensaje real por WhatsApp a esa persona; tomar el control detiene al vendedor automático hasta liberarlo. No hace envíos masivos.',{
+  listar:{schema:listQuery,read:true,run:i=>c.sales.read({operation:'list',resource:'conversations',environment:'REAL',limit:20,offset:0,...i})},
+  leer:{schema:conversationId,read:true,run:i=>c.sales.read({operation:'get',resource:'conversations',id:i.conversationId,environment:'REAL'})},
+  responder:{schema:z.object({operationId:z.uuid(),conversationId:z.uuid(),text:z.string().min(1).max(4096),expectedVersion:z.number().int().positive()}).strict(),read:false,
+   run:i=>sales({operation:'conversation.command',operation_id:i.operationId,resource_id:i.conversationId,environment:'REAL',body:{type:'send_message',kind:'text',text:i.text,expected_version:i.expectedVersion}})},
+  registrar_acuerdo:{schema:z.object({operationId:z.uuid(),conversationId:z.uuid()}).strict(),read:false,run:i=>sales({operation:'conversation.command',operation_id:i.operationId,resource_id:i.conversationId,environment:'REAL',body:{type:'commitment'}})},
+  cerrar:{schema:reasoned,read:false,destructive:true,run:i=>sales({operation:'conversation.command',operation_id:i.operationId,resource_id:i.conversationId,environment:'REAL',body:{type:'close_conversation',reason:i.reason}})},
+  registrar_baja:{schema:reasoned,read:false,destructive:true,run:i=>sales({operation:'conversation.command',operation_id:i.operationId,resource_id:i.conversationId,environment:'REAL',body:{type:'opt_out',reason:i.reason}})},
+  tomar_control:control({takeover:true}),
+  liberar_control:control({takeover:false}),
+  pausar:control({paused:true}),
+  reanudar:control({paused:false}),
+ });
+ tool('orders_manage','Pedidos','Pedidos del perfil con su producto, monto y estado de pago. Sólo lectura: los pagos se aprueban en Comprobantes.',{
+  listar:{schema:listQuery,read:true,run:i=>c.sales.read({operation:'list',resource:'orders',environment:'REAL',limit:20,offset:0,...i})},
+  leer:{schema:z.object({orderId:z.uuid()}).strict(),read:true,run:i=>c.sales.read({operation:'get',resource:'orders',id:i.orderId,environment:'REAL'})},
+ });
  tool('receipts_manage','Comprobantes','Cola de comprobantes: primero los que esperan una decisión. Cada uno trae su resultado (Aprobado, Por revisar, Rechazado, Prueba o Falso) y la regla que lo decidió. Revisar aprueba o rechaza uno; el archivo se abre en la aplicación.',{
   listar:P('GET',z.object({view:z.enum(['pending','all']).optional(),limit:z.number().int().min(1).max(100).optional(),offset:z.number().int().min(0).optional()}).strict(),i=>'/v2/receipts'+query(i)),
   leer:P('GET',receiptId,i=>'/v2/receipts/'+id(i.receiptId)),

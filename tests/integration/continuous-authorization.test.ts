@@ -9,8 +9,8 @@ import {ZodError} from 'zod';
 import {createAuth} from '../../apps/api/src/auth.js';
 import {continuousAuthorizationRoutes} from '../../apps/api/src/continuous-authorization.js';
 import {withPersonalProfileTransaction} from '../../packages/db/src/profile-personal-token.js';
-import {sessionContinuity,personalContinuity} from '../../packages/commerce-client/src/continuous-authorization.js';
-import {createContinuityMcp} from '../../apps/commerce-mcp/src/continuous-authorization.js';
+import {sessionContinuity} from '../../packages/commerce-client/src/continuous-authorization.js';
+import {createProfileMcp} from '../../apps/commerce-mcp/src/profile-server.js';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js';
 import pg from 'pg';
@@ -415,15 +415,16 @@ describe('F3 continuity persistence, real restricted PostgreSQL and synthetic so
   const browserFetch:typeof fetch=(url,init)=>fetch(address+url,{...init,headers:{...init?.headers,origin,cookie}});
   const client=sessionContinuity({workspaceId:workspace,version:1},browserFetch);
   const created=await client({operation:'issue',purpose:'commercial',assignmentId:source.assignment,expectedRevision:1,operationId});const issued=created.data[0]!;
-  const token=await personal(['assignments:read','assignments:write']);const server=createContinuityMcp(personalContinuity(address,token.token));
+  const token=await personal(['assignments:read','assignments:write']);const server=createProfileMcp(address,token.token);
   const sdk=new Client({name:'native-f3-continuity',version:'1'}),[ct,st]=InMemoryTransport.createLinkedPair();await server.connect(st);await sdk.connect(ct);
+  const call=(action:string,args:Record<string,unknown>)=>sdk.callTool({name:'number_assignments_manage',arguments:{action,...args}});
   try{
-   const operation=randomUUID();const result=await sdk.callTool({name:'profile_continuity_command',arguments:{purpose:'commercial',id:issued.id,operationId:operation,expectedVersion:1,action:'pause'}});
+   const operation=randomUUID();const result=await call('pausar',{purpose:'commercial',id:issued.id,operationId:operation,expectedVersion:1});
    expect(result.isError).not.toBe(true);expect((await saved(issued.id))?.humanPaused).toBe(true);
-   const receipt=await sdk.callTool({name:'profile_continuity_receipt',arguments:{purpose:'commercial',operationId:operation}});expect(receipt.isError).not.toBe(true);
-   for(const args of [{purpose:'warmup'},{purpose:'commercial',environment:'SIMULATION'},{purpose:'commercial',workspaceId:foreign}])expect((await sdk.callTool({name:'profile_continuity_list',arguments:args})).isError).toBe(true);
-   const before=await count('continuous_authorization_events',issued.id);await sdk.callTool({name:'profile_continuity_command',arguments:{purpose:'commercial',id:issued.id,operationId:operation,expectedVersion:1,action:'pause'}});expect(await count('continuous_authorization_events',issued.id)).toBe(before);
-   await admin.query('UPDATE personal_access_tokens SET revoked_at=clock_timestamp() WHERE id=$1',[token.id]);expect((await sdk.callTool({name:'profile_continuity_list',arguments:{purpose:'commercial'}})).isError).toBe(true);
+   const receipt=await call('consultar_operacion',{purpose:'commercial',operationId:operation});expect(receipt.isError).not.toBe(true);
+   for(const args of [{purpose:'warmup'},{purpose:'commercial',environment:'SIMULATION'},{purpose:'commercial',workspaceId:foreign}])expect((await call('autorizaciones',args)).isError).toBe(true);
+   const before=await count('continuous_authorization_events',issued.id);await call('pausar',{purpose:'commercial',id:issued.id,operationId:operation,expectedVersion:1});expect(await count('continuous_authorization_events',issued.id)).toBe(before);
+   await admin.query('UPDATE personal_access_tokens SET revoked_at=clock_timestamp() WHERE id=$1',[token.id]);expect((await call('autorizaciones',{purpose:'commercial'})).isError).toBe(true);
   }finally{await sdk.close();await server.close();}
  });
  it('013 exposes only the selected locked profile to exact worker roles without global profiles SELECT',async()=>{

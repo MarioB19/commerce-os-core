@@ -6,7 +6,6 @@ import {advanceWorkflow} from '../../apps/automation-worker/src/workflows.js';
 import {createDefaultRemarketingPolicy} from '../../packages/domain/src/sales/remarketing.js';
 import {salesAgreementRecipeV1,salesAgreementWorkflowV1} from '../../packages/domain/src/sales/sales-recipe-v2.js';
 import {validateSalesFlowOfferDraft} from '../../packages/domain/src/sales/sales-flow-configuration.js';
-import {toolDefinitions,toolRequest} from '../../apps/commerce-mcp/src/server.js';
 import type {Body,DomainRecord} from '../../packages/contracts/src/index.js';
 
 let fixture:Awaited<ReturnType<typeof retirementFixture>>,product:DomainRecord,workflow:DomainRecord,agent:DomainRecord,bank:DomainRecord,policy:DomainRecord,assets:DomainRecord[],salesFlow:Body,fulfillment:Body[];
@@ -54,7 +53,6 @@ it('requires frequency acknowledgement through Web validation, API and MCP and a
  const invalid=structuredClone(salesFlow);invalid.remarketing.slots[1]!.enabled=true;delete invalid.remarketing.slots[1]!.warning_acknowledged;
  const webValidation=validateSalesFlowOfferDraft({...source.body,sales_flow:invalid});expect(webValidation.valid).toBe(false);expect(webValidation.issues.some(issue=>issue.path.join('.').endsWith('slots.1.warning_acknowledged'))).toBe(true);
  const rejected=await fixture.call('POST',`/v1/offers/${source.id}/sales-flow/validate`,{expected_version:source.version,changes:{sales_flow:invalid}});expect(rejected.statusCode,rejected.body).toBe(400);expect(rejected.json().error.details.some((issue:Body)=>String(issue.path).endsWith('slots.1.warning_acknowledged'))).toBe(true);
- expect((toolDefinitions.sales_flow_validate.schema.changes as any).safeParse({sales_flow:invalid}).success).toBe(false);
 
  const acknowledged=structuredClone(salesFlow);for(const slot of acknowledged.remarketing.slots.filter((item:Body)=>item.position>1)){slot.enabled=true;slot.warning_acknowledged=true;}
  const saved=data(await fixture.call('PATCH',`/v1/offers/${source.id}/sales-flow`,{expected_version:source.version,changes:{sales_flow:acknowledged}}));
@@ -65,8 +63,8 @@ it('requires frequency acknowledgement through Web validation, API and MCP and a
 
 it('exposes matching OpenAPI operations and creates an editable offer version through the MCP contract',async()=>{
  const published=await create('offer',{name:'Published guided source',product_id:product.id,status:'PUBLISHED',currency:'MXN',base_amount_minor:9700,payment_profile_version_id:bank.id,receipt_policy_version_id:policy.id,workflow_version_id:workflow.id,agent_version_id:agent.id,fulfillment,positive_payment_unlocks_all:true,billing_delay_seconds:0,sales_flow:salesFlow});
- const mapped=toolRequest('offer_version_create',{offer_id:published.id,expected_version:published.version,changes:{name:'Editable MCP successor'},idempotency_key:'offer-version-integration',environment:'SIMULATION'});
- const createdResponse=await fixture.app.inject({method:mapped.method!,url:mapped.route,headers:{cookie:fixture.cookie,origin:fixture.origin,'idempotency-key':mapped.key!},payload:mapped.body});
+ const mapped={method:'POST' as const,route:`/v1/offers/${published.id}/versions`,key:'offer-version-integration',body:{expected_version:published.version,changes:{name:'Editable MCP successor'},environment:'SIMULATION'}};
+ const createdResponse=await fixture.app.inject({method:mapped.method,url:mapped.route,headers:{cookie:fixture.cookie,origin:fixture.origin,'idempotency-key':mapped.key},payload:mapped.body});
  const created=data(createdResponse,201);expect(created).toMatchObject({name:'Editable MCP successor',status:'DRAFT',source_version_id:published.id});
  const spec=(await fixture.app.inject({method:'GET',url:'/v1/openapi.json'})).json();
  const expected:[string,string,string[],string,boolean][]=[

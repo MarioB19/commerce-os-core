@@ -19,8 +19,8 @@ import {withPersonalProfileTransaction} from '../../packages/db/src/profile-pers
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {listPayments,exportPayments,paymentOptions} from '../../packages/db/src/payments-register.js';
 import {readResultFacts} from '../../packages/db/src/results.js';
-import {sessionPayments,personalPayments} from '../../packages/commerce-client/src/payments.js';
-import {createPaymentsMcp} from '../../apps/commerce-mcp/src/payments.js';
+import {sessionPayments} from '../../packages/commerce-client/src/payments.js';
+import {createProfileMcp} from '../../apps/commerce-mcp/src/profile-server.js';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {InMemoryTransport} from '@modelcontextprotocol/sdk/inMemory.js';
 import {paymentPageQuerySchema} from '../../packages/contracts/src/payments-register.js';
@@ -170,9 +170,9 @@ describe('profile payments and canonical F7 reconciliation',()=>{
   const file=await client({operation:'export',query:{from:day,to:day,familyId:j.family,format:'xlsx'}});expect(file.operation).toBe('export');if(file.operation==='export')expect(file.sha256).toBe(createHash('sha256').update(file.bytes).digest('hex'));
  });
  it('uses one actual PAT through the MCP SDK and cannot export without export scope',async()=>{
-  const j=await payment(),{user}=await account(),t=await token(user),server=createPaymentsMcp(personalPayments(address,t.secret)),client=new Client({name:'native-payments',version:'1'}),[ct,st]=InMemoryTransport.createLinkedPair();await server.connect(st);await client.connect(ct);
-  try{const r=await client.callTool({name:'payments_list',arguments:{query:{from:day,to:day,familyId:j.family}}});expect(r.isError).not.toBe(true);expect((r.structuredContent as any).data.rows[0]?.receiptId).toBe(j.receipt);
-   expect((await client.callTool({name:'payments_export',arguments:{query:{from:day,to:day,format:'csv'}}})).isError).toBe(true);
+  const j=await payment(),{user}=await account(),t=await token(user),server=createProfileMcp(address,t.secret),client=new Client({name:'native-payments',version:'1'}),[ct,st]=InMemoryTransport.createLinkedPair();await server.connect(st);await client.connect(ct);
+  try{const r=await client.callTool({name:'payments_manage',arguments:{action:'listar',query:{from:day,to:day,familyId:j.family}}});expect(r.isError).not.toBe(true);expect((r.structuredContent as any).data.rows[0]?.receiptId).toBe(j.receipt);
+   expect((await client.callTool({name:'payments_manage',arguments:{action:'exportar',query:{from:day,to:day,format:'csv'}}})).isError).toBe(true);
   }finally{await client.close();await server.close();}
  });
  it('reads scoped filter options through native HTTP with bounded cursor pages',async()=>{
