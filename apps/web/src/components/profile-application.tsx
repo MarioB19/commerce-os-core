@@ -43,7 +43,6 @@ export const profileSections=[
  // Until F7 moves it, Campañas opens the reviewed read-only campaign dashboard.
  {label:'Campañas',href:'/campaigns',active:(path:string)=>path==='/campaigns'},
  {label:'Resultados',href:'/results',active:(path:string)=>path.startsWith('/results')},
- {label:'Ayuda',href:'/help',active:(path:string)=>path==='/help'},
 ] as const;
 export const isProfileApplicationPath=(path:string)=>profileApplicationPaths.some(value=>value===path)||productVariantPath.test(path)||numberTestPath.test(path);
 export function ProfileApplication({path,login}:{path:string;login:(retry:()=>void)=>ReactNode}){
@@ -65,7 +64,7 @@ export function ProfileApplication({path,login}:{path:string;login:(retry:()=>vo
  setProfileFence(fence);
  return <div className="profile-application">
   <a href="#profile-main" className="skip-link">Saltar al contenido</a>
-  <header className="topbar"><a href="/home" className="brand">Commerce <strong>OS</strong></a><div><strong>{profile.businessName}</strong> · {profileRoleLabels[profile.role]} <Button variant="secondary" onClick={()=>setConfirmSwitch(true)}>Cambiar perfil</Button>{platformAdmin&&<a href="/platform">Plataforma</a>}</div><details><summary>Mi cuenta · {data.user.name||data.user.email}</summary><nav aria-label="Mi cuenta"><a href="/account/security">Seguridad</a><a href="/settings/profile">Perfil del negocio</a>{profile.role!=='viewer'&&<a href="/account/integrations">Integraciones</a>}{profile.role==='owner'&&<><a href="/settings/employees">Empleados e invitaciones</a><a href="/account/tokens">Accesos MCP</a></>}<Button variant="ghost" disabled={leaving} onClick={()=>{void logout();}}>Cerrar sesión</Button></nav></details></header>
+  <header className="topbar"><a href="/home" className="brand">Commerce <strong>OS</strong></a><div><strong>{profile.businessName}</strong> · {profileRoleLabels[profile.role]} <Button variant="secondary" onClick={()=>setConfirmSwitch(true)}>Cambiar perfil</Button>{platformAdmin&&<a href="/platform">Plataforma</a>}</div><details><summary>Mi cuenta · {data.user.name||data.user.email}</summary><nav aria-label="Mi cuenta"><a href="/account/security">Seguridad</a><a href="/settings/profile">Perfil del negocio</a>{profile.role!=='viewer'&&<a href="/account/integrations">Integraciones</a>}{profile.role==='owner'&&<><a href="/settings/employees">Empleados e invitaciones</a><a href="/account/tokens">Accesos MCP</a></>}<a href="/help">Ayuda</a><Button variant="ghost" disabled={leaving} onClick={()=>{void logout();}}>Cerrar sesión</Button></nav></details></header>
   <nav aria-label="Navegación del perfil" className="profile-application-nav">{profileSections.map(section=><a key={section.href} href={section.href} aria-current={section.active(path)?'page':undefined}>{section.label}</a>)}</nav>
   <main id="profile-main" className="main-content" tabIndex={-1} key={key}>
    {profile.state==='SUSPENDED'&&<p role="status">Este perfil está suspendido. Las operaciones comerciales están detenidas.</p>}
