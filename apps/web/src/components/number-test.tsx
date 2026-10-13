@@ -10,7 +10,7 @@ import {Button} from './ui/button.js';
  * Nothing reaches WhatsApp, sales, payments or the number's quota. */
 interface Estimate {mode:'CHAT'|'AUTOMATIC';maximum_microusd:number;maximum_ai_calls:number;valid_until:string;captured_at:string;note:string;
  variants:{variant_id:string;name:string;provider:string;model:string;cases:number;maximum_microusd:number}[]}
-interface Entry {at:string;from:'customer'|'business';kind:string;text:string|null;material:string|null;status:string|null;purpose:string|null;material_id?:string|null;mime?:string|null}
+interface Entry {at:string;from:'customer'|'business';kind:string;text:string|null;material:string|null;status:string|null;purpose:string|null;material_id?:string|null;mime?:string|null;attachment_id?:string|null;receipt_id?:string|null;explanation?:string|null}
 interface View {run:{run_id:string;account_id:string;state:string;state_label:string;version:number;virtual_now:string;created_at:string;expires_at:string};
  captured:{captured_at:string;estimate:{maximum_microusd:number;maximum_ai_calls:number}}|null;
  variants:{variant_id:string;name:string;revision:number;amount_minor:number;currency:string}[];selected_variant_id:string|null;
@@ -22,17 +22,20 @@ interface NumberRow {account_id:string;name:string;masked:string|null;sells:{var
 const usd=(micro:number)=>new Intl.NumberFormat('es-MX',{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:4}).format(micro/1_000_000);
 const clock=(iso:string,timezone:string)=>{try{return new Intl.DateTimeFormat('es-MX',{dateStyle:'medium',timeStyle:'short',timeZone:timezone}).format(new Date(iso));}catch{return iso;}};
 const purposeLabels:Record<string,string>={remarketing:'Seguimiento',collection:'Cobro',seller_reply:'Vendedor IA',fulfillment:'Entrega',commercial:'Mensaje del flujo'};
-const actionLabel=(a:View['operations'][number]['action'])=>a.type==='message'?'Mensaje del cliente':a.type==='advance'?`Reloj +${a.hours} h`:a.type==='continue'?'Continuar':a.type==='select_variant'?'Elegir variante':a.type;
+const actionLabel=(a:View['operations'][number]['action'])=>a.type==='message'?'Mensaje del cliente':a.type==='advance'?`Reloj +${a.hours} h`:a.type==='continue'?'Continuar':a.type==='select_variant'?'Elegir variante':a.type==='receipt'?'Comprobante del cliente':a.type==='review_receipt'?'Revisión del comprobante':a.type;
+const receiptLabels:Record<string,string>={APPROVED:'Aprobado',REJECTED:'Rechazado',HUMAN_REVIEW:'En revisión'};
+const ATTACHMENT_TYPES=['image/png','image/jpeg','image/webp','application/pdf'];
 
 /** RF-19.c: a file the business sent, previewed inside the chat as the customer
  * would see it. Read privately with the profile fence and kept only in memory. */
 function LabMaterial({runId,entry,selection}:{runId:string;entry:Entry;selection:ProfileFence}){
+ const path=entry.attachment_id?`attachments/${entry.attachment_id}`:`materials/${entry.material_id}`;
  const [url,setUrl]=useState<string|null>(null),[failed,setFailed]=useState(false),[open,setOpen]=useState(!/^(?:video|application)\//.test(entry.mime??''));
- useEffect(()=>{if(!open||!entry.material_id)return;const c=new AbortController();let made:string|null=null;setFailed(false);
-  fetch(`/v2/number-tests/${runId}/materials/${entry.material_id}?environment=REAL`,{credentials:'include',cache:'no-store',redirect:'error',signal:c.signal,headers:{'X-Commerce-Profile-Id':selection.workspaceId,'X-Commerce-Profile-Version':String(selection.version)}})
+ useEffect(()=>{if(!open||!(entry.material_id||entry.attachment_id))return;const c=new AbortController();let made:string|null=null;setFailed(false);
+  fetch(`/v2/number-tests/${runId}/${path}?environment=REAL`,{credentials:'include',cache:'no-store',redirect:'error',signal:c.signal,headers:{'X-Commerce-Profile-Id':selection.workspaceId,'X-Commerce-Profile-Version':String(selection.version)}})
    .then(async r=>{if(!r.ok)throw Error('file');made=URL.createObjectURL(await r.blob());setUrl(made);}).catch(()=>{if(!c.signal.aborted)setFailed(true);});
   return()=>{c.abort();if(made)URL.revokeObjectURL(made);setUrl(null);};
- },[open,runId,entry.material_id,selection.workspaceId,selection.version]);
+ },[open,runId,path,entry.material_id,entry.attachment_id,selection.workspaceId,selection.version]);
  const name=entry.material??'Material',mime=entry.mime??'';
  if(!open)return <button type="button" className="number-test-material" onClick={()=>setOpen(true)}>📎 {name} · Ver</button>;
  if(failed)return <span className="number-test-material">📎 {name} (no se pudo abrir; si cambió el material, reinicia la prueba)</span>;
@@ -66,6 +69,15 @@ export function NumberTest({accountId,selection,role,state,timezone}:{accountId:
  async function act(action:Record<string,unknown>){if(!view)return;setBusy(true);setError('');
   try{await variantRequest(selection,'POST',`/v2/number-tests/${view.run.run_id}/actions`,{expected_version:view.run.version,action},newOperationKey());await readRun(view.run.run_id);}
   catch(e){setError(errorText(e,'No se pudo aplicar la acción.'));await readRun(view.run.run_id).catch(()=>undefined);}finally{setBusy(false);}}
+ // RF-19.d: the customer sends a receipt (image or PDF ≤4 MB), as on WhatsApp.
+ async function attach(file:File){if(!view)return;
+  if(!ATTACHMENT_TYPES.includes(file.type)){setError('Adjunta una imagen (PNG, JPG o WEBP) o un PDF.');return;}
+  if(file.size>4*1024*1024){setError('El comprobante debe pesar máximo 4 MB.');return;}
+  setBusy(true);setError('');
+  try{const bytes=new Uint8Array(await file.arrayBuffer());let binary='';for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x8000));
+   const saved=await variantRequest<{attachment_id:string}>(selection,'POST',`/v2/number-tests/${view.run.run_id}/attachments`,{mime_type:file.type,base64:btoa(binary)},newOperationKey());
+   setBusy(false);await act({type:'receipt',attachment_id:saved.attachment_id});}
+  catch(e){setError(errorText(e,'No se pudo adjuntar el comprobante.'));setBusy(false);}}
  async function send(e:FormEvent){e.preventDefault();const value=text.trim();if(!value)return;await act({type:'message',text:value});setText('');input.current?.focus();}
  const title=number?`${number.name}${number.masked?` · ${number.masked}`:''}`:'Número';
  const blocked=!canRun||busy||!!view?.pending||['COMPLETED','STOPPED'].includes(view?.run.state??'');
@@ -94,7 +106,11 @@ export function NumberTest({accountId,selection,role,state,timezone}:{accountId:
     {view.conversation.transcript.map((m,i)=><li key={i} className={`number-test-bubble from-${m.from}`}>
      {m.from==='business'&&m.purpose&&<span className="number-test-tag">{purposeLabels[m.purpose]??m.purpose}</span>}
      {m.text&&<span className="number-test-text">{m.text}</span>}
-     {m.material_id&&m.mime?<LabMaterial runId={view.run.run_id} entry={m} selection={selection}/>:m.material&&<span className="number-test-material">📎 {m.material}</span>}
+     {(m.material_id||m.attachment_id)&&m.mime?<LabMaterial runId={view.run.run_id} entry={m} selection={selection}/>:m.material&&<span className="number-test-material">📎 {m.material}</span>}
+     {m.kind==='receipt'&&<span className="number-test-receipt"><strong>{receiptLabels[m.status??'']??m.status}</strong>{m.explanation&&<> · {m.explanation}</>}</span>}
+     {m.kind==='receipt'&&m.status==='HUMAN_REVIEW'&&m.receipt_id&&canRun&&<span className="number-test-review" role="group" aria-label="Decidir el comprobante">
+      <Button variant="secondary" disabled={blocked} onClick={()=>void act({type:'review_receipt',receipt_id:m.receipt_id,decision:'APPROVED',reason:'Aprobado en la prueba'})}>Aprobar</Button>
+      <Button variant="secondary" disabled={blocked} onClick={()=>void act({type:'review_receipt',receipt_id:m.receipt_id,decision:'REJECTED',reason:'Rechazado en la prueba'})}>Rechazar</Button></span>}
      <span className="number-test-meta">{m.from==='customer'?'Cliente':'Negocio'}</span>
     </li>)}
    </ol>
@@ -108,6 +124,8 @@ export function NumberTest({accountId,selection,role,state,timezone}:{accountId:
     <label className="sr-only" htmlFor="number-test-input">Mensaje del cliente</label>
     <input id="number-test-input" ref={input} value={text} maxLength={4096} disabled={blocked} placeholder="Escribe como cliente…" onChange={e=>setText(e.target.value)} autoComplete="off"/>
     <Button type="submit" disabled={blocked||!text.trim()}>Enviar</Button>
+    <label className="number-test-attach">📎<span className="sr-only">Adjuntar comprobante</span>
+     <input type="file" accept={ATTACHMENT_TYPES.join(',')} disabled={blocked} onChange={e=>{const f=e.target.files?.[0];e.target.value='';if(f)void attach(f);}}/></label>
    </form>
    <div className="number-test-tools" role="group" aria-label="Controles de la prueba">
     {next?.action==='continue'&&<Button disabled={blocked} onClick={()=>void act({type:'continue'})}>Continuar</Button>}

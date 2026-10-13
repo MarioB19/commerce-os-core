@@ -4222,6 +4222,10 @@ input:not([type="checkbox"]):not([type="radio"]),select,textarea{min-height:44px
 button.number-test-material{background:none;border:0;padding:0;text-align:left;cursor:pointer;text-decoration:underline}
 .number-test-media{display:block;max-width:min(100%,280px);max-height:240px;border-radius:8px}
 audio.number-test-media{width:min(100%,280px)}
+.number-test-receipt{display:block;font-size:.85rem;margin-top:.25rem}
+.number-test-review{display:flex;gap:.5rem;margin-top:.35rem;flex-wrap:wrap}
+.number-test-attach{display:inline-flex;align-items:center;cursor:pointer;padding:0 .5rem;font-size:1.2rem}
+.number-test-attach input{position:absolute;width:1px;height:1px;opacity:0}
 .number-test-meta{font-size:.72rem;color:var(--text-secondary,#52617b)}
 .number-test-next{margin:0;font-weight:600}
 .number-test-composer{display:flex;gap:.5rem}

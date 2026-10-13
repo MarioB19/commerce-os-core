@@ -1,4 +1,4 @@
-import {createCipheriv,createDecipheriv,hkdfSync,randomBytes,randomUUID} from 'node:crypto';
+import {createCipheriv,createDecipheriv,createHash,hkdfSync,randomBytes,randomUUID} from 'node:crypto';
 import {numberLabStartSchema,numberLabOperationSchema,labCiphertextSchema,type NumberLabOperation,type NumberLabAction} from '../../contracts/src/number-laboratory.js';
 import {labHash,labCanonical,validateLabSnapshot,type LabEstimate} from '../../domain/src/laboratory/number-lab.js';
 import {authorizeProfileAction,type ProfileAuthority} from '../../domain/src/core/profile-authorization.js';
@@ -19,8 +19,8 @@ export function numberLabKeys(secret=process.env.PRIVATE_DATA_KEY??process.env.D
  const derive=(info:string)=>new Uint8Array(hkdfSync('sha256',raw,Buffer.from('commerce-os'),Buffer.from(info),32));
  return{control:derive('commerce.number-lab.control.v1'),files:derive('commerce.number-lab.files.v1'),transport:derive('commerce.number-lab.transport.v1'),source:new Uint8Array(raw)};
 }
-export interface LabCipherBinding {workspaceId:string;runId:string;purpose:'snapshot'|'action'|'result';operationId?:string}
-function aad(b:LabCipherBinding){need(typeof b.workspaceId==='string'&&b.workspaceId.length>0&&b.workspaceId.length<=256&&!b.workspaceId.includes('\0')&&uuid.test(b.runId)&&['snapshot','action','result'].includes(b.purpose)&&(b.purpose==='snapshot'?b.operationId===undefined:typeof b.operationId==='string'&&uuid.test(b.operationId)),'LAB_CIPHER_SCOPE');return Buffer.from(labCanonical({protocol:'commerce.number-lab.v1',...b}));}
+export interface LabCipherBinding {workspaceId:string;runId:string;purpose:'snapshot'|'action'|'result'|'attachment';operationId?:string}
+function aad(b:LabCipherBinding){need(typeof b.workspaceId==='string'&&b.workspaceId.length>0&&b.workspaceId.length<=256&&!b.workspaceId.includes('\0')&&uuid.test(b.runId)&&['snapshot','action','result','attachment'].includes(b.purpose)&&(b.purpose==='snapshot'?b.operationId===undefined:typeof b.operationId==='string'&&uuid.test(b.operationId)),'LAB_CIPHER_SCOPE');return Buffer.from(labCanonical({protocol:'commerce.number-lab.v1',...b}));}
 export function sealLabValue(binding:LabCipherBinding,value:unknown,key:Uint8Array){
  need(key.length===32,'LAB_CIPHER_KEY');const raw=Buffer.from(labCanonical(value));need(raw.length>0&&raw.length<=8388608,'LAB_CONTENT_LIMIT');
  const iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key,iv);cipher.setAAD(aad(binding));try{const encrypted=Buffer.concat([cipher.update(raw),cipher.final()]);return{version:1 as const,iv:iv.toString('base64'),tag:cipher.getAuthTag().toString('base64'),ciphertext:encrypted.toString('base64')};}finally{raw.fill(0);}
@@ -37,7 +37,9 @@ function settlement(o:any,key:Uint8Array){const v=openLabValue({workspaceId:o.wo
 function presentOperation(o:any,key:Uint8Array){return{operation_id:String(o.id),run_id:String(o.run_id),state:o.state as 'QUEUED'|'INTENT'|'APPLIED'|'FAILED'|'UNKNOWN',expected_version:amount(o.expected_version),created_at:iso(o.created_at),result:o.result_ciphertext?settlement(o,key).result:null};}
 /** Execute in the live F2 authority callback; caller never supplies snapshot or
  * price through HTTP. Capture and estimate are server-derived in that callback. */
-export async function startNumberLab(db:ProfileExecutor,a:ProfileAuthority,raw:unknown,captured:LabCapturedConfiguration,estimate:LabEstimate,key:Uint8Array){
+/** extras.receipt_policies (RF-19.d): each variant's resolved receipt policy at
+ * capture time, sealed with the snapshot so a test keeps the rules it started with. */
+export async function startNumberLab(db:ProfileExecutor,a:ProfileAuthority,raw:unknown,captured:LabCapturedConfiguration,estimate:LabEstimate,key:Uint8Array,extras:{receipt_policies?:Record<string,unknown>}={}){
  const now=await authorize(db,a,true),input=numberLabStartSchema.parse(raw),snapshot=validateLabSnapshot(captured.snapshot);
  need(Array.isArray(captured.records)&&labHash(captured.records)===snapshot.configuration_sha256&&captured.records.length===snapshot.sources.length&&captured.records.every(r=>snapshot.sources.some(s=>s.kind===r.kind&&labCanonical(s.ref)===labCanonical(r.ref))),'LAB_CAPTURE_BINDING');
  need(snapshot.workspace_id===db.workspaceId&&snapshot.account.id===input.account_id&&labHash(snapshot)===input.snapshot_sha256&&estimate.snapshot_sha256===input.snapshot_sha256&&estimate.sha256===input.estimate_sha256&&estimate.mode===input.mode,'LAB_START_BINDING');
@@ -46,7 +48,7 @@ export async function startNumberLab(db:ProfileExecutor,a:ProfileAuthority,raw:u
  await db.query("SELECT pg_advisory_xact_lock(hashtextextended('commerce.number-lab.start:'||$1||':'||$2,0))",[db.workspaceId,input.operation_id]);
  const existing=(await db.query('SELECT * FROM commerce_number_lab.runs WHERE workspace_id=$1 AND start_operation_id=$2',[db.workspaceId,input.operation_id])).rows[0];
  if(existing){need(existing.start_request_sha256===request&&existing.actor_id===a.membership.userId,'LAB_OPERATION_CONFLICT');await authorize(db,a,true);return{...presentLabRun(existing),created:false};}
- const runId=randomUUID(),ciphertext=sealLabValue({workspaceId:db.workspaceId,runId,purpose:'snapshot'},{snapshot,estimate,records:captured.records},key);
+ const runId=randomUUID(),ciphertext=sealLabValue({workspaceId:db.workspaceId,runId,purpose:'snapshot'},{snapshot,estimate,records:captured.records,...(extras.receipt_policies&&Object.keys(extras.receipt_policies).length?{receipt_policies:extras.receipt_policies}:{})},key);
  await authorize(db,a,true);need(Date.parse(estimate.valid_until)>(await dbNow(db)).getTime(),'LAB_ESTIMATE_EXPIRED');
  const r=(await db.query(`INSERT INTO commerce_number_lab.runs(workspace_id,id,source_account_id,actor_id,start_operation_id,start_request_sha256,snapshot_sha256,estimate_sha256,engine_sha256,snapshot_ciphertext,mode,virtual_now,maximum_ai_calls,maximum_microusd)
  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,clock_timestamp(),$12,$13) RETURNING *`,[db.workspaceId,runId,input.account_id,a.membership.userId,input.operation_id,request,input.snapshot_sha256,input.estimate_sha256,snapshot.engine_sha256,ciphertext,input.mode,estimate.maximum_ai_calls,estimate.maximum_microusd])).rows[0];await authorize(db,a,true);return{...presentLabRun(r),created:true};
@@ -90,6 +92,37 @@ export async function numberLabRunMaterial(db:ProfileExecutor,a:ProfileAuthority
  return{source_id:record.source.id,revision:record.source.revision,sha256:body.sha256,size_bytes:Number(body.size_bytes),mime_type:body.mime_type,name:String(body.name??'Material').slice(0,160)};
 }
 export async function readNumberLabOperation(db:ProfileExecutor,a:ProfileAuthority,runId:string,operationId:string,key:Uint8Array){await authorize(db,a,false);need(uuid.test(runId)&&uuid.test(operationId),'LAB_OPERATION_ID');const o=(await db.query('SELECT * FROM commerce_number_lab.operations WHERE workspace_id=$1 AND run_id=$2 AND id=$3',[db.workspaceId,runId,operationId])).rows[0];await authorize(db,a,false);return o?presentOperation(o,key):null;}
+/** V7 RF-19.d: an example receipt for one run, as the customer would send it
+ * (image or PDF, ≤4 MiB). Sealed with the control key under purpose
+ * 'attachment' (its id is the operation binding); the same bytes twice in one
+ * run return the first attachment. Never a REAL asset or a public link. */
+export const NUMBER_LAB_ATTACHMENT_MAX=4*1024*1024;
+const attachmentSignatures:Record<string,(b:Buffer)=>boolean>={'application/pdf':b=>b.subarray(0,5).toString()==='%PDF-',
+ 'image/png':b=>b.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])),'image/jpeg':b=>b[0]===255&&b[1]===216&&b[2]===255,
+ 'image/webp':b=>b.subarray(0,4).toString()==='RIFF'&&b.subarray(8,12).toString()==='WEBP'};
+export async function attachNumberLabFile(db:ProfileExecutor,a:ProfileAuthority,runId:string,input:{mime_type:string;base64:string},key:Uint8Array){
+ await authorize(db,a,true);need(uuid.test(runId),'LAB_RUN_ID');
+ const check=attachmentSignatures[input.mime_type];need(check,'LAB_ATTACHMENT_TYPE');
+ const bytes=Buffer.from(input.base64,'base64');need(bytes.length>0&&bytes.length<=NUMBER_LAB_ATTACHMENT_MAX&&bytes.toString('base64').replace(/=+$/,'')===input.base64.replace(/=+$/,''),'LAB_ATTACHMENT_SIZE');
+ need(check(bytes),'LAB_ATTACHMENT_TYPE');
+ const sha256=createHash('sha256').update(bytes).digest('hex');
+ const prior=(await db.query('SELECT id,mime_type,size_bytes,sha256,created_at FROM commerce_number_lab.attachments WHERE workspace_id=$1 AND run_id=$2 AND sha256=$3',[db.workspaceId,runId,sha256])).rows[0];
+ if(prior)return{attachment_id:String(prior.id),mime_type:String(prior.mime_type),size_bytes:Number(prior.size_bytes),sha256,created_at:iso(prior.created_at),created:false};
+ const id=randomUUID(),sealed=sealLabValue({workspaceId:db.workspaceId,runId,purpose:'attachment',operationId:id},{schema_version:1,mime_type:input.mime_type,sha256,base64:bytes.toString('base64')},key);
+ const row=(await db.query('INSERT INTO commerce_number_lab.attachments(workspace_id,run_id,id,actor_id,mime_type,size_bytes,sha256,content_ciphertext) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING created_at',
+  [db.workspaceId,runId,id,a.membership.userId,input.mime_type,bytes.length,sha256,sealed])).rows[0];
+ return{attachment_id:id,mime_type:input.mime_type,size_bytes:bytes.length,sha256,created_at:iso(row.created_at),created:true};
+}
+export async function listNumberLabAttachments(db:ProfileExecutor,a:ProfileAuthority,runId:string){await authorize(db,a,false);need(uuid.test(runId),'LAB_RUN_ID');
+ return(await db.query('SELECT id,mime_type,size_bytes,sha256,created_at FROM commerce_number_lab.attachments WHERE workspace_id=$1 AND run_id=$2 ORDER BY created_at,id',[db.workspaceId,runId])).rows
+  .map(r=>({attachment_id:String(r.id),mime_type:String(r.mime_type),size_bytes:Number(r.size_bytes),sha256:String(r.sha256),created_at:iso(r.created_at)}));}
+/** Bytes of one attachment for its own run (API preview or laboratory worker). */
+export async function readNumberLabAttachment(db:ProfileExecutor,runId:string,attachmentId:string,key:Uint8Array){need(uuid.test(runId)&&uuid.test(attachmentId),'LAB_ATTACHMENT_ID');
+ const r=(await db.query('SELECT * FROM commerce_number_lab.attachments WHERE workspace_id=$1 AND run_id=$2 AND id=$3',[db.workspaceId,runId,attachmentId])).rows[0];if(!r)return null;
+ const v=openLabValue({workspaceId:db.workspaceId,runId,purpose:'attachment',operationId:attachmentId},r.content_ciphertext,key) as {schema_version:number;mime_type:string;sha256:string;base64:string};
+ const bytes=Buffer.from(v.base64,'base64');need(v.schema_version===1&&v.mime_type===r.mime_type&&v.sha256===r.sha256&&bytes.length===Number(r.size_bytes)&&createHash('sha256').update(bytes).digest('hex')===r.sha256,'LAB_ATTACHMENT_CHANGED');
+ return{id:attachmentId,mime_type:String(r.mime_type),sha256:String(r.sha256),size_bytes:bytes.length,bytes};
+}
 /** Dedicated lab-control pool, not the API or canonical-engine pool. A claim is
  * usable only after withProfileTransaction confirms COMMIT. No IO inside TX. */
 export class NumberLabWorkerStore {

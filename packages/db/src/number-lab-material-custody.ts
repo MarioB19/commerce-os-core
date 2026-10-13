@@ -112,3 +112,26 @@ export async function readNumberLabMaterial(handle:NumberLabMaterialReader,raw:{
   need(bytes.length===q.size_bytes&&hash(bytes)===q.sha256,'LAB_MATERIAL_CONTENT_CHANGED');await assertPrivateNamespaceLease(lease,o.root,'SHARED');return bytes;
  });}catch(error){bytes?.fill(0);throw error;}
 }
+/** V7 RF-19.d: the laboratory copy of an example receipt, written by the
+ * laboratory worker into its protected root under the files key, with the
+ * same layout as captured materials, so the canonical engine reads it like any
+ * private asset. Idempotent by content; never source custody or a caller path. */
+export interface NumberLabReceiptCustody {readonly kind:'NUMBER_LAB_RECEIPT_CUSTODY'}
+const receiptCustodies=new WeakMap<object,{root:string;key:Buffer}>();
+export function createNumberLabReceiptCustody(options:{laboratoryRoot:string;laboratoryKey:Uint8Array}):NumberLabReceiptCustody{
+ need(isAbsolute(options.laboratoryRoot)&&resolve(options.laboratoryRoot)===options.laboratoryRoot&&options.laboratoryKey.length===32,'LAB_MATERIAL_ROOT');
+ const h=Object.freeze({kind:'NUMBER_LAB_RECEIPT_CUSTODY' as const});receiptCustodies.set(h,{root:options.laboratoryRoot,key:Buffer.from(options.laboratoryKey)});return h;
+}
+export async function storeNumberLabReceipt(handle:NumberLabReceiptCustody,raw:{id:string;sha256:string;bytes:Uint8Array}):Promise<{storage_key:string}>{
+ need(!currentProfileExecutor()&&!currentWorkerProfile(),'LAB_MATERIAL_OUTER_SCOPE');const o=handle&&receiptCustodies.get(handle);need(o,'LAB_RECEIPT_CUSTODY_REQUIRED');
+ const id=uuid.parse(raw.id),digest=sha.parse(raw.sha256);need(raw.bytes.byteLength>0&&raw.bytes.byteLength<=4*1024*1024&&hash(raw.bytes)===digest,'LAB_RECEIPT_CONTENT');
+ await directory(o.root,true);
+ return withPrivateNamespaceLock(o.root,'SHARED',async lease=>{
+  const assets=join(o.root,'assets');await mkdir(assets,{mode:0o700}).catch(e=>{if(e.code!=='EEXIST')throw e;});await directory(assets,true);
+  const storageKey=id+'-'+digest,path=join(assets,storageKey+'.enc');let output;
+  try{output=await open(path,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);}catch(e:any){if(e.code!=='EEXIST')throw e;}
+  if(output){try{await output.writeFile(encryptFile(raw.bytes,o.key));await output.sync();}finally{await output.close();}await syncDirectory(assets);}
+  const verified=decryptFile(await boundedFile(path),o.key);try{need(verified.length===raw.bytes.byteLength&&hash(verified)===digest,'LAB_RECEIPT_COPY_CHANGED');}finally{verified.fill(0);}
+  await assertPrivateNamespaceLease(lease,o.root,'SHARED');return{storage_key:storageKey};
+ });
+}

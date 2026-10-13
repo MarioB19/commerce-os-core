@@ -475,13 +475,14 @@
     "seleccionar",
     "avanzar_reloj",
     "continuar",
-    "reiniciar"
+    "reiniciar",
+    "adjuntar",
+    "revisar_comprobante"
    ],
    "audience": "profile",
    "family": "/v2/number-tests",
    "name": "number_test_manage",
    "pending": [
-    "adjuntar",
     "ejecutar_suite",
     "informe"
    ],

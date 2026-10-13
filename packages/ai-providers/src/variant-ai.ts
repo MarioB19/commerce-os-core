@@ -97,7 +97,9 @@ export async function laboratoryGrants(db:ProfileExecutor,authority:ProfileAutho
   AND provider=$3 AND model=$4 AND model_revision=$5 AND price_version=$6 AND NOT is_test AND revoked_at IS NULL AND expires_at>clock_timestamp()+interval '10 minutes' ORDER BY expires_at DESC,id LIMIT 1`,[db.workspaceId,variantId,q.provider,q.model,q.modelRevision,q.priceVersion])).rows[0]?.id as string|undefined;
  for(const variantId of [...new Set(cases.map(c=>c.variant_id))]){
   const q=cases.find(c=>c.variant_id===variantId)!.quote;let id=await find(variantId,q);
-  if(!id&&owner){await authorizeVariantAi(db,authority,'REAL',variantId,selections[variantId]??{primary:null,fallback:null},['laboratory.chat']).catch(e=>{if(!(e instanceof AiError))throw e;});id=await find(variantId,q);}
+  // RF-19.d: the receipt reading is minted with the seller (same model); a
+  // model without vision leaves receipts to the tester, never blocks the test.
+  if(!id&&owner){await authorizeVariantAi(db,authority,'REAL',variantId,selections[variantId]??{primary:null,fallback:null},['laboratory.chat','laboratory.vision']).catch(e=>{if(!(e instanceof AiError))throw e;});id=await find(variantId,q);}
   if(id)grants[variantId]=id;else missing.push(variantId);
  }
  return{grants,missing};

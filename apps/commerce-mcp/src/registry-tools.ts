@@ -205,6 +205,13 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
   seleccionar:step(i=>({type:'select_variant',variant_id:i.variantId,origin:i.entry??'EXPLICIT'}),{variantId:z.uuid(),entry:z.enum(['EXPLICIT','ADVERTISEMENT']).optional()}),
   avanzar_reloj:step(i=>({type:'advance',hours:i.hours}),{hours:z.union([z.literal(2),z.literal(8),z.literal(24)])}),
   continuar:step(()=>({type:'continue'})),
+  // RF-19.d: the customer sends an example receipt (image or PDF ≤4 MB, base64);
+  // the test reads it with the profile's key and decides it with its rules.
+  adjuntar:{schema:operation.extend({runId:z.uuid(),expectedVersion:z.number().int().positive(),mimeType:z.enum(['image/png','image/jpeg','image/webp','application/pdf']),base64:z.string().min(4).max(5_600_000).regex(/^[A-Za-z0-9+/]+={0,2}$/)}).strict(),read:false,run:async i=>{
+   const raw=await c.variant('POST','/v2/number-tests/'+id(i.runId)+'/attachments',{mime_type:i.mimeType,base64:i.base64},crypto.randomUUID()) as Record<string,unknown>;
+   const saved=(raw&&typeof raw==='object'&&'data' in raw?raw.data:raw) as {attachment_id:string};
+   return c.variant('POST','/v2/number-tests/'+id(i.runId)+'/actions',{expected_version:i.expectedVersion,action:{type:'receipt',attachment_id:saved.attachment_id}},i.operationId);}},
+  revisar_comprobante:step(i=>({type:'review_receipt',receipt_id:i.receiptId,decision:i.decision,reason:i.reason}),{receiptId:z.uuid(),decision:z.enum(['APPROVED','REJECTED']),reason:z.string().trim().min(1).max(500)}),
   // A new test of the same number with the configuration current now.
   reiniciar:{schema:operation.extend({runId:z.uuid(),acceptedMaximumMicrousd:z.number().int().positive()}).strict(),read:false,run:async i=>{
    const v=await c.variant('GET','/v2/number-tests/'+id(i.runId)) as {run:{account_id:string}};

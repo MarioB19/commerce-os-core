@@ -3,7 +3,11 @@ import {dispatchNumberLabOutbox} from '../../channel-worker/src/dispatch.js';
 import {consumeNumberLabObservations} from '../../channel-worker/src/observations.js';
 import {createNumberLabDispatch} from '../../channel-worker/src/catalog-simulator.js';
 import {processNumberLabInbound} from './inbound.js';
-import type {NumberLabMaterialReader} from '../../../packages/db/src/number-lab-material-custody.js';
+import {storeNumberLabReceipt,type NumberLabMaterialReader,type NumberLabReceiptCustody} from '../../../packages/db/src/number-lab-material-custody.js';
+import {PostgresNumberLabVisionAi,laboratoryVisionAttempt} from '../../../packages/ai-providers/src/laboratory-vision.js';
+import {prepareLabReceiptAssessment} from './number-lab-receipts.js';
+import {receiptReasonLabel} from '../../../packages/db/src/receipt-queue.js';
+import {createHash} from 'node:crypto';
 import {processNumberLabAgents} from './agents.js';
 import {createNumberLabSeller} from './number-lab-seller.js';
 import {z} from 'zod';
@@ -12,13 +16,13 @@ import {getRecord,putRecord,appendEvent} from '@commerce/db';
 import {numberLabActionSchema,type NumberLabAction} from '../../../packages/contracts/src/number-laboratory.js';
 import {compileNumberLabConfiguration} from '../../../packages/domain/src/laboratory/configuration-plan.js';
 import {labHash,validateLabSnapshot,resolveNumberLab} from '../../../packages/domain/src/laboratory/number-lab.js';
-import {NumberLabWorkerStore,openLabValue,sealLabValue} from '../../../packages/db/src/number-laboratory.js';
+import {NumberLabWorkerStore,openLabValue,sealLabValue,readNumberLabAttachment} from '../../../packages/db/src/number-laboratory.js';
 import {createNumberLabMaterializer,type NumberLabMaterialPort} from '../../../packages/db/src/number-lab-materialization.js';
 import {createNumberLabEngineRuntime,withNumberLabEngine,type NumberLabEngineIdentity,type NumberLabPhaseAuthority} from '../../../packages/db/src/number-lab-engine-runtime.js';
 import {withProfileTransaction,type ProfilePool,type ProfileExecutor} from '../../../packages/db/src/profile-context.js';
 import {currentProfileExecutor} from '../../../packages/db/src/profile-query-routing.js';
 import {currentWorkerProfile} from '../../../packages/db/src/profile-worker-scope.js';
-import {applyCommand} from './commands.js';
+import {applyCommand,applyReceiptAssessment} from './commands.js';
 import {processNumberLabWorkflows} from './workflows.js';
 
 const inputSchema=z.object({workspaceId:z.string().min(1).max(256),runId:z.uuid(),operationId:z.uuid()}).strict();
@@ -31,17 +35,41 @@ export const transcriptEntrySchema=z.object({at:z.string().max(40),from:z.enum([
  material:z.string().max(160).nullable(),status:z.string().max(20).nullable(),purpose:z.string().max(40).nullable(),
  // RF-19.c: a file material carries its id and type so the chat can preview it
  // privately (GET /v2/number-tests/:id/materials/:material); links stay names.
- material_id:z.uuid().nullable().optional(),mime:z.string().max(100).nullable().optional()}).strict();
+ material_id:z.uuid().nullable().optional(),mime:z.string().max(100).nullable().optional(),
+ // RF-19.d: an example receipt the tester attached (its attachment id), the
+ // engine receipt it became and why it was decided.
+ attachment_id:z.uuid().nullable().optional(),receipt_id:z.uuid().nullable().optional(),explanation:z.string().max(600).nullable().optional()}).strict();
 const previewMime=/^(?:image\/(?:png|jpeg|webp)|audio\/(?:mpeg|ogg|mp4|wav)|video\/mp4|application\/pdf)$/;
+const decisionLabels:Record<string,string>={APPROVED:'Aprobado: se entrega lo comprado.',REJECTED:'Rechazado.',HUMAN_REVIEW:'Pasa a revisión de una persona.'};
+/** Why a receipt was decided, in the operator's words (RF-19.d/g). */
+function receiptExplanation(b:Record<string,any>,lab:Record<string,any>|undefined){
+ const parts:string[]=[];const status=String(b.status??'');
+ if(b.analysis_status==='HUMAN_REQUIRED')parts.push('Pasa a revisión de una persona: '+(receiptReasonLabel(b.analysis_dependency)??'la lectura automática no está disponible')+'.');
+ else if(b.analysis_status==='HUMAN_REVIEWED')parts.push((decisionLabels[status]??status)+' Decisión de la persona que prueba.');
+ else if(lab){parts.push(decisionLabels[status]??status);
+  const reasons=(lab.reasons as string[]|undefined)?.filter(c=>c!=='HUMAN_APPROVAL_REQUIRED'||status!=='APPROVED').map(c=>receiptReasonLabel(c)).filter(Boolean)??[];
+  if(reasons.length)parts.push('Motivos: '+reasons.join('; ')+'.');
+  parts.push('Supone que la cuenta destino y el titular coinciden con tu cuenta (una prueba no usa tu cuenta real).');}
+ else if(b.analysis_status==='PENDING')parts.push('Recibido; esperando la lectura.');
+ return parts.join(' ').slice(0,600)||null;
+}
 async function readTranscript(db:ProfileExecutor,conversationId:string){
  const inbound=(await db.query(`SELECT created_at,body FROM records WHERE workspace_id=$1 AND environment='SIMULATION' AND kind='message' AND body->>'conversation_id'=$2 AND body->>'direction'='INBOUND' ORDER BY created_at DESC,id LIMIT 200`,[db.workspaceId,conversationId])).rows;
  const outbound=(await db.query(`SELECT o.created_at,o.status,o.payload,a.body->>'name' AS material,a.id::text AS material_id,a.body->>'kind' AS material_kind,a.body->>'mime_type' AS mime FROM outbox o LEFT JOIN records a ON a.workspace_id=o.workspace_id AND a.environment=o.environment AND a.kind='asset' AND a.id::text=o.payload->>'asset_id'
   WHERE o.workspace_id=$1 AND o.environment='SIMULATION' AND o.conversation_id::text=$2 ORDER BY o.created_at DESC LIMIT 200`,[db.workspaceId,conversationId])).rows;
  const at=(v:unknown)=>new Date(v as string).toISOString(),clip=(v:unknown)=>typeof v==='string'?v.slice(0,4000):null;
- const entries=[...inbound.map(r=>({at:at(r.created_at),from:'customer' as const,kind:String(r.body.kind??'text').slice(0,20),text:clip(r.body.text),material:null,status:null,purpose:null})),
+ const entries:z.infer<typeof transcriptEntrySchema>[]=[...inbound.map(r=>({at:at(r.created_at),from:'customer' as const,kind:String(r.body.kind??'text').slice(0,20),text:clip(r.body.text),material:null,status:null,purpose:null})),
   ...outbound.map(r=>({at:at(r.created_at),from:'business' as const,kind:String(r.payload?.kind??'text').slice(0,20),text:clip(r.payload?.text),material:typeof r.material==='string'?r.material.slice(0,160):null,status:String(r.status).slice(0,20),purpose:typeof r.payload?.purpose==='string'?r.payload.purpose.slice(0,40):null,
    ...(r.material_kind==='file'&&typeof r.mime==='string'&&previewMime.test(r.mime)?{material_id:String(r.material_id),mime:r.mime}:{})}))]
-  .sort((x,y)=>x.at.localeCompare(y.at)).slice(-200);
+  .sort((x,y)=>x.at.localeCompare(y.at));
+ // RF-19.d: each example receipt, as the customer sent it, with its decision.
+ const receipts=(await db.query(`SELECT r.id::text,r.created_at,r.body AS receipt,a.body AS asset FROM records r LEFT JOIN records a ON a.workspace_id=r.workspace_id AND a.environment=r.environment AND a.kind='asset' AND a.id::text=r.body->>'asset_id'
+  WHERE r.workspace_id=$1 AND r.environment='SIMULATION' AND r.kind='receipt' AND r.body->>'conversation_id'=$2 ORDER BY r.created_at DESC LIMIT 20`,[db.workspaceId,conversationId])).rows;
+ for(const r of receipts){const a=r.asset??{},b=r.receipt,lab=b.lab_assessment;
+  const attachment=typeof a.lab_attachment_id==='string'&&/^[a-f0-9-]{36}$/.test(a.lab_attachment_id)?a.lab_attachment_id:null;
+  entries.push({at:at(r.created_at),from:'customer',kind:'receipt',text:null,material:'Comprobante',status:String(b.status??'').slice(0,20)||null,purpose:'receipt',
+   ...(attachment&&typeof a.mime_type==='string'?{attachment_id:attachment,mime:a.mime_type}:{}),receipt_id:String(r.id),explanation:receiptExplanation(b,lab)});}
+ entries.sort((x,y)=>x.at.localeCompare(y.at));entries.splice(0,Math.max(0,entries.length-200));
  const timers=(await db.query(`SELECT due_at,payload->>'purpose' AS purpose FROM timers WHERE workspace_id=$1 AND environment='SIMULATION' AND conversation_id::text=$2 AND status='PENDING' ORDER BY due_at LIMIT 10`,[db.workspaceId,conversationId])).rows
   .map(r=>({due_at:at(r.due_at),purpose:typeof r.purpose==='string'?r.purpose.slice(0,40):null}));
  const flow=(await db.query(`SELECT body->'flow_state'->>'status' AS status,body->'flow_state'->>'waiting_for' AS waiting_for,body->>'ai_status' AS ai_status FROM records WHERE workspace_id=$1 AND environment='SIMULATION' AND kind='conversation' AND id::text=$2`,[db.workspaceId,conversationId])).rows[0];
@@ -57,7 +85,9 @@ const outcomeSchema=z.object({schema_version:z.literal(1),stage:z.enum(['ACTION_
   transport_phase:z.literal('APPLIED').optional(),transport_result:z.object({projected:z.number().int().min(0),sent:z.number().int().nonnegative(),inbound:z.number().int().nonnegative(),observations:z.number().int().nonnegative(),statuses:z.record(z.string(),z.number().int().nonnegative())}).strict().optional(),
   pending:z.array(z.enum(['WORKFLOWS','AI','TRANSPORT','ATTACHMENTS','AUTOMATIC_REPORT'])).max(5),
   transcript:z.array(transcriptEntrySchema).max(200).optional(),flow:z.object({status:z.string().max(40).nullable(),waiting_for:z.string().max(40).nullable(),ai_status:z.string().max(40).nullable()}).strict().optional(),timers:z.array(z.object({due_at:z.string().max(40),purpose:z.string().max(40).nullable()}).strict()).max(10).optional(),
-  ai_phase:z.enum(['APPLIED','NOT_REQUIRED']).optional(),ai_result:z.object({processed:z.number().int().min(0).max(5),run_id:z.uuid().nullable(),status:z.enum(['RUNNING','AWAITING_EFFECT','COMPLETED','FAILED','DISCARDED']).nullable(),provider_state:z.enum(['SUCCEEDED','REJECTED','UNCERTAIN']).nullable(),human_review:z.boolean(),dependency:z.string().regex(/^[A-Z_]+$/).max(128).nullable().optional()}).strict().optional(),ai_network:z.literal('PROFILE_AI_ONLY').optional(),external_effects:z.literal(0)}).strict()}).strict();
+  ai_phase:z.enum(['APPLIED','NOT_REQUIRED']).optional(),ai_result:z.object({processed:z.number().int().min(0).max(5),run_id:z.uuid().nullable(),status:z.enum(['RUNNING','AWAITING_EFFECT','COMPLETED','FAILED','DISCARDED']).nullable(),provider_state:z.enum(['SUCCEEDED','REJECTED','UNCERTAIN']).nullable(),human_review:z.boolean(),dependency:z.string().regex(/^[A-Z_]+$/).max(128).nullable().optional()}).strict().optional(),ai_network:z.literal('PROFILE_AI_ONLY').optional(),
+  receipt_id:z.uuid().nullable().optional(),receipt_phase:z.enum(['APPLIED','HUMAN_REQUIRED']).optional(),receipt_result:z.object({status:z.string().regex(/^[A-Z_]+$/).max(40),analysis_status:z.string().regex(/^[A-Z_]+$/).max(40),dependency:z.string().regex(/^[A-Z0-9_]+$/).max(128).nullable(),ai:z.boolean()}).strict().optional(),
+  external_effects:z.literal(0)}).strict()}).strict();
 type Outcome=z.infer<typeof outcomeSchema>;
 type Captured=Awaited<ReturnType<typeof captureControl>>;
 
@@ -70,13 +100,13 @@ async function captureControl(db:ProfileExecutor,key:Uint8Array,installed:Number
    FROM commerce_number_lab.runs r JOIN commerce_number_lab.operations o ON o.workspace_id=r.workspace_id AND o.run_id=r.id
    WHERE r.workspace_id=$1 AND r.id=$2 AND o.id=$3 FOR SHARE OF r,o`,[input.workspaceId,input.runId,input.operationId])).rows[0];
   need(row&&row.engine_sha256===installed.engineSha256,'LAB_DRIVER_CONTROL_REQUIRED');
-  const value=openLabValue({workspaceId:input.workspaceId,runId:input.runId,purpose:'snapshot'},row.snapshot_ciphertext,key) as Parameters<typeof compileNumberLabConfiguration>[0];
+  const value=openLabValue({workspaceId:input.workspaceId,runId:input.runId,purpose:'snapshot'},row.snapshot_ciphertext,key) as Parameters<typeof compileNumberLabConfiguration>[0]&{receipt_policies?:Record<string,unknown>};
   const snapshot=validateLabSnapshot(value.snapshot),plan=compileNumberLabConfiguration({...value,snapshot},input.runId);
   need(plan.snapshot_sha256===row.snapshot_sha256&&plan.engine_sha256===installed.engineSha256,'LAB_DRIVER_CAPTURE_CHANGED');
   const action=numberLabActionSchema.parse(openLabValue({workspaceId:input.workspaceId,runId:input.runId,purpose:'action',operationId:input.operationId},row.action_ciphertext,key));
   const now=new Date((await db.query('SELECT clock_timestamp() AS now')).rows[0].now).getTime();
   need(Number.isFinite(now)&&(!live||row.operation_state==='INTENT'&&Number(row.version)===Number(row.expected_version)&&new Date(row.expires_at).getTime()>now),'LAB_DRIVER_CONTROL_NOT_LIVE');
-  return{snapshot,plan,action,actionSha256:labHash(action),virtualNow:new Date(row.virtual_now).toISOString(),mode:String(row.mode),operationState:String(row.operation_state),expiresAt:new Date(row.expires_at).getTime()};
+  return{snapshot,plan,action,actionSha256:labHash(action),virtualNow:new Date(row.virtual_now).toISOString(),mode:String(row.mode),operationState:String(row.operation_state),expiresAt:new Date(row.expires_at).getTime(),receiptPolicies:value.receipt_policies??{}};
 }
 async function readControl(pool:ProfilePool,key:Uint8Array,installed:NumberLabEngineIdentity,input:Input,live:boolean){
  return withProfileTransaction(pool,input.workspaceId,db=>captureControl(db,key,installed,input,live));
@@ -101,16 +131,22 @@ async function writeReceipt(db:ProfileExecutor,input:Input,c:Captured,outcome:Ou
   sealLabValue({workspaceId:input.workspaceId,runId:input.runId,purpose:'result',operationId:input.operationId},outcome,key)]);
 }
 /** A pure restriction of the public action vocabulary, not an executor or permission. */
-export function numberLabDriverDependency(action:NumberLabAction,mode:string):string|null{
+export function numberLabDriverDependency(action:NumberLabAction,mode:string,attachments=false):string|null{
  if(mode!=='CHAT')return'AUTOMATIC_DRIVER_REQUIRED';
- if(action.type==='receipt'||action.type==='review_receipt')return'LAB_ATTACHMENT_DRIVER_REQUIRED';
+ // RF-19.d: receipts need the laboratory's receipt custody; without it the
+ // driver says so instead of fabricating a reading.
+ if((action.type==='receipt'||action.type==='review_receipt')&&!attachments)return'LAB_ATTACHMENT_DRIVER_REQUIRED';
  if(action.type==='message'&&action.text.length>4096)return'CANONICAL_MESSAGE_LIMIT';
  return null;
 }
-async function applyAction(db:ProfileExecutor,input:Input,c:Captured):Promise<Outcome>{
+interface LabReceiptAsset {attachment_id:string;mime_type:string;size_bytes:number;sha256:string;storage_key:string}
+const derivedId=(purpose:string,operationId:string)=>{const h=createHash('sha256').update('commerce.number-lab.'+purpose+':'+operationId).digest('hex');return h.slice(0,8)+'-'+h.slice(8,12)+'-5'+h.slice(13,16)+'-a'+h.slice(17,20)+'-'+h.slice(20,32);};
+async function applyAction(db:ProfileExecutor,input:Input,c:Captured,receiptAsset?:LabReceiptAsset|null):Promise<Outcome>{
  await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['commerce.number-lab.driver:'+input.runId]);
  let simulation=await getRecord(db,db.workspaceId,'simulation',input.runId);
- const dependency=numberLabDriverDependency(c.action,c.mode)??((c.action.type==='continue'||c.action.type==='advance')&&!simulation?.body.conversation_id?'LAB_CONVERSATION_REQUIRED':null);
+ const receiptWork=c.action.type==='receipt'||c.action.type==='review_receipt';
+ const dependency=numberLabDriverDependency(c.action,c.mode,receiptAsset!==undefined)??((c.action.type==='continue'||c.action.type==='advance'||receiptWork)&&!simulation?.body.conversation_id?'LAB_CONVERSATION_REQUIRED':null)
+  ??(c.action.type==='receipt'&&!receiptAsset?'LAB_ATTACHMENT_NOT_FOUND':null);
  if(simulation)need(simulation.environment==='SIMULATION'&&simulation.body.lab_run_id===input.runId&&simulation.body.lab_snapshot_sha256===c.plan.snapshot_sha256&&simulation.body.account_id===c.plan.account_id,'LAB_DRIVER_SIMULATION_CHANGED');
  const base:Outcome={schema_version:1,stage:'ACTION_APPLIED',action_sha256:c.actionSha256,operation_state:dependency?'FAILED':'APPLIED',run_state:'PARTIAL',
   result:{execution_environment:'SIMULATION',operation_class:'TEST',simulation_id:input.runId,conversation_id:simulation?.body.conversation_id??null,
@@ -143,6 +179,28 @@ async function applyAction(db:ProfileExecutor,input:Input,c:Captured):Promise<Ou
  await saveSimulation({...simulation.body,lab_variant_id:variant.variant_id,lab_release_id:variant.release_id,lab_origin:selected.origin??'EXPLICIT'});
  const text=c.action.type==='message'?c.action.text:c.action.type==='select_variant'?simulation.body.lab_pending_message?.text:undefined;
  let conversation=simulation.body.conversation_id?await getRecord(db,db.workspaceId,'conversation',simulation.body.conversation_id):undefined;
+ // RF-19.d: the customer sends a receipt / the tester decides one under review,
+ // through the canonical receipt commands of the engine.
+ if(c.action.type==='receipt'||c.action.type==='review_receipt'){
+  need(conversation&&conversation.environment==='SIMULATION'&&conversation.body.simulation_id===input.runId,'LAB_CONVERSATION_REQUIRED');
+  let kind:string,resource:string,payload:Record<string,unknown>;
+  if(c.action.type==='receipt'){
+   need(receiptAsset&&receiptAsset.attachment_id===c.action.attachment_id,'LAB_ATTACHMENT_REQUIRED');
+   const asset=await putRecord(db,{id:derivedId('receipt-asset',input.operationId),workspaceId:db.workspaceId,environment:'SIMULATION',kind:'asset',
+    body:{kind:'file',name:'Comprobante de prueba',mime_type:receiptAsset.mime_type,size_bytes:receiptAsset.size_bytes,sha256:receiptAsset.sha256,storage_key:receiptAsset.storage_key,status:'READY',purpose:'receipt_evidence',lab_snapshot:true,lab_attachment_id:receiptAsset.attachment_id}});
+   kind='conversation_command';resource=conversation.id;payload={type:'receipt_received',asset_id:asset.id};
+  }else{
+   const receipt=await getRecord(db,db.workspaceId,'receipt',c.action.receipt_id);
+   need(receipt&&receipt.environment==='SIMULATION'&&receipt.body.conversation_id===conversation.id,'LAB_RECEIPT_NOT_FOUND');
+   kind='receipt_review';resource=receipt.id;payload={decision:c.action.decision,reason:c.action.reason,expected_version:receipt.version};
+  }
+  const command={id:input.operationId,workspace_id:db.workspaceId,environment:'SIMULATION',kind,resource_id:resource,actor_id:'number-laboratory',status:'PENDING',payload};
+  await db.query('INSERT INTO commands(id,workspace_id,environment,kind,resource_id,actor_id,status,payload,idempotency_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',[command.id,command.workspace_id,command.environment,command.kind,command.resource_id,command.actor_id,command.status,command.payload,command.id]);
+  const result=await applyCommand(db,command) as {receipt_id?:string};
+  await db.query("UPDATE commands SET status='APPLIED',result=$2,updated_at=clock_timestamp() WHERE id=$1",[command.id,result]);
+  return{...base,result:{...base.result,conversation_id:conversation.id,command_id:command.id,state:'COMMAND_APPLIED',reason:null,workflow_phase:'PENDING',
+   receipt_id:typeof result?.receipt_id==='string'?result.receipt_id:null,pending:['WORKFLOWS',...base.result.pending]}};
+ }
  if(c.action.type==='select_variant'&&!text)return base;
  need(text!==undefined||conversation,'LAB_CONVERSATION_REQUIRED');
  const start=!!text&&(!conversation||conversation.body.offer_version_id!==variant.roots.offer_id);
@@ -163,7 +221,7 @@ async function applyAction(db:ProfileExecutor,input:Input,c:Captured):Promise<Ou
 
 /** Private factory. HTTP can pass IDs only; the installed pools, keys, material
  * broker and canonical functions are never replaceable through an operation. */
-export interface NumberLabDriverSellerConfiguration {readonly workspaceId:string;readonly enterprisePool:ProfilePool;readonly custodyKey:Uint8Array;readonly grants:Readonly<Record<string,string>>;readonly maximumMicrousd:number;readonly timeoutMs?:number;readonly fetcher?:typeof fetch;readonly clock?:()=>number}
+export interface NumberLabDriverSellerConfiguration {readonly workspaceId:string;readonly enterprisePool:ProfilePool;readonly custodyKey:Uint8Array;readonly grants:Readonly<Record<string,string>>;readonly visionGrants?:Readonly<Record<string,string>>;readonly maximumMicrousd:number;readonly timeoutMs?:number;readonly fetcher?:typeof fetch;readonly clock?:()=>number}
 // Two simultaneous control connections are required by cached AI + the native
 // phase authority. A smaller/exhausted pool fails closed; late acquisition is
 // released unused after the outer lock has unwound, never used by a timed-out phase.
@@ -171,11 +229,12 @@ function boundedControlPool(pool:ProfilePool):ProfilePool{return{connect:()=>new
  let done=false;const timer=setTimeout(()=>{done=true;reject(Error('LAB_CONTROL_CONNECTION_TIMEOUT'));},2000);
  void Promise.resolve().then(()=>pool.connect()).then(connection=>{if(done){connection.release();return;}done=true;clearTimeout(timer);resolve(connection);},error=>{if(done)return;done=true;clearTimeout(timer);reject(error);});
 })};}
-export function createNumberLabDriver(options:{controlPool:ProfilePool;seedPool:ProfilePool;enginePool:ProfilePool;identity:NumberLabEngineIdentity;key:Uint8Array;materials:NumberLabMaterialPort;seller?:NumberLabDriverSellerConfiguration;transport?:{key:Uint8Array;reader?:NumberLabMaterialReader}}){
+export function createNumberLabDriver(options:{controlPool:ProfilePool;seedPool:ProfilePool;enginePool:ProfilePool;identity:NumberLabEngineIdentity;key:Uint8Array;materials:NumberLabMaterialPort;seller?:NumberLabDriverSellerConfiguration;transport?:{key:Uint8Array;reader?:NumberLabMaterialReader};receipts?:{custody:NumberLabReceiptCustody}}){
  options={...options,controlPool:boundedControlPool(options.controlPool)};
  const key=new Uint8Array(options.key),installed=Object.freeze({...options.identity});need(key.length===32,'LAB_CIPHER_KEY');
  const transport=options.transport?Object.freeze({...options.transport,key:new Uint8Array(options.transport.key)}):undefined;if(transport)need(transport.key.length===32,'LAB_DISPATCH_CONFIGURATION');
- const seller=options.seller?Object.freeze({...options.seller,custodyKey:new Uint8Array(options.seller.custodyKey),grants:Object.freeze(z.record(z.uuid(),z.uuid()).parse(options.seller.grants))}):undefined;
+ const seller=options.seller?Object.freeze({...options.seller,custodyKey:new Uint8Array(options.seller.custodyKey),grants:Object.freeze(z.record(z.uuid(),z.uuid()).parse(options.seller.grants)),visionGrants:Object.freeze(z.record(z.uuid(),z.uuid()).parse(options.seller.visionGrants??{}))}):undefined;
+ const receipts=options.receipts?Object.freeze({...options.receipts}):undefined;
  const materializer=createNumberLabMaterializer({...options,key,identity:installed}),store=new NumberLabWorkerStore(options.controlPool,key);
  const input=(raw:unknown)=>{need(!currentProfileExecutor()&&!currentWorkerProfile(),'LAB_DRIVER_OUTER_SCOPE');return inputSchema.parse(raw);};
  const inspect=async(i:Input,c:Captured,close:boolean)=>withProfileTransaction(options.seedPool,'number-lab:'+i.runId,async db=>{
@@ -211,11 +270,52 @@ export function createNumberLabDriver(options:{controlPool:ProfilePool;seedPool:
     });
    }};
    const runtime=createNumberLabEngineRuntime(options.enginePool,installed,authority);
-   const applied=await withNumberLabEngine(await runtime.lease(binding),p=>p.transaction(async db=>{const outcome=await applyAction(db,i,c);await writeReceipt(db,i,c,outcome,key);return outcome;}));
+   // RF-19.d: the example receipt is copied into laboratory custody before the
+   // engine phase (no file I/O inside a transaction). Undefined = no custody.
+   let receiptAsset:LabReceiptAsset|null|undefined=receipts&&(c.action.type==='receipt'||c.action.type==='review_receipt')?null:undefined,receiptBytes:Buffer|undefined;
+   if(receipts&&c.action.type==='receipt'){const attachmentId=c.action.attachment_id;
+    const found=await withProfileTransaction(options.controlPool,i.workspaceId,db=>readNumberLabAttachment(db,i.runId,attachmentId,key));
+    if(found){const stored=await storeNumberLabReceipt(receipts.custody,{id:found.id,sha256:found.sha256,bytes:found.bytes});receiptBytes=found.bytes;
+     receiptAsset={attachment_id:found.id,mime_type:found.mime_type,size_bytes:found.size_bytes,sha256:found.sha256,storage_key:stored.storage_key};}}
+   try{
+   const applied=await withNumberLabEngine(await runtime.lease(binding),p=>p.transaction(async db=>{const outcome=await applyAction(db,i,c,receiptAsset);await writeReceipt(db,i,c,outcome,key);return outcome;}));
    await readControl(options.controlPool,key,installed,i,true);
    if(applied.result.workflow_phase==='PENDING')await processNumberLabWorkflows(await runtime.lease(binding),25);
+   // RF-19.d: read the receipt as production would (vision with the profile's
+   // key), then decide it with the captured rules; a missing grant or a failed
+   // reading leaves it to the tester, exactly like a person in production.
+   let receiptPhase:'APPLIED'|'HUMAN_REQUIRED'|undefined,receiptResult:{status:string;analysis_status:string;dependency:string|null;ai:boolean}|undefined;
+   if(c.action.type==='receipt'&&applied.operation_state==='APPLIED'&&applied.result.receipt_id&&receiptAsset&&receiptBytes){
+    const variant=c.plan.variants.find(v=>v.variant_id===applied.result.variant_id&&v.release_id===applied.result.release_id);need(variant,'LAB_RECEIPT_RELEASE_CHANGED');
+    const release=c.snapshot.candidates.find(x=>x.release.variant_id===variant.variant_id&&x.release.id===variant.release_id)?.release;need(release,'LAB_RECEIPT_RELEASE_CHANGED');
+    const policy=c.receiptPolicies[variant.variant_id],grantId=seller?.visionGrants[variant.variant_id],attemptId=laboratoryVisionAttempt(i.runId,i.operationId);
+    let reading:{state:'SUCCEEDED';value:unknown}|{state:'HUMAN_REQUIRED';dependency:string};
+    if(!policy)reading={state:'HUMAN_REQUIRED',dependency:'RECEIPT_POLICY_REQUIRED'};
+    else if(!seller||!grantId)reading={state:'HUMAN_REQUIRED',dependency:'RECEIPT_AI_GRANT_REQUIRED'};
+    else{try{const v=await new PostgresNumberLabVisionAi({controlPool:options.controlPool,enterprisePool:seller.enterprisePool,custodyKey:seller.custodyKey,maximumMicrousd:seller.maximumMicrousd,
+      binding:{workspaceId:i.workspaceId,runId:i.runId,operationId:i.operationId,variantId:variant.variant_id,releaseId:variant.release_id,snapshotSha256:c.plan.snapshot_sha256,attemptId,grantId},
+      ...(seller.timeoutMs?{timeoutMs:seller.timeoutMs}:{}),...(seller.fetcher?{fetcher:seller.fetcher}:{}),...(seller.clock?{clock:seller.clock}:{})})
+      .invoke({attachmentId:receiptAsset.attachment_id,sha256:receiptAsset.sha256,mimeType:receiptAsset.mime_type as 'image/png'},receiptBytes);
+     reading=v.invocation.state==='SUCCEEDED'?{state:'SUCCEEDED',value:v.invocation.value}:{state:'HUMAN_REQUIRED',dependency:v.invocation.code};}
+    catch{reading={state:'HUMAN_REQUIRED',dependency:'RECEIPT_AI_RECONCILE_REQUIRED'};}}
+    receiptResult=await withNumberLabEngine(await runtime.lease(binding),p=>p.transaction(async db=>{
+     const r=await getRecord(db,db.workspaceId,'receipt',applied.result.receipt_id!);need(r&&r.environment==='SIMULATION'&&r.body.conversation_id===applied.result.conversation_id&&r.body.analysis_status==='PENDING','LAB_RECEIPT_CHANGED');
+     if(reading.state==='SUCCEEDED'){
+      const asset=await getRecord(db,db.workspaceId,'asset',r.body.asset_id),order=await getRecord(db,db.workspaceId,'order',r.body.order_id),sim=await getRecord(db,db.workspaceId,'simulation',i.runId);
+      need(asset&&order&&sim,'LAB_RECEIPT_CHANGED');
+      const prepared=prepareLabReceiptAssessment({policy,receipt:r,asset,order,release,observedAt:new Date(sim.body.virtual_now).toISOString(),duplicate:!!r.body.duplicate_of,document:reading.value,cause:attemptId});
+      await applyReceiptAssessment(db,r,prepared,attemptId);
+      const after=await getRecord(db,db.workspaceId,'receipt',r.id);need(after,'LAB_RECEIPT_CHANGED');
+      await putRecord(db,{id:after.id,workspaceId:db.workspaceId,environment:'SIMULATION',kind:'receipt',version:after.version,body:{...after.body,lab_assessment:prepared.laboratory}});
+     }else await putRecord(db,{id:r.id,workspaceId:db.workspaceId,environment:'SIMULATION',kind:'receipt',version:r.version,body:{...r.body,analysis_status:'HUMAN_REQUIRED',analysis_dependency:reading.dependency}});
+     const final=await getRecord(db,db.workspaceId,'receipt',r.id);need(final,'LAB_RECEIPT_CHANGED');
+     return{status:String(final.body.status),analysis_status:String(final.body.analysis_status),dependency:typeof final.body.analysis_dependency==='string'?final.body.analysis_dependency:null,ai:reading.state==='SUCCEEDED'};
+    }));
+    receiptPhase=receiptResult.analysis_status==='COMPLETED'?'APPLIED':'HUMAN_REQUIRED';
+    await processNumberLabWorkflows(await runtime.lease(binding),25);
+   }
    let aiPhase:'APPLIED'|'NOT_REQUIRED'|undefined,aiResult:Awaited<ReturnType<typeof processNumberLabAgents>>|undefined;
-   if(seller&&applied.operation_state==='APPLIED'&&applied.result.conversation_id){
+   if(seller&&Object.keys(seller.grants).length&&applied.operation_state==='APPLIED'&&applied.result.conversation_id){
     need(seller.workspaceId===i.workspaceId,'LAB_SELLER_PROFILE_CHANGED');
     const variant=c.plan.variants.find(v=>v.variant_id===applied.result.variant_id&&v.release_id===applied.result.release_id);need(variant,'LAB_SELLER_RELEASE_CHANGED');
     const grantId=seller.grants[variant.variant_id];need(grantId,'LAB_SELLER_GRANT_REQUIRED');
@@ -245,9 +345,10 @@ export function createNumberLabDriver(options:{controlPool:ProfilePool;seedPool:
    await readControl(options.controlPool,key,installed,i,true);
    const transportComplete=!!transportResult&&Object.keys(transportResult.statuses).every(status=>['DELIVERED','READ','FAILED','CANCELLED'].includes(status));
    const final=outcomeSchema.parse({...applied,stage:'SETTLED',run_state:applied.operation_state==='FAILED'?'PARTIAL':'RUNNING',result:{...applied.result,
-    ...(applied.result.workflow_phase==='PENDING'?{state:'WORKFLOWS_APPLIED',workflow_phase:'APPLIED'}:{}),...(aiPhase?{ai_phase:aiPhase,ai_result:aiResult,ai_network:'PROFILE_AI_ONLY'}:{}),...(transportResult?{transport_phase:'APPLIED',transport_result:transportResult}:{}),...(view?{transcript:view.entries,timers:view.timers,flow:view.flow}:{}),pending:applied.result.pending.filter(p=>p!=='WORKFLOWS'&&(!aiPhase||p!=='AI')&&(!transportComplete||p!=='TRANSPORT'))}});
+    ...(applied.result.workflow_phase==='PENDING'?{state:'WORKFLOWS_APPLIED',workflow_phase:'APPLIED'}:{}),...(aiPhase?{ai_phase:aiPhase,ai_result:aiResult,ai_network:'PROFILE_AI_ONLY'}:{}),...(transportResult?{transport_phase:'APPLIED',transport_result:transportResult}:{}),...(receiptPhase?{receipt_phase:receiptPhase,receipt_result:receiptResult}:{}),...(view?{transcript:view.entries,timers:view.timers,flow:view.flow}:{}),pending:applied.result.pending.filter(p=>p!=='WORKFLOWS'&&(!aiPhase||p!=='AI')&&(!transportComplete||p!=='TRANSPORT')&&(!receiptPhase||p!=='ATTACHMENTS'))}});
    await withNumberLabEngine(await runtime.lease(binding),p=>p.transaction(db=>writeReceipt(db,i,c,final,key)));
    return settle(i,c);
+   }finally{receiptBytes?.fill(0);}
   },
  });
 }

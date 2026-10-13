@@ -87,7 +87,7 @@ it('answers with the variant model, admitted and accounted per variant and conve
  expect(blocked).toMatchObject({status:'FAILED',reason:'AI_AUTHORITY'});expect(providerCalls).toHaveLength(0);
  // The owner confirms (here by the explicit action; publishing as owner does the same).
  const confirmed=data(await call('owner','POST',`/v2/variants/${v.id}/ai-authorization`,{}));
- expect(confirmed.minted.map((m:{task:string})=>m.task).sort()).toEqual(['laboratory.chat','receipt.document','sales.chat']);
+ expect(confirmed.minted.map((m:{task:string})=>m.task).sort()).toEqual(['laboratory.chat','laboratory.vision','receipt.document','sales.chat']);
  expect(data(await call('owner','GET',`/v2/variants/${v.id}/ai-status`)).find((t:{task:string})=>t.task==='sales.chat').state).toBe('READY');
  const chat=(await inbound('opaque:con-ia'))!;
  await withRole('commerce_automation',()=>processAgents(20));

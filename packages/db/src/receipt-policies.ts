@@ -10,10 +10,11 @@ export class ReceiptPolicyStoreError extends Error{constructor(readonly code:str
 function need(v:unknown,code:string,status=409):asserts v{if(!v)throw new ReceiptPolicyStoreError(code,status);}
 async function context(db:ProfileExecutor,environment:Environment,mutation=false,owner=false){
  // `owner`: the API role or the schema owner (the reviewed migration); only the
- // default-policy bootstrap asks for it.
+ // default-policy bootstrap asks for it. Reads also admit the schema owner
+ // (migration identity, isolated verification); writes never do.
  receiptPolicyQuery.parse({environment});
  const r=(await db.query("SELECT current_user AS role,current_setting('app.workspace_id',true) w,current_setting('app.environment',true) e,current_user=pg_get_userbyid(c.relowner) AS owner FROM pg_class c WHERE c.oid='public.receipt_policy_heads'::regclass")).rows[0];
- need(r&&r.w===db.workspaceId&&r.e===environment&&(owner?(r.owner===true||r.role==='commerce_api'):mutation?r.role==='commerce_api':['commerce_api','commerce_automation'].includes(r.role)),'RECEIPT_POLICY_CONTEXT',403);
+ need(r&&r.w===db.workspaceId&&r.e===environment&&(owner?(r.owner===true||r.role==='commerce_api'):mutation?r.role==='commerce_api':(['commerce_api','commerce_automation'].includes(r.role)||r.owner===true)),'RECEIPT_POLICY_CONTEXT',403);
 }
 async function lock(db:ProfileExecutor,environment:Environment){
  need((await db.query('SELECT pg_try_advisory_xact_lock(hashtextextended($1,0)) acquired',['receipt-policy:'+db.workspaceId+':'+environment])).rows[0]?.acquired===true,'RECEIPT_POLICY_BUSY');

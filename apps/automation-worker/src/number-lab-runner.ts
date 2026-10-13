@@ -2,7 +2,7 @@ import pg from 'pg';
 import type {ProfilePool} from '../../../packages/db/src/profile-context.js';
 import {withProfileTransaction} from '../../../packages/db/src/profile-context.js';
 import {numberLabKeys} from '../../../packages/db/src/number-laboratory.js';
-import {createNumberLabMaterialCustody,createNumberLabMaterialReader} from '../../../packages/db/src/number-lab-material-custody.js';
+import {createNumberLabMaterialCustody,createNumberLabMaterialReader,createNumberLabReceiptCustody} from '../../../packages/db/src/number-lab-material-custody.js';
 import type {NumberLabEngineIdentity} from '../../../packages/db/src/number-lab-engine-runtime.js';
 import {createNumberLabDriver,type NumberLabDriverSellerConfiguration} from './number-lab-driver.js';
 import {aiCredentialKey} from '../../../packages/ai-providers/src/profile-integrations.js';
@@ -33,11 +33,16 @@ export function numberLabRuntimeFromEnv(env=process.env):NumberLabRuntime|null{
   keys:numberLabKeys(),sourceRoot,laboratoryRoot:env.LAB_PRIVATE_STORAGE_DIR!,ai:aiPool&&custody?{pool:aiPool,custodyKey:custody}:null,
   async close(){await Promise.all([control.native.end(),engine.native.end(),seed.native.end(),source.native.end()]);}};
 }
-/** Laboratory seller grants of one run's profile (task laboratory.chat). */
-async function labGrants(ai:{pool:pg.Pool},workspaceId:string){
+/** Laboratory grants of one run's profile: the seller (task laboratory.chat)
+ * and the receipt reading (task laboratory.vision, RF-19.d). */
+async function labGrants(ai:{pool:pg.Pool},workspaceId:string,task:'laboratory.chat'|'laboratory.vision'){
  return withProfileTransaction(ai.pool as never,workspaceId,async db=>{await db.query("SELECT set_config('app.environment','REAL',true)");
-  const rows=(await db.query(`SELECT DISTINCT ON(variant_id) id,variant_id FROM ai_runtime_grants WHERE workspace_id=$1 AND environment='REAL' AND task='laboratory.chat' AND NOT is_test AND revoked_at IS NULL AND variant_id IS NOT NULL
-   AND expires_at>clock_timestamp()+interval '5 minutes' ORDER BY variant_id,expires_at DESC,id`,[workspaceId])).rows as {id:string;variant_id:string}[];
+  // A reading grant counts only on the seller's own model: the run was priced
+  // (and its AI bindings are guarded) with that model.
+  const rows=(await db.query(`SELECT DISTINCT ON(g.variant_id) g.id,g.variant_id FROM ai_runtime_grants g WHERE g.workspace_id=$1 AND g.environment='REAL' AND g.task=$2 AND NOT g.is_test AND g.revoked_at IS NULL AND g.variant_id IS NOT NULL
+   AND g.expires_at>clock_timestamp()+interval '5 minutes' AND ($2='laboratory.chat' OR EXISTS(SELECT 1 FROM ai_runtime_grants c WHERE c.workspace_id=g.workspace_id AND c.environment=g.environment AND c.variant_id=g.variant_id
+    AND c.task='laboratory.chat' AND NOT c.is_test AND c.revoked_at IS NULL AND (c.provider,c.model,c.model_revision,c.price_version)=(g.provider,g.model,g.model_revision,g.price_version)))
+   ORDER BY g.variant_id,g.expires_at DESC,g.id`,[workspaceId,task])).rows as {id:string;variant_id:string}[];
   return Object.fromEntries(rows.map(r=>[r.variant_id,r.id])) as Record<string,string>;});
 }
 export const LAB_SELLER_MAXIMUM_MICROUSD=250_000;
@@ -54,15 +59,17 @@ export async function processNumberLabOperations(runtime:NumberLabRuntime|null,l
  for(const q of queued){
   try{
    let seller:NumberLabDriverSellerConfiguration|undefined;
-   if(runtime.ai){const grants=await labGrants(runtime.ai,q.workspace_id);if(Object.keys(grants).length)seller={workspaceId:q.workspace_id,enterprisePool:runtime.ai.pool as never,custodyKey:runtime.ai.custodyKey,grants,maximumMicrousd:LAB_SELLER_MAXIMUM_MICROUSD,...(runtime.fetcher?{fetcher:runtime.fetcher}:{})};}
+   if(runtime.ai){const grants=await labGrants(runtime.ai,q.workspace_id,'laboratory.chat'),visionGrants=await labGrants(runtime.ai,q.workspace_id,'laboratory.vision');
+    if(Object.keys(grants).length||Object.keys(visionGrants).length)seller={workspaceId:q.workspace_id,enterprisePool:runtime.ai.pool as never,custodyKey:runtime.ai.custodyKey,grants,visionGrants,maximumMicrousd:LAB_SELLER_MAXIMUM_MICROUSD,...(runtime.fetcher?{fetcher:runtime.fetcher}:{})};}
    const materials=createNumberLabMaterialCustody({controlPool:runtime.control,sourcePool:runtime.source,controlKey:runtime.keys.control,sourceKey:runtime.keys.source,laboratoryKey:runtime.keys.files,sourceRoot:runtime.sourceRoot,laboratoryRoot:runtime.laboratoryRoot});
    const driver=createNumberLabDriver({controlPool:runtime.control,seedPool:runtime.seed,enginePool:runtime.engine,identity:runtime.identity,key:runtime.keys.control,materials,...(seller?{seller}:{}),
-    transport:{key:runtime.keys.transport,reader:createNumberLabMaterialReader({laboratoryRoot:runtime.laboratoryRoot,laboratoryKey:runtime.keys.files})}});
+    transport:{key:runtime.keys.transport,reader:createNumberLabMaterialReader({laboratoryRoot:runtime.laboratoryRoot,laboratoryKey:runtime.keys.files})},
+    receipts:{custody:createNumberLabReceiptCustody({laboratoryRoot:runtime.laboratoryRoot,laboratoryKey:runtime.keys.files})}});
    const input={workspaceId:q.workspace_id,runId:q.run_id,operationId:q.operation_id};
    if(q.stage==='EXECUTE')await driver.execute(input);
    // A stale INTENT settles only from its engine receipt; without one it stays uncertain.
    else if((await driver.observe(input)).receipt)await driver.reconcile(input);
-  }catch(error){process.stderr.write(`number_lab_operation_failed ${code(error)}\n`);}
+  }catch(error){process.stderr.write(`number_lab_operation_failed ${code(error)}\n`);if(process.env.LAB_DEBUG)console.error(error);}
  }
  return queued.length;
 }

@@ -20,8 +20,9 @@ describe('V7 reviewed model price catalogue (RF-14.a/c/d)',()=>{
  it('covers chat, vision and audio with three providers and an explicit fallback order (D-09)',()=>{
   for(const provider of ['openai','anthropic','google'])expect(reviewedModelCatalog.some(m=>m.provider===provider&&m.capabilities.includes('chat')),provider).toBe(true);
   expect([...new Set(Object.values(aiTasks).map(t=>t.capability))].sort()).toEqual(['audio','chat','vision']);
-  // V7 F6: the laboratory seller is its own task with the same chat model.
-  expect(Object.keys(aiTasks).sort()).toEqual(['audio.transcribe','laboratory.chat','receipt.document','sales.chat']);
+  // V7 F6: the laboratory seller is its own task with the same chat model, and
+  // reading example receipts there (RF-19.d) its own vision task.
+  expect(Object.keys(aiTasks).sort()).toEqual(['audio.transcribe','laboratory.chat','laboratory.vision','receipt.document','sales.chat']);
   const profile={profileId:'p',version:1,default:{provider:'anthropic' as const,model:'claude-haiku-5-5'},variants:{},capabilityFallbacks:[{provider:'google' as const,model:'gemini-2.5-flash-lite'}],configuredProviders:['anthropic' as const,'google' as const]};
   expect(resolveModel(profile,'11111111-1111-4111-8111-111111111111','chat',reviewedModelCatalog,at)).toMatchObject({state:'MODEL',selection:'default'});
   expect(resolveModel(profile,'11111111-1111-4111-8111-111111111111','audio',reviewedModelCatalog,at)).toMatchObject({state:'MODEL',selection:'capability-fallback',model:{provider:'google'}});

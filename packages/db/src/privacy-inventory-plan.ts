@@ -37,7 +37,7 @@ export function buildPrivacyInventoryPlan(catalog:PrivacyInventoryCatalog,policy
  check(names.length===new Set(names).size&&JSON.stringify(names)===JSON.stringify(Object.keys(policy.relations).sort()),'PRIVACY_RELATION_CLASSIFICATION_INCOMPLETE');
  const tables=catalog.tables.slice().sort((a,b)=>a.name.localeCompare(b.name,'en'));
  const privateTables=catalog.non_public_tables??[];
- const privateNames=new Set(['commerce_number_lab.ai_bindings','commerce_number_lab.events','commerce_number_lab.operations','commerce_number_lab.run_releases','commerce_number_lab.runs']);
+ const privateNames=new Set(['commerce_number_lab.ai_bindings','commerce_number_lab.attachments','commerce_number_lab.events','commerce_number_lab.operations','commerce_number_lab.run_releases','commerce_number_lab.runs']);
  for(const t of privateTables)check(privateNames.has(t.schema+'.'+t.name),'PRIVACY_PRIVATE_RELATION_UNCLASSIFIED');
  const expected=[...tables.map(t=>({...t,schema:'public'})),...privateTables].sort((a,b)=>(a.schema+'.'+a.name)<(b.schema+'.'+b.name)?-1:1).map(t=>{
   quote(t.schema);quote(t.name);const p=catalog.primary_keys.filter(k=>k.schema===t.schema&&k.table===t.name);check(p.length===1&&p[0]!.columns.length>0,'PRIVACY_PRIMARY_KEY_REQUIRED');

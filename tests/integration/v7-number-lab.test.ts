@@ -13,6 +13,7 @@ import {installNumberLabEngine,numberLabUrls} from '../../packages/db/src/number
 import {numberLabRuntimeFromEnv,processNumberLabOperations,type NumberLabRuntime} from '../../apps/automation-worker/src/number-lab-runner.js';
 import type {ProfileAuthority} from '../../packages/domain/src/core/profile-authorization.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
+import {writeReceiptPolicy} from '../../packages/db/src/receipt-policies.js';
 import {fixtureProfiles} from '../support/profile-fixture.js';
 import {roleExecutor} from '../support/database-role.js';
 
@@ -28,10 +29,14 @@ let app:Awaited<ReturnType<typeof createApp>>,aiPool:pg.Pool,runtime:NumberLabRu
 const cookies:Record<string,string>={};const created:string[]=[];
 const call=(who:string,method:string,path:string,body?:unknown,key=randomUUID())=>app.inject({method:method as 'GET',url:path,payload:body as object,headers:{origin,cookie:cookies[who]!,'idempotency-key':key}});
 const data=(r:{statusCode:number;body:string;json():any},status=200)=>{expect(r.statusCode,r.body).toBe(status);return r.json().data;};
-let sellerCalls=0;
+let sellerCalls=0,visionCalls=0;
+// RF-19.d: what the (contract) model reads from the next example receipt.
+let visionDocument:Record<string,unknown>={};
 const fakeAnthropic:typeof fetch=async(_input,init)=>{
- const body=JSON.parse(String(init?.body)),verification=body.system==='Return exactly OK. Do not call tools.';if(!verification)sellerCalls++;
- const text=verification?'OK':JSON.stringify({reply:'¡Hola! El curso cuesta 97 pesos. ¿Te interesa?',intent:'question',confidence:1,tool:'none',grounding:['offer_snapshot']});
+ const body=JSON.parse(String(init?.body)),verification=body.system==='Return exactly OK. Do not call tools.';
+ const vision=JSON.stringify(body.messages??[]).includes('"type":"image"')||JSON.stringify(body.messages??[]).includes('"type":"document"');
+ if(vision)visionCalls++;else if(!verification)sellerCalls++;
+ const text=verification?'OK':vision?JSON.stringify(visionDocument):JSON.stringify({reply:'¡Hola! El curso cuesta 97 pesos. ¿Te interesa?',intent:'question',confidence:1,tool:'none',grounding:['offer_snapshot']});
  return new Response(JSON.stringify({id:'msg_synthetic',type:'message',role:'assistant',model:'claude-haiku-5-5',content:[{type:'text',text}],stop_reason:'end_turn',usage:{input_tokens:900,output_tokens:60,service_tier:'standard'}}),{status:200,headers:{'content-type':'application/json'}});
 };
 async function login(who:string,role:'owner'|'operator'){
@@ -262,4 +267,73 @@ it('previews a file the business sent inside the test chat, privately and only w
  try{const refused=await call('operator','GET',url);expect(refused.statusCode).toBe(409);expect(refused.json().error?.code??refused.json().code).toBe('LAB_MATERIAL_CHANGED');}
  finally{await rename(aside,stored);}
  expect((await call('operator','GET',url)).statusCode).toBe(200);
+},240000);
+
+it('reads an example receipt with the profile key and decides it with the rules captured at start (RF-19.d)',async()=>{
+ const link=data(await call('owner','POST','/v2/materials?environment=REAL',{name:'Acceso taller',kind:'link',url:'https://example.com/taller'}),201).id as string;
+ let v=data(await call('owner','POST','/v2/products',{name:'Taller de recibos',variant:{name:'México',locale:MX}}),201).variant;
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/offer`,{expected_version:v.version,value:{...v.document.offer,price_minor:9700,fulfillment:[{asset_id:link,release_on:'receipt_approved'}]}}));
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/collection`,{expected_version:v.version,value:{spei:{bank:'Banco sintético',holder:'Titular sintético',clabe:clabe('01218000011835971')},links:[],instructions:''}}));
+ data(await call('owner','POST',`/v2/variants/${v.id}/publish`,{expected_version:v.version,document_sha256:v.document_sha256}));
+ // The variant approves on its own when every documentary check passes.
+ // (The application role writes rules; this verification app runs as the schema owner.)
+ const rules=(revision:number,automaticApproval:boolean)=>withProfileTransaction(pool as never,P,async db=>{await db.query('SET LOCAL ROLE commerce_api');await db.query("SELECT set_config('app.environment','REAL',true)");
+  return writeReceiptPolicy(db,'REAL',v.id,{expectedRevision:revision,override:{automaticApproval}},ownerId,randomUUID());});
+ await rules(0,true);
+ const number=await withTransaction(async c=>{await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','REAL',true)",[P]);
+  return(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','channel_account',$2) RETURNING id",[P,{name:'Ventas recibos',provider:'waha',gateway_ref:'lab-'+randomUUID(),status:'WORKING',sending_enabled:true,identity_verified:true}])).rows[0].id as string;});
+ data(await call('owner','POST',`/v2/variants/${v.id}/numbers`,{account_id:number,sell:true}));
+ const estimate=data(await call('owner','POST','/v2/number-tests/estimate',{account_id:number,mode:'CHAT'}));
+ const run=data(await call('owner','POST','/v2/number-tests',{account_id:number,mode:'CHAT',accepted_maximum_microusd:estimate.maximum_microusd}),201);
+ // Rules changed after the start do not apply to this test (RF-19.b/m).
+ await rules(1,false);
+ const step=async(action:unknown)=>{const before=data(await call('owner','GET',`/v2/number-tests/${run.run_id}`));
+  data(await call('owner','POST',`/v2/number-tests/${run.run_id}/actions`,{expected_version:before.run.version,action}),202);await tick();
+  const after=data(await call('owner','GET',`/v2/number-tests/${run.run_id}`));expect(after.pending).toBe(false);return after;};
+ await step({type:'message',text:'Hola, quiero el taller'});await step({type:'continue'});
+ let view=await step({type:'message',text:'Sí, acepto'});
+ expect(view.conversation.waiting_for).toBe('receipt_approved');
+
+ // Upload: images or PDF only, checked by signature; the same bytes twice are one attachment.
+ const png=(seed:string)=>Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),Buffer.from(seed.padEnd(64,'.'))]);
+ expect((await call('owner','POST',`/v2/number-tests/${run.run_id}/attachments`,{mime_type:'image/png',base64:Buffer.from('not an image').toString('base64')})).statusCode).toBe(400);
+ const wrong=data(await call('owner','POST',`/v2/number-tests/${run.run_id}/attachments`,{mime_type:'image/png',base64:png('wrong amount').toString('base64')}),201);
+ expect(data(await call('owner','POST',`/v2/number-tests/${run.run_id}/attachments`,{mime_type:'image/png',base64:png('wrong amount').toString('base64')})).attachment_id).toBe(wrong.attachment_id);
+ const today=new Intl.DateTimeFormat('en-CA',{timeZone:MX.timezone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(view.run.virtual_now));
+ const document=(amount:number)=>({is_receipt:true,amount_minor:amount,currency:'MXN',destination_suffix:'5971',bank:'Banco sintético',reference:'REF-0001',status:'completed',confidence:0.97,contradictions:[],
+  destination:'012180000118359716',beneficiary:'Titular sintético',paid_on:today,concept:null});
+
+ // 1) A receipt for less than the price: read with the profile's key and left
+ // to a person, with the same reason production would give.
+ visionDocument=document(5000);const callsBefore=visionCalls;
+ view=await step({type:'receipt',attachment_id:wrong.attachment_id});
+ expect(visionCalls).toBe(callsBefore+1);
+ const first=view.conversation.transcript.findLast((e:{kind:string})=>e.kind==='receipt');
+ expect(first).toMatchObject({from:'customer',kind:'receipt',status:'HUMAN_REVIEW',attachment_id:wrong.attachment_id,mime:'image/png'});
+ expect(first.explanation).toContain('El monto no coincide con el precio');
+ expect(first.explanation).toContain('una prueba no usa tu cuenta real');
+ // The tester sees the receipt privately and decides it as a person would.
+ const preview=await call('owner','GET',`/v2/number-tests/${run.run_id}/attachments/${wrong.attachment_id}?environment=REAL`);
+ expect(preview.statusCode).toBe(200);expect(preview.headers['content-type']).toContain('image/png');expect(preview.rawPayload.equals(png('wrong amount'))).toBe(true);
+ view=await step({type:'review_receipt',receipt_id:first.receipt_id,decision:'REJECTED',reason:'El monto no corresponde'});
+ expect(view.conversation.transcript.findLast((e:{kind:string})=>e.kind==='receipt')).toMatchObject({status:'REJECTED'});
+
+ // 2) The right receipt: approved by the captured rules (automatic approval was
+ // on at start) and the purchase is delivered, simulated only.
+ const right=data(await call('owner','POST',`/v2/number-tests/${run.run_id}/attachments`,{mime_type:'image/png',base64:png('right amount').toString('base64')}),201);
+ visionDocument=document(9700);
+ view=await step({type:'receipt',attachment_id:right.attachment_id});
+ const second=view.conversation.transcript.findLast((e:{kind:string})=>e.kind==='receipt');
+ expect(second).toMatchObject({status:'APPROVED',attachment_id:right.attachment_id});
+ expect(second.explanation).toContain('Aprobado');
+ expect(view.conversation.transcript.at(-1)).toMatchObject({from:'business',text:expect.stringContaining('Recibimos tu pago')});
+ // The purchase is delivered in the next visible step (simulated, never sent).
+ view=await step({type:'continue'});
+ expect(view.conversation.transcript.some((e:{from:string;material:string|null})=>e.from==='business'&&e.material==='Acceso taller')).toBe(true);
+ expect(data(await call('owner','GET',`/v2/number-tests/${run.run_id}/attachments`)).map((a:{attachment_id:string})=>a.attachment_id)).toEqual([wrong.attachment_id,right.attachment_id]);
+ // The reading is a laboratory attempt in the profile's budget (RF-19.l).
+ const attempts=await withTransaction(async c=>(await c.query("SELECT task,state FROM ai_attempts WHERE workspace_id=$1 AND task='laboratory.vision'",[P])).rows);
+ expect(attempts).toEqual([{task:'laboratory.vision',state:'SUCCEEDED'},{task:'laboratory.vision',state:'SUCCEEDED'}]);
+ // Another run's attachment is not served.
+ expect((await call('owner','GET',`/v2/number-tests/${randomUUID()}/attachments/${right.attachment_id}?environment=REAL`)).statusCode).toBe(404);
 },240000);

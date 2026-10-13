@@ -4,7 +4,7 @@ import {withProfileRequest,type ProfileRequestDependencies} from './profile-requ
 import type {ProfileExecutor} from '../../../packages/db/src/profile-context.js';
 import type {ProfileAuthority} from '../../../packages/domain/src/core/profile-authorization.js';
 import {captureNumberLab} from '../../../packages/db/src/number-lab-snapshot.js';
-import {numberLabKeys,startNumberLab,enqueueNumberLab,readNumberLab,readNumberLabStartOperation,listNumberLabOperations,latestNumberLab,numberLabRunScope,numberLabRunMaterial} from '../../../packages/db/src/number-laboratory.js';
+import {numberLabKeys,startNumberLab,enqueueNumberLab,readNumberLab,readNumberLabStartOperation,listNumberLabOperations,latestNumberLab,numberLabRunScope,numberLabRunMaterial,attachNumberLabFile,listNumberLabAttachments,readNumberLabAttachment,NUMBER_LAB_ATTACHMENT_MAX} from '../../../packages/db/src/number-laboratory.js';
 import {materialBytes} from '../../../packages/db/src/profile-materials.js';
 import {sendPrivateFile} from './file-response.js';
 import {createHash} from 'node:crypto';
@@ -13,6 +13,7 @@ import {numberLabActionSchema} from '../../../packages/contracts/src/number-labo
 import {laboratoryAiConfiguration,laboratoryGrants,type VariantAiSelection} from '../../../packages/ai-providers/src/variant-ai.js';
 import {bindNumberLabReleases} from '../../../packages/ai-providers/src/number-laboratory.js';
 import {readVariant} from '../../../packages/db/src/variant-workspace.js';
+import {effectiveReceiptPolicy} from '../../../packages/db/src/receipt-policies.js';
 
 /** V7 F6 (RF-19): «Probar número». One service for the web, the API and MCP.
  * - The configuration is captured on the server when the test starts and never
@@ -39,9 +40,11 @@ const messages:Record<string,string>={
  LAB_VERSION_CHANGED:'La prueba avanzó. Actualiza antes de continuar.',LAB_OPERATION_ADMISSION:'La prueba avanzó. Actualiza antes de continuar.',
  LAB_OPERATION_PENDING:'Espera a que termine la acción anterior.',LAB_OPERATION_CONFLICT:'Esa operación ya se usó con otros datos.',
  LAB_MATERIAL_NOT_FOUND:'Ese material no forma parte de esta prueba.',LAB_MATERIAL_CHANGED:'El material cambió después de iniciar la prueba. Inicia otra para verlo.',
+ LAB_ATTACHMENT_TYPE:'Adjunta una imagen (PNG, JPG o WEBP) o un PDF de comprobante.',LAB_ATTACHMENT_SIZE:'El comprobante debe pesar máximo 4 MB.',
+ LAB_ATTACHMENT_LIMIT:'Esta prueba ya tiene 20 comprobantes. Inicia otra.',LAB_ATTACHMENT_NOT_FOUND:'No encontramos ese comprobante en esta prueba.',
  LAB_CATALOG_AMBIGUOUS:'El número tiene asignaciones ambiguas. Revisa sus variantes.',LAB_SOURCE_LIMIT:'La configuración del número es demasiado grande para una prueba.',
 };
-const status:Record<string,number>={LAB_NOT_INSTALLED:503,LAB_ACCOUNT_NOT_FOUND:404,LAB_RUN_NOT_FOUND:404,LAB_MATERIAL_NOT_FOUND:404};
+const status:Record<string,number>={LAB_NOT_INSTALLED:503,LAB_ACCOUNT_NOT_FOUND:404,LAB_RUN_NOT_FOUND:404,LAB_MATERIAL_NOT_FOUND:404,LAB_ATTACHMENT_NOT_FOUND:404,LAB_ATTACHMENT_TYPE:400,LAB_ATTACHMENT_SIZE:400};
 function fail(code:string,statusCode=409):never{throw Object.assign(new Error(code),{code,statusCode,publicMessage:messages[code]});}
 async function mapped<T>(work:()=>Promise<T>):Promise<T>{
  try{return await work();}catch(error){
@@ -76,6 +79,15 @@ async function prepare(db:ProfileExecutor,authority:ProfileAuthority,accountId:s
  const estimate=estimateNumberLab(captured.snapshot,mode,ai.config,ai.models,now);
  return{captured,estimate,selections,names};
 }
+/** RF-19.d: each variant's receipt rules as they are now, fixed with the test.
+ * A variant without rules is left out: its receipts go to a person. */
+async function receiptPolicies(db:ProfileExecutor,variantIds:string[]){
+ const out:Record<string,unknown>={};
+ for(const id of [...new Set(variantIds)]){await db.query('SAVEPOINT lab_receipt_policy');
+  try{out[id]=await effectiveReceiptPolicy(db,'REAL',id);await db.query('RELEASE SAVEPOINT lab_receipt_policy');}
+  catch{await db.query('ROLLBACK TO SAVEPOINT lab_receipt_policy');}}
+ return out;
+}
 function presentEstimate(p:Awaited<ReturnType<typeof prepare>>){
  const byVariant=[...new Set(p.estimate.cases.map(c=>c.variant_id))].map(variantId=>{const cases=p.estimate.cases.filter(c=>c.variant_id===variantId),q=cases[0]!.quote;
   return{variant_id:variantId,name:p.names[variantId]??'Variante',provider:q.provider,model:q.model,cases:cases.length,maximum_ai_calls:cases.reduce((s,c)=>s+c.maximum_ai_calls,0),maximum_microusd:cases.reduce((s,c)=>s+c.maximum_ai_calls*c.quote.maximumMicrousd,0)};});
@@ -83,7 +95,7 @@ function presentEstimate(p:Awaited<ReturnType<typeof prepare>>){
   captured_at:p.captured.snapshot.captured_at,variants:byVariant,paid_by:'PROFILE_KEY' as const,
   note:'Es un máximo: cada respuesta de la IA se cobra a la clave de tu perfil y cuenta en tu presupuesto mensual. Nada se envía por WhatsApp.'};
 }
-const reasonLabels:Record<string,string>={LAB_CONVERSATION_REQUIRED:'Primero escribe un mensaje como cliente.',LAB_ATTACHMENT_DRIVER_REQUIRED:'Adjuntar comprobantes en la prueba aún no está disponible.',
+const reasonLabels:Record<string,string>={LAB_CONVERSATION_REQUIRED:'Primero escribe un mensaje como cliente.',LAB_ATTACHMENT_DRIVER_REQUIRED:'Este servidor no tiene habilitados los comprobantes de prueba.',LAB_ATTACHMENT_NOT_FOUND:'No encontramos ese comprobante en esta prueba.',LAB_RECEIPT_NOT_FOUND:'Ese comprobante no es de esta conversación.',
  AUTOMATIC_DRIVER_REQUIRED:'El comprador automático aún no está disponible.',CANONICAL_MESSAGE_LIMIT:'El mensaje es demasiado largo.',LAB_SELLER_GRANT_REQUIRED:'Falta confirmar la IA de la prueba.'};
 const stateLabels:Record<string,string>={QUEUED:'En cola',INTENT:'Ejecutando',APPLIED:'Aplicada',FAILED:'No se pudo aplicar',UNKNOWN:'Resultado incierto'};
 /** «Producto · Variante», so several variants of one market stay distinguishable. */
@@ -138,7 +150,7 @@ export async function numberTestRoutes(app:FastifyInstance,deps?:ProfileRequestD
    const p=await prepare(db,a,q.account_id,q.mode);
    if(p.estimate.maximum_microusd>q.accepted_maximum_microusd)fail('LAB_ESTIMATE_INCREASED');
    const {missing}=await laboratoryGrants(db,a,p.estimate.cases,p.selections);if(missing.length)fail('LAB_AI_GRANT_REQUIRED');
-   const run=await startNumberLab(db,a,{operation_id:operationId,account_id:q.account_id,snapshot_sha256:labHash(p.captured.snapshot),estimate_sha256:p.estimate.sha256,mode:q.mode},p.captured,p.estimate,key);
+   const run=await startNumberLab(db,a,{operation_id:operationId,account_id:q.account_id,snapshot_sha256:labHash(p.captured.snapshot),estimate_sha256:p.estimate.sha256,mode:q.mode},p.captured,p.estimate,key,{receipt_policies:await receiptPolicies(db,p.captured.snapshot.candidates.map(c=>c.release.variant_id))});
    if(run.created)await bindNumberLabReleases(db,run.run_id,p.captured.snapshot,p.estimate);
    return{run,created:run.created};
   },deps));
@@ -158,6 +170,25 @@ export async function numberTestRoutes(app:FastifyInstance,deps?:ProfileRequestD
    const current=await materialBytes(db,'REAL',captured.source_id).catch(()=>fail('LAB_MATERIAL_CHANGED'));
    if(current.bytes.length!==captured.size_bytes||createHash('sha256').update(current.bytes).digest('hex')!==captured.sha256)fail('LAB_MATERIAL_CHANGED');
    return{bytes:current.bytes,mime:captured.mime_type,name:captured.name};},deps));
+  return sendPrivateFile(req,reply,file);
+ });
+ // RF-19.d: example receipts. Uploaded as the customer would send them (image
+ // or PDF ≤4 MB), kept sealed with the test and read back only by its profile.
+ const attachmentParam=z.object({id:z.string().uuid(),attachment:z.string().uuid()}).strict();
+ app.post('/v2/number-tests/:id/attachments',{bodyLimit:Math.ceil(NUMBER_LAB_ATTACHMENT_MAX*4/3)+4096},async(req,reply)=>{const {id}=runParam.parse(req.params);
+  const q=z.object({mime_type:z.enum(['image/png','image/jpeg','image/webp','application/pdf']),base64:z.string().min(4).max(Math.ceil(NUMBER_LAB_ATTACHMENT_MAX*4/3)+4).regex(/^[A-Za-z0-9+/]+={0,2}$/)}).strict().parse(req.body);
+  const data=await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:run',mutation:true},async({db,profile})=>{
+   if(!await readNumberLab(db,profile.authority,id))fail('LAB_RUN_NOT_FOUND',404);
+   return attachNumberLabFile(db,profile.authority,id,q,numberLabKeys().control);},deps));
+  reply.code(data.created?201:200);const {created:_created,...out}=data;return{data:out};});
+ app.get('/v2/number-tests/:id/attachments',async req=>{const {id}=runParam.parse(req.params);
+  return{data:await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:read',mutation:false},async({db,profile})=>{
+   if(!await readNumberLab(db,profile.authority,id))fail('LAB_RUN_NOT_FOUND',404);return listNumberLabAttachments(db,profile.authority,id);},deps))};});
+ app.get('/v2/number-tests/:id/attachments/:attachment',async(req,reply)=>{const {id,attachment}=attachmentParam.parse(req.params);
+  const file=await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:read',mutation:false},async({db,profile})=>{
+   if(!await readNumberLab(db,profile.authority,id))fail('LAB_RUN_NOT_FOUND',404);
+   const found=await readNumberLabAttachment(db,id,attachment,numberLabKeys().control);if(!found)fail('LAB_ATTACHMENT_NOT_FOUND',404);
+   return{bytes:found.bytes,mime:found.mime_type,name:'comprobante-de-prueba'};},deps));
   return sendPrivateFile(req,reply,file);
  });
  app.post('/v2/number-tests/:id/actions',{bodyLimit:16384},async(req,reply)=>{const {id}=runParam.parse(req.params),q=actionSchema.parse(req.body),operationId=operationKey(req);

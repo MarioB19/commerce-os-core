@@ -36,5 +36,7 @@ export const aiTasks={
  'audio.transcribe':{capability:'audio',label:'Transcribir notas de voz'},
  // V7 F6 (RF-19): the seller in «Probar número»; same model, SIMULATION only.
  'laboratory.chat':{capability:'chat',label:'Responder en «Probar número»'},
+ // RF-19.d: reading example receipts in «Probar número»; same model as its seller.
+ 'laboratory.vision':{capability:'vision',label:'Leer comprobantes en «Probar número»'},
 } as const;
 export type AiTask=keyof typeof aiTasks;

@@ -63,7 +63,9 @@ BEGIN
  IF current_user<>'commerce_lab_engine' THEN RETURN NEW;END IF;
  IF TG_OP='INSERT' AND (NEW.environment<>'SIMULATION'
   OR NEW.workspace_id IS DISTINCT FROM current_setting('app.workspace_id',true)
-  OR NEW.kind NOT IN('simulation_start','simulation_advance') OR NEW.status<>'PENDING'
+  -- V7 RF-19.d: the customer's receipt and the tester's decision on it are
+  -- canonical receipt commands of the same operation.
+  OR NOT (NEW.kind IN('simulation_start','simulation_advance','receipt_review') OR (NEW.kind='conversation_command' AND NEW.payload->>'type'='receipt_received')) OR NEW.status<>'PENDING'
   OR NEW.actor_id<>'number-laboratory'
   OR NOT EXISTS(SELECT 1 FROM commerce_number_lab_engine.executions e
    WHERE e.operation_id=NEW.id AND e.workspace_id=NEW.workspace_id AND e.state='INTENT'

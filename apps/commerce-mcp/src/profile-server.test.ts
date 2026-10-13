@@ -209,6 +209,15 @@ describe('V7 F3 number tools',()=>{
     ['POST',`/v2/number-tests/${runId}/actions`],['GET',`/v2/number-tests/${runId}`],['GET',`/v2/number-tests/latest?account_id=${accountId}`]]);
    expect(seen[1]).toMatchObject({key:operationId,body:{account_id:accountId,mode:'CHAT',accepted_maximum_microusd:51200}});
    expect(seen.slice(2,5).map(x=>x.body)).toEqual([{expected_version:1,action:{type:'message',text:'Hola'}},{expected_version:2,action:{type:'advance',hours:8}},{expected_version:3,action:{type:'continue'}}]);
+   // RF-19.d: an example receipt is uploaded, then sent as the customer; the tester decides one under review.
+   seen.length=0;const receiptId='55555555-5555-4555-8555-555555555555';
+   await client.callTool({name:'number_test_manage',arguments:{action:'adjuntar',operationId,runId,expectedVersion:4,mimeType:'image/png',base64:'iVBORw0KGgo='}});
+   expect(seen.map(x=>[x.method,x.url])).toEqual([['POST',`/v2/number-tests/${runId}/attachments`],['POST',`/v2/number-tests/${runId}/actions`]]);
+   expect(seen[0]!.body).toEqual({mime_type:'image/png',base64:'iVBORw0KGgo='});
+   expect(seen[1]).toMatchObject({key:operationId,body:{expected_version:4,action:{type:'receipt'}}});
+   seen.length=0;
+   await client.callTool({name:'number_test_manage',arguments:{action:'revisar_comprobante',operationId,runId,expectedVersion:5,receiptId,decision:'REJECTED',reason:'Monto distinto'}});
+   expect(seen[0]).toMatchObject({method:'POST',url:`/v2/number-tests/${runId}/actions`,body:{expected_version:5,action:{type:'review_receipt',receipt_id:receiptId,decision:'REJECTED',reason:'Monto distinto'}}});
   }finally{await client.close();await server.close();}
  });
 });

@@ -138,10 +138,11 @@ export async function applyCommand(client:QueryExecutor,cmd:Body):Promise<Body>{
  if(cmd.kind==='campaign_cancel'){const campaign=await get('message_campaign');await save(client,campaign,{...campaign.body,status:'CANCELLED',cancelled_at:new Date().toISOString(),cancelled_reason:p.reason});await client.query(`UPDATE outbox SET status='CANCELLED',updated_at=now(),result=jsonb_build_object('reason','CAMPAIGN_CANCELLED') WHERE workspace_id=$1 AND payload->>'campaign_id'=$2 AND status IN ('READY','BLOCKED')`,[cmd.workspace_id,campaign.id]);return{campaign_id:campaign.id,status:'CANCELLED'};}
  throw new Error('COMMAND_KIND_UNSUPPORTED');
 }
-export async function applyReceiptAnalysis(client:QueryExecutor,receipt:DomainRecord,raw:unknown,cause:string){
- const prepared=await prepareReceiptPolicyAnalysis(client,receipt,raw,cause);
- if(prepared?.state==='EXISTING')return;
- if(prepared?.state==='PREPARED'){
+/** Applies a prepared documentary assessment to a receipt: its decision,
+ * the order, the analysis event and, when approved, the first recognition and
+ * delivery. Shared by production (policy snapshot of the order) and the number
+ * laboratory (policy captured when the test started, RF-19.d). */
+export async function applyReceiptAssessment(client:QueryExecutor,receipt:DomainRecord,prepared:{assessment:{decision:string;reasons:string[];policySha256:string};extraction:{amount_minor:number|null}&Record<string,unknown>;observedAt:string;policyAnalysis:unknown;evidenceCiphertext:string},cause:string){
   const {assessment,extraction}=prepared,decision=assessment.decision==='APPROVED'?'APPROVED':assessment.decision==='REJECTED'?'REJECTED':'HUMAN_REVIEW';
   receipt=await save(client,receipt,{...receipt.body,extraction,assessment,status:decision,analysis_status:'COMPLETED',analyzed_at:prepared.observedAt,policy_analysis:prepared.policyAnalysis,analysis_evidence_ciphertext:prepared.evidenceCiphertext});
   const order=await getRecord(client,receipt.workspace_id,'order',receipt.body.order_id);if(!order||order.environment!==receipt.environment)throw Error('ORDER_NOT_FOUND');
@@ -149,8 +150,11 @@ export async function applyReceiptAnalysis(client:QueryExecutor,receipt:DomainRe
   const conversation=await getRecord(client,receipt.workspace_id,'conversation',receipt.body.conversation_id);if(!conversation||conversation.environment!==receipt.environment)throw Error('RECEIPT_POLICY_CONVERSATION_CHANGED');
   await event(client,conversation,'receipt.analyzed',{receipt_id:receipt.id,decision,reasons:assessment.reasons,policy_sha256:assessment.policySha256},cause);
   if(decision==='APPROVED'){const sale=await recognizeReceipt(client,receipt,{actor:'receipt-policy',cause});if(sale.firstRecognition)await completeReceiptSale(client,conversation,sale.order,cause);}
-  return;
- }
+}
+export async function applyReceiptAnalysis(client:QueryExecutor,receipt:DomainRecord,raw:unknown,cause:string){
+ const prepared=await prepareReceiptPolicyAnalysis(client,receipt,raw,cause);
+ if(prepared?.state==='EXISTING')return;
+ if(prepared?.state==='PREPARED'){await applyReceiptAssessment(client,receipt,prepared,cause);return;}
 const extraction=parseReceiptExtraction(raw);const order=await getRecord(client,receipt.workspace_id,'order',receipt.body.order_id);if(!order)throw new Error('ORDER_NOT_FOUND');const policy=order.body.receipt_policy_version_id?await getRecord(client,receipt.workspace_id,'receipt_policy',order.body.receipt_policy_version_id):undefined;const bank=order.body.payment_profile_version_id?await getRecord(client,receipt.workspace_id,'bank_profile',order.body.payment_profile_version_id):undefined;
  const duplicateReference=extraction.reference?(await client.query("SELECT id FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='receipt' AND id<>$3 AND body->'extraction'->>'reference'=$4 LIMIT 1",[receipt.workspace_id,receipt.environment,receipt.id,extraction.reference])).rows[0]:null;const assessment=assessReceipt(extraction,{amount_minor:order.body.amount_minor,currency:order.body.currency,destination_suffix:bank?.body.last4,duplicate:!!receipt.body.duplicate_of||!!duplicateReference,policy:policy?.body??{auto_approve:false}});if(order.body.launch_test_scope_id)assessment.decision='HUMAN_REVIEW';receipt=await save(client,receipt,{...receipt.body,extraction,assessment,status:assessment.decision,analysis_status:'COMPLETED',analyzed_at:new Date().toISOString()});await save(client,order,{...order.body,receipt_status:assessment.decision,observed_amount_minor:extraction.amount_minor,...(assessment.decision==='APPROVED'?{status:'RECEIPT_APPROVED'}:{})});const conversation=await getRecord(client,receipt.workspace_id,'conversation',receipt.body.conversation_id);if(conversation){await event(client,conversation,'receipt.analyzed',{receipt_id:receipt.id,decision:assessment.decision,reasons:assessment.reasons},cause);if(assessment.decision==='APPROVED'){const sale=await recognizeReceipt(client,receipt,{actor:'receipt-policy',cause});if(sale.firstRecognition)await completeReceiptSale(client,conversation,sale.order,cause);}}
 }

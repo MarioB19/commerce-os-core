@@ -88,7 +88,11 @@ GRANT EXECUTE ON FUNCTION retention_context_valid() TO commerce_lab_engine;
 CREATE FUNCTION commerce_number_lab_engine.guard_record() RETURNS trigger LANGUAGE plpgsql SET search_path=pg_catalog AS $$
 BEGIN
  IF NEW.environment<>'SIMULATION' OR NEW.workspace_id IS DISTINCT FROM current_setting('app.workspace_id',true) THEN RAISE EXCEPTION 'LAB_ENGINE_SCOPE_REQUIRED'; END IF;
- IF current_user='commerce_lab_engine' AND NEW.kind NOT IN('contact','conversation','message','order','receipt','fulfillment','touchpoint','simulation','ai_run') THEN RAISE EXCEPTION 'LAB_ENGINE_CONFIGURATION_IMMUTABLE'; END IF;
+ -- V7 RF-19.d: a customer's example receipt is conversation evidence, not
+ -- configuration: the engine may insert it once, as a private file asset.
+ IF current_user='commerce_lab_engine' AND NEW.kind NOT IN('contact','conversation','message','order','receipt','fulfillment','touchpoint','simulation','ai_run')
+  AND NOT (TG_OP='INSERT' AND NEW.kind='asset' AND NEW.body->>'purpose'='receipt_evidence' AND NEW.body->>'kind'='file'
+   AND NEW.body->>'lab_attachment_id' ~ '^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$') THEN RAISE EXCEPTION 'LAB_ENGINE_CONFIGURATION_IMMUTABLE'; END IF;
  IF NEW.kind='channel_account' AND NEW.body->>'provider' IS DISTINCT FROM 'simulator' THEN RAISE EXCEPTION 'LAB_ENGINE_SIMULATOR_REQUIRED'; END IF;
  RETURN NEW;
 END $$;
@@ -108,6 +112,10 @@ DO $$ DECLARE n text; has_environment boolean; condition text; BEGIN
   EXECUTE format('CREATE POLICY lab_scope_restrictive ON public.%I AS RESTRICTIVE TO commerce_lab_engine,commerce_lab_engine_seed USING(%s) WITH CHECK(%s)',n,condition,condition);
  END LOOP;
 END $$;
+-- V7 RF-19.d: an approved example receipt recognizes the simulated sale; the
+-- canonical totals read this view as the engine role, under its own row scope.
+ALTER VIEW receipt_sale_facts SET (security_invoker=true);
+GRANT SELECT ON receipt_sale_facts TO commerce_lab_engine;
 -- Protected installation marker remains empty until native installation seals it.
 
 -- Canonical commercial readers join historical authority/preparation tables even
