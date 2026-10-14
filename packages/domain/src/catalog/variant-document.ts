@@ -150,13 +150,44 @@ export function collectionInstructions(input:{bank:Body;secret:Body|null;price:s
  const lines:string[]=[];
  if(s.spei&&typeof s.spei.clabe==='string')lines.push(`${b.spei_bank??b.bank} · ${s.spei.holder}`,`CLABE ${s.spei.clabe}`);
  const labels=new Map<string,string>((Array.isArray(b.methods?.links)?b.methods.links:[]).map((link:Body)=>[String(link.id),String(link.label)]));
- for(const link of Array.isArray(s.links)?s.links:[])if(typeof link.url==='string')lines.push(`${labels.get(String(link.id))??'Pago en línea'}: ${link.url}`);
+ const online={es:'Pago en línea',pt:'Pagamento on-line',en:'Online payment'}[languageFamily(String(b.language??'es'))];
+ for(const link of Array.isArray(s.links)?s.links:[])if(typeof link.url==='string')lines.push(`${labels.get(String(link.id))??online}: ${link.url}`);
  if(typeof s.instructions==='string'&&s.instructions.trim())lines.push(s.instructions.trim());
- // RF-09.d: what the buyer must write; the receipt rules compare against it.
+ lines.push(...expectedTextLines(b));
+ return lines.join('\n')+amount;
+}
+/** RF-09.d: what the buyer must write; the receipt rules compare against it. */
+function expectedTextLines(b:Body){
  const words=String(b.language??'es').startsWith('pt')?['Referência','Descrição']:String(b.language??'es').startsWith('en')?['Reference','Concept']:['Referencia','Concepto'];
+ const lines:string[]=[];
  if(typeof b.expected_reference==='string'&&b.expected_reference.trim())lines.push(`${words[0]}: ${b.expected_reference.trim()}`);
  if(typeof b.expected_concept==='string'&&b.expected_concept.trim())lines.push(`${words[1]}: ${b.expected_concept.trim()}`);
- return lines.join('\n')+amount;
+ return lines;
+}
+
+/** RF-05.c/RF-08.c/RF-19.b: what the laboratory (or a missing private
+ * destination outside REAL) shows instead of payment details: the methods the
+ * variant offers, in its language, with placeholders. Never an account number,
+ * a holder or a payment link. */
+export function simulatedCollectionInstructions(bank:Body|null|undefined,fallbackLanguage?:unknown){
+ const language=typeof bank?.language==='string'&&bank.language?bank.language:typeof fallbackLanguage==='string'&&fallbackLanguage?fallbackLanguage:'es';
+ const t={es:{head:'SIMULACIÓN: datos de pago de prueba; no hagas transferencias ni pagos.',spei:'transferencia SPEI a una CLABE de prueba',link:'enlace de pago de prueba'},
+  pt:{head:'SIMULAÇÃO: dados de pagamento de teste; não faça transferências nem pagamentos.',spei:'transferência SPEI para uma CLABE de teste',link:'link de pagamento de teste'},
+  en:{head:'SIMULATION: test payment details; do not make transfers or payments.',spei:'SPEI transfer to a test CLABE',link:'test payment link'}}[languageFamily(language)];
+ const lines=[t.head],methods=bank?.methods;
+ if(methods&&typeof methods==='object'){
+  if(methods.spei===true)lines.push(`${String(bank?.spei_bank??bank?.bank??'SPEI')}: ${t.spei}`);
+  for(const link of Array.isArray(methods.links)?methods.links:[])if(link&&typeof link.label==='string')lines.push(`${link.label}: ${t.link}`);
+ }
+ if(bank)lines.push(...expectedTextLines(bank));
+ return lines.join('\n');
+}
+
+/** RF-05.c: what the customer reads when a person takes over a question
+ * after the agreement, in the language of the variant. */
+export function reviewAcknowledgement(language:unknown){
+ return{es:'Recibí tu mensaje. Necesito revisar ese punto y te responderé por aquí.',pt:'Recebi sua mensagem. Preciso verificar esse ponto e vou responder por aqui.',
+  en:'I got your message. I need to check that point and will reply here.'}[languageFamily(typeof language==='string'&&language?language:'es')];
 }
 
 /** The ten-step recipe constant used when the guided base is chosen. */

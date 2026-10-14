@@ -1,6 +1,6 @@
 import {describe,expect,it} from 'vitest';
 import {baseVariantDocument,duplicateVariantDocument,variantMissing,variantState,conversationSaleWorkflow,collectionInstructions,
- plainPrice,displayPrice,minorDigits,agreementPhrases,sellerLanguageInstruction,variantDocumentHash,variantMaterialIds,disabledRemarketingPolicy} from './variant-document.js';
+ plainPrice,displayPrice,minorDigits,agreementPhrases,sellerLanguageInstruction,variantDocumentHash,variantMaterialIds,disabledRemarketingPolicy,simulatedCollectionInstructions,reviewAcknowledgement} from './variant-document.js';
 import {clabeValid,collectionInputSchema,variantDocumentSchema} from '../../../contracts/src/variants.js';
 import {remarketingPolicySchema} from '../../../contracts/src/sales-flow.js';
 import {validateWorkflow} from '../sales/workflow.js';
@@ -15,6 +15,15 @@ describe('V7 variant document (RF-05/06/08)',()=>{
   expect(pt.sale.conversation!.offer_message).toContain('preço');expect(es.sale.conversation!.payment_message).toContain('{{bank_instructions}}');
   expect(variantMissing(es,{spei:false,links:0}).sort()).toEqual(['collection','materials','offer_price']);
   expect(sellerLanguageInstruction('pt-BR')).toContain('português');expect(agreementPhrases('en-US')).toContain('i agree');
+ });
+ it('shows test payment methods and the human hand-off in the variant language, never an account or link (EMU-PAY-METHOD, RF-05.c)',()=>{
+  const bank={bank:'Banco X',spei_bank:'Banco X',methods:{spei:true,links:[{id:'card',label:'Pagar con tarjeta',provider:'stripe'}]},expected_reference:'REF1',language:'es-MX',last4:'1234'};
+  const es=simulatedCollectionInstructions(bank);
+  expect(es.split('\n')).toEqual(['SIMULACIÓN: datos de pago de prueba; no hagas transferencias ni pagos.','Banco X: transferencia SPEI a una CLABE de prueba','Pagar con tarjeta: enlace de pago de prueba','Referencia: REF1']);
+  expect(es).not.toContain('1234');
+  expect(simulatedCollectionInstructions({...bank,language:'pt-BR',methods:{spei:false,links:bank.methods.links}})).toBe('SIMULAÇÃO: dados de pagamento de teste; não faça transferências nem pagamentos.\nPagar con tarjeta: link de pagamento de teste\nReferência: REF1');
+  expect(simulatedCollectionInstructions(undefined,'en-US')).toBe('SIMULATION: test payment details; do not make transfers or payments.');
+  expect(reviewAcknowledgement('pt-BR')).toContain('Recebi sua mensagem');expect(reviewAcknowledgement('en')).toContain('I got your message');expect(reviewAcknowledgement(undefined)).toContain('Recibí tu mensaje');
  });
  it('builds a valid conversation workflow with remarketing anchors and optional delivery before payment',()=>{
   const d=baseVariantDocument({productName:'Curso',name:'México',locale:MX});

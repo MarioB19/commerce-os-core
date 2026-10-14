@@ -16,6 +16,7 @@ import {fixtureProfiles} from '../support/profile-fixture.js';
 import {aiCredentialKey} from '../../packages/ai-providers/src/profile-integrations.js';
 const aiKey=aiCredentialKey();
 import {roleExecutor} from '../support/database-role.js';
+import {collectOperationalAlerts} from '../../apps/automation-worker/src/operations-monitor.js';
 
 // V7 F4 (RF-14.a/c/d, D-09): a variant answers with its own model through the
 // profile's key, admitted against the owner's monthly budget and accounted per
@@ -98,4 +99,63 @@ it('answers with the variant model, admitted and accounted per variant and conve
  const attempt=await inProfile(async c=>(await c.query('SELECT variant_id,conversation_id,task,provider,model,price_version,state,charged_microusd,measured_cost_microusd,input_tokens,output_tokens FROM ai_attempts WHERE workspace_id=$1 AND conversation_id=$2',[P,chat.id])).rows[0]);
  expect(attempt).toMatchObject({variant_id:v.id,conversation_id:chat.id,task:'sales.chat',provider:'anthropic',model:'claude-haiku-5-5',price_version:PRICE_VERSION,state:'SUCCEEDED'});expect([Number(attempt.input_tokens),Number(attempt.output_tokens)]).toEqual([1200,80]);
  expect(Number(attempt.charged_microusd)).toBe(Math.ceil((1200*100_000+80*500_000)/1_000_000));
+},120000);
+
+// CHAOS-PROVIDER (RF-13.d): the provider fails (server error, then no balance).
+// No chat is left in silence: it goes to a person and the owner sees an alert.
+// When the provider answers again the next chat uses AI with no new
+// authorization, the alert resolves and a chat already with a person stays there.
+it('hands chats to a person while the provider fails and recovers without reauthorizing (CHAOS-PROVIDER)',async()=>{
+ let mode:'server_error'|'no_balance'|'ok'='server_error';const calls:string[]=[];
+ const chaos:typeof fetch=async(input,init)=>{
+  const body=JSON.parse(String(init?.body));if(body.system!=='Return exactly OK. Do not call tools.')calls.push(mode);
+  if(mode==='server_error')return new Response(JSON.stringify({type:'error',error:{type:'api_error',message:'Internal server error'}}),{status:500,headers:{'content-type':'application/json'}});
+  if(mode==='no_balance')return new Response(JSON.stringify({type:'error',error:{type:'invalid_request_error',message:'Your credit balance is too low'}}),{status:400,headers:{'content-type':'application/json'}});
+  return fakeAnthropic(input,init);
+ };
+ setProfileSellerForTests(new ProfileSellerAi({aiPool,custodyKey:aiKey,fetcher:chaos}));
+ try{
+  const asset=await inProfile(async c=>(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','asset',$2) RETURNING id",[P,{name:'Guía caos',kind:'link',url:'https://example.com/caos',status:'READY'}])).rows[0].id);
+  let v=data(await call('owner','POST','/v2/products',{name:'Curso caos',variant:{name:'México',locale:{market:'México',country:'MX',currency:'MXN',language:'es-MX',timezone:'America/Mexico_City'}}}),201).variant;
+  v=data(await call('owner','PUT',`/v2/variants/${v.id}/offer`,{expected_version:v.version,value:{...v.document.offer,price_minor:9700,fulfillment:[{asset_id:asset,release_on:'receipt_approved'}]}}));
+  v=data(await call('owner','PUT',`/v2/variants/${v.id}/collection`,{expected_version:v.version,value:{spei:null,links:[{label:'Pagar',provider:'stripe',url:'https://pay.example.com/caos'}],instructions:''}}));
+  // Published by the owner: AI is authorized once, here and only here.
+  const published=data(await call('owner','POST',`/v2/variants/${v.id}/publish`,{expected_version:v.version,document_sha256:v.document_sha256}));
+  expect(published.ai.find((t:{task:string})=>t.task==='sales.chat')).toMatchObject({state:'READY'});
+  const number=await inProfile(async c=>(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','channel_account',$2) RETURNING *",[P,{name:'Ventas caos',provider:'simulator',status:'WORKING'}])).rows[0]);
+  data(await call('owner','POST',`/v2/variants/${v.id}/numbers`,{account_id:number.id,sell:true}));
+  const inbound=(identity:string,text='¿Cuánto cuesta?')=>withRole('commerce_automation',()=>withTransaction(c=>materializeMessage(c,number,{key:randomUUID(),type:'message',providerAt:new Date().toISOString(),identity,kind:'text',text,payload:{}},randomUUID())));
+  const conversation=(id:string)=>inProfile(async c=>(await c.query("SELECT body FROM records WHERE kind='conversation' AND id=$1",[id])).rows[0].body);
+  const runs=(id:string)=>inProfile(async c=>(await c.query("SELECT body FROM records WHERE kind='ai_run' AND body->>'conversation_id'=$1 ORDER BY created_at",[id])).rows.map(r=>r.body));
+  const alerts=async()=>(data(await app.inject({method:'GET',url:'/v2/alerts?include=all',headers:{origin,cookie:cookies.owner!}})).alerts as {kind:string;label:string;resolvedAt:string|null}[]).filter(a=>a.kind==='AI_UNAVAILABLE');
+  const monitor=()=>withRole('commerce_automation',()=>collectOperationalAlerts());
+  // 1) Server error: the chat goes to a person, never silent.
+  const a=(await inbound('opaque:caos-a'))!;
+  await withRole('commerce_automation',()=>processAgents(20));
+  expect(calls).toEqual(['server_error']);
+  expect((await runs(a.id)).at(-1)).toMatchObject({status:'FAILED',reason:expect.stringMatching(/^AI_/)});
+  expect((await conversation(a.id)).ai_status).toBe('HUMAN_REVIEW');
+  await monitor();
+  const opened=await alerts();expect(opened).toHaveLength(1);expect(opened[0]).toMatchObject({label:expect.stringContaining('IA no está respondiendo')});
+  // 2) No balance at the provider: same handling, still one open alert.
+  mode='no_balance';
+  const b=(await inbound('opaque:caos-b'))!;
+  await withRole('commerce_automation',()=>processAgents(20));
+  expect(calls).toEqual(['server_error','no_balance']);
+  expect((await runs(b.id)).at(-1)).toMatchObject({status:'FAILED'});expect((await conversation(b.id)).ai_status).toBe('HUMAN_REVIEW');
+  await monitor();expect((await alerts()).filter(x=>!x.resolvedAt)).toHaveLength(1);
+  // 3) The provider answers again: the next chat uses AI with no reauthorization.
+  mode='ok';
+  const c=(await inbound('opaque:caos-c'))!;
+  await withRole('commerce_automation',()=>processAgents(20));
+  expect(calls).toEqual(['server_error','no_balance','ok']);
+  expect((await runs(c.id)).at(-1)!.status).not.toBe('FAILED');
+  await monitor();expect((await alerts()).filter(x=>!x.resolvedAt)).toHaveLength(0);
+  expect(data(await call('owner','GET',`/v2/variants/${v.id}/ai-status`)).find((t:{task:string})=>t.task==='sales.chat').state).toBe('READY');
+  // 4) The chat already with a person stays with the person when the customer writes again.
+  await inbound('opaque:caos-a','¿Siguen ahí?');
+  await withRole('commerce_automation',()=>processAgents(20));
+  expect(calls).toEqual(['server_error','no_balance','ok']);
+  expect((await conversation(a.id)).ai_status).toBe('HUMAN_REVIEW');
+ }finally{setProfileSellerForTests(new ProfileSellerAi({aiPool,custodyKey:aiKey,fetcher:fakeAnthropic}));}
 },120000);

@@ -18,6 +18,7 @@ import type {Body,DomainRecord} from '@commerce/contracts';
 import {DeterministicSalesAi,OpenAiSalesProvider,parseProposal,type SalesAiProvider,type AgentConfig} from '../../../packages/domain/src/sales/ai.js';
 import {event,save,create,gated,controls,proposeEffect,proposeEffectOutcome,cancelPending,receiptReviewPending} from './shared.js';
 import {advanceWorkflow} from './workflows.js';
+import {reviewAcknowledgement} from '../../../packages/domain/src/catalog/variant-document.js';
 import {profileAiPool} from './ai-runtime.js';
 import {applyReceiptAnalysis} from './commands.js';
 const deterministic=new DeterministicSalesAi();
@@ -42,7 +43,8 @@ function agentBinding(conv:DomainRecord){return{account_id:conv.body.account_id,
 function reviewBody(current:DomainRecord){const body:Body={...current.body,ai_status:'HUMAN_REVIEW',ai_pending:false,active_ai_run_id:null};if(current.body.flow_state?.status==='FINISHED'){delete body.ai_review_resume_state;return body;}return{...body,ai_review_resume_state:current.body.flow_state??null,flow_state:current.body.flow_state?{...current.body.flow_state,status:'HUMAN_REVIEW',waiting_for:'human_approved',waiting_node_id:current.body.flow_state.waiting_node_id??current.body.flow_state.node_id}:undefined};}
 async function acknowledgeReview(client:Parameters<typeof proposeEffect>[0],current:DomainRecord,runId:string){
  if(!['COMMITTED','AWAITING_RECEIPT'].includes(String(current.body.stage)))return;
- await proposeEffect(client,current,{kind:'text',purpose:'seller_review_ack',text:'Recibí tu mensaje. Necesito revisar ese punto y te responderé por aquí.',ai_run_id:runId},`ai-review-ack:${runId}`);
+ const offer=typeof current.body.offer_version_id==='string'?await getRecord(client as QueryExecutor,current.workspace_id,'offer',current.body.offer_version_id):undefined;
+ await proposeEffect(client,current,{kind:'text',purpose:'seller_review_ack',text:reviewAcknowledgement(offer?.body.language),ai_run_id:runId},`ai-review-ack:${runId}`);
 }
 function configuration(record?:DomainRecord):AgentConfig{return{provider:'deterministic',model:'deterministic-v1',knowledge:'',instructions:'',max_cost_minor:20,max_tokens:500,timeout_ms:10000,...record?.body};}
 async function configuredAi(record:DomainRecord|undefined,workspace:string,environment:'REAL'|'SIMULATION',override?:SalesAiProvider){

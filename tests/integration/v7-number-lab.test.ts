@@ -30,6 +30,7 @@ const cookies:Record<string,string>={};const created:string[]=[];
 const call=(who:string,method:string,path:string,body?:unknown,key=randomUUID())=>app.inject({method:method as 'GET',url:path,payload:body as object,headers:{origin,cookie:cookies[who]!,'idempotency-key':key}});
 const data=(r:{statusCode:number;body:string;json():any},status=200)=>{expect(r.statusCode,r.body).toBe(status);return r.json().data;};
 let sellerCalls=0,visionCalls=0;
+let authority:ProfileAuthority,owned:<T>(work:(db:import('../../packages/db/src/profile-context.js').ProfileExecutor)=>Promise<T>)=>Promise<T>;
 // RF-19.d: what the (contract) model reads from the next example receipt.
 let visionDocument:Record<string,unknown>={};
 const fakeAnthropic:typeof fetch=async(_input,init)=>{
@@ -66,11 +67,11 @@ beforeAll(async()=>{
  created.push(...Object.values(installation.logins!).map(l=>l.user));
  // Idempotent: a second run verifies and never rebuilds or issues logins.
  const again=await installNumberLabEngine(url.toString());expect(again).toEqual({database:installation.database,installationId:installation.installationId,engineSha256:installation.engineSha256,created:false});
- await fixtureProfiles({id:P,numbers:8});app=await createApp();ownerId=(await login('owner','owner')).id;await login('operator','operator');
+ await fixtureProfiles({id:P,numbers:10});app=await createApp();ownerId=(await login('owner','owner')).id;await login('operator','operator');
  aiPool=new pg.Pool({connectionString:process.env.DATABASE_URL,max:3});aiPool.on('connect',c=>{void c.query('SET ROLE commerce_ai');});
- const authority:ProfileAuthority={profile:{id:P,state:'ACTIVE'},membership:{userId:ownerId,workspaceId:P,role:'owner',active:true,version:1},
+ authority={profile:{id:P,state:'ACTIVE'},membership:{userId:ownerId,workspaceId:P,role:'owner',active:true,version:1},
   credential:{kind:'session',userId:ownerId,workspaceId:P,revoked:false,expiresAt:new Date(Date.now()+3600000).toISOString(),scopes:[],membershipVersion:1}};
- const owned=<T>(work:(db:import('../../packages/db/src/profile-context.js').ProfileExecutor)=>Promise<T>)=>withProfileTransaction(pool as never,P,async db=>{await db.query("SELECT set_config('app.environment','REAL',true)");return work(db);});
+ owned=<T>(work:(db:import('../../packages/db/src/profile-context.js').ProfileExecutor)=>Promise<T>)=>withProfileTransaction(pool as never,P,async db=>{await db.query("SELECT set_config('app.environment','REAL',true)");return work(db);});
  await owned(db=>saveAiPreferences(db,authority,{environment:'REAL',expectedVersion:0,defaultProvider:'anthropic',defaultModel:'claude-haiku-5-5',monthlyLimitMicrousd:5_000_000}));
  const saved=await owned(db=>saveAiKey(db,authority,{operationId:randomUUID(),environment:'REAL',provider:'anthropic',expectedRevision:0,key:'sk-ant-synthetic-key-0000'},aiKey));
  expect(await verifyAiKey({pool:aiPool as never,key:aiKey,fetcher:fakeAnthropic},saved.verification!)).toEqual({state:'VERIFIED'});
@@ -439,5 +440,125 @@ it('runs the automatic buyer over every variant of a number and reports one verd
  expect(transcript.some((e:{kind:string;status:string})=>e.kind==='receipt'&&e.status==='APPROVED')).toBe(true);
  expect((await call('owner','POST',`/v2/number-tests/${purchase.run_id}/actions`,{expected_version:1,action:{type:'continue'}})).statusCode).toBe(409);
  expect(data(await call('owner','GET',`/v2/number-tests/suites/latest?account_id=${number}`)).suite.suite_id).toBe(started.suite_id);
+ expect(await footprint()).toEqual(before);
+},240000);
+
+// EMU-LANGUAGE (RF-05.c, RF-19.b): a pt-BR variant converses in Portuguese with
+// each of the three providers; the profile's own (contract) key answers.
+it('converses in the language of the variant with each of the three providers (EMU-LANGUAGE)',async()=>{
+ const BR={market:'Brasil',country:'BR',currency:'BRL',language:'pt-BR',timezone:'America/Sao_Paulo'};
+ const seen:{provider:string;body:string}[]=[];
+ const reply='Olá! Aceitamos cartão pelo link de pagamento. Tem interesse?';
+ const multi:typeof fetch=async(input,init)=>{
+  const url=String(input),body=JSON.parse(String(init?.body));
+  const provider=url.startsWith('https://api.anthropic.com/')?'anthropic':url.startsWith('https://api.openai.com/')?'openai':url.startsWith('https://generativelanguage.googleapis.com/')?'google':'unknown';
+  expect(provider).not.toBe('unknown');
+  const instruction=provider==='anthropic'?body.system:provider==='openai'?body.instructions:body.systemInstruction?.parts?.[0]?.text;
+  const verification=instruction==='Return exactly OK. Do not call tools.';
+  if(!verification)seen.push({provider,body:JSON.stringify(body)});
+  const text=verification?'OK':JSON.stringify({reply,intent:'question',confidence:1,tool:'none',grounding:['offer_snapshot']});
+  const json=(value:unknown)=>new Response(JSON.stringify(value),{status:200,headers:{'content-type':'application/json'}});
+  if(provider==='anthropic')return json({id:'msg_synthetic',type:'message',role:'assistant',model:body.model,content:[{type:'text',text}],stop_reason:'end_turn',usage:{input_tokens:900,output_tokens:60,service_tier:'standard'}});
+  if(provider==='openai')return json({id:'resp_synthetic',model:body.model,status:'completed',service_tier:'default',output:[{type:'message',status:'completed',role:'assistant',content:[{type:'output_text',text}]}],usage:{input_tokens:900,output_tokens:60,total_tokens:960}});
+  const model=decodeURIComponent(url.split('/models/')[1]!.split(':')[0]!);
+  return json({modelVersion:model,candidates:[{finishReason:'STOP',content:{role:'model',parts:[{text}]}}],usageMetadata:{promptTokenCount:900,candidatesTokenCount:60,totalTokenCount:960}});
+ };
+ const previous=runtime!.fetcher;runtime!.fetcher=multi;
+ const prefVersion=async()=>withTransaction(async c=>{await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','REAL',true)",[P]);
+  return Number((await c.query("SELECT version FROM ai_profile_preferences WHERE workspace_id=$1 AND environment='REAL'",[P])).rows[0].version);});
+ try{
+  // The owner adds the keys of the other two providers (verified with the same contract fake).
+  for(const provider of ['openai','google'] as const){
+   const saved=await owned(db=>saveAiKey(db,authority,{operationId:randomUUID(),environment:'REAL',provider,expectedRevision:0,key:`synthetic-${provider}-key-0000`},aiKey));
+   expect(await verifyAiKey({pool:aiPool as never,key:aiKey,fetcher:multi},saved.verification!)).toEqual({state:'VERIFIED'});
+  }
+  const material=data(await call('owner','POST','/v2/materials?environment=REAL',{name:'Guia do curso',kind:'link',url:'https://example.com/guia-pt'}),201).id as string;
+  let v=data(await call('owner','POST','/v2/products',{name:'Curso de pão',variant:{name:'Brasil',locale:BR}}),201).variant;
+  v=data(await call('owner','PUT',`/v2/variants/${v.id}/offer`,{expected_version:v.version,value:{...v.document.offer,price_minor:4900,fulfillment:[{asset_id:material,release_on:'receipt_approved'}]}}));
+  v=data(await call('owner','PUT',`/v2/variants/${v.id}/collection`,{expected_version:v.version,value:{spei:null,links:[{label:'Pagar com cartão',provider:'stripe',url:'https://pay.example.com/curso-pao'}],instructions:'Pague pelo link.'}}));
+  data(await call('owner','POST',`/v2/variants/${v.id}/publish`,{expected_version:v.version,document_sha256:v.document_sha256}));
+  const number=await withTransaction(async c=>{await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','REAL',true)",[P]);
+   return(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','channel_account',$2) RETURNING id",[P,{name:'Vendas Brasil',provider:'waha',gateway_ref:'lab-'+randomUUID(),status:'WORKING',sending_enabled:true,identity_verified:true}])).rows[0].id as string;});
+  data(await call('owner','POST',`/v2/variants/${v.id}/numbers`,{account_id:number,sell:true}));
+  const before=await footprint();
+  for(const [provider,model] of [['anthropic','claude-haiku-5-5'],['openai','gpt-6-luna'],['google','gemini-2.5-flash-lite']] as const){
+   await owned(async db=>saveAiPreferences(db,authority,{environment:'REAL',expectedVersion:await prefVersion(),defaultProvider:provider,defaultModel:model}));
+   // Changing the provider needs the owner's authorization again (RF-13); then the test uses it.
+   data(await call('owner','POST',`/v2/variants/${v.id}/ai-authorization`,{}));
+   const estimate=data(await call('owner','POST','/v2/number-tests/estimate',{account_id:number,mode:'CHAT'}));
+   expect(estimate.variants).toEqual([expect.objectContaining({variant_id:v.id,provider,model})]);
+   const run=data(await call('owner','POST','/v2/number-tests',{account_id:number,mode:'CHAT',accepted_maximum_microusd:estimate.maximum_microusd}),201);
+   const step=async(action:unknown)=>{const current=data(await call('owner','GET',`/v2/number-tests/${run.run_id}`));
+    data(await call('owner','POST',`/v2/number-tests/${run.run_id}/actions`,{expected_version:current.run.version,action}),202);await tick();
+    const after=data(await call('owner','GET',`/v2/number-tests/${run.run_id}`));expect(after.pending).toBe(false);return after;};
+   let view=await step({type:'message',text:'Olá, quero o curso'});
+   const business=()=>(view.conversation.transcript as {from:string;text:string|null;purpose?:string|null}[]).filter(e=>e.from==='business');
+   expect(business()[0]!.text).toContain('Olá! Apresento Curso de pão');expect(business()[0]!.text).toContain('O preço é');
+   view=await step({type:'continue'});
+   expect(business().at(-1)!.text).toBe('Quer continuar? Responda «Sim, aceito» para seguir.');
+   view=await step({type:'message',text:'Sim, aceito'});
+   const collection=business().at(-1)!;
+   expect(collection.purpose).toBe('collection');expect(collection.text).toContain('Para concluir sua compra');expect(collection.text).toContain('SIMULAÇÃO');
+   expect(collection.text).not.toContain('SIMULACIÓN');expect(collection.text).not.toContain('pay.example.com');
+   const calls=seen.length;
+   view=await step({type:'message',text:'Vocês aceitam cartão?'});
+   expect(seen.length).toBe(calls+1);expect(seen.at(-1)!.provider).toBe(provider);
+   expect(seen.at(-1)!.body).toContain('Responda sempre em português');
+   expect(view.conversation.transcript.at(-1)).toMatchObject({from:'business',purpose:'seller_reply',text:reply,explanation:expect.stringContaining(model)});
+  }
+  // One laboratory attempt per provider, all in the profile's REAL budget as tests; REAL untouched.
+  const attempts=await withTransaction(async c=>(await c.query("SELECT provider,count(*)::int n FROM ai_attempts WHERE workspace_id=$1 AND lab_binding_id IS NOT NULL AND task='laboratory.chat' GROUP BY provider ORDER BY provider",[P])).rows);
+  expect(attempts.filter((a:{provider:string})=>a.provider!=='anthropic')).toEqual([{provider:'google',n:1},{provider:'openai',n:1}]);
+  expect(await footprint()).toEqual(before);
+ }finally{
+  runtime!.fetcher=previous;
+  await owned(async db=>saveAiPreferences(db,authority,{environment:'REAL',expectedVersion:await prefVersion(),defaultProvider:'anthropic',defaultModel:'claude-haiku-5-5'}));
+ }
+},240000);
+
+// EMU-PAY-METHOD (RF-08.c, RF-19.b): each variant shows exactly the methods it
+// offers (placeholders, never the account or the link); with both, one SPEI
+// receipt is enough and the purchase is delivered once.
+it('collects with one or both methods as each variant is configured (EMU-PAY-METHOD)',async()=>{
+ const material=data(await call('owner','POST','/v2/materials?environment=REAL',{name:'Acceso métodos',kind:'link',url:'https://example.com/metodos'}),201).id as string;
+ const spei={bank:'Banco sintético',holder:'Titular sintético',clabe:clabe('01218000011835971')},link={label:'Pagar con tarjeta',provider:'stripe',url:'https://pay.example.com/metodos'};
+ const make=async(name:string,collection:{spei:typeof spei|null;links:typeof link[]})=>{
+  let v=data(await call('owner','POST','/v2/products',{name,variant:{name:'México',locale:MX}}),201).variant;
+  v=data(await call('owner','PUT',`/v2/variants/${v.id}/offer`,{expected_version:v.version,value:{...v.document.offer,price_minor:12000,fulfillment:[{asset_id:material,release_on:'receipt_approved'}]}}));
+  v=data(await call('owner','PUT',`/v2/variants/${v.id}/collection`,{expected_version:v.version,value:{...collection,instructions:'',expected_reference:'METODOS',expected_concept:null}}));
+  data(await call('owner','POST',`/v2/variants/${v.id}/publish`,{expected_version:v.version,document_sha256:v.document_sha256}));return v;};
+ const onlySpei=await make('Pago SPEI',{spei,links:[]}),onlyLink=await make('Pago enlace',{spei:null,links:[link]}),both=await make('Pago ambos',{spei,links:[link]});
+ await withProfileTransaction(pool as never,P,async db=>{await db.query('SET LOCAL ROLE commerce_api');await db.query("SELECT set_config('app.environment','REAL',true)");
+  return writeReceiptPolicy(db,'REAL',both.id,{expectedRevision:0,override:{automaticApproval:true}},ownerId,randomUUID());});
+ const number=await withTransaction(async c=>{await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','REAL',true)",[P]);
+  return(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','channel_account',$2) RETURNING id",[P,{name:'Ventas métodos',provider:'waha',gateway_ref:'lab-'+randomUUID(),status:'WORKING',sending_enabled:true,identity_verified:true}])).rows[0].id as string;});
+ for(const v of [onlySpei,onlyLink,both])data(await call('owner','POST',`/v2/variants/${v.id}/numbers`,{account_id:number,sell:true}));
+ const before=await footprint();
+ const collect=async(variant:{id:string})=>{
+  const estimate=data(await call('owner','POST','/v2/number-tests/estimate',{account_id:number,mode:'CHAT'}));
+  const run=data(await call('owner','POST','/v2/number-tests',{account_id:number,mode:'CHAT',accepted_maximum_microusd:estimate.maximum_microusd}),201);
+  const step=async(action:unknown)=>{const current=data(await call('owner','GET',`/v2/number-tests/${run.run_id}`));
+   data(await call('owner','POST',`/v2/number-tests/${run.run_id}/actions`,{expected_version:current.run.version,action}),202);await tick();
+   const after=data(await call('owner','GET',`/v2/number-tests/${run.run_id}`));expect(after.pending).toBe(false);return after;};
+  await step({type:'message',text:'Hola'});await step({type:'select_variant',variant_id:variant.id,origin:'ADVERTISEMENT'});await step({type:'continue'});
+  const view=await step({type:'message',text:'Sí, acepto'});
+  const text=String(view.conversation.transcript.at(-1).text);expect(view.conversation.transcript.at(-1).purpose).toBe('collection');
+  expect(text).toContain('SIMULACIÓN');expect(text).toContain('Referencia: METODOS');expect(text).not.toContain('01218000011835971');expect(text).not.toContain('pay.example.com');
+  return{text,run,step,view};};
+ const a=await collect(onlySpei);expect(a.text).toContain('Banco sintético: transferencia SPEI a una CLABE de prueba');expect(a.text).not.toContain('Pagar con tarjeta');
+ const b=await collect(onlyLink);expect(b.text).toContain('Pagar con tarjeta: enlace de pago de prueba');expect(b.text).not.toContain('SPEI');
+ const c=await collect(both);expect(c.text).toContain('Banco sintético: transferencia SPEI a una CLABE de prueba');expect(c.text).toContain('Pagar con tarjeta: enlace de pago de prueba');
+ // With both, one SPEI receipt approves the purchase and it is delivered once.
+ const png=Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),Buffer.from('both methods receipt'.padEnd(64,'.'))]);
+ const upload=data(await call('owner','POST',`/v2/number-tests/${c.run.run_id}/attachments`,{mime_type:'image/png',base64:png.toString('base64')}),201);
+ const today=new Intl.DateTimeFormat('en-CA',{timeZone:MX.timezone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(c.view.run.virtual_now));
+ visionDocument={is_receipt:true,amount_minor:12000,currency:'MXN',destination_suffix:'5971',bank:'Banco sintético',reference:'METODOS',status:'completed',confidence:0.97,contradictions:[],
+  destination:'012180000118359716',beneficiary:'Titular sintético',paid_on:today,concept:null};
+ let view=await c.step({type:'receipt',attachment_id:upload.attachment_id});
+ expect(view.conversation.transcript.findLast((e:{kind:string})=>e.kind==='receipt')).toMatchObject({status:'APPROVED'});
+ expect(view.conversation.waiting_for).not.toBe('receipt_approved');
+ view=await c.step({type:'continue'});
+ const delivered=view.conversation.transcript.filter((e:{from:string;material:string|null})=>e.from==='business'&&e.material==='Acceso métodos');
+ expect(delivered).toHaveLength(1);
  expect(await footprint()).toEqual(before);
 },240000);

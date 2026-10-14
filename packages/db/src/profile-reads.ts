@@ -136,6 +136,7 @@ export const alertLabels:Record<string,{label:string;href:string}>={
  REAL_POLICY_FROZEN:{label:'Envíos detenidos por la plataforma',href:'/home'},
  RELEASE_HOLD_OVERDUE:{label:'Actualización de la plataforma en curso',href:'/home'},
  CHANNEL_WORKER_UNAVAILABLE:{label:'Servicio de envío no disponible',href:'/home'},
+ AI_UNAVAILABLE:{label:'La IA no está respondiendo: las conversaciones pasan a una persona',href:'/account/integrations'},
 };
 export async function listProfileAlerts(db:ProfileExecutor,authority:ProfileAuthority,input:{includeResolved?:boolean}={}){
  await authorize(db,authority,'alerts:read');

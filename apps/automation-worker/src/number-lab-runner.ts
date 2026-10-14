@@ -34,16 +34,19 @@ export function numberLabRuntimeFromEnv(env=process.env):NumberLabRuntime|null{
   keys:numberLabKeys(),sourceRoot,laboratoryRoot:env.LAB_PRIVATE_STORAGE_DIR!,ai:aiPool&&custody?{pool:aiPool,custodyKey:custody}:null,
   async close(){await Promise.all([control.native.end(),engine.native.end(),seed.native.end(),source.native.end()]);}};
 }
-/** Laboratory grants of one run's profile: the seller (task laboratory.chat)
- * and the receipt reading (task laboratory.vision, RF-19.d). */
-async function labGrants(ai:{pool:pg.Pool},workspaceId:string,task:'laboratory.chat'|'laboratory.vision'){
+/** Laboratory grants of one run: the seller (task laboratory.chat) and the
+ * receipt reading (task laboratory.vision, RF-19.d), each on exactly the model
+ * the run was priced with (its run_releases quote, which also guards every AI
+ * binding). A variant may hold grants for several providers after the owner
+ * changes the profile's model; an older one must never be picked. */
+async function labGrants(ai:{pool:pg.Pool},workspaceId:string,runId:string,task:'laboratory.chat'|'laboratory.vision'){
  return withProfileTransaction(ai.pool as never,workspaceId,async db=>{await db.query("SELECT set_config('app.environment','REAL',true)");
-  // A reading grant counts only on the seller's own model: the run was priced
-  // (and its AI bindings are guarded) with that model.
-  const rows=(await db.query(`SELECT DISTINCT ON(g.variant_id) g.id,g.variant_id FROM ai_runtime_grants g WHERE g.workspace_id=$1 AND g.environment='REAL' AND g.task=$2 AND NOT g.is_test AND g.revoked_at IS NULL AND g.variant_id IS NOT NULL
-   AND g.expires_at>clock_timestamp()+interval '5 minutes' AND ($2='laboratory.chat' OR EXISTS(SELECT 1 FROM ai_runtime_grants c WHERE c.workspace_id=g.workspace_id AND c.environment=g.environment AND c.variant_id=g.variant_id
-    AND c.task='laboratory.chat' AND NOT c.is_test AND c.revoked_at IS NULL AND (c.provider,c.model,c.model_revision,c.price_version)=(g.provider,g.model,g.model_revision,g.price_version)))
-   ORDER BY g.variant_id,g.expires_at DESC,g.id`,[workspaceId,task])).rows as {id:string;variant_id:string}[];
+  const rows=(await db.query(`SELECT DISTINCT ON(g.variant_id) g.id,g.variant_id FROM ai_runtime_grants g
+    JOIN commerce_number_lab.run_releases v ON v.workspace_id=g.workspace_id AND v.run_id=$3::uuid AND v.variant_id=g.variant_id
+   WHERE g.workspace_id=$1 AND g.environment='REAL' AND g.task=$2 AND NOT g.is_test AND g.revoked_at IS NULL AND g.variant_id IS NOT NULL
+    AND g.expires_at>clock_timestamp()+interval '5 minutes'
+    AND (g.provider,g.model,g.model_revision,g.price_version)=(v.quote->>'provider',v.quote->>'model',v.quote->>'modelRevision',v.quote->>'priceVersion')
+   ORDER BY g.variant_id,g.expires_at DESC,g.id`,[workspaceId,task,runId])).rows as {id:string;variant_id:string}[];
   return Object.fromEntries(rows.map(r=>[r.variant_id,r.id])) as Record<string,string>;});
 }
 export const LAB_SELLER_MAXIMUM_MICROUSD=250_000;
@@ -63,7 +66,7 @@ export async function processNumberLabOperations(runtime:NumberLabRuntime|null,l
  for(const q of queued){
   try{
    let seller:NumberLabDriverSellerConfiguration|undefined;
-   if(runtime.ai){const grants=await labGrants(runtime.ai,q.workspace_id,'laboratory.chat'),visionGrants=await labGrants(runtime.ai,q.workspace_id,'laboratory.vision');
+   if(runtime.ai){const grants=await labGrants(runtime.ai,q.workspace_id,q.run_id,'laboratory.chat'),visionGrants=await labGrants(runtime.ai,q.workspace_id,q.run_id,'laboratory.vision');
     if(Object.keys(grants).length||Object.keys(visionGrants).length)seller={workspaceId:q.workspace_id,enterprisePool:runtime.ai.pool as never,custodyKey:runtime.ai.custodyKey,grants,visionGrants,maximumMicrousd:LAB_SELLER_MAXIMUM_MICROUSD,...(runtime.fetcher?{fetcher:runtime.fetcher}:{})};}
    const materials=createNumberLabMaterialCustody({controlPool:runtime.control,sourcePool:runtime.source,controlKey:runtime.keys.control,sourceKey:runtime.keys.source,laboratoryKey:runtime.keys.files,sourceRoot:runtime.sourceRoot,laboratoryRoot:runtime.laboratoryRoot});
    const driver=createNumberLabDriver({controlPool:runtime.control,seedPool:runtime.seed,enginePool:runtime.engine,identity:runtime.identity,key:runtime.keys.control,materials,...(seller?{seller}:{}),
