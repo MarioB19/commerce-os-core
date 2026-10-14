@@ -25,7 +25,10 @@ const suffix=randomBytes(8).toString('hex'),login='result_sources_api_'+suffix,w
 let admin:pg.Pool,api:pg.Pool,worker:pg.Pool,aiPool:pg.Pool,scoped:ProfilePool,workerScope:ProfilePool,serial=0;
 const aiLogin='result_sources_ai_'+suffix;
 const day='2026-10-10',started='2026-10-10T16:00:00.000Z',response='2026-10-10T16:00:30.000Z',paid='2026-10-10T17:00:00.000Z';
-const query=resultFiltersSchema.parse({from:day,to:'2026-10-13',currency:'MXN'});
+// The range must include facts the fixtures create at the current time (AI
+// attempts, projections); a fixed end date turned these into a time bomb.
+const until=new Date(Date.now()+86400000).toISOString().slice(0,10);
+const query=resultFiltersSchema.parse({from:day,to:until>'2026-10-13'?until:'2026-10-13',currency:'MXN'});
 function tx<T>(w:string,work:(db:ProfileExecutor)=>Promise<T>){return withProfileTransaction(scoped,w,async db=>{await db.query("SELECT set_config('app.environment','REAL',true)");return work(db);});}
 async function profile(timezone='America/Mexico_City'){return fixtureProfileRow(admin,createdProfiles,'results_'+suffix+'_'+(++serial),{businessName:'Synthetic Results',timezone,numbers:6,products:20,daily:100});}
 async function rec(w:string,kind:string,body:Record<string,unknown>,environment='REAL'){const id=randomUUID();await admin.query('INSERT INTO records(id,workspace_id,environment,kind,body,created_at) VALUES($1,$2,$3,$4,$5,$6)',[id,w,environment,kind,body,started]);return id;}
