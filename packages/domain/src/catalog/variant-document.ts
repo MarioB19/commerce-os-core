@@ -171,9 +171,10 @@ function expectedTextLines(b:Body){
  * a holder or a payment link. */
 export function simulatedCollectionInstructions(bank:Body|null|undefined,fallbackLanguage?:unknown){
  const language=typeof bank?.language==='string'&&bank.language?bank.language:typeof fallbackLanguage==='string'&&fallbackLanguage?fallbackLanguage:'es';
- const t={es:{head:'SIMULACIÓN: datos de pago de prueba; no hagas transferencias ni pagos.',spei:'transferencia SPEI a una CLABE de prueba',link:'enlace de pago de prueba'},
-  pt:{head:'SIMULAÇÃO: dados de pagamento de teste; não faça transferências nem pagamentos.',spei:'transferência SPEI para uma CLABE de teste',link:'link de pagamento de teste'},
-  en:{head:'SIMULATION: test payment details; do not make transfers or payments.',spei:'SPEI transfer to a test CLABE',link:'test payment link'}}[languageFamily(language)];
+ // The Spanish head keeps the historical simulator text that existing flows and tests read.
+ const t={es:{head:'SIMULACIÓN: instrucciones bancarias de prueba; no efectuar transferencias.',spei:'transferencia SPEI a una CLABE de prueba',link:'enlace de pago de prueba'},
+  pt:{head:'SIMULAÇÃO: instruções bancárias de teste; não faça transferências.',spei:'transferência SPEI para uma CLABE de teste',link:'link de pagamento de teste'},
+  en:{head:'SIMULATION: test bank instructions; do not make transfers.',spei:'SPEI transfer to a test CLABE',link:'test payment link'}}[languageFamily(language)];
  const lines=[t.head],methods=bank?.methods;
  if(methods&&typeof methods==='object'){
   if(methods.spei===true)lines.push(`${String(bank?.spei_bank??bank?.bank??'SPEI')}: ${t.spei}`);
