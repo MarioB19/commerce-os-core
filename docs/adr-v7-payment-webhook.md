@@ -22,8 +22,9 @@ persona. Un webhook de proveedor no es requisito para cerrar V7 (D-05).
 ## Lo que la plataforma no afirma
 
 Una captura o un comprobante aprobados **no** son verificación bancaria: la
-aplicación los muestra como «comprobante aprobado por reglas» o «por una
-persona», nunca como pago conciliado con el banco o el proveedor.
+aplicación los muestra como comprobante aprobado (por las reglas de la
+variante o por una persona, con su motivo), nunca como pago conciliado con el
+banco o el proveedor.
 
 ## Revisión futura
 
