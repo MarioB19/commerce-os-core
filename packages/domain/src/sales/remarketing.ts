@@ -65,3 +65,28 @@ export function setRemarketingSlotEnabled(policy:RemarketingPolicy,slotId:string
  if(!parsed.slots.some(slot=>slot.id===slotId))throw new Error('REMARKETING_SLOT_NOT_FOUND');
  return remarketingPolicySchema.parse({...parsed,slots:parsed.slots.map(slot=>slot.id===slotId?{...slot,enabled,...(enabled&&slot.position>1?{warning_acknowledged:warningAcknowledged}:{})}:slot)});
 }
+
+function localParts(at:Date,timezone:string){
+ const parts=new Intl.DateTimeFormat('en-US',{timeZone:timezone,hourCycle:'h23',hour:'2-digit',minute:'2-digit',second:'2-digit'}).formatToParts(at);
+ const get=(type:string)=>Number(parts.find(p=>p.type===type)?.value??'0');
+ return{hour:get('hour')%24,minute:get('minute'),second:get('second')};
+}
+/** V7 F5 (RF-10.d): the first instant at or after `at` inside the allowed local
+ * hours [start, end) of `timezone`. Without a window, `at` itself. DST is
+ * handled by re-reading the local hour of the candidate. */
+export function nextRemarketingTime(at:Date,window:{start_hour:number;end_hour:number;timezone?:string}|undefined,fallbackTimezone='America/Mexico_City'):Date{
+ if(!window)return at;
+ const timezone=window.timezone??fallbackTimezone;
+ const inside=(d:Date)=>{const h=localParts(d,timezone).hour;return h>=window.start_hour&&h<window.end_hour;};
+ if(inside(at))return at;
+ const {hour,minute,second}=localParts(at,timezone);
+ const hoursAhead=hour<window.start_hour?window.start_hour-hour:24-hour+window.start_hour;
+ let candidate=new Date(at.getTime()+hoursAhead*3600_000-(minute*60+second)*1000-at.getMilliseconds());
+ for(let i=0;i<3&&!inside(candidate);i++){const h=localParts(candidate,timezone).hour;candidate=new Date(candidate.getTime()+(h<window.start_hour?1:-1)*3600_000);}
+ // A DST jump can overshoot the opening hour: take the earliest inside instant.
+ for(let i=0;i<2;i++){const earlier=new Date(candidate.getTime()-3600_000);if(earlier.getTime()>=at.getTime()&&inside(earlier))candidate=earlier;else break;}
+ return candidate.getTime()<at.getTime()?at:candidate;
+}
+export function insideRemarketingWindow(at:Date,window:{start_hour:number;end_hour:number;timezone?:string}|undefined,fallbackTimezone='America/Mexico_City'){
+ if(!window)return true;const h=localParts(at,window.timezone??fallbackTimezone).hour;return h>=window.start_hour&&h<window.end_hour;
+}

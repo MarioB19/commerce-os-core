@@ -1,35 +1,18 @@
 import {offerSalesFlowAssetIds,workflowAssetIds} from '../../../packages/domain/src/sales/workflow-assets.js';
 import type {FastifyInstance} from 'fastify';
-import {z} from 'zod';
 import {pool,getRecord,listRecords,readOperationalSettings,readEffectiveHealthBatch,currentProviderHealthReady} from '../../../packages/db/src/index.js';
 import {numberNow} from '../../../packages/db/src/number-clock.js';
 import {warmupIdentityMatches} from '../../../packages/db/src/warmup.js';
 import {accountAssignmentSnapshot,commercialAssignmentNonCurrentReason,commercialAssignmentResourceIds,commercialAssignmentSnapshot,commercialAuthorizationStatus} from '../../../packages/db/src/commercial-assignments.js';
-import {integrationReadiness,publicSettingText} from '../../../packages/db/src/integration-settings.js';
+import {integrationReadiness} from '../../../packages/db/src/integration-settings.js';
 import {readiness as offerReadiness} from '../../../packages/domain/src/catalog/validation.js';
 import {assertPermission} from '../../../packages/domain/src/core/permissions.js';
 import {channelProgress} from '../../../packages/domain/src/operations/service-progress.js';
 import {automationProgress} from '../../../packages/domain/src/operations/automation-progress.js';
-import {principal,envOf,parseBody,resourcePermitted,mutate,fail,audit,sanitize} from './context.js';
+import {principal,envOf,resourcePermitted,fail,sanitize} from './context.js';
 import {mailMetadata,readMailSetting} from './identity-mail.js';
 import type {Body} from '../../../packages/contracts/src/index.js';
 const evidenceKinds=['backup_external','restore_assets','smtp_received','alert_received','ai_evaluation','provider_capability','commercial_pilot','warmup_pilot','staging_24h','accessibility_human'] as const;
-const evidenceDetailsSchema=z.object({
- summary:z.string().trim().min(10).max(1000),
- resource_ids:z.array(z.string().uuid()).max(100).optional(),
- capabilities:z.array(z.enum(['text','audio','image','document','profile','template'])).max(6).optional(),
- approved_templates:z.array(z.object({
-  name:z.string().trim().min(1).max(512).regex(/^[a-z0-9_]+$/),
-  language:z.string().trim().regex(/^[a-z]{2,3}(?:_[A-Z]{2})?$/),
-  header_kind:z.literal('video'),
-  body_text_sha256:z.string().regex(/^[a-f0-9]{64}$/),
- }).strict()).max(100).optional(),
-}).strict().superRefine((details,ctx)=>{
- if(details.capabilities?.includes('template')){
-  if(!details.resource_ids?.length)ctx.addIssue({code:'custom',path:['resource_ids'],message:'La capacidad template debe cubrir al menos una cuenta.'});
-  if(!details.approved_templates?.length)ctx.addIssue({code:'custom',path:['approved_templates'],message:'Registra nombre, idioma, encabezado de video y hash del texto aprobado.'});
- }
-});
 type Check={key:string;label:string;status:string;source:string;observed_at:string|null;href:string;message?:string;details?:{available_bytes:number;total_bytes:number}};
 const iso=(value:any)=>value?new Date(value).toISOString():null;
 const configured=(checks:Check[])=>checks.every(c=>['CONFIGURED','VERIFIED','NOT_APPLICABLE'].includes(c.status));
@@ -117,16 +100,5 @@ export async function readinessRoutes(app:FastifyInstance){
    checks.push({key:kind,label:kind,status:e?new Date(e.expires_at).getTime()<Date.now()?'STALE':!coversScope?'UNAVAILABLE':e.status:'UNAVAILABLE',source:e?.source??'NO_EVIDENCE',observed_at:iso(e?.observed_at),href:'/settings',message:!coversScope?'La evidencia no cubre todas las cuentas y versiones vigentes.':e?.source==='HUMAN_ATTESTATION'?'Declaración humana registrada; no medición automática.':undefined});}
 
   return{data:{environment,scope:'WORKSPACE',observed_at,configuration_ready:accounts.length>0&&accounts.every(a=>a.configuration_ready),ready:accounts.length>0&&accounts.every(a=>a.configuration_ready)&&configured(checks),checks,accounts,evidence:sanitize(evidence)}};
- });
- app.post('/v1/operational-evidence',async(req,reply)=>{
-  const p=principal(req);if(p.service||p.role!=='owner')throw fail(403,'OWNER_REQUIRED');
-  const input=z.object({kind:z.enum(evidenceKinds),status:z.enum(['VERIFIED','FAILED','UNAVAILABLE']),evidence_ref:z.string().trim().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.:/ -]{2,239}$/),details:evidenceDetailsSchema,observed_at:z.string().datetime({offset:true}),expires_at:z.string().datetime({offset:true})}).strict().parse(parseBody(req));
-  if(Date.parse(input.observed_at)>Date.now()+60000||Date.parse(input.expires_at)<=Date.parse(input.observed_at)||Date.parse(input.expires_at)>Date.now()+366*86400000)throw fail(400,'INVALID_EVIDENCE_WINDOW');
-  if(publicSettingText(input.details.summary)!==input.details.summary||publicSettingText(input.evidence_ref)!==input.evidence_ref)throw fail(400,'PRIVATE_DATA_IN_EVIDENCE');
-  const result=await mutate(req,'operational.evidence',async c=>{
-   for(const id of input.details.resource_ids??[])if(!(await c.query('SELECT id FROM records WHERE workspace_id=$1 AND environment=$2 AND id=$3',[p.workspace_id,envOf(req),id])).rowCount)throw fail(404,'NOT_FOUND');
-   const row=(await c.query("INSERT INTO operational_evidence(workspace_id,environment,kind,status,source,evidence_ref,details,observed_at,expires_at,actor_id) VALUES($1,$2,$3,$4,'HUMAN_ATTESTATION',$5,$6,$7,$8,$9) RETURNING *",[p.workspace_id,envOf(req),input.kind,input.status,input.evidence_ref,input.details,input.observed_at,input.expires_at,p.user.id])).rows[0];
-   await audit(c,req,'operational.evidence_attested',row.id,{kind:input.kind,status:input.status,source:'HUMAN_ATTESTATION'});return{data:sanitize(row),status:201};
-  });reply.code(result.status??201);return{data:result.data};
  });
 }

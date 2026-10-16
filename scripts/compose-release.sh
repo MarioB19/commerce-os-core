@@ -9,14 +9,26 @@ test -s "$release_env"
 read_value() { sed -n "s/^$1=//p" "$2"; }
 private_dir=$(read_value COMMERCE_SECRETS_DIR "$release_env")
 scope=$(read_value COMMERCE_DEPLOY_SCOPE "$release_env")
-case "$scope" in ''|full) ;; api-web)
+# V7 F1 PITR: once scripts/v7_pitr.py enable wrote the marker, PostgreSQL always
+# renders with pgBackRest archiving. The overlay goes after every other overlay.
+pitr_dir=${COMMERCE_PITR_DIR:-$private_dir/pitr}
+if [ -e "$pitr_dir/enabled" ]; then
+ test -s "$pitr_dir/pgbackrest.env" && test -s "$pitr_dir/pgbackrest.conf" || { echo 'PITR is enabled but its private configuration is missing.' >&2; exit 2; }
+ export COMMERCE_PITR_DIR="$pitr_dir"
+ pitr=1
+else
+ pitr=
+fi
+case "$scope" in ''|full) [ -z "$pitr" ] || set -- -f infra/compose/postgres-pitr.yaml "$@" ;; api-web)
  test -s "$private_dir/api-web-adoption.json" || { echo 'Adopted API/web state required' >&2; exit 2; }
  # Scope is stored in the protected release environment, including rollback.
  # A pilot overlay cannot silently select consumers on this recovered copy.
  test -z "${COMMERCE_PILOT_RELEASE_ENV:-$(read_value COMMERCE_PILOT_RELEASE_ENV "$release_env")}"
+ [ -z "$pitr" ] || set -- -f infra/compose/postgres-pitr.yaml "$@"
  exec docker compose --env-file "$release_env" -f infra/compose/production.yaml -f infra/compose/copy-api-web.yaml "$@"
  ;; copy-runtime)
  test -s "$private_dir/api-web-adoption.json" || exit 2
+ [ -z "$pitr" ] || set -- -f infra/compose/postgres-pitr.yaml "$@"
  set -- -f infra/compose/copy-api-web.yaml -f infra/compose/copy-runtime.yaml "$@"
  ;; *) echo 'Invalid deployment scope' >&2; exit 2;; esac
 pilot_env=${COMMERCE_PILOT_RELEASE_ENV:-$(read_value COMMERCE_PILOT_RELEASE_ENV "$release_env")}

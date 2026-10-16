@@ -1,3 +1,10 @@
+import {recordProfileExecutor} from '../../../packages/db/src/profile-record-context.js';
+import {bindRecordEnvironment} from '../../../packages/db/src/profile-environment.js';
+import {withNumberLabEngine,type NumberLabEngineLease} from '../../../packages/db/src/number-lab-engine-runtime.js';
+import type {ProfileQuery} from '../../../packages/db/src/profile-context.js';
+import {bindNumberLabDispatch,type NumberLabDispatch} from './catalog-simulator.js';
+import {readContinuousEffectAuthority} from '../../../packages/db/src/continuous-effect.js';
+import {lockedContinuousWorkerProfile,commercialContinuityAuthorityBlock,continuousInboundRecipient} from '../../../packages/db/src/continuous-commercial.js';
 import {reserveDispatchCapacity} from './dispatch-capacity.js';
 import {refreshEffectGroup,reconcileGroupDeliveries} from './warmup-group-dispatch.js';
 import {assignmentFor,assignmentGate,chatLock,channelIdentityHash} from '../../../packages/db/src/commercial-assignments.js';
@@ -9,7 +16,7 @@ import {effectiveNumberFlowControls} from '../../../packages/db/src/number-flow-
 import {readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {performance} from 'node:perf_hooks';
-import {withTransaction,query,pool,getRecord,appendEvent,uuid,hash,stableJson,decrypt,encrypt,readOperationalSettings,setRemarketingAttemptStatus,verifiedTemplateCapabilityEvidence,type QueryExecutor} from '@commerce/db';
+import {withTransaction,query,getRecord,appendEvent,uuid,hash,stableJson,decrypt,encrypt,readOperationalSettings,setRemarketingAttemptStatus,verifiedTemplateCapabilityEvidence,type QueryExecutor} from '@commerce/db';
 import {readEffectiveHealth,currentEffectiveSignal,currentProviderHealthReady} from '../../../packages/db/src/effective-health.js';
 import {remarketingTransportTemplateSchema,type DomainRecord,type Body} from '@commerce/contracts';
 import type {OutboundMessage,SendResult} from '@commerce/messaging';
@@ -24,13 +31,19 @@ async function effectiveNow(client:QueryExecutor,conversation:DomainRecord|undef
  if(conversation?.environment==='SIMULATION'&&conversation.body.simulation_id){const simulation=await getRecord(client,conversation.workspace_id,'simulation',conversation.body.simulation_id);if(simulation?.body.virtual_now)return new Date(simulation.body.virtual_now);}
  return (await client.query('SELECT now() AS now')).rows[0].now as Date;
 }
-const cancelledGateReasons=new Set(['EFFECT_EXPIRED','CONTACT_SUPPRESSED','CONTROL_VERSION_CHANGED','COLLECTION_STOPPED','RECEIPT_RECEIVED','FOLLOWUP_INELIGIBLE','FOLLOWUP_WINDOW_CLOSED','TEMPLATE_MEDIA_UNSUPPORTED','TEMPLATE_TRANSPORT_UNSUPPORTED','TEMPLATE_PROVIDER_EVIDENCE_REQUIRED','HUMAN_TAKEOVER','BUYER_EXCLUDED','AGREEMENT_ACCEPTED','REMARKETING_INELIGIBLE','REMARKETING_CYCLE_CLOSED','REMARKETING_ATTEMPT_INACTIVE','CAUSAL_PREDECESSOR_FAILED']);
+const cancelledGateReasons=new Set(['V5_CAMPAIGN_RETIRED','EFFECT_EXPIRED','CONTACT_SUPPRESSED','CONTROL_VERSION_CHANGED','COLLECTION_STOPPED','RECEIPT_RECEIVED','FOLLOWUP_INELIGIBLE','FOLLOWUP_WINDOW_CLOSED','TEMPLATE_MEDIA_UNSUPPORTED','TEMPLATE_TRANSPORT_UNSUPPORTED','TEMPLATE_PROVIDER_EVIDENCE_REQUIRED','HUMAN_TAKEOVER','BUYER_EXCLUDED','AGREEMENT_ACCEPTED','REMARKETING_INELIGIBLE','REMARKETING_CYCLE_CLOSED','REMARKETING_ATTEMPT_INACTIVE','CAUSAL_PREDECESSOR_FAILED']);
 export async function gateDispatch(client:QueryExecutor,effect:Body,owner:string):Promise<{allowed:boolean;reason?:string;account?:DomainRecord;contact?:DomainRecord;leaseMs?:number}>{
+ // Inside a profile scope, environment-bound tables (session ownership, custody)
+ // are visible only with the effect's own environment bound to the transaction.
+ await bindRecordEnvironment(client,effect.workspace_id,effect.environment);
  if(effect.kind==='warmup')return gateWarmupDispatch(client,effect,owner);
  const account=await getRecord(client,effect.workspace_id,'channel_account',effect.account_id),contact=await getRecord(client,effect.workspace_id,'contact',effect.contact_id),conversation=await getRecord(client,effect.workspace_id,'conversation',effect.conversation_id);
  const deny=(reason:string)=>({allowed:false,reason});if(!account||!contact||!conversation||account.environment!==effect.environment||contact.environment!==effect.environment||conversation.environment!==effect.environment)return deny('RESOURCE_SCOPE_INVALID');
  if(account.body.deleted_at)return deny('CHANNEL_ACCOUNT_DELETED');
  if(!effect.payload||typeof effect.payload!=='object'||Array.isArray(effect.payload))return deny('EFFECT_PAYLOAD_INVALID');
+ // V7 F8-E: V5 message campaigns were retired with their routes; an effect
+ // left from one is cancelled with its reason and never sent (no outbound outside D-17).
+ if(effect.payload.campaign_id)return deny('V5_CAMPAIGN_RETIRED');
  let effectAsset:DomainRecord|undefined;
  if(effect.payload.asset_id){effectAsset=await getRecord(client,effect.workspace_id,'asset',effect.payload.asset_id);if(!effectAsset||effectAsset.environment!==effect.environment)return deny('ASSET_SCOPE_INVALID');if(effectAsset.body.delivery_eligible===false||effectAsset.body.usage==='MARKETING_REFERENCE'||effectAsset.body.storage_provider==='r2')return deny('ASSET_NOT_DELIVERY_ELIGIBLE');if(effectAsset.body.product_id&&effectAsset.body.product_id!==conversation.body.product_id)return deny('ASSET_PRODUCT_MISMATCH');}
  const assignmentBlock=await assignmentGate(client,conversation);if(assignmentBlock)return deny(assignmentBlock);
@@ -126,6 +139,17 @@ export async function gateDispatch(client:QueryExecutor,effect:Body,owner:string
  if(effect.environment==='SIMULATION'){if(effect.approval_hash!==effect.config_hash)return deny('SIMULATION_APPROVAL_INVALIDATED');}
  else {
   const offer=await getRecord(client,effect.workspace_id,'offer',effect.payload.offer_version_id??'');if(!offer||offer.body.status!=='PUBLISHED')return deny('PUBLISHED_OFFER_REQUIRED');if(effect.payload.workflow_version_id){const workflow=await getRecord(client,effect.workspace_id,'workflow',effect.payload.workflow_version_id);if(!workflow||workflow.body.status!=='PUBLISHED')return deny('PUBLISHED_WORKFLOW_REQUIRED');}
+  if(effect.continuous_authorization_id){
+   const db=await recordProfileExecutor(client,effect.workspace_id,effect.environment);
+   await lockedContinuousWorkerProfile(db);
+   const read=await readContinuousEffectAuthority(db,'REAL',effect.id);if(read.state==='EXPIRED')return deny(read.reason);
+   const reason=commercialContinuityAuthorityBlock(read.authorization,effect.workspace_id,'REAL',{
+    assignmentId:conversation.body.assignment_id,assignmentRevision:conversation.body.assignment_revision,bindingId:conversation.body.binding_id,
+    accountId:account.id,productId:conversation.body.product_id});
+   if(reason)return deny(reason);
+   if(effect.authorization_id||effect.approval_hash!==effect.config_hash)return deny('CONTINUITY_EFFECT_APPROVAL_INVALID');
+   if(!continuousInboundRecipient(conversation,contact,now,!!eligibleTemplate))return deny('CONTINUITY_INBOUND_CONSENT_REQUIRED');
+  }else{
   const auth=(await client.query(`SELECT * FROM read_locked_operation_authorization($1,$2,'REAL')`,[effect.authorization_id,effect.workspace_id])).rows[0];if(!auth)return deny('AUTHORIZATION_MISSING_OR_EXPIRED');
   if(auth.configuration_version!==policy.version)return deny('CONFIGURATION_CHANGED');
   const scope=auth.scope??{};if(conversation.body.assignment_id){const assignment=await assignmentFor(client,effect.workspace_id,effect.environment,conversation.body.assignment_id);if(!assignment||scope.mode!=='product_assignment'||scope.channel_identity_hash!==channelIdentityHash(account)||assignment.authorization_id!==auth.id||scope.assignment_id!==assignment.id||scope.assignment_revision!==assignment.revision||scope.binding_id!==assignment.binding_id||scope.product_id!==conversation.body.product_id||(scope.agent_version_id??null)!==(conversation.body.agent_version_id??null))return deny('PRODUCT_ASSIGNMENT_NOT_AUTHORIZED');}if(scope.mode==='channel_setup'&&(scope.assignment_revision!==account.body.assignment_revision||account.body.active_authorization_id!==auth.id||(scope.agent_version_id??null)!==(conversation.body.agent_version_id??null)))return deny('CHANNEL_ASSIGNMENT_CHANGED');if(!Array.isArray(scope.account_ids)||!scope.account_ids.includes(account.id))return deny('ACCOUNT_NOT_AUTHORIZED');if(!Array.isArray(scope.offer_version_ids)||!scope.offer_version_ids.includes(effect.payload.offer_version_id))return deny('OFFER_VERSION_NOT_AUTHORIZED');if(effect.payload.workflow_version_id&&(!Array.isArray(scope.workflow_version_ids)||!scope.workflow_version_ids.includes(effect.payload.workflow_version_id)))return deny('WORKFLOW_VERSION_NOT_AUTHORIZED');
@@ -133,9 +157,8 @@ export async function gateDispatch(client:QueryExecutor,effect:Body,owner:string
   if(!authorizedRecipient(auth,effect.contact_id,conversation,now.getTime()))return deny('RECIPIENT_NOT_AUTHORIZED');
   if(auth.config_hash!==(effect.payload.approval_config_hash??effect.config_hash)||effect.approval_hash!==effect.config_hash)return deny('APPROVAL_INVALIDATED');
   const count=Number((await client.query(`SELECT count(*) FROM outbox WHERE authorization_id=$1 AND id<>$2 AND status IN('SENDING','SENT','DELIVERED','READ','UNKNOWN')`,[auth.id,effect.id])).rows[0].count);if(!Number.isSafeInteger(scope.max_messages)||count>=scope.max_messages)return deny('AUTHORIZATION_MESSAGE_LIMIT');
-  if(effect.payload.campaign_id&&scope.campaign_id!==effect.payload.campaign_id)return deny('CAMPAIGN_AUTHORIZATION_REQUIRED');
+  }
  }
- if(effect.payload.campaign_id){const campaign=await getRecord(client,effect.workspace_id,'message_campaign',effect.payload.campaign_id);if(!campaign||!['EXECUTING','SCHEDULED'].includes(campaign.body.status))return deny('CAMPAIGN_CANCELLED_OR_PAUSED');if(campaign.body.message!==effect.payload.text||campaign.body.approved_snapshot?.message!==campaign.body.message)return deny('CAMPAIGN_CONFIG_CHANGED');if(!contact.body.consent?.evidence||!['marketing','messages'].includes(contact.body.consent?.purpose)||!contact.body.consent?.source||!contact.body.consent?.observed_at)return deny('CAMPAIGN_CONSENT_REQUIRED');}
  const inboundAt=new Date(conversation.body.last_inbound_at??0).getTime();const inWindow=now.getTime()-inboundAt<24*3600_000;
  const windowTemplateEligible=effect.payload.purpose==='remarketing'?eligibleTemplate:effect.payload.kind==='template'&&effect.payload.template?.approved===true;
  if(account.body.provider==='cloud'&&!inWindow&&!windowTemplateEligible)return deny('BUSINESS_WINDOW_CLOSED');
@@ -172,12 +195,13 @@ async function releaseUnsentClaim(client:QueryExecutor,effectId:string,claimId:s
  }else await scheduleGateRecheck(client,effect.id,reason);
  await appendEvent(client,{workspace_id:effect.workspace_id,environment:effect.environment,event_type:'effect.not_sent',aggregate_id:effect.conversation_id,causation_id:effect.id,actor:{type:'channel',id:owner},payload:{effect_id:effect.id,claim_id:claimId,status,reason,external_attempt:false}});
 }
-export async function dispatchOutbox(limit=20,factory:ProviderFactory=providerFor,owner=ownerId){const candidates=(await query(`WITH clocks AS MATERIALIZED (SELECT o.id,o.account_id,o.conversation_id,o.workspace_id,o.environment,o.dispatch_sequence,o.created_at AS first_seen_at,o.not_before,g.next_check_at,g.updated_at AS gate_checked_at,CASE WHEN o.environment='SIMULATION' THEN COALESCE(wr.virtual_now,(s.body->>'virtual_now')::timestamptz,now()) ELSE now() END AS effective_now FROM outbox o LEFT JOIN outbox_gate_schedule g ON g.effect_id=o.id LEFT JOIN records c ON c.id::text=o.conversation_id AND c.workspace_id=o.workspace_id LEFT JOIN records s ON s.id::text=c.body->>'simulation_id' AND s.workspace_id=c.workspace_id LEFT JOIN warmup_conversations wv ON wv.id::text=o.conversation_id AND o.kind='warmup' LEFT JOIN warmup_simulation_runs wr ON wr.id=wv.simulation_run_id WHERE o.status IN ('READY','BLOCKED')),fair AS MATERIALIZED (SELECT clocks.*,COALESCE(gate_checked_at,first_seen_at) AS considered_at,row_number() OVER(PARTITION BY account_id ORDER BY COALESCE(gate_checked_at,first_seen_at),dispatch_sequence) AS account_rank FROM clocks WHERE not_before<=effective_now AND (next_check_at IS NULL OR next_check_at<=now())) SELECT id,account_id,conversation_id,workspace_id,environment FROM fair ORDER BY account_rank,considered_at,dispatch_sequence LIMIT $1`,[limit])).rows;let sent=0;
- const grouped=new Map<string,typeof candidates>();for(const item of candidates){const group=grouped.get(item.account_id)??[];group.push(item);grouped.set(item.account_id,group);}const dispatchGroup=async(items:typeof candidates)=>{for(const item of items){try{await refreshEffectGroup(item.id,factory);}catch(error){if(error instanceof Error&&error.message==='RELEASE_HOLD_ACTIVE')continue;
+type DispatchStore={query:ProfileQuery;transaction<T>(work:(db:QueryExecutor)=>Promise<T>):Promise<T>};
+async function dispatchOutboxImpl(store:DispatchStore,limit:number,factory:ProviderFactory,owner:string,lab?:ReturnType<typeof bindNumberLabDispatch>){const reader:QueryExecutor={query:store.query};const candidates=(await store.query(`WITH clocks AS MATERIALIZED (SELECT o.id,o.account_id,o.conversation_id,o.workspace_id,o.environment,o.dispatch_sequence,o.created_at AS first_seen_at,o.not_before,g.next_check_at,g.updated_at AS gate_checked_at,CASE WHEN o.environment='SIMULATION' THEN COALESCE(wr.virtual_now,(s.body->>'virtual_now')::timestamptz,now()) ELSE now() END AS effective_now FROM outbox o LEFT JOIN outbox_gate_schedule g ON g.effect_id=o.id LEFT JOIN records c ON c.id::text=o.conversation_id AND c.workspace_id=o.workspace_id LEFT JOIN records s ON s.id::text=c.body->>'simulation_id' AND s.workspace_id=c.workspace_id LEFT JOIN warmup_conversations wv ON wv.id::text=o.conversation_id AND o.kind='warmup' LEFT JOIN warmup_simulation_runs wr ON wr.id=wv.simulation_run_id WHERE o.status IN ('READY','BLOCKED') ${lab?"AND o.account_id=$2 AND o.conversation_id=$3 AND o.workspace_id=$4 AND o.environment='SIMULATION' AND o.kind<>'warmup'":''}),fair AS MATERIALIZED (SELECT clocks.*,COALESCE(gate_checked_at,first_seen_at) AS considered_at,row_number() OVER(PARTITION BY account_id ORDER BY COALESCE(gate_checked_at,first_seen_at),dispatch_sequence) AS account_rank FROM clocks WHERE not_before<=effective_now AND (next_check_at IS NULL OR next_check_at<=now())) SELECT id,account_id,conversation_id,workspace_id,environment FROM fair ORDER BY account_rank,considered_at,dispatch_sequence LIMIT $1`,lab?[limit,lab.scope.accountId,lab.scope.conversationId,lab.scope.workspaceId]:[limit])).rows;let sent=0;
+ const grouped=new Map<string,typeof candidates>();for(const item of candidates){const group=grouped.get(item.account_id)??[];group.push(item);grouped.set(item.account_id,group);}const dispatchGroup=async(items:typeof candidates)=>{for(const item of items){try{if(!lab)await refreshEffectGroup(item.id,factory);}catch(error){if(error instanceof Error&&error.message==='RELEASE_HOLD_ACTIVE')continue;
  // Failed observations consume no send attempt. Retry timing lives outside the
  // immutable business effect so other accounts can progress without churn.
- await withTransaction(async client=>{await client.query("UPDATE outbox SET status='BLOCKED',result=$2,updated_at=now() WHERE id=$1 AND status IN('READY','BLOCKED') AND (status IS DISTINCT FROM 'BLOCKED' OR result IS DISTINCT FROM $2::jsonb)",[item.id,{reason:'GROUP_OBSERVATION_FAILED'}]);await scheduleGateRecheck(client,item.id,'GROUP_OBSERVATION_FAILED');});continue;
- }const claim=await withTransaction(async client=>{const candidate=(await client.query('SELECT kind,contact_id,payload FROM outbox WHERE id=$1',[item.id])).rows[0];if(candidate?.kind!=='warmup'){const acquired=(await client.query('SELECT pg_try_advisory_xact_lock(hashtextextended($1,0)) AS acquired',[chatLock(item.workspace_id,item.account_id,candidate?.contact_id)])).rows[0];if(!acquired?.acquired){await scheduleGateRecheck(client,item.id,'CHAT_LOCK_BUSY');return;}if(candidate?.payload?.assignment_id)await assignmentFor(client,item.workspace_id,item.environment,candidate.payload.assignment_id,'share');}await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[item.conversation_id]);const effect=(await client.query(`SELECT * FROM outbox WHERE id=$1 AND status IN('READY','BLOCKED') FOR UPDATE SKIP LOCKED`,[item.id])).rows[0];if(!effect)return;
+ await store.transaction(async client=>{await client.query("UPDATE outbox SET status='BLOCKED',result=$2,updated_at=now() WHERE id=$1 AND status IN('READY','BLOCKED') AND (status IS DISTINCT FROM 'BLOCKED' OR result IS DISTINCT FROM $2::jsonb)",[item.id,{reason:'GROUP_OBSERVATION_FAILED'}]);await scheduleGateRecheck(client,item.id,'GROUP_OBSERVATION_FAILED');});continue;
+ }const claim=await store.transaction(async client=>{const candidate=(await client.query('SELECT kind,contact_id,payload FROM outbox WHERE id=$1',[item.id])).rows[0];if(candidate?.kind!=='warmup'){const acquired=(await client.query('SELECT pg_try_advisory_xact_lock(hashtextextended($1,0)) AS acquired',[chatLock(item.workspace_id,item.account_id,candidate?.contact_id)])).rows[0];if(!acquired?.acquired){await scheduleGateRecheck(client,item.id,'CHAT_LOCK_BUSY');return;}if(candidate?.payload?.assignment_id)await assignmentFor(client,item.workspace_id,item.environment,candidate.payload.assignment_id,'share');}await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[item.conversation_id]);const effect=(await client.query(`SELECT * FROM outbox WHERE id=$1 AND status IN('READY','BLOCKED') FOR UPDATE SKIP LOCKED`,[item.id])).rows[0];if(!effect)return;
  await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`quota:contact:${effect.workspace_id}:${effect.contact_id}`]);if(effect.authorization_id)await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`quota:authorization:${effect.authorization_id}`]);
  const gate=await gateDispatch(client,effect,owner);if(!gate.allowed){const reason=gate.reason??'DISPATCH_GATE_DENIED',cancelled=cancelledGateReasons.has(reason),nextStatus=cancelled?'CANCELLED':'BLOCKED',nextResult={reason:gate.reason,...(cancelled&&['collection','followup','remarketing'].includes(effect.payload.purpose)?{superseded_before_send:effect.attempts===0}:{})};await client.query(`UPDATE outbox SET status=$2,result=$3,updated_at=now() WHERE id=$1 AND (status IS DISTINCT FROM $2 OR result IS DISTINCT FROM $3::jsonb)`,[effect.id,nextStatus,nextResult]);if(cancelled)await client.query('DELETE FROM outbox_gate_schedule WHERE effect_id=$1',[effect.id]);else await scheduleGateRecheck(client,effect.id,reason);if(cancelled&&effect.payload.remarketing_attempt_id)await setRemarketingAttemptStatus(client,{attemptId:effect.payload.remarketing_attempt_id,workspaceId:effect.workspace_id,environment:effect.environment},'CANCELLED',{reason:gate.reason??'DISPATCH_GATE_CANCELLED'});return;}
  if(!await reserveDispatchCapacity(client,effect,owner)){await scheduleGateRecheck(client,effect.id,'DISPATCH_CAPACITY_BUSY');return;}
@@ -185,15 +209,16 @@ export async function dispatchOutbox(limit=20,factory:ProviderFactory=providerFo
  let outcome:SendResult & {accessCiphertext?:string},externalAttempt=false;
  try{
  let send:()=>Promise<SendResult & {accessCiphertext?:string}>;
- if(claim.effect.payload.kind==='grant'){
-  const asset=await getRecord(pool,claim.effect.workspace_id,'asset',claim.effect.payload.asset_id);if(!asset?.body.delivery_ciphertext)throw new Error('ACCESS_ASSET_REQUIRED');
+ if(lab){if(claim.effect.payload.kind==='grant')send=await lab.prepareGrant(claim.effect,claim.contact,claim.account);else{const message=await lab.prepare(claim.effect,claim.contact),provider=lab.factory(claim.account);send=()=>provider.send(message);}}
+ else if(claim.effect.payload.kind==='grant'){
+  const asset=await getRecord(reader,claim.effect.workspace_id,'asset',claim.effect.payload.asset_id);if(!asset?.body.delivery_ciphertext)throw new Error('ACCESS_ASSET_REQUIRED');
   const secret=JSON.parse(decrypt(asset.body.delivery_ciphertext));
   const provider=claim.effect.environment==='REAL'&&secret.adapter==='link'?new StaticAccessFulfillmentProvider():await fulfillmentProviderFor(claim.effect.workspace_id,claim.effect.environment);
   send=async()=>{const grant=await provider.grant({grantId:claim.effect.payload.grant_id,subjectId:claim.effect.contact_id,assetReference:secret.delivery_reference,environment:claim.effect.environment,offerVersionId:claim.effect.payload.offer_version_id});return grant.status==='GRANTED'?{status:'ACCEPTED',providerMessageId:grant.providerGrantId,accessCiphertext:encrypt(grant.access??{})}:{status:grant.status==='UNKNOWN'?'UNKNOWN':'REJECTED',reason:grant.reason};};
- }else{const message=await outbound(claim.effect,claim.contact,pool),provider=await factory(claim.account);send=()=>provider.send(message);}
+ }else{const message=await outbound(claim.effect,claim.contact,reader),provider=await factory(claim.account);send=()=>provider.send(message);}
  // Prepare files and provider configuration before the final gate. There is no
  // asynchronous preparation between this check and the external operation.
- const allowed=await withTransaction(async c=>{
+ const allowed=await store.transaction(async c=>{
   const e=(await c.query('SELECT * FROM outbox WHERE id=$1 AND claim_id=$2 FOR UPDATE',[claim.effect.id,claim.claimId])).rows[0];
   if(!e||e.status!=='SENDING')return false;
   const gate=await gateDispatch(c,e,owner);
@@ -204,14 +229,14 @@ export async function dispatchOutbox(limit=20,factory:ProviderFactory=providerFo
  if(!allowed)continue;
  // COMMIT itself can outlast the local ownership deadline. Check again after
  // it completes and before invoking any external operation.
- if(performance.now()>=claim.deadline){await withTransaction(c=>releaseUnsentClaim(c,claim.effect.id,claim.claimId,owner,'LOCAL_OWNERSHIP_DEADLINE'));continue;}
+ if(performance.now()>=claim.deadline){await store.transaction(c=>releaseUnsentClaim(c,claim.effect.id,claim.claimId,owner,'LOCAL_OWNERSHIP_DEADLINE'));continue;}
  externalAttempt=true;outcome=await send();
  }catch(error){
   const reason=error instanceof Error&&/^[A-Z_]+$/.test(error.message)?error.message:externalAttempt?'DISPATCH_EXCEPTION_UNCERTAIN':'DISPATCH_PREPARATION_FAILED';
-  if(!externalAttempt){await withTransaction(c=>releaseUnsentClaim(c,claim.effect.id,claim.claimId,owner,reason));continue;}
+  if(!externalAttempt){await store.transaction(c=>releaseUnsentClaim(c,claim.effect.id,claim.claimId,owner,reason));continue;}
   outcome={status:'UNKNOWN',reason};
  }
- await withTransaction(async client=>{const current=(await client.query('SELECT * FROM outbox WHERE id=$1 AND claim_id=$2 FOR UPDATE',[claim.effect.id,claim.claimId])).rows[0];if(!current)return;
+ await store.transaction(async client=>{const current=(await client.query('SELECT * FROM outbox WHERE id=$1 AND claim_id=$2 FOR UPDATE',[claim.effect.id,claim.claimId])).rows[0];if(!current)return;
  const status=outcome.status==='ACCEPTED'?'SENT':outcome.status==='REJECTED'?'FAILED':'UNKNOWN';if(current.status!=='SENDING'){await client.query('UPDATE effect_attempts SET result=$2,finished_at=now() WHERE effect_id=$1 AND claim_id=$3',[current.id,{late_result:{...outcome,accessCiphertext:outcome.accessCiphertext??null}},claim.claimId]);await appendEvent(client,{workspace_id:current.workspace_id,environment:current.environment,event_type:'effect.late_result_observed',aggregate_id:current.conversation_id,causation_id:current.id,payload:{effect_id:current.id,claim_id:claim.claimId,status,provider_message_id:outcome.providerMessageId??null}});return;}await client.query('UPDATE outbox SET status=$2,provider_message_id=$3,result=$4,updated_at=now() WHERE id=$1',[current.id,status,outcome.providerMessageId??null,{reason:outcome.reason??null,provider:claim.effect.payload.kind==='grant'?'fulfillment':claim.account.body.provider,...(outcome.status==='ACCEPTED'?{accepted_at:(await effectiveNow(client,(await getRecord(client,current.workspace_id,'conversation',current.conversation_id))!,current)).toISOString()}:{}),...(outcome.accessCiphertext?{access_ciphertext:outcome.accessCiphertext}:{})}]);await client.query('UPDATE effect_attempts SET status=$2,result=$3,finished_at=now() WHERE effect_id=$1 AND claim_id=$4',[current.id,status,{reason:outcome.reason??null,provider_message_id:outcome.providerMessageId??null},claim.claimId]);
  if(current.payload.remarketing_attempt_id)await setRemarketingAttemptStatus(client,{attemptId:current.payload.remarketing_attempt_id,workspaceId:current.workspace_id,environment:current.environment},outcome.status==='ACCEPTED'?'SENT':outcome.status==='UNKNOWN'?'UNKNOWN':'CANCELLED',{effect_id:current.id,provider_message_id:outcome.providerMessageId??null,reason:outcome.reason??null});
  await appendEvent(client,{workspace_id:current.workspace_id,environment:current.environment,event_type:`effect.${status.toLowerCase()}`,aggregate_id:current.conversation_id,causation_id:current.id,actor:{type:'channel',id:owner},payload:{effect_id:current.id,status,reason:outcome.reason??null}});
@@ -220,6 +245,15 @@ export async function dispatchOutbox(limit=20,factory:ProviderFactory=providerFo
  });
  }};
  const workspaces=new Map<string,typeof candidates[]>();for(const group of grouped.values()){const first=group[0]!;const key=first.workspace_id+':'+first.environment;const groups=workspaces.get(key)??[];groups.push(group);workspaces.set(key,groups);}
- await Promise.all([...workspaces.values()].map(async groups=>{const first=groups[0]![0]!;const policy=await readOperationalSettings(pool,first.workspace_id,first.environment);let cursor=0;await Promise.all(Array.from({length:Math.min(policy.body.channel_account_concurrency,groups.length)},async()=>{while(cursor<groups.length){const group=groups[cursor++];if(group)await dispatchGroup(group);}}));}));await reconcileGroupDeliveries();return sent;
+ await Promise.all([...workspaces.values()].map(async groups=>{const first=groups[0]![0]!;const policy=await readOperationalSettings(reader,first.workspace_id,first.environment);let cursor=0;await Promise.all(Array.from({length:Math.min(policy.body.channel_account_concurrency,groups.length)},async()=>{while(cursor<groups.length){const group=groups[cursor++];if(group)await dispatchGroup(group);}}));}));if(!lab)await reconcileGroupDeliveries();return sent;
+}
+/** Existing entry point retains the original commercial store and providers. */
+export async function dispatchOutbox(limit=20,factory:ProviderFactory=providerFor,owner=ownerId){return dispatchOutboxImpl({query,transaction:work=>withTransaction(work)},limit,factory,owner);}
+/** Protected laboratory handle and lease; no public provider override. */
+export async function dispatchNumberLabOutbox(lease:NumberLabEngineLease,handle:NumberLabDispatch,limit=20){
+ if(!Number.isInteger(limit)||limit<1||limit>100)throw Error('LAB_ENGINE_BATCH_LIMIT');
+ return withNumberLabEngine(lease,async ports=>{const bound=bindNumberLabDispatch(handle,ports);
+  return dispatchOutboxImpl({query:ports.query,transaction:work=>ports.transaction(work)},limit,account=>bound.factory(account),'number-lab:'+ports.binding.runId,bound);
+ });
 }
 export async function recoverSending(ageSeconds=60){return withTransaction(async client=>{const rows=(await client.query(`UPDATE outbox o SET status='UNKNOWN',result=jsonb_build_object('reason','ABANDONED_SENDING_REQUIRES_RECONCILIATION'),updated_at=now() WHERE o.status='SENDING' AND o.claimed_at<(CASE WHEN o.environment='SIMULATION' THEN COALESCE((SELECT r.virtual_now FROM warmup_simulation_runs r JOIN warmup_conversations v ON v.simulation_run_id=r.id WHERE o.kind='warmup' AND v.id::text=o.conversation_id AND v.workspace_id=o.workspace_id),(SELECT (s.body->>'virtual_now')::timestamptz FROM records c JOIN records s ON s.id::text=c.body->>'simulation_id' AND s.workspace_id=c.workspace_id WHERE c.id::text=o.conversation_id AND c.workspace_id=o.workspace_id),now()) ELSE now() END)-($1*interval '1 second') RETURNING o.id,o.workspace_id,o.environment,o.payload`,[ageSeconds])).rows;for(const row of rows)if(row.payload?.remarketing_attempt_id)await setRemarketingAttemptStatus(client,{attemptId:row.payload.remarketing_attempt_id,workspaceId:row.workspace_id,environment:row.environment},'UNKNOWN',{effect_id:row.id,recovery:'ABANDONED_SENDING_REQUIRES_RECONCILIATION'});return rows;});}

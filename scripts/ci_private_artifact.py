@@ -52,7 +52,7 @@ def store(kind):
             paths = [ROOT/'release/commerce-os.tar', ROOT/'release/commerce-os.tar.sha256']
         else:
             paths = [folder/(kind+'.tar.gz')]
-            roots = ['playwright-report', 'test-results', 'docs/evidence'] if kind == 'verification' else ['release/deployment.json']
+            roots = ['playwright-report', 'test-results', 'test-evidence', 'docs/evidence'] if kind == 'verification' else ['release/deployment.json']
             files = []
             for name in roots:
                 path = ROOT/name

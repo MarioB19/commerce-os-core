@@ -1,12 +1,16 @@
 import {randomBytes,randomUUID} from 'node:crypto';
 import {hash,type QueryExecutor} from './index.js';
+import {profileRoleScopes} from '../../contracts/src/profiles.js';
 
 export const newPersonalToken=()=> 'cos_pat_'+randomBytes(32).toString('base64url');
 export type PersonalTokenInput={workspace_id:string;user_id:string;name:string;allowed_environments:string[];expires_at:string};
+/** Historical owner PATs carry the complete owner capability; V7 stores it as
+ * the closed owner scope set, still intersected with the live membership. */
+export const ownerPersonalTokenScopes=Object.freeze(profileRoleScopes.owner.filter(scope=>scope!=='profiles:switch'));
 export async function insertPersonalToken(c:QueryExecutor,input:PersonalTokenInput,token=newPersonalToken(),id:string=randomUUID()) {
- const row=(await c.query(`INSERT INTO personal_access_tokens(id,workspace_id,user_id,name,token_hash,allowed_environments,expires_at)
- VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id,name,allowed_environments,expires_at,revoked_at,version,created_at`,
- [id,input.workspace_id,input.user_id,input.name,hash(token),JSON.stringify(input.allowed_environments),input.expires_at])).rows[0];
+ const row=(await c.query(`INSERT INTO personal_access_tokens(id,workspace_id,user_id,name,token_hash,allowed_environments,expires_at,profile_scopes)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,name,allowed_environments,expires_at,revoked_at,version,created_at`,
+ [id,input.workspace_id,input.user_id,input.name,hash(token),JSON.stringify(input.allowed_environments),input.expires_at,JSON.stringify(ownerPersonalTokenScopes)])).rows[0];
  return {...row,token};
 }
 

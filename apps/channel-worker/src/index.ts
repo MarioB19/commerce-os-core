@@ -8,6 +8,7 @@ import {PostgresJobBus} from '@commerce/jobs';
 import {buildChannelServer} from './server.js';
 import {ChannelLoopMonitor} from './loop-monitor.js';
 import {persistChannelHeartbeat} from './heartbeat.js';
+import {runChannelProfileMaintenance} from './profile-maintenance.js';
 import {dispatchOutbox,recoverSending,recoverChannelCommands,processChannelCommands,heartbeatOwnership,collectHealth,recordHealth,consumeProviderObservations,downloadInboundMedia,ownerId} from './runtime.js';
 const monitor=new ChannelLoopMonitor(),app=await buildChannelServer(undefined,monitor);await recoverSending();await recoverChannelCommands();
 function loop(name:string,period:number,work:()=>Promise<unknown>,deadlineMs=180_000,required=true){const observed=monitor.add(name,work,{deadlineMs,required});const timer=setInterval(()=>void observed.run(),period);void observed.run();return{run:observed.run,stop:()=>{clearInterval(timer);observed.stop();}};}
@@ -28,5 +29,7 @@ const ownership=loop('channel_ownership',15000,()=>heartbeatOwnership(),45_000);
 const discovery=loop('channel_ownership_discovery',15000,()=>discoverSessionOwnership(),180_000,false);
 const maintenance=loop('channel_maintenance',15000,async()=>{await recoverSending();await recoverChannelCommands();},60_000);
 const heartbeat=loop('channel_heartbeat',15000,()=>persistChannelHeartbeat(ownerId,monitor.snapshot()),45_000,false);
+// V7 F3: per-profile expiry cancellation and QR continuity registration (WorkerScope).
+const profileMaintenance=loop('channel_profile_maintenance',60000,()=>runChannelProfileMaintenance(),180_000,false);
 const bus=new PostgresJobBus();await bus.start();await bus.work('channel.wake',dispatch.run);await app.listen({host:process.env.HOST??'0.0.0.0',port:Number(process.env.PORT??process.env.CHANNEL_PORT??3004)});
-for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{for(const item of [dispatch,observations,commands,media,health,maintenance,profiles,warmupSimulation,supervisor,numberOperations,numberGroups,ownership,discovery,heartbeat])item.stop();void Promise.all([bus.stop(),app.close()]).then(()=>process.exit(0));});
+for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{for(const item of [dispatch,observations,commands,media,health,maintenance,profiles,profileMaintenance,warmupSimulation,supervisor,numberOperations,numberGroups,ownership,discovery,heartbeat])item.stop();void Promise.all([bus.stop(),app.close()]).then(()=>process.exit(0));});

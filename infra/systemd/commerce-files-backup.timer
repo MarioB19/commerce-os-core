@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily private assets copy (08:50 UTC)
+[Timer]
+OnCalendar=*-*-* 08:50:00 UTC
+RandomizedDelaySec=300
+Persistent=true
+Unit=commerce-files-backup.service
+[Install]
+WantedBy=timers.target

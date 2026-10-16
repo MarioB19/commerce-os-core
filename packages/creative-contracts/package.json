@@ -1,1 +1,0 @@
-{"name":"@commerce/creative-contracts","version":"1.0.0","private":true,"type":"module","exports":"./src/index.ts","dependencies":{"zod":"4.5.4"}}

@@ -1,0 +1,4 @@
+# App Engine standard (python312) — ADR-V7-13. Pinned; bundled Mail API.
+appengine-python-standard==3.0.2
+cryptography==46.0.3
+gunicorn==23.0.0

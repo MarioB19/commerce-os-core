@@ -14,14 +14,8 @@ from ci_provider_evidence import package_context, release_metadata
 ROOT=Path(__file__).resolve().parent.parent
 SOURCE_REVISION_LABEL='org.opencontainers.image.revision'
 SENSITIVE_SOURCE_SUFFIXES=('.key','.pem','.p12','.pfx','.dump','.backup','.backup.aes','.tar','.tar.gz')
-# Explicit local factory drivers; shared archive, broker, Intelligence and maintenance scripts stay available.
-LOCAL_FACTORY_SCRIPTS={
-    'commerce-worker-mcp-smoke.mjs','commerce-worker-operational-pilot.mjs','commerce-worker-resource-sampler.mjs',
-    'creative-engine-artifact-select.py','creative-engine-compare-platforms.mjs','creative-engine-import-pilot.ts',
-    'creative-engine-native-pilot.mjs','creative-engine-provenance.mjs','creative-engine-render.ts','creative-engine-verify-reuse.ts',
-    'creative-studio-browser-upload.mjs','creative-studio-pilot.mjs','creative-technical-catalog.ts','creative-technical-pilot.ts',
-    'creative-commercial-latency.mjs','package-creative-composition.ts','package-creative-desktop.mjs','test-creative-v11-render.ts'
-}
+# V7 F8: the local creative factory and its drivers were retired from the repository.
+LOCAL_FACTORY_SCRIPTS=frozenset()
 def release_source(name):
     return name.startswith(('scripts/','infra/','packages/db/migrations/')) and name!='scripts/rotate-local-test-credential.mjs' and not(name.startswith('scripts/') and Path(name).name in LOCAL_FACTORY_SCRIPTS)
 

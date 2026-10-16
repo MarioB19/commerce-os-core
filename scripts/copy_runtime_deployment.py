@@ -296,6 +296,48 @@ def inspect_inventory(rows, *, portal, caddy_id, initial=False):
     return services
 
 
+LAB_MOUNT = '/data/laboratory'
+
+
+def application_boundary_equal(name, old, new):
+    """Static projections of one application service before/after a publication.
+
+    Equal, or V7's single addition (RF-19, docs/adr-v7-f1-infrastructure.md §4c):
+    automation-worker gains a read-write bind of <private assets>/number-lab at
+    /data/laboratory, next to its unchanged read-only /data/private. Only the
+    first V7 publication can add it; afterwards plain equality applies again."""
+    if old['HostConfig'] == new['HostConfig'] and old['Mounts'] == new['Mounts']:
+        return old['NetworkSettings'] == new['NetworkSettings']
+    if name != 'automation-worker' or old['NetworkSettings'] != new['NetworkSettings']:
+        return False
+    if any(m.get('Destination') == LAB_MOUNT for m in old['Mounts']):
+        return False
+    added = [m for m in new['Mounts'] if m not in old['Mounts']]
+    private = [m for m in old['Mounts'] if m.get('Destination') == '/data/private']
+    if not (len(added) == 1 and all(m in new['Mounts'] for m in old['Mounts']) and len(new['Mounts']) == len(old['Mounts'])+1
+            and len(private) == 1 and private[0].get('Type') == 'bind' and private[0].get('RW') is False):
+        return False
+    lab = added[0]
+    if not (lab.get('Type') == 'bind' and lab.get('Destination') == LAB_MOUNT and lab.get('RW') is True
+            and lab.get('Source') == str(PurePosixPath(private[0]['Source'])/'number-lab')):
+        return False
+    rest = lambda value: {k: v for k, v in value.items() if k not in ('Binds', 'Mounts')}
+    if rest(old['HostConfig']) != rest(new['HostConfig']):
+        return False
+    old_binds, new_binds = list(old['HostConfig'].get('Binds') or []), list(new['HostConfig'].get('Binds') or [])
+    old_specs, new_specs = list(old['HostConfig'].get('Mounts') or []), list(new['HostConfig'].get('Mounts') or [])
+    if not (all(b in new_binds for b in old_binds) and all(m in new_specs for m in old_specs)):
+        return False
+    added_binds = [b for b in new_binds if b not in old_binds]
+    added_specs = [m for m in new_specs if m not in old_specs]
+    if len(added_binds) + len(added_specs) != 1:
+        return False
+    if added_binds:
+        return added_binds[0] in (lab['Source']+':'+LAB_MOUNT, lab['Source']+':'+LAB_MOUNT+':rw')
+    spec = added_specs[0]
+    return spec.get('Type') == 'bind' and spec.get('Target') == LAB_MOUNT and spec.get('Source') == lab['Source'] and not spec.get('ReadOnly')
+
+
 def validate_inventory(state, rows):
     validate_state(state)
     services = inspect_inventory(rows, portal=state['portal'], caddy_id=state['service_inventory']['caddy'],
@@ -444,9 +486,7 @@ def validate_publication(previous, candidate, before_rows, after_rows, *,
                 'COPY_RUNTIME_PRESERVED_INFRASTRUCTURE_CHANGED')
     for name in CORE - {'postgres', 'caddy', 'portal'}:
         old, new = static_projection(before[name]), static_projection(after[name])
-        require(old['HostConfig'] == new['HostConfig'] and old['Mounts'] == new['Mounts']
-                and old['NetworkSettings'] == new['NetworkSettings'],
-                'COPY_RUNTIME_APPLICATION_BOUNDARY_CHANGED')
+        require(application_boundary_equal(name, old, new), 'COPY_RUNTIME_APPLICATION_BOUNDARY_CHANGED')
     previous_policy = {key: previous[key] for key in ('policy_version', 'policy_body_sha256')}
     observed_policy = previous_policy if observed_policy is None else observed_policy
     canonical_revisions(previous_policy, observed_policy, [] if revision_receipts is None else revision_receipts)
@@ -517,6 +557,43 @@ import signal
 
 MIGRATION_NAMES = frozenset({'0066_pending_channel_cancellation.sql', '0067_copy_source_isolation.sql'})
 OPERATING_MIGRATION_NAMES = frozenset({'0068_operational_metric_writer.sql'})
+# V7 profile cutover: the exact reviewed 68→110 set, applied as one bounded
+# OPERATING publication (docs/adr-v7-isolation-model.md). Names are fixed here;
+# hashes come from the private review and must equal the candidate's files.
+V7_PROFILE_MIGRATION_NAMES = frozenset({
+    '0069_v7_cutover_preflight.sql', '0070_v7_profile_identity.sql', '0071_v7_profile_adoption.sql',
+    '0072_v7_profile_tokens_settings.sql', '0073_v7_profile_employees_invitations.sql', '0074_v7_market_variants.sql',
+    '0075_v7_profile_token_operations.sql', '0076_v7_continuous_authorization.sql', '0077_v7_invitation_mail.sql',
+    '0078_v7_continuous_effects.sql', '0079_v7_profile_quotas.sql', '0080_v7_qr_warmup.sql',
+    '0081_v7_results_goals_discovery.sql', '0082_v7_ai_admission.sql', '0083_v7_profile_scope_components.sql',
+    '0084_v7_quota_and_budget_authority.sql', '0085_v7_quota_adoption.sql', '0086_v7_number_laboratory.sql',
+    '0087_v7_result_projections.sql', '0088_v7_receipt_policies.sql', '0089_v7_result_financial_context.sql',
+    '0090_v7_result_closure_receipts.sql', '0091_v7_privacy_writer_fences.sql', '0092_v7_privacy_job_authority.sql',
+    '0093_v7_commercial_resolution_financial_retention.sql', '0094_v7_record_minimization.sql',
+    '0095_v7_privacy_copies_backups.sql', '0096_v7_isolation_model.sql', '0097_v7_service_token_profile_binding.sql',
+    '0098_v7_composed_foreign_keys.sql', '0099_v7_api_environment_guard.sql',
+    '0100_v7_platform_admin.sql', '0101_v7_profile_integrations.sql', '0102_v7_platform_tokens.sql', '0103_v7_capacity_agent_tokens.sql', '0104_v7_number_identity_claims.sql',
+    '0105_v7_variant_documents.sql', '0106_v7_ai_price_catalog.sql', '0107_v7_ai_budget_continuity.sql',
+    '0108_v7_number_lab_queue.sql', '0109_v7_retire_modules.sql', '0110_v7_meta_profile_sync.sql',
+    '0111_v7_platform_recovery.sql', '0112_v7_invitation_mail_queue.sql', '0113_v7_number_lab_attachments.sql', '0114_v7_number_lab_retention.sql', '0115_v7_number_lab_suites.sql', '0116_v7_owner_alert_mail.sql', '0117_v7_profile_deletion_request.sql'})
+V7_PROFILE_MIGRATION_TOTAL = 68 + len(V7_PROFILE_MIGRATION_NAMES)
+
+
+# Bound of the single migration transaction. The 68→117 V7 cutover touches every
+# profile-scoped table; on the production disk class (pd-standard) a rehearsal on
+# a copy of production after the health telemetry cut measured 90–270 s, so the
+# V7 profile alone gets 600 s inside the same 1500 s installation deadline.
+MIGRATION_DEADLINE_SECONDS = 300
+V7_MIGRATION_DEADLINE_SECONDS = 600
+
+
+def migration_deadline(metadata):
+    # An inadmissible set keeps the short bound; apply_reviewed_migrations rejects it.
+    try:
+        names = reviewed_migration_names(metadata)
+    except ReleaseError:
+        return MIGRATION_DEADLINE_SECONDS
+    return V7_MIGRATION_DEADLINE_SECONDS if names == V7_PROFILE_MIGRATION_NAMES else MIGRATION_DEADLINE_SECONDS
 
 
 def reviewed_migration_names(metadata):
@@ -525,13 +602,18 @@ def reviewed_migration_names(metadata):
             'COPY_RUNTIME_MIGRATION_SET_INVALID')
     if len(expected) == 67 and not OPERATING_MIGRATION_NAMES & set(expected):
         return MIGRATION_NAMES
-    require(len(expected) == 68 and OPERATING_MIGRATION_NAMES <= set(expected),
-            'COPY_RUNTIME_MIGRATION_SET_INVALID')
-    return OPERATING_MIGRATION_NAMES
+    if len(expected) == 68 and OPERATING_MIGRATION_NAMES <= set(expected):
+        return OPERATING_MIGRATION_NAMES
+    require(len(expected) == V7_PROFILE_MIGRATION_TOTAL and OPERATING_MIGRATION_NAMES <= set(expected)
+            and V7_PROFILE_MIGRATION_NAMES <= set(expected), 'COPY_RUNTIME_MIGRATION_SET_INVALID')
+    return V7_PROFILE_MIGRATION_NAMES
 
 
 def migration_stage_guard(applied, metadata, *, initial=False, stage=None):
-    """Only the reviewed 65→67 cold copy or 67→68 OPERATING correction."""
+    """Only the reviewed 65→67 cold copy, the 67→68 OPERATING correction or
+    the 68→110 OPERATING V7 profile cutover. 0109 retires the V5 modules only
+    after scripts/v7-retirement-export.ts recorded their export (otherwise the
+    whole transaction aborts and the database stays at 68)."""
     names = reviewed_migration_names(metadata); expected = metadata['migration_hashes']
     verify_migrations(applied, expected)
     if initial:
@@ -539,6 +621,10 @@ def migration_stage_guard(applied, metadata, *, initial=False, stage=None):
                 and set(expected)-set(applied) == MIGRATION_NAMES, 'COPY_RUNTIME_65_MIGRATION_BASELINE_REQUIRED')
     elif stage == 'CORE_PREPARED':
         require(names == MIGRATION_NAMES and applied == expected, 'COPY_RUNTIME_CONTINUATION_MIGRATIONS_CHANGED')
+    elif names == V7_PROFILE_MIGRATION_NAMES:
+        require(stage == 'OPERATING'
+                and ((len(applied) == 68 and set(expected)-set(applied) == V7_PROFILE_MIGRATION_NAMES)
+                     or applied == expected), 'COPY_RUNTIME_68_MIGRATION_BASELINE_REQUIRED')
     else:
         require(stage == 'OPERATING' and names == OPERATING_MIGRATION_NAMES
                 and ((len(applied) == 67 and set(expected)-set(applied) == OPERATING_MIGRATION_NAMES)
@@ -782,7 +868,7 @@ def closed_inventory(command, root, state):
 
 def network_snapshot(command, root, services):
     names = set().union(*(set(row['NetworkSettings']['Networks']) for row in services.values()))
-    require(3 <= len(names) <= 7, 'COPY_RUNTIME_NETWORK_BOUND')
+    require(3 <= len(names) <= 8, 'COPY_RUNTIME_NETWORK_BOUND')
     rows = _parse(command(['docker', 'network', 'inspect', *sorted(names)], root).encode())
     require(type(rows) is list and len(rows) == len(names), 'COPY_RUNTIME_NETWORK_READBACK_INVALID')
     result = {}
@@ -803,9 +889,11 @@ def topology(command, root, services, networks, release):
     require(type(consumer) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}', consumer)
             and len({core, proxy, edge, consumer}) == 4, 'COPY_RUNTIME_CONSUMER_EDGE_REQUIRED')
     gateway_names = {'commerce-os_gateway-'+name[-2:] for name in set(services) & GATEWAYS}
-    require(set(networks) == {core, proxy, edge, consumer} | gateway_names,
+    pitr = native.PITR_NETWORK in networks
+    require(set(networks) - {native.PITR_NETWORK} == {core, proxy, edge, consumer} | gateway_names,
             'COPY_RUNTIME_CLOSED_NETWORK_SET_REQUIRED')
-    expected = {'postgres': {core}, 'web': {proxy}, 'api': {core, proxy, edge}, 'caddy': {proxy, edge},
+    expected = {'postgres': {core} | ({native.PITR_NETWORK} if pitr else set()), 'web': {proxy},
+                'api': {core, proxy, edge}, 'caddy': {proxy, edge},
                 'portal': {proxy}, 'ingress': {core, proxy} | gateway_names,
                 'automation-worker': {core, consumer}, 'channel-worker': {core} | gateway_names}
     expected.update({name: {'commerce-os_gateway-'+name[-2:]} for name in set(services) & GATEWAYS})
@@ -813,7 +901,8 @@ def topology(command, root, services, networks, release):
         require(set(services[name]['NetworkSettings']['Networks']) == membership,
                 'COPY_RUNTIME_NETWORK_MEMBERSHIP_CHANGED')
     require(networks[core]['Internal'] is True and networks[proxy]['Internal'] is True
-            and all(networks[name]['Internal'] is False for name in {edge, consumer} | gateway_names)
+            and all(networks[name]['Internal'] is False for name in {edge, consumer} | gateway_names
+                    | ({native.PITR_NETWORK} if pitr else set()))
             and all(row['EnableIPv6'] is False and row['Driver'] == 'bridge' for row in networks.values()),
             'COPY_RUNTIME_NETWORK_ISOLATION_CHANGED')
     for name in {'api', 'ingress', 'automation-worker', 'channel-worker'}:
@@ -822,7 +911,8 @@ def topology(command, root, services, networks, release):
                 'COPY_RUNTIME_FORWARDING_ENABLED')
     # Reuse native kernel routing proof for API while closing its original edge.
     subset = {name: services[name] for name in INITIAL}
-    native.topology_guard(command, root, subset, {name: networks[name] for name in (core, proxy, edge)}, release)
+    native.topology_guard(command, root, subset, {name: networks[name] for name in (core, proxy, edge)
+                                                  + ((native.PITR_NETWORK,) if pitr else ())}, release)
     import ipaddress
     config = networks[consumer]['IPAM']['Config']
     require(len(config) == 1, 'COPY_RUNTIME_CONSUMER_EDGE_IPV4_REQUIRED')
@@ -1135,8 +1225,8 @@ def reviewed_migrations(private, root, source_sha, metadata):
 BOUNDED_MIGRATION_JS = """import{readFile}from'node:fs/promises';
 import{pool,withTransaction,hash}from'/app/packages/db/src/index.ts';
 const plan=JSON.parse(await readFile('/copy-plan/migrations.json','utf8'));
-const profiles={INITIAL:{baseline:65,total:67,names:['0066_pending_channel_cancellation.sql','0067_copy_source_isolation.sql']},OPERATING:{baseline:67,total:68,names:['0068_operational_metric_writer.sql']}};
-const profile=profiles[plan.stage];
+const profiles=[{stage:'INITIAL',baseline:65,total:67,names:['0066_pending_channel_cancellation.sql','0067_copy_source_isolation.sql']},{stage:'OPERATING',baseline:67,total:68,names:['0068_operational_metric_writer.sql']},{stage:'OPERATING',baseline:68,total:V7_TOTAL,names:V7_NAMES}];
+const profile=profiles.find(p=>p.stage===plan.stage&&Object.keys(plan.additions??{}).sort().join()===p.names.join());
 if(!profile||Object.keys(plan).sort().join()!=='additions,baseline,stage'||Object.keys(plan.additions).sort().join()!==profile.names.join()||Object.keys(plan.baseline).length!==profile.baseline)throw Error('COPY_MIGRATION_PLAN');
 const names=profile.names;
 try{await withTransaction(async c=>{await c.query('SELECT pg_advisory_xact_lock(83947101)');
@@ -1144,17 +1234,73 @@ const applied=Object.fromEntries((await c.query('SELECT name,sha256 FROM schema_
 if(Object.keys(applied).length!==profile.baseline||Object.entries(plan.baseline).some(([k,v])=>applied[k]!==v))throw Error('COPY_MIGRATION_HISTORY_CHANGED');
 for(const name of names){const sql=await readFile('/copy-sql/'+name,'utf8');if(hash(sql)!==plan.additions[name])throw Error('COPY_SQL_CHANGED');await c.query(sql);await c.query('INSERT INTO schema_migrations(name,sha256) VALUES($1,$2)',[name,hash(sql)]);}
 const after=Object.fromEntries((await c.query('SELECT name,sha256 FROM schema_migrations')).rows.map(r=>[r.name,r.sha256]));
-if(Object.keys(after).length!==profile.total||Object.entries({...plan.baseline,...plan.additions}).some(([k,v])=>after[k]!==v))throw Error('COPY_MIGRATION_READBACK');});}finally{await pool.end();}"""
+if(Object.keys(after).length!==profile.total||Object.entries({...plan.baseline,...plan.additions}).some(([k,v])=>after[k]!==v))throw Error('COPY_MIGRATION_READBACK');});}finally{await pool.end();}""".replace(
+    'V7_NAMES', json.dumps(sorted(V7_PROFILE_MIGRATION_NAMES), separators=(',', ':'))).replace('V7_TOTAL', str(V7_PROFILE_MIGRATION_TOTAL))
+
+
+V7_RETIREMENT_EXPORT_DIR = 'v7-retirement-export'
+
+
+def export_retired_modules(server, root, report_dir, metadata, timeout=300):
+    """V7 F8-E: 0109 drops the retired V5 tables only when the latest receipt of
+    scripts/v7-retirement-export.ts matches their rows. Run it here, producers
+    already stopped, with the candidate image and the owner connection, into a
+    new 0700 directory under the private root. The script reads every encrypted
+    file back before recording receipts; nothing is printed but counts."""
+    require(type(timeout) is int and 0 < timeout <= 300, 'COPY_RUNTIME_RETIREMENT_EXPORT_DEADLINE_INVALID')
+    require(re.fullmatch(r'[a-f0-9]{40}', metadata.get('source_sha') or ''), 'COPY_RUNTIME_RETIREMENT_EXPORT_SOURCE_INVALID')
+    base = Path(server.PRIVATE)/V7_RETIREMENT_EXPORT_DIR
+    if not base.exists():
+        base.mkdir(mode=0o700)
+    info = base.lstat()
+    require(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700 and info.st_uid == os.getuid(),
+            'COPY_RUNTIME_RETIREMENT_EXPORT_DIRECTORY_UNSAFE')
+    name = 'export-'+metadata['source_sha'][:12]+'-'+dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    require(not (base/name).exists(), 'COPY_RUNTIME_RETIREMENT_EXPORT_EXISTS')
+    env = native.env_values(native.protected_bytes(server.PRIVATE/'release.env'))
+    args = ['docker', 'run', '--rm', '--user', '0:0', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
+            '--tmpfs', '/tmp:size=64m,noexec,nosuid', '--network', 'commerce-os_core',
+            '--env-file', str(server.PRIVATE/'admin.env'), '-v', str(base)+':/v7-retirement-export',
+            env['COMMERCE_IMAGE'], 'node', '--import', 'tsx', 'scripts/v7-retirement-export.ts', 'export', '/v7-retirement-export/'+name]
+    server.run_deployment_task(root, report_dir, args, 'v7-retirement-export', timeout)
+    require((base/name/'manifest.json').is_file(), 'COPY_RUNTIME_RETIREMENT_EXPORT_UNCONFIRMED')
+    return {'status': 'EXPORTED', 'directory': name}
+
+
+def ensure_lab_storage(server):
+    """V7 RF-19: the laboratory's private files live in <assets>/number-lab,
+    mounted read-write only into automation-worker at /data/laboratory. Created
+    once, owned like the assets directory, 0700; never a symlink."""
+    env = native.env_values(native.protected_bytes(server.PRIVATE/'release.env'))
+    assets = Path(env.get('COMMERCE_PRIVATE_ASSETS_DIR') or '')
+    require(assets.is_absolute() and assets.is_dir() and not assets.is_symlink(), 'COPY_RUNTIME_ASSETS_DIRECTORY_REQUIRED')
+    owner = assets.lstat()
+    lab = assets/'number-lab'
+    if not lab.exists() and not lab.is_symlink():
+        lab.mkdir(mode=0o700)
+        os.chown(lab, owner.st_uid, owner.st_gid)
+        os.chmod(lab, 0o700)
+    info = lab.lstat()
+    require(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700
+            and (info.st_uid, info.st_gid) == (owner.st_uid, owner.st_gid), 'COPY_RUNTIME_LAB_STORAGE_UNSAFE')
+    return str(lab)
 
 
 def apply_reviewed_migrations(server, root, report_dir, metadata, review, timeout=300, *, stage='INITIAL'):
-    require(type(timeout) is int and 0 < timeout <= 300, 'COPY_RUNTIME_MIGRATION_DEADLINE_INVALID')
+    bound = migration_deadline(metadata)
+    require(type(timeout) is int and 0 < timeout <= bound, 'COPY_RUNTIME_MIGRATION_DEADLINE_INVALID')
     applied = server.migrations(root); expected = metadata['migration_hashes']
     migration_stage_guard(applied, metadata, initial=stage == 'INITIAL', stage=stage)
     names = reviewed_migration_names(metadata)
     require(review.get('migration_hashes') == {name: expected[name] for name in names},
             'COPY_RUNTIME_REVIEWED_MIGRATION_HASH_CHANGED')
-    if applied == expected: return {'status': 'ALREADY_APPLIED', 'migration_count': len(expected)}
+    lab_storage = ensure_lab_storage(server) if names == V7_PROFILE_MIGRATION_NAMES else None
+    if applied == expected:
+        return {'status': 'ALREADY_APPLIED', 'migration_count': len(expected), **({'lab_storage': 'READY'} if lab_storage else {})}
+    retirement = None
+    if names == V7_PROFILE_MIGRATION_NAMES:
+        # Own bound, before the ≤300 s migration bound; 0109 still verifies it.
+        retirement = export_retired_modules(server, root, report_dir, metadata, 300)
     plan = Path(report_dir)/'migrations.json'
     server._write_report(plan, {'stage': stage, 'baseline': applied, 'additions': review['migration_hashes']})
     env = native.env_values(native.protected_bytes(server.PRIVATE/'release.env'))
@@ -1164,10 +1310,15 @@ def apply_reviewed_migrations(server, root, report_dir, metadata, review, timeou
             *[part for name in sorted(names) for part in ('-v', str(Path(root)/'packages/db/migrations'/name)+':/copy-sql/'+name+':ro')],
             env['COMMERCE_IMAGE'],
             'node', '--import', 'tsx', '--input-type=module', '-e', BOUNDED_MIGRATION_JS]
-    require(type(timeout) is int and 0 < timeout <= 300, 'COPY_RUNTIME_MIGRATION_DEADLINE_INVALID')
+    require(type(timeout) is int and 0 < timeout <= bound, 'COPY_RUNTIME_MIGRATION_DEADLINE_INVALID')
     server.run_deployment_task(root, report_dir, args, 'copy-migrations', timeout)
     verify_migrations(server.migrations(root), expected, complete=True)
-    return {'status': 'APPLIED_BOUNDED', 'migration_count': len(expected), 'bootstrap_or_import': False}
+    result = {'status': 'APPLIED_BOUNDED', 'migration_count': len(expected), 'bootstrap_or_import': False}
+    if retirement:
+        result['retirement_export'] = retirement
+    if lab_storage:
+        result['lab_storage'] = 'READY'
+    return result
 
 
 def first_start_guard(server, root):
@@ -1208,11 +1359,12 @@ def profiles(before, private, *, initial=False):
 
 def commercial_snapshot(server, root):
     # Private stable configuration and reservations. No row bodies are reported.
-    tables = ('manual_controls', 'integration_settings', 'commercial_assignments', 'operation_authorizations',
-              'creative_budgets', 'creative_global_budgets', 'intelligence_searches')
+    tables = ('manual_controls', 'integration_settings', 'commercial_assignments', 'operation_authorizations')
+    # V7 F8-E: 0109 exports and drops these retired V5 reservations.
+    retired = ('creative_budgets', 'creative_global_budgets', 'intelligence_searches')
     query = 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SELECT json_build_object('+','.join(
-        "'"+name+"',(SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]'::jsonb) FROM "+name+' t)'
-        for name in tables)+'); ROLLBACK;'
+        ["'"+name+"',(SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]'::jsonb) FROM "+name+' t)'
+         for name in tables]+["'"+name+"',"+native.retired_rows(name) for name in retired])+'); ROLLBACK;'
     real_quotas = {
         'warmup_rate_buckets': "JOIN records a ON a.id=t.account_id AND a.kind='channel_account' WHERE a.environment='REAL'",
         'warmup_rate_reservations': "JOIN outbox e ON e.id=t.effect_id WHERE e.environment='REAL'",
@@ -1272,7 +1424,7 @@ def reviewed_backup_module(manifest_ref, root, source_sha):
 
 
 def in_flight_guard(server, root):
-    query = "SELECT json_build_object('sends',(SELECT count(*) FROM outbox WHERE environment='REAL' AND status='SENDING'),'provider',(SELECT count(*) FROM creative_provider_operations WHERE status IN('RESERVED','RUNNING')),'voice',(SELECT count(*) FROM creative_voice_operations WHERE status IN('QUOTED','REQUESTED','RUNNING','PAID_PENDING_STORAGE')),'number',(SELECT count(*) FROM number_operations WHERE environment='REAL' AND state='PREPARING' AND lease_until>now()),'profile',(SELECT count(*) FROM warmup_identities WHERE environment='REAL' AND profile_operation_status='APPLYING'),'lifecycle',(SELECT count(*) FROM commands WHERE environment='REAL' AND kind='channel_command' AND status='PENDING' AND result ? 'processing_owner'));"
+    query = "SELECT json_build_object('sends',(SELECT count(*) FROM outbox WHERE environment='REAL' AND status='SENDING'),'provider',"+native.retired_count('creative_provider_operations',"status IN('RESERVED','RUNNING')")+",'voice',"+native.retired_count('creative_voice_operations',"status IN('QUOTED','REQUESTED','RUNNING','PAID_PENDING_STORAGE')")+",'number',(SELECT count(*) FROM number_operations WHERE environment='REAL' AND state='PREPARING' AND lease_until>now()),'profile',(SELECT count(*) FROM warmup_identities WHERE environment='REAL' AND profile_operation_status='APPLYING'),'lifecycle',(SELECT count(*) FROM commands WHERE environment='REAL' AND kind='channel_command' AND status='PENDING' AND result ? 'processing_owner'));"
     value = _parse(server.database(root, query).encode())
     require(type(value) is dict and set(value) == {'sends', 'provider', 'voice', 'number', 'profile', 'lifecycle'}
             and all(type(count) is int and count == 0 for count in value.values()),
@@ -1352,8 +1504,7 @@ def stage_continuity(before, services, candidate, after_owner, server, private):
                           {name: services[name] for name in preserved})
     for name in set(before['services'])-preserved:
         old, new = static_projection(before['services'][name]), static_projection(services[name])
-        require(old['HostConfig'] == new['HostConfig'] and old['Mounts'] == new['Mounts']
-                and old['NetworkSettings'] == new['NetworkSettings'], 'COPY_RUNTIME_APPLICATION_BOUNDARY_CHANGED')
+        require(application_boundary_equal(name, old, new), 'COPY_RUNTIME_APPLICATION_BOUNDARY_CHANGED')
         if previous.get('runtime_stage') == 'CORE_PREPARED' and candidate['runtime_stage'] == 'OPERATING':
             compare_live_snapshot({name: before['services'][name]}, {name: services[name]})
     require(previous['portal'] == candidate['portal'] and previous['smtp_transition_ref'] == candidate['smtp_transition_ref']
@@ -1396,8 +1547,13 @@ def commit_stage(server, root, report_dir, before, services, report, stage, revi
         gateway_continuity(before, services, candidate, server.owner_auth_snapshot(root), server, server.PRIVATE)
     else:
         stage_continuity(before, services, candidate, server.owner_auth_snapshot(root), server, server.PRIVATE)
+    gateway_boot = None
+    if gateway_extension:
+        import runtime_boot_install
+        gateway_boot = runtime_boot_install.gateway_admission(server, root, report_dir, before, services, report, locks, deadline)
     with reviewed_backup_module(review['backup_tools_manifest_ref'], root, report['source_sha']) as backup:
         if deadline is not None: deadline_check(deadline)
+        if gateway_boot is not None: gateway_boot.fence()
         prepared = backup.prepare_reviewed_controllers(review['backup_tools_manifest_ref'], root,
             report['source_sha'], sha256(before['plan_raw']), sha256(before['state_raw']), candidate,
             {row['Id']: row for row in services.values()}, held_locks=dict(zip(native.LOCKS, locks)))
@@ -1413,6 +1569,7 @@ def commit_stage(server, root, report_dir, before, services, report, stage, revi
             'candidate_plan_sha256': sha256(plan_raw), 'runtime_stage': stage, 'database_rollback': False}
         journal['candidate_state_sha256'] = sha256(prepared['adoption_bytes'])
         server._write_report(journal_path, journal)
+        if gateway_boot is not None: gateway_boot.fence()
         # Tool-source changes are independently authorized/validated by the native
         # B02 helper. This second CAS protects the two unchanged old files ourselves.
         require(native.protected_bytes(server.PRIVATE/'api-web-adoption.json') == before['state_raw']
@@ -1446,6 +1603,13 @@ def commit_stage(server, root, report_dir, before, services, report, stage, revi
         # Only a confirmed pair/native mark can publish a terminal report. A
         # SIGKILL before this point leaves RUNNING, never an early SUCCEEDED.
         if deadline is not None: deadline_check(deadline)
+        if stage == 'OPERATING':
+            # Same native FULL/package admission, source bundle and held locks.
+            # Installation errors leave the applied pair without SUCCEEDED.
+            # The hook never starts containers or sessions during installation.
+            import runtime_boot_install
+            completed['host_boot'] = (gateway_boot.apply(actual_state, actual_plan, backup) if gateway_extension else
+                runtime_boot_install.install(server, root, report_dir, before, report, actual_state, actual_plan, backup, locks, deadline))
         if before_terminal is not None: before_terminal()
         server._write_report(report_dir/'report.json', completed)
         report.update(completed)
@@ -1618,12 +1782,23 @@ def reconcile_gateways(server, manifest_ref_file):
             locks = native.acquire_locks(server.PRIVATE)
             if report_dir.exists():
                 prior = _parse(native.protected_bytes(report_dir/'report.json'))
-                require(prior.get('status') == 'SUCCEEDED' and prior.get('action') == report['action']
-                        and prior.get('approval_ref') == manifest_ref, 'COPY_RUNTIME_GATEWAY_RETRY_REQUIRES_RECONCILIATION')
+                require(prior.get('status') in {'SUCCEEDED', 'RUNNING', 'FAILED'} and prior.get('action') == report['action']
+                        and prior.get('approval_ref') == manifest_ref and prior.get('source_sha') == manifest['source_sha']
+                        and prior.get('run_id') == manifest['run_id'], 'COPY_RUNTIME_GATEWAY_RETRY_REQUIRES_RECONCILIATION')
                 actual = snapshot(server, server.PRIVATE, current, report_dir)
                 require(Path(actual['state']['last_release_receipt_ref']['path']).parent == report_dir,
                         'COPY_RUNTIME_GATEWAY_IDEMPOTENT_LINEAGE_CHANGED')
-                replay = dict(prior, idempotent_replay=True); return replay
+                import runtime_boot_install
+                if prior['status'] == 'SUCCEEDED':
+                    runtime_boot_install.gateway_replay(server, current, report_dir, actual, prior)
+                    replay = dict(prior, idempotent_replay=True); return replay
+                completion = runtime_boot_install.gateway_recover(server, current, report_dir, actual, prior, locks, deadline, manifest)
+                finished = {k: v for k, v in prior.items() if k not in {'error', 'reconciliation_required'}}
+                finished.update(status='SUCCEEDED', stage='complete', host_boot=completion,
+                    runtime_stage='OPERATING', finished_at=dt.datetime.now(dt.timezone.utc).isoformat(),
+                    recovery='POLICY_READBACK_ONLY_NO_REDISPATCH')
+                server._write_report(report_dir/'report.json', finished)
+                replay = finished; return replay
             report_dir.mkdir(mode=0o700); owns_report = True; report['approval_ref'] = manifest_ref
             server._write_report(report_dir/'report.json', report)
             state_raw = native.protected_bytes(server.PRIVATE/'api-web-adoption.json'); state = _parse(state_raw); validate_state(state)
@@ -1790,7 +1965,7 @@ def publish(server, archive, archive_hash, source_sha, run_id, portal_private_en
                 'INSUFFICIENT_FREE_DISK')
         extract_release(archive, root, archive_hash); metadata = _parse((root/'RELEASE.json').read_bytes())
         context = provider_evidence.release_identity(metadata, source_sha, run_id, 'copy-runtime')
-        provider_evidence.publication_enabled(context)
+        provider_evidence.installation_enabled(context)
         if metadata.get('schema_version') == 2:
             report.update(provider_evidence.report_binding(metadata, run_id, archive_hash,
                 before['state']['portal'], _parse((root/'images.json').read_bytes())))
@@ -1877,7 +2052,7 @@ def publish(server, archive, archive_hash, source_sha, run_id, portal_private_en
                 report['stage'] = 'reviewed-migrations'; server._write_report(report_dir/'report.json', report)
                 remaining = deadline_check(deadline)
                 report['bounded_migrations'] = apply_reviewed_migrations(
-                    server, root, report_dir, metadata, review, min(300, remaining), stage='OPERATING')
+                    server, root, report_dir, metadata, review, min(migration_deadline(metadata), remaining), stage='OPERATING')
                 require(commercial_snapshot(server, previous_root) == configuration,
                         'COPY_RUNTIME_COMMERCIAL_CONFIGURATION_CHANGED')
             mutation_started = True

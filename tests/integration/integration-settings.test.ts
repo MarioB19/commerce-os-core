@@ -1,5 +1,6 @@
 import {explicitFixtureEnvironment} from './explicit-fixture-environment.js';
 import {afterAll,beforeAll,describe,expect,it,vi} from 'vitest';
+import {fixtureProfiles,retireRealAccount,retireRealAccountOn,retiredRealAccount} from '../support/profile-fixture.js';
 import {randomBytes,randomUUID} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
@@ -10,6 +11,8 @@ import {pool,getRecord,putRecord,withTransaction,readOperationalSettings,hash,st
 import {readIntegrationSettings,saveIntegrationSetting,integrationReadiness} from '../../packages/db/src/integration-settings.js';
 import {providerFor,assertGatewayIsolation,fulfillmentProviderFor} from '../../apps/channel-worker/src/providers.js';
 const workspace='integrations-'+randomUUID(),other='integration-other-'+randomUUID(),origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0]!;
+// V7 F2: fixture workspaces are adopted profiles (max three per installation).
+beforeAll(()=>fixtureProfiles(workspace,other));
 const secret='synthetic-access-token-fixture-only',replacement='synthetic-rotated-credential-only';
 let app:FastifyInstance,cookie='',viewerCookie='',actor='';
 let gatewayFixtureAccountId:string|undefined;
@@ -31,15 +34,13 @@ afterAll(async()=>{
    }
    const account=await getRecord(c,workspace,'channel_account',accountId);
    expect(account?.environment).toBe('REAL');
-   await putRecord(c,{id:account!.id,workspaceId:workspace,environment:'REAL',kind:'channel_account',version:account!.version,body:{...account!.body,deleted_at:new Date().toISOString(),sending_enabled:false}});
+   // V7 F2: a REAL number retires through the quota path (paused, stopped, then deleted).
+   await retireRealAccountOn(c,workspace,account!.id);
    expect((await c.query('SELECT archived_at IS NOT NULL AS archived FROM channel_sessions WHERE account_id=$1 AND workspace_id=$2',[accountId,workspace])).rows).toEqual([{archived:true}]);
   });
   }
   if(gatewayFixtureAccountId){
-   const path='/v1/channel-accounts/'+gatewayFixtureAccountId+'?environment=REAL',account=await call('GET',path);
-   expect(account.statusCode,account.body).toBe(200);
-   const removed=await call('DELETE',path,{expected_version:account.json().data.version,confirmation:'DELETE_CHANNEL_ACCOUNT',reason:'Retire isolated integration gateway fixture'});
-   expect(removed.statusCode,removed.body).toBe(200);
+   const accountId=gatewayFixtureAccountId;await withTransaction(c=>retireRealAccountOn(c,workspace,accountId));
   }
  } finally {vi.unstubAllEnvs();await app.close();await pool.end();}
 });
@@ -124,8 +125,7 @@ describe('Private owner integration settings, field-scoped DB runtime reads',()=
    for(const event of mediaTerminals)await pool.query("INSERT INTO consumer_receipts(consumer,event_id) VALUES($1,$2) ON CONFLICT DO NOTHING",[event.event_type==='channel.media.stored'?'media-sales-v1':'media-sales-failure-v1',event.id]);
    await pool.query("UPDATE warmup_pools SET enabled=false,paused=true WHERE group_id IN(SELECT id FROM warmup_groups WHERE workspace_id=$1 AND members @> jsonb_build_array(jsonb_build_object('account_id',$2::text)))",[workspace,account.id]);
    await pool.query("UPDATE number_operations SET state='CANCELLED' WHERE workspace_id=$1 AND input->>'account_id'=$2",[workspace,account.id]);
-   const current=(await getRecord(pool,workspace,'channel_account',account.id))!;
-   await putRecord(pool,{id:current.id,workspaceId:workspace,environment:'REAL',kind:'channel_account',version:current.version,body:{...current.body,deleted_at:new Date().toISOString()}});
+   await retireRealAccount(workspace,account.id);// V7 F2: quota retirement path
    // Retire only this isolated test profile; no global worker fixture survives.
    await pool.query("UPDATE integration_settings SET enabled=false WHERE workspace_id=$1 AND environment='REAL' AND key=$2",[workspace,key]);
   }
@@ -141,7 +141,12 @@ describe('Private owner integration settings, field-scoped DB runtime reads',()=
   expect(result.body).not.toContain(secret);
  }));
  it('ignores a deleted archived account sharing the profile with a frozen WORKING account',async()=>frozenProfile(async({account,key,input,snapshot,request}:any)=>{
-  const retired=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'channel_account',body:{...account.body,status:'STOPPED',deleted_at:new Date().toISOString()}});
+  // V7 F2: a retired REAL number is admitted, then retired through the quota
+  // path. Its admission briefly needs the shared gateway, so the frozen
+  // account's session is archived around it and restored before any snapshot.
+  await pool.query('UPDATE channel_sessions SET archived_at=now() WHERE account_id=$1',[account.id]);
+  let retired!:Awaited<ReturnType<typeof retiredRealAccount>>;try{retired=await retiredRealAccount(pool,workspace,{...account.body,status:'STOPPED',deleted_at:new Date().toISOString()});}
+  finally{await pool.query('UPDATE channel_sessions SET archived_at=NULL WHERE account_id=$1',[account.id]);}
   const retiredSnapshot=async()=>({record:(await pool.query('SELECT * FROM records WHERE id=$1',[retired.id])).rows[0],session:(await pool.query('SELECT * FROM channel_sessions WHERE account_id=$1',[retired.id])).rows[0]});
   const before=await snapshot(),history=await retiredSnapshot(),profile=await readIntegrationSettings(pool,workspace,'REAL',key),policy=await readOperationalSettings(pool,workspace,'REAL'),idem=randomUUID();
   expect(history.record.body.deleted_at).toBeTruthy();expect(history.session.archived_at).toBeTruthy();expect(before.account.body.status).toBe('WORKING');expect(before.session.archived_at).toBeNull();
@@ -219,7 +224,7 @@ describe('Private owner integration settings, field-scoped DB runtime reads',()=
    const before=await snapshot(),otherBefore=await getRecord(pool,workspace,'channel_account',otherAccount.id),ownership=(await pool.query('SELECT * FROM session_ownership WHERE account_id=$1',[otherAccount.id])).rows[0],profile=await readIntegrationSettings(pool,workspace,'REAL',key),policy=await readOperationalSettings(pool,workspace,'REAL');
    const result=await request('PUT',`/v1/settings/integrations/${key}?environment=REAL`,input);
    expect(result.statusCode,result.body).toBe(409);expect(await snapshot()).toEqual(before);expect(await getRecord(pool,workspace,'channel_account',otherAccount.id)).toEqual(otherBefore);expect((await pool.query('SELECT * FROM session_ownership WHERE account_id=$1',[otherAccount.id])).rows[0]).toEqual(ownership);expect(await readIntegrationSettings(pool,workspace,'REAL',key)).toEqual(profile);expect(await readOperationalSettings(pool,workspace,'REAL')).toEqual(policy);
-  }finally{const current=(await getRecord(pool,workspace,'channel_account',otherAccount.id))!;await putRecord(pool,{id:current.id,workspaceId:workspace,environment:'REAL',kind:'channel_account',version:current.version,body:{...current.body,deleted_at:new Date().toISOString()}});}
+  }finally{await retireRealAccount(workspace,otherAccount.id);}
  },'cloud'));
 
  it('restricts decrypted field visibility to the role responsible for each provider operation',async()=>{
@@ -227,11 +232,5 @@ describe('Private owner integration settings, field-scoped DB runtime reads',()=
   const expected:Record<string,string[]>={commerce_automation:['meta:access_token','openai:api_key'],commerce_ingress:['cloud:app_secret','cloud:verify_token','waha:webhook_secret'],commerce_channel:['cloud:token','fulfillment:token','waha:api_key','waha:webhook_secret']};
   for(const[role,fields]of Object.entries(expected)){const rows=await withTransaction(async c=>{await c.query('SET LOCAL ROLE '+role);return(await c.query('SELECT DISTINCT type,field FROM integration_secrets WHERE workspace_id=$1',[workspace])).rows;});expect(rows.map(r=>`${r.type}:${r.field}`).sort()).toEqual(fields.sort());await expect(withTransaction(async c=>{await c.query('SET LOCAL ROLE '+role);await c.query("UPDATE integration_settings SET enabled=true WHERE workspace_id=$1",[workspace]);})).rejects.toThrow('permission denied');}
   await withTransaction(async c=>{await c.query('SET LOCAL ROLE commerce_ingress');const cloud=await readIntegrationSettings(c,workspace,'REAL','cloud:CLOUD');expect(Object.keys(cloud!.secrets).sort()).toEqual(['app_secret','verify_token']);});
- });
- it('protects static portal access in catalog, history, idempotency and API metadata',async()=>{
-  const code='synthetic-preescolar-private-code',reference=JSON.stringify({url:'https://portal.example/access',code,instructions:'Synthetic approved static access'}),payload={name:'Synthetic portal access',kind:'access',adapter:'link',delivery_reference:reference};
-  const key=randomUUID(),result=await call('POST','/v1/assets?environment=REAL',payload,key);expect(result.statusCode,result.body).toBe(201);expect(result.body).not.toContain(code);expect((await call('POST','/v1/assets?environment=REAL',payload,key)).json()).toEqual(result.json());
-  for(const table of ['records','record_versions','idempotency','domain_events']){const rows=(await pool.query(`SELECT * FROM ${table} WHERE workspace_id=$1`,[workspace])).rows;expect(JSON.stringify(rows)).not.toContain(code);}
-  const asset=(await pool.query('SELECT body FROM records WHERE id=$1',[result.json().data.id])).rows[0].body;expect(JSON.parse(decrypt(asset.delivery_ciphertext)).delivery_reference).toBe(reference);expect((await call('POST','/v1/assets?environment=REAL',{...payload,name:code})).statusCode).toBe(400);expect((await call('POST','/v1/assets?environment=REAL',{...payload,delivery_reference:'invalid'})).statusCode).toBe(400);
  });
 });

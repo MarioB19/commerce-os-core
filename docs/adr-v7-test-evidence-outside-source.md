@@ -1,0 +1,11 @@
+# Evidencia de pruebas fuera del árbol de fuente
+
+2026-10-12. Alcance: destinos de artefactos de integración/E2E; sin cambios a fixtures, aserciones, selección de pruebas, permisos, `.gitignore` o al gate `SOURCE_TREE_NOT_CLEAN`.
+
+El FULL público de51f72 ejecutó sus21 etapas, pero el gate final rechazó el árbol modificado. El análisis local identificó14 productores de34 rutas en `docs/evidence`: tres pruebas de integración escriben JSON; once pruebas E2E escriben JSON/capturas y copias de capturas. Esas rutas no están ignoradas en el candidato. Esto prueba una causa por construcción; no sustituye un inventario del workspace nativo, que no se recuperó. El escritor original de Next16.3.3, aplicado localmente al `next-env.d.ts` exacto del candidato, conservó el SHA1862ac4b; no se atribuye ese fichero al incidente.
+
+Cada productor llama ahora `evidencePath(relative)` y conserva su sufijo, contenido y aserciones. El helper exige un directorio absoluto externo al checkout cuando recibe `COMMERCE_TEST_EVIDENCE_DIR`. Rechaza traversal, destinos dentro o ancestros del código y enlaces hacia él; tampoco sigue symlinks bajo el destino. Crea padres privados. Sin configuración, deja una carpeta privada y única por proceso bajo el directorio local del usuario, fuera de la fuente; no elimina evidencia.
+
+El runner de F0 debe fijar `COMMERCE_TEST_EVIDENCE_DIR` a un directorio privado por ejecución fuera del checkout y conservar un manifiesto con hashes de los artefactos. `.runtime` está dentro del checkout y no sirve para este destino. La ruta compartida de Node para mounts Docker permanece independiente. Los wrappers `test-isolated` y `test-e2e` transmiten el entorno a sus hijos, sin filtrar esta variable.
+
+Validación local proporcional: siete pruebas filesystem/Git reales prueban salidas retenidas, estado limpio y rechazos de rutas; reproducción Chromium de PNG, JSON y copia con hashes; comparación inversa de los14 diffs prueba que al deshacer sólo el wrapper de ruta y su import se recupera cada fuente original byte por byte. No se repitió el FULL ni las suites de integración/E2E completas. El ensayo local inicial de TypeScript usó un symlink de dependencias incompleto y falló en imports de workspace; se corrigió la instalación aislada offline antes de validar el árbol final. Ningún efecto de nube ni modificación del candidato histórico.

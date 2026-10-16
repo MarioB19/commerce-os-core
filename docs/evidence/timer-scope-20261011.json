@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "status": "LOCAL_SYNTHETIC_VALIDATION_PASSED",
+  "at": "2026-10-11T16:14:15.670980+00:00",
+  "base_commit": "80a6d6eabc52f5eb5f7c62c7c634a74f1a7bb24d",
+  "production_installed": false,
+  "native_full_passed": false,
+  "production_slo_proven": false,
+  "real_sends": 0,
+  "schema_migrations": 68,
+  "runtime": {
+    "node": "24.20.0",
+    "pnpm": "10.34.5",
+    "postgres": "17.11",
+    "vitest": "4.1.11"
+  },
+  "checks": {
+    "targeted_timer_scope": {
+      "passed": 12
+    },
+    "related_postgresql_integration": {
+      "passed": 72,
+      "files": [
+        "automation-runtime",
+        "remarketing-v2",
+        "mi-ciclo-listo-runtime",
+        "sales-journey",
+        "timer-scope",
+        "v5-product-routing",
+        "assignment-change-preview"
+      ]
+    },
+    "unit": {
+      "passed": 558,
+      "files": 70
+    },
+    "typescript": "PASS",
+    "targeted_eslint": "PASS",
+    "diff_check": "PASS"
+  },
+  "isolation": {
+    "data": "synthetic only",
+    "container_cpu": 0.5,
+    "container_memory_mib": 384,
+    "postgres_data": "own tmpfs",
+    "inherited_database_url": false,
+    "production_connections": 0,
+    "cleanup": {
+      "status": "OWN_SYNTHETIC_POSTGRES_REMOVED",
+      "at": "2026-10-11T16:08:42.136684+00:00",
+      "five_prior_containers_preserved": true,
+      "31_prior_volumes_preserved": true,
+      "other_resources_removed": false
+    },
+    "followup_cleanup": {
+      "status": "OWN_SYNTHETIC_POSTGRES_REMOVED",
+      "at": "2026-10-11T16:13:46.683369+00:00",
+      "five_prior_containers_preserved": true,
+      "31_prior_volumes_preserved": true,
+      "other_resources_removed": false
+    }
+  },
+  "source_sha256": {
+    "apps/automation-worker/src/workflows.ts": "47d70c576ef1c100e51127f1b3fbb5812a06b03adfda2af88b483721574bd652",
+    "apps/automation-worker/src/shared.ts": "2d36864f96882bf3deee7c4a89f6a5e4fcdaf3e647df134e5690b9429fade8bb",
+    "tests/integration/timer-scope.test.ts": "7f6703808b80a490b71e6c22f4f450d6fda377ad930d86ff63be49e4f676dd08",
+    "packages/db/src/commercial-assignments.ts": "5f68f15ce1c49dfb022182e402741ba80c26310dbd03016233262b208fd439fe"
+  },
+  "private_log_sha256": {
+    "migrate.log": "06f8a052cbe2edb6d91e4970dc151e0a19dacbcb0ca47329cbb8e095cff073c8",
+    "timer-scope.log": "361ff7302402729e0e674ff417351f022d52bbcedfee2eca5415512a3ab19302",
+    "related-integration.log": "8649ba8846f118baa18910049ad37cdeac2a96f7619e1af3a4fc576cb48362c1",
+    "related-integration2.log": "e28ee9bc330c3d1f44de169f44fd16f287ede76b631d6f778779582f8ed89ece",
+    "explain-plans.json": "7599e6e74f77997244f3641fc8daedcd013b19c12ef71f1eafd45a18c3a4ed19"
+  },
+  "harness_correction": {
+    "initial_related_run": "45 passed;12 not run because two login setup hooks returned403",
+    "cause": "Isolated test environment omitted TRUSTED_ORIGINS while fixtures used127.0.0.1",
+    "resolution": "Set explicit synthetic local trusted origin and repeat related suite in a fresh database;57 passed. Original failure preserved."
+  },
+  "explain": {
+    "status": "SYNTHETIC_POSTGRES_EXPLAIN_COMPARISON",
+    "at": "2026-10-11T16:05:54.606Z",
+    "postgres": "17.11 (Debian 17.11-1.pgdg12+2)",
+    "records_added": 20400,
+    "timers_added": 200,
+    "limit": 25,
+    "production_data": false,
+    "statement_timeout_seconds": 30,
+    "before": {
+      "planning_ms": 0.647,
+      "execution_ms": 10.574,
+      "rows": 25,
+      "indexes": [],
+      "node_types": [
+        "Limit",
+        "Sort",
+        "Hash Join",
+        "Seq Scan",
+        "Hash"
+      ],
+      "shared_hit_blocks": 1040,
+      "shared_read_blocks": 0
+    },
+    "after": {
+      "planning_ms": 0.559,
+      "execution_ms": 0.22,
+      "rows": 25,
+      "indexes": [
+        "timers_pending",
+        "records_conversation_assignee",
+        "records_lookup"
+      ],
+      "node_types": [
+        "Limit",
+        "Nested Loop",
+        "Index Scan",
+        "Memoize"
+      ],
+      "shared_hit_blocks": 180,
+      "shared_read_blocks": 0
+    },
+    "limits": "Single local warm-cache synthetic sample. It does not establish production latency or an SLO."
+  },
+  "followup_private_log_sha256": {
+    "migrate.log": "06f8a052cbe2edb6d91e4970dc151e0a19dacbcb0ca47329cbb8e095cff073c8",
+    "related-integration.log": "43039d2b775539b04eb659dd6b5ed7554069580195ff57f3aca216ae7689fcdd"
+  }
+}

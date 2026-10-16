@@ -1,4 +1,9 @@
+import {recordProfileExecutor} from '../../../packages/db/src/profile-record-context.js';
+import {withNumberLabEngine,type NumberLabEngineLease} from '../../../packages/db/src/number-lab-engine-runtime.js';
+import {captureNewReceiptPolicy} from './receipt-policy.js';
 import {acceptsAgreement} from '../../../packages/domain/src/sales/agreement.js';
+import {collectionInstructions,plainPrice,simulatedCollectionInstructions} from '../../../packages/domain/src/catalog/variant-document.js';
+import {nextRemarketingTime,insideRemarketingWindow} from '../../../packages/domain/src/sales/remarketing.js';
 import {launchTestOrderFields,activeLaunchTest,approvedBenefitTotal,lockLaunchTestOrderCreation,reconcileNumberFlowTestClassification,assertNumberFlowTestOrder,approvedNumberFlowTestPayment} from '../../../packages/db/src/launch-test-scope.js';
 import {classifyEducation,collectionStopReason} from '../../../packages/domain/src/sales/education.js';
 import {armConfirmedWait,armFollowups,collectionEligibility,remarketingEligibility} from './workflow-timing.js';
@@ -9,18 +14,18 @@ import {firstObservedAttribution} from '../../../packages/db/src/receipt-sales.j
 import {cancelPendingRemarketingForContact,closeRemarketingCycle,getRecord,hash,query,reserveRemarketingAttempt,setRemarketingAttemptStatus,verifiedTemplateCapabilityEvidence,withTransaction,uuid,decrypt,type QueryExecutor} from '@commerce/db';
 import {remarketingTransportTemplateSchema,type DomainRecord,type Body} from '@commerce/contracts';
 import {defaultSalesWorkflow,newFlowState,waitingCommitmentNode,evaluateCondition,renderMessage,validateWorkflow,type FlowDefinition,type FlowState} from '../../../packages/domain/src/sales/workflow.js';
-import {save,event,create,commercialContext,proposeEffect,gated,nowFor,cancelCollectionPending,cancelPending} from './shared.js';
+import {save,event,create,commercialContext,proposeEffect,proposeEffectOutcome,gated,nowFor,cancelCollectionPending,cancelPending} from './shared.js';
 import {interruptPendingRecipeEffects} from './recipe-interruptions.js';
 const transportConfirmedStatuses=new Set(['SENT','DELIVERED','READ']);
 const deliveryConfirmedStatuses=new Set(['DELIVERED','READ']);
 export async function ensureOrder(client:QueryExecutor,conversation:DomainRecord):Promise<DomainRecord|undefined>{
- const existing=(await client.query(`SELECT * FROM records WHERE workspace_id=$1 AND kind='order' AND body->>'conversation_id'=$2 LIMIT 1`,[conversation.workspace_id,conversation.id])).rows[0];if(existing){await assertNumberFlowTestOrder(client,conversation,existing);return existing;}
+ const existing=(await client.query(`SELECT * FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='order' AND body->>'conversation_id'=$3 LIMIT 1`,[conversation.workspace_id,conversation.environment,conversation.id])).rows[0];if(existing){await assertNumberFlowTestOrder(client,conversation,existing);return existing;}
  await lockLaunchTestOrderCreation(client,conversation.workspace_id,conversation.body.account_id);
  // Another worker may have created the order while this transaction waited.
- const concurrent=(await client.query(`SELECT * FROM records WHERE workspace_id=$1 AND kind='order' AND body->>'conversation_id'=$2 LIMIT 1`,[conversation.workspace_id,conversation.id])).rows[0];if(concurrent){await assertNumberFlowTestOrder(client,conversation,concurrent);return concurrent;}
+ const concurrent=(await client.query(`SELECT * FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='order' AND body->>'conversation_id'=$3 LIMIT 1`,[conversation.workspace_id,conversation.environment,conversation.id])).rows[0];if(concurrent){await assertNumberFlowTestOrder(client,conversation,concurrent);return concurrent;}
  const offer=await getRecord(client,conversation.workspace_id,'offer',conversation.body.offer_version_id??'');if(!offer)return undefined;
  const testFields=await launchTestOrderFields(client,conversation);
- let order=await create(client,conversation,'order',{...testFields,physical_chat_id:conversation.body.physical_chat_id,assignment_id:conversation.body.assignment_id,assignment_revision:conversation.body.assignment_revision,binding_id:conversation.body.binding_id,conversation_id:conversation.id,contact_id:conversation.body.contact_id,account_id:conversation.body.account_id,acquisition_account_id:conversation.body.account_id,closing_account_id:conversation.body.account_id,product_id:offer.body.product_id,offer_version_id:offer.id,workflow_version_id:conversation.body.workflow_version_id,agent_version_id:conversation.body.agent_version_id,payment_profile_version_id:offer.body.payment_profile_version_id,receipt_policy_version_id:offer.body.receipt_policy_version_id,offer_snapshot:offer.body,workflow_snapshot:conversation.body.workflow_snapshot??null,workflow_runtime_version:conversation.body.workflow_runtime_version??null,amount_minor:testFields.launch_test_role==='beneficiary'?0:offer.body.base_amount_minor,currency:offer.body.currency,status:testFields.launch_test_role==='beneficiary'?'SPONSORSHIP_AWAITING_ASSIGNMENT':'OFFERED',receipt_status:'NONE',reconciliation_status:'UNRECONCILED',fulfillment_status:'PENDING',origin:conversation.body.origin});order=await save(client,order,{...order.body,attribution:await firstObservedAttribution(client,order)});await event(client,conversation,'order.created',{order_id:order.id,offer_version_id:offer.id});return order;
+ let order=await create(client,conversation,'order',{...testFields,physical_chat_id:conversation.body.physical_chat_id,assignment_id:conversation.body.assignment_id,assignment_revision:conversation.body.assignment_revision,binding_id:conversation.body.binding_id,conversation_id:conversation.id,contact_id:conversation.body.contact_id,account_id:conversation.body.account_id,acquisition_account_id:conversation.body.account_id,closing_account_id:conversation.body.account_id,product_id:offer.body.product_id,offer_version_id:offer.id,workflow_version_id:conversation.body.workflow_version_id,agent_version_id:conversation.body.agent_version_id,payment_profile_version_id:offer.body.payment_profile_version_id,receipt_policy_version_id:offer.body.receipt_policy_version_id,offer_snapshot:offer.body,workflow_snapshot:conversation.body.workflow_snapshot??null,workflow_runtime_version:conversation.body.workflow_runtime_version??null,amount_minor:testFields.launch_test_role==='beneficiary'?0:offer.body.base_amount_minor,currency:offer.body.currency,status:testFields.launch_test_role==='beneficiary'?'SPONSORSHIP_AWAITING_ASSIGNMENT':'OFFERED',receipt_status:'NONE',reconciliation_status:'UNRECONCILED',fulfillment_status:'PENDING',origin:conversation.body.origin});const receiptPolicy=await captureNewReceiptPolicy(client,conversation,order);order=await save(client,order,{...order.body,...(receiptPolicy?{receipt_policy_snapshot_sha256:receiptPolicy.sha256}:{}),attribution:await firstObservedAttribution(client,order)});await event(client,conversation,'order.created',{order_id:order.id,offer_version_id:offer.id});return order;
 }
 async function eligibleFulfillmentItems(client:QueryExecutor,order:DomainRecord,releaseOn:'commitment_accepted'|'receipt_approved'|'reconciled'){
  const benefitTotal=await approvedBenefitTotal(client,order);
@@ -33,10 +38,10 @@ export async function deliver(client:QueryExecutor,conversation:DomainRecord,rel
  if(['receipt_approved','reconciled'].includes(releaseOn)&&order.body.receipt_status!=='APPROVED'&&order.body.sale_definition!=='receipt_sales_v1'&&!(releaseOn==='reconciled'&&order.body.reconciliation_status==='RECONCILED'))return;
  if(order.body.commercial_classification==='TEST'&&!await activeLaunchTest(client,order))return;
  const eligible=await eligibleFulfillmentItems(client,order,releaseOn as 'commitment_accepted'|'receipt_approved'|'reconciled');
- for(const item of eligible){const exists=(await client.query(`SELECT id FROM records WHERE workspace_id=$1 AND kind='fulfillment' AND body->>'order_id'=$2 AND body->>'asset_id'=$3 AND (body->>'release_on'=$4 OR ($4 IN ('receipt_approved','reconciled') AND body->>'release_on' IN ('receipt_approved','reconciled')))`,[conversation.workspace_id,order.id,item.asset_id,releaseOn])).rows[0];if(exists)continue;
- const asset=await getRecord(client,conversation.workspace_id,'asset',item.asset_id);if(!asset)throw new Error('DELIVERY_ASSET_NOT_FOUND');const fulfillment=await create(client,conversation,'fulfillment',{order_id:order.id,conversation_id:conversation.id,asset_id:asset.id,release_on:releaseOn,status:'PROPOSED',...(['access','link'].includes(asset.body.kind)?{access_verification_status:'UNVERIFIED'}:{}),adapter:asset.body.adapter??asset.body.kind,attempts:0});
+ for(const item of eligible){const exists=(await client.query(`SELECT * FROM records WHERE workspace_id=$1 AND kind='fulfillment' AND body->>'order_id'=$2 AND body->>'asset_id'=$3 AND (body->>'release_on'=$4 OR ($4 IN ('receipt_approved','reconciled') AND body->>'release_on' IN ('receipt_approved','reconciled')))`,[conversation.workspace_id,order.id,item.asset_id,releaseOn])).rows[0];if(exists?.body.effect_id)continue;
+ const asset=await getRecord(client,conversation.workspace_id,'asset',item.asset_id);if(!asset)throw new Error('DELIVERY_ASSET_NOT_FOUND');const fulfillment=exists??await create(client,conversation,'fulfillment',{order_id:order.id,conversation_id:conversation.id,asset_id:asset.id,release_on:releaseOn,status:'PROPOSED',...(['access','link'].includes(asset.body.kind)?{access_verification_status:'UNVERIFIED'}:{}),adapter:asset.body.adapter??asset.body.kind,attempts:0});
  const payload:Body={kind:asset.body.kind==='file'?(String(asset.body.mime_type).startsWith('image/')?'image':String(asset.body.mime_type).startsWith('audio/')?'audio':'document'):'text',asset_id:asset.id,fulfillment_id:fulfillment.id,text:asset.body.kind==='link'?String(asset.body.url):asset.body.kind==='access'?undefined:String(asset.body.name)};
- let grant; if(asset.body.kind==='access'&&['webhook','link'].includes(asset.body.adapter))grant=await proposeEffect(client,conversation,{kind:'grant',asset_id:asset.id,grant_id:fulfillment.id},`fulfillment-grant:${fulfillment.id}`);if(grant){payload.grant_effect_id=grant.id;delete payload.asset_id;}const effect=await proposeEffect(client,conversation,payload,`fulfillment:${fulfillment.id}`,{predecessorId:grant?.id});if(effect)await save(client,fulfillment,{...fulfillment.body,effect_id:effect.id,...(grant?{grant_effect_id:grant.id}:{})});await event(client,conversation,'fulfillment.proposed',{fulfillment_id:fulfillment.id,asset_id:asset.id,release_on:releaseOn},cause);
+ let grant:Body|undefined; if(asset.body.kind==='access'&&['webhook','link'].includes(asset.body.adapter)){const proposed=await proposeEffectOutcome(client,conversation,{kind:'grant',asset_id:asset.id,grant_id:fulfillment.id},`fulfillment-grant:${fulfillment.id}`);if(proposed.state==='BLOCKED')return proposed;grant=proposed.effect;}if(grant){payload.grant_effect_id=grant.id;delete payload.asset_id;}const proposed=await proposeEffectOutcome(client,conversation,payload,`fulfillment:${fulfillment.id}`,{predecessorId:grant?.id});if(proposed.state==='BLOCKED')return proposed;const effect=proposed.effect;await save(client,fulfillment,{...fulfillment.body,effect_id:effect.id,...(grant?{grant_effect_id:grant.id}:{})});await event(client,conversation,'fulfillment.proposed',{fulfillment_id:fulfillment.id,asset_id:asset.id,release_on:releaseOn},cause);
  }
 }
 /**
@@ -151,29 +156,30 @@ export async function advanceWorkflow(client:QueryExecutor,original:DomainRecord
   state.status='RUNNING';delete state.waiting_for;delete state.waiting_node_id;delete state.wake_at;
  }
  const order=await ensureOrder(client,conversation);if(order?.body.launch_test_role==='beneficiary')return save(client,conversation,{...conversation.body,launch_test_role:'beneficiary',payment_obligation:false,ai_pending:false,flow_state:{...state,status:'FINISHED'}});const offer=order?.body.offer_snapshot??{};const product=offer.product_id?await getRecord(client,conversation.workspace_id,'product',offer.product_id):undefined;const contact=await getRecord(client,conversation.workspace_id,'contact',conversation.body.contact_id);
- const variables={product_name:product?.body.name??'Producto',offer_name:offer.name??product?.body.name??'Oferta',price:(Number(offer.base_amount_minor??0)/100).toFixed(2),currency:offer.currency??'',contact_name:contact?.body.name??'Contacto'};
+ const variables={product_name:product?.body.name??'Producto',offer_name:offer.name??product?.body.name??'Oferta',price:plainPrice(Number(offer.base_amount_minor??0),offer.currency??'MXN'),currency:offer.currency??'',contact_name:contact?.body.name??'Contacto'};
  for(let batch=0;batch<25&&state.status==='RUNNING';batch++){
   if(++state.steps>(def.flow.max_steps??100)){state.status='FAILED';await event(client,conversation,'workflow.limit_reached',{limit:def.flow.max_steps??100});break;}
   const node=def.flow.nodes.find(n=>n.id===state.node_id);if(!node){state.status='FAILED';break;}
   const nodeKey=`run:${conversation.id}:${def.versionId}:${state.steps}:${node.id}`;
   let next=node.next;
+  const defer=(reason:string)=>{state.steps--;return save(client,conversation,{...conversation.body,flow_state:state,workflow_runtime_version:def.versionId,effect_proposal_block:{node_id:node.id,reason}});};
   switch(node.type){
    case'entry':break;
    case'condition':next=node.branches?.[evaluateCondition(node.config,{...state.variables,conversation:conversation.body,order:order?.body,customer_text:conversation.body.last_customer_text})?'true':'false'];break;
    case'message':{
     if(node.config.education_intro){const selected=classifyEducation(String(conversation.body.last_customer_text??''),state.variables);const {valid,clarification,...selection}=selected;Object.assign(state.variables,selection);if(valid){next=def.flow.nodes.find(n=>n.id===node.next)?.next;break;}if(selected.nivel){node.config={...node.config,text:clarification};}}
-    conversation=await save(client,conversation,{...conversation.body,ai_pending:false,flow_response_sequence:conversation.body.sequence});await proposeEffect(client,conversation,{kind:node.config.kind??'text',...(node.config.after_previous_confirmed_seconds!==undefined?{after_previous_confirmed_seconds:node.config.after_previous_confirmed_seconds}:{}),workflow_node_id:node.id,workflow_runtime_version:def.versionId,...(node.config.recipe_step!==undefined?{workflow_recipe_step:Number(node.config.recipe_step),workflow_recipe_id:node.config.recipe_id}:{}),...(node.config.purpose?{purpose:node.config.purpose}:{}),text:renderMessage(String(node.config.text??''),variables),...(node.config.asset_id?{asset_id:node.config.asset_id}:{})},nodeKey);break;
+    const proposed=await proposeEffectOutcome(client,conversation,{kind:node.config.kind??'text',...(node.config.after_previous_confirmed_seconds!==undefined?{after_previous_confirmed_seconds:node.config.after_previous_confirmed_seconds}:{}),workflow_node_id:node.id,workflow_runtime_version:def.versionId,...(node.config.recipe_step!==undefined?{workflow_recipe_step:Number(node.config.recipe_step),workflow_recipe_id:node.config.recipe_id}:{}),...(node.config.purpose?{purpose:node.config.purpose}:{}),text:renderMessage(String(node.config.text??''),variables),...(node.config.asset_id?{asset_id:node.config.asset_id}:{})},nodeKey);if(proposed.state==='BLOCKED')return defer(proposed.reason);conversation=await save(client,conversation,{...conversation.body,ai_pending:false,flow_response_sequence:conversation.body.sequence,effect_proposal_block:null});break;
    }
    case'reply':state.status='WAITING';state.waiting_for='customer_reply';state.waiting_node_id=node.id;break;
    case'wait':{if(node.config.anchor){state.status='WAITING';state.waiting_for='effect_confirmed';state.waiting_node_id=node.id;state.pending_anchor={node_id:node.id,key:nodeKey,seconds:Number(node.config.seconds),purpose:node.config.purpose,anchor:structuredClone(node.config.anchor)};await armConfirmedWait(client,conversation,state);break;}const now=await nowFor(client,conversation);const due=new Date(now.getTime()+Number(node.config.seconds)*1000).toISOString();await client.query(`INSERT INTO timers(id,workspace_id,environment,conversation_id,kind,payload,due_at,logical_key) VALUES($1,$2,$3,$4,$8,$5,$6,$7) ON CONFLICT(workspace_id,logical_key) DO NOTHING`,[uuid(),conversation.workspace_id,conversation.environment,conversation.id,{...await commercialContext(client,conversation),node_id:node.id,workflow_version_id:conversation.body.workflow_version_id,purpose:node.config.purpose??(node.config.cancel_on_response?'followup':null)},due,nodeKey,node.config.cancel_on_response?'followup':'workflow_wait']);state.status='WAITING';state.wake_at=due;break;}
    case'stage':conversation=await save(client,conversation,{...conversation.body,stage:String(node.config.stage??'QUALIFIED')});break;
    case'approval':case'handoff':state.status='HUMAN_REVIEW';state.waiting_for='human_approved';state.waiting_node_id=node.id;await event(client,conversation,'workflow.human_review_requested',{node_id:node.id});break;
    case'commitment':if(order?.body.status!=='COMMITTED'&&!order?.body.committed_at){state.status='WAITING';state.waiting_for='commitment';state.waiting_node_id=node.id;conversation=await prepareRemarketingPlan(client,conversation,def,offer,'awaiting_agreement',node.id);}break;
-   case'fulfillment':case'post_receipt':await deliver(client,conversation,String(node.config.release_on??'receipt_approved'),nodeKey);if(Number(node.config.recipe_step)===6&&order&&(await eligibleFulfillmentItems(client,order,'commitment_accepted')).length){state.status='WAITING';state.waiting_for='prepayment_delivery_confirmed';state.waiting_node_id=node.id;}else if(Number(node.config.recipe_step)===10){state.status='WAITING';state.waiting_for='closing_delivery_confirmed';state.waiting_node_id=node.id;}break;
+   case'fulfillment':case'post_receipt':{const proposed=await deliver(client,conversation,String(node.config.release_on??'receipt_approved'),nodeKey);if(proposed?.state==='BLOCKED')return defer(proposed.reason);if(Number(node.config.recipe_step)===6&&order&&(await eligibleFulfillmentItems(client,order,'commitment_accepted')).length){state.status='WAITING';state.waiting_for='prepayment_delivery_confirmed';state.waiting_node_id=node.id;}else if(Number(node.config.recipe_step)===10){state.status='WAITING';state.waiting_for='closing_delivery_confirmed';state.waiting_node_id=node.id;}break;}
    case'bank_instructions':{
      const bankId=offer.payment_profile_version_id;const bank=bankId?await getRecord(client,conversation.workspace_id,'bank_profile',bankId):undefined;
      if(!bank&&conversation.environment==='REAL'){state.status='HUMAN_REVIEW';await event(client,conversation,'bank.configuration_required',{});next=node.id;}
-     else{const sensitive=bank?.body.secret_ciphertext?JSON.parse(decrypt(bank.body.secret_ciphertext)):null;const text=sensitive?`${bank!.body.bank} · ${sensitive.holder}\n${sensitive.account_number}\n${sensitive.instructions??''}\n${variables.price} ${variables.currency}`:'SIMULACIÓN: instrucciones bancarias de prueba; no efectuar transferencias.';await proposeEffect(client,conversation,{kind:'text',purpose:'collection',workflow_node_id:node.id,workflow_runtime_version:def.versionId,...(node.config.recipe_step!==undefined?{workflow_recipe_step:Number(node.config.recipe_step),workflow_recipe_id:node.config.recipe_id}:{}),text:node.config.text?renderMessage(String(node.config.text),{...variables,bank_instructions:text}):text,payment_profile_version_id:bank?.id},nodeKey);}break;
+     else{const sensitive=bank?.body.secret_ciphertext?JSON.parse(decrypt(bank.body.secret_ciphertext)):null;const text=(bank&&collectionInstructions({bank:bank.body,secret:sensitive,price:variables.price,currency:variables.currency}))??simulatedCollectionInstructions(bank?.body,offer.language);const proposed=await proposeEffectOutcome(client,conversation,{kind:'text',purpose:'collection',workflow_node_id:node.id,workflow_runtime_version:def.versionId,...(node.config.recipe_step!==undefined?{workflow_recipe_step:Number(node.config.recipe_step),workflow_recipe_id:node.config.recipe_id}:{}),text:node.config.text?renderMessage(String(node.config.text),{...variables,bank_instructions:text}):text,payment_profile_version_id:bank?.id},nodeKey);if(proposed.state==='BLOCKED')return defer(proposed.reason);}break;
    }
    case'receipt':if(order?.body.receipt_status!=='APPROVED'){state.status='WAITING';state.waiting_for='receipt_approved';if(offerRemarketingPolicy(offer))conversation=await prepareRemarketingPlan(client,conversation,def,offer,'awaiting_payment',node.id);else if(node.config.followups&&!conversation.body.followup_plan){conversation=await save(client,conversation,{...conversation.body,followup_plan:{...structuredClone(node.config.followups),key:`followup:${conversation.id}:${def.versionId}:${node.id}`,workflow_runtime_version:def.versionId,status:'AWAITING_COLLECTION_ACK'}});conversation=await armFollowups(client,conversation);}}break;
    case'reconcile':if(order?.body.sale_definition!=='receipt_sales_v1'&&order?.body.reconciliation_status!=='RECONCILED'){state.status='WAITING';state.waiting_for='reconciled';}break;
@@ -185,19 +191,26 @@ export async function advanceWorkflow(client:QueryExecutor,original:DomainRecord
   // Flow-test chat advances expose one visible unit at a time. The durable
   // node cursor is already moved below, so resuming is deterministic and does
   // not replay the effect that was just proposed.
-  if(conversation.body.flow_test_single_step===true&&state.status==='RUNNING'&&next&&['message','bank_instructions','fulfillment','post_receipt'].includes(node.type)){
+  // In «Probar número» (V7 F6, RF-19.b/j) a pause only separates two visible
+  // units: before a wait (commitment, receipt, reply) the flow runs on, so the
+  // customer answers the question just shown exactly as in production.
+  const visible=['message','bank_instructions','fulfillment','post_receipt'],betweenVisible=conversation.body.flow_test_pause==='BETWEEN_VISIBLE';
+  if(conversation.body.flow_test_single_step===true&&state.status==='RUNNING'&&next&&visible.includes(node.type)&&(!betweenVisible||visible.includes(String(def.flow.nodes.find(n=>n.id===next)?.type)))){
    state.status='WAITING';state.waiting_for='simulation_continue';state.waiting_node_id=node.id;
   }
   await event(client,conversation,'workflow.node_executed',{node_id:node.id,node_type:node.type,step:state.steps,workflow_version_id:def.versionId,status:state.status},nodeKey);
   if(next)state.node_id=next;else if(state.status==='RUNNING')state.status='FINISHED';
  }
- if(state.status==='FINISHED'&&conversation.body.simulation_id){const simulation=await getRecord(client,conversation.workspace_id,'simulation',conversation.body.simulation_id);if(simulation)await save(client,simulation,{...simulation.body,status:'COMPLETED',completed_at:new Date().toISOString()});}
- return save(client,conversation,{...conversation.body,flow_state:state,workflow_runtime_version:def.versionId});
+ if(state.status==='FINISHED'&&conversation.environment==='SIMULATION'&&conversation.body.simulation_id){const simulation=await getRecord(client,conversation.workspace_id,'simulation',conversation.body.simulation_id);if(simulation?.environment===conversation.environment)await save(client,simulation,{...simulation.body,status:'COMPLETED',completed_at:new Date().toISOString()});}
+ return save(client,conversation,{...conversation.body,flow_state:state,workflow_runtime_version:def.versionId,effect_proposal_block:null});
 }
 /** Recover schedules from durable accepted effects, including after a worker restart. */
-export async function processConfirmedSchedules(limit=100){
- const rows=(await query(`SELECT * FROM records WHERE kind='conversation' AND (body->'flow_state' ? 'pending_anchor' OR body->'followup_plan'->>'status'='AWAITING_COLLECTION_ACK') ORDER BY updated_at LIMIT $1`,[limit])).rows;
- for(const row of rows)await withTransaction(async client=>{await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[row.id]);let conversation=await getRecord(client,row.workspace_id,'conversation',row.id);if(!conversation)return;
+interface WorkflowStore {query:typeof query;transaction<T>(work:(db:QueryExecutor)=>Promise<T>):Promise<T>}
+const workflowStore:WorkflowStore={query,transaction:work=>withTransaction(work)};
+async function confirmedSchedules(store:WorkflowStore,limit:number){
+ const rows=(await store.query(`SELECT * FROM records WHERE kind='conversation' AND (body->'flow_state' ? 'pending_anchor' OR body->'followup_plan'->>'status'='AWAITING_COLLECTION_ACK') ORDER BY updated_at LIMIT $1`,[limit])).rows;
+ for(const row of rows)await store.transaction(async client=>{await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[row.id]);let conversation=await getRecord(client,row.workspace_id,'conversation',row.id);if(!conversation)return;
+  await recordProfileExecutor(client,conversation.workspace_id,conversation.environment as 'REAL'|'SIMULATION');
   const state:FlowState=structuredClone(conversation.body.flow_state);if(state&&await armConfirmedWait(client,conversation,state))conversation=await save(client,conversation,{...conversation.body,flow_state:state});await armFollowups(client,conversation);
  });return rows.length;
 }
@@ -206,6 +219,13 @@ async function dispatchFollowup(client:QueryExecutor,conversation:DomainRecord,t
  const stage=timer.payload.stage==='AGREEMENT'?'AGREEMENT':'COLLECTION';
  const isRemarketing=!!timer.payload.cycle_id;
  const now=await nowFor(client,conversation),lastInbound=new Date(conversation.body.last_inbound_at??0).getTime();
+ // RF-10.d: outside the variant's allowed hours a reminder waits for the next
+ // allowed moment (all guards are re-checked then); it is never sent early.
+ if(isRemarketing&&timer.payload.window&&!insideRemarketingWindow(now,timer.payload.window)){
+  const next=nextRemarketingTime(now,timer.payload.window).toISOString();
+  await client.query(`UPDATE timers SET due_at=$2 WHERE id=$1 AND status='PENDING'`,[timer.id,next]);
+  await event(client,conversation,'remarketing.rescheduled_to_window',{slot_id:timer.payload.slot_id??timer.payload.id,stage,due_at:next},timer.id);return;
+ }
  const outsideWindow=!Number.isFinite(lastInbound)||lastInbound>now.getTime()||now.getTime()-lastInbound>=24*3600_000;
  const parsedTemplate=isRemarketing&&outsideWindow?remarketingTransportTemplateSchema.safeParse(timer.payload.template):undefined;
  const templateAccount=parsedTemplate?.success?await getRecord(client,conversation.workspace_id,'channel_account',conversation.body.account_id):undefined;
@@ -241,26 +261,38 @@ async function dispatchFollowup(client:QueryExecutor,conversation:DomainRecord,t
   attempt=reservation.attempt;cycleRevision=Number(reservation.cycle?.revision);
  }
  const bankSecret=bank?.body.secret_ciphertext?JSON.parse(decrypt(bank.body.secret_ciphertext)):undefined;
- const bankText=bankSecret?`${bank!.body.bank} · ${bankSecret.holder}\n${bankSecret.account_number}\n${bankSecret.instructions??''}`:'SIMULACIÓN: instrucciones bancarias de prueba; no efectuar transferencias.';
+ const bankText=(bank&&bankSecret&&collectionInstructions({bank:bank.body,secret:bankSecret,price:null,currency:null}))??simulatedCollectionInstructions(bank?.body,offer?.body.language);
  const payload={purpose:isRemarketing?'remarketing':'followup',followup_touch:index,remarketing_attempt_id:attempt?.id,remarketing_cycle_id:timer.payload.cycle_id,remarketing_cycle_revision:cycleRevision,remarketing_slot_id:timer.payload.slot_id,remarketing_stage:timer.payload.stage,followup_plan_key:plan.key,workflow_runtime_version:plan.workflow_runtime_version,workflow_node_id:timer.payload.id};
- const medium=isRemarketing&&timer.payload.medium==='video'?'video':'audio';
+ const medium=isRemarketing&&timer.payload.medium==='video'?'video':isRemarketing&&timer.payload.medium==='text'?'text':'audio';
  const expiresAt=new Date(lastInbound+24*3600_000).toISOString();
- const first=template
-  ?await proposeEffect(client,conversation,{...payload,kind:'template',template,asset_id:timer.payload.asset_id,text:String(timer.payload.text),template_provider_evidence_id:templateEvidence?.id,template_header_kind:'video',template_body_text_sha256:templateBodyTextSha256,remarketing_template_medium:medium},`${timer.logical_key}:template`,{notBefore:now.toISOString()})
-  :await proposeEffect(client,conversation,{...payload,kind:medium,asset_id:timer.payload.asset_id},`${timer.logical_key}:${medium}`,{notBefore:now.toISOString(),expiresAt});
- if(first&&!template)await proposeEffect(client,conversation,{...payload,kind:'text',text:renderMessage(String(timer.payload.text),{bank_instructions:bankText}),payment_profile_version_id:bank?.id},`${timer.logical_key}:text`,{predecessorId:first.id,notBefore:now.toISOString(),expiresAt});
+ const prior=(await client.query('SELECT not_before,expires_at FROM outbox WHERE workspace_id=$1 AND logical_key=$2',[conversation.workspace_id,`${timer.logical_key}:${template?'template':medium}`])).rows[0];
+ const notBefore=prior?new Date(prior.not_before).toISOString():now.toISOString();
+ const textOnly=medium==='text'&&!template;
+ const firstResult=template
+  ?await proposeEffectOutcome(client,conversation,{...payload,kind:'template',template,asset_id:timer.payload.asset_id,text:String(timer.payload.text),template_provider_evidence_id:templateEvidence?.id,template_header_kind:'video',template_body_text_sha256:templateBodyTextSha256,remarketing_template_medium:medium},`${timer.logical_key}:template`,{notBefore})
+  :textOnly
+   // A text-only reminder is one message (bank details rendered as in collection).
+   ?await proposeEffectOutcome(client,conversation,{...payload,kind:'text',text:renderMessage(String(timer.payload.text),{bank_instructions:bankText}),payment_profile_version_id:bank?.id},`${timer.logical_key}:text`,{notBefore,expiresAt:prior?new Date(prior.expires_at).toISOString():expiresAt})
+   :await proposeEffectOutcome(client,conversation,{...payload,kind:medium,asset_id:timer.payload.asset_id},`${timer.logical_key}:${medium}`,{notBefore,expiresAt:prior?new Date(prior.expires_at).toISOString():expiresAt});
+ if(firstResult.state==='BLOCKED')return;const first=firstResult.effect;
+ if(!template&&!textOnly){const second=await proposeEffectOutcome(client,conversation,{...payload,kind:'text',text:renderMessage(String(timer.payload.text),{bank_instructions:bankText}),payment_profile_version_id:bank?.id},`${timer.logical_key}:text`,{predecessorId:first.id,notBefore:new Date(first.not_before).toISOString(),expiresAt:new Date(first.expires_at).toISOString()});if(second.state==='BLOCKED')return;}
  await client.query(`UPDATE timers SET status=$2 WHERE id=$1`,[timer.id,first?'FIRED':'CANCELLED']);
  if(attempt)await setRemarketingAttemptStatus(client,{attemptId:attempt.id,workspaceId:conversation.workspace_id,environment:conversation.environment},first?'PROPOSED':'CANCELLED',{effect_id:first?.id??null});
- if(first)await event(client,conversation,isRemarketing?'remarketing.proposed':'followup.proposed',{touch_id:timer.payload.id,slot_id:timer.payload.slot_id??null,touch_index:index,effect_id:first.id,media_effect_id:template?null:first.id,template_effect_id:template?first.id:null,transport:template?'APPROVED_TEMPLATE':'CURRENT_WINDOW',anchor_at:timer.payload.anchor_at},timer.id);
+ if(first)await event(client,conversation,isRemarketing?'remarketing.proposed':'followup.proposed',{touch_id:timer.payload.id,slot_id:timer.payload.slot_id??null,touch_index:index,effect_id:first.id,media_effect_id:template||textOnly?null:first.id,template_effect_id:template?first.id:null,transport:template?'APPROVED_TEMPLATE':'CURRENT_WINDOW',anchor_at:timer.payload.anchor_at},timer.id);
 }
-export async function processTimers(limit=25){
- await processConfirmedSchedules(limit*4);
- const due=(await query(`SELECT t.id FROM timers t LEFT JOIN records c ON c.id::text=t.conversation_id LEFT JOIN records s ON s.id::text=c.body->>'simulation_id' WHERE t.status='PENDING' AND (t.due_at<=now() OR (t.environment='SIMULATION' AND t.due_at<=COALESCE((s.body->>'virtual_now')::timestamptz,now()))) ORDER BY t.due_at LIMIT $1`,[limit])).rows;
- for(const row of due)await withTransaction(async client=>{
+async function timers(store:WorkflowStore,limit:number){
+ await confirmedSchedules(store,limit*4);
+ const due=(await store.query(`SELECT t.id FROM timers t
+  LEFT JOIN records c ON c.workspace_id=t.workspace_id AND c.environment=t.environment AND c.kind='conversation' AND c.id::text=t.conversation_id
+  LEFT JOIN records s ON s.workspace_id=c.workspace_id AND s.environment=c.environment AND s.kind='simulation' AND s.id::text=c.body->>'simulation_id'
+  WHERE t.status='PENDING' AND (t.due_at<=now() OR (t.environment='SIMULATION' AND t.due_at<=COALESCE((s.body->>'virtual_now')::timestamptz,now())))
+  ORDER BY t.due_at LIMIT $1`,[limit])).rows;
+ for(const row of due)await store.transaction(async client=>{
   const candidate=(await client.query(`SELECT * FROM timers WHERE id=$1 AND status='PENDING'`,[row.id])).rows[0];if(!candidate)return;
   await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[candidate.conversation_id]);
   const timer=(await client.query(`SELECT * FROM timers WHERE id=$1 AND status='PENDING' FOR UPDATE`,[row.id])).rows[0];if(!timer)return;
-  const conversation=await getRecord(client,timer.workspace_id,'conversation',timer.conversation_id);if(!conversation)return;
+  const conversation=await getRecord(client,timer.workspace_id,'conversation',timer.conversation_id);if(!conversation||conversation.environment!==timer.environment)return;
+  await recordProfileExecutor(client,conversation.workspace_id,conversation.environment as 'REAL'|'SIMULATION');
   if(new Date(timer.due_at)>await nowFor(client,conversation))return;
   if(timer.kind==='followup'&&timer.payload.plan_key){await dispatchFollowup(client,conversation,timer);return;}
   if(timer.payload.purpose==='collection'){const reason=await collectionEligibility(client,conversation);if(reason){await client.query(`UPDATE timers SET status='CANCELLED' WHERE id=$1`,[timer.id]);await event(client,conversation,'workflow.collection_wait_cancelled',{reason,node_id:timer.payload.node_id},timer.id);return;}}
@@ -269,7 +301,21 @@ export async function processTimers(limit=25){
   await client.query(`UPDATE timers SET status='FIRED' WHERE id=$1`,[timer.id]);await advanceWorkflow(client,conversation,'timer');
  });return due.length;
 }
-export async function processNewWorkflows(limit=25){const rows=(await query(`SELECT * FROM records WHERE kind='conversation' AND body->>'historical_only' IS DISTINCT FROM 'true' AND NULLIF(btrim(body->>'account_id'),'') IS NOT NULL AND NULLIF(btrim(body->>'contact_id'),'') IS NOT NULL AND body ? 'offer_version_id' AND (NOT body ? 'flow_state' OR body->'flow_state'->>'status'='RUNNING') ORDER BY created_at LIMIT $1`,[limit])).rows;for(const r of rows)await withTransaction(async c=>{await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[r.id]);await advanceWorkflow(c,r);});return rows.length;}
+async function newWorkflows(store:WorkflowStore,limit:number){const rows=(await store.query(`SELECT * FROM records WHERE kind='conversation' AND body->>'historical_only' IS DISTINCT FROM 'true' AND NULLIF(btrim(body->>'account_id'),'') IS NOT NULL AND NULLIF(btrim(body->>'contact_id'),'') IS NOT NULL AND body ? 'offer_version_id' AND (NOT body ? 'flow_state' OR body->'flow_state'->>'status'='RUNNING') ORDER BY updated_at,id LIMIT $1`,[limit])).rows;for(const r of rows)await store.transaction(async c=>{await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[r.id]);await advanceWorkflow(c,r);});return rows.length;}
+
+// Existing workers retain their canonical pool/WorkerScope dependencies.
+export async function processConfirmedSchedules(limit=100){return confirmedSchedules(workflowStore,limit);}
+export async function processTimers(limit=25){return timers(workflowStore,limit);}
+export async function processNewWorkflows(limit=25){return newWorkflows(workflowStore,limit);}
+/** A private installed lease is the sole alternate runtime selector. */
+export async function processNumberLabWorkflows(lease:NumberLabEngineLease,limit=25){
+ if(!Number.isInteger(limit)||limit<1||limit>25)throw Error('LAB_ENGINE_BATCH_LIMIT');
+ return withNumberLabEngine(lease,async ports=>{
+  const store:WorkflowStore={query:ports.query,transaction:work=>ports.transaction(work)};
+  const workflows=await newWorkflows(store,limit),dueTimers=await timers(store,limit);
+  return{workflows,timers:dueTimers};
+ });
+}
 
 export async function acceptCustomerResponse(client:QueryExecutor,conversation:DomainRecord,cause:string){
  if(conversation.body.sponsorship_id||conversation.body.launch_test_role==='beneficiary')return;

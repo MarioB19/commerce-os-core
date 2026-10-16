@@ -2,6 +2,8 @@ import {afterAll,beforeAll,expect,it} from 'vitest';
 import {randomBytes,randomUUID} from 'node:crypto';
 import type {FastifyInstance} from 'fastify';
 import {pool,putRecord,hash,encrypt,withTransaction,readOperationalSettings,writeOperationalSettings} from '../../packages/db/src/index.js';
+import {fixtureProfiles} from '../support/profile-fixture.js';
+import {disposeAllFixtureProfiles} from '../support/migrated-database.js';
 import {canonicalIdentity,SimulatorProvider} from '../../packages/messaging/src/index.js';
 import {warmupProfileSchema} from '../../packages/domain/src/warmup/policy.js';
 import {prepareWarmupProfiles} from '../../apps/channel-worker/src/warmup-profile.js';
@@ -15,6 +17,8 @@ beforeAll(async()=>{app=await createApp();});
 afterAll(async()=>{await app.close();await pool.end();});
 async function fixture(){
  const workspace='warm-profile-'+randomUUID(),owner='fixture-'+randomUUID(),providerIdentity='19995550123@c.us',name='Owned fixture profile';
+ // V7 F2: each case owns a fresh adopted profile; earlier cases' fixtures are disposed.
+ await disposeAllFixtureProfiles(pool);await fixtureProfiles(workspace);
  const account=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'channel_account',body:{name:'Synthetic own account',provider:'waha',gateway_ref:'fixture',session:randomUUID(),status:'WORKING',sending_enabled:false,identity_verified:true,identity_fingerprint:hash(providerIdentity)}});
  const profile=(await pool.query("INSERT INTO warmup_profiles(workspace_id,environment,config) VALUES($1,'REAL',$2) RETURNING *",[workspace,warmupProfileSchema.parse({policy_version:'legacy-30d/v1',name:'Local fixture curve',timezone:'America/Mexico_City'})])).rows[0];
  const group=(await pool.query("INSERT INTO warmup_pools(workspace_id,environment,profile_id,enabled) VALUES($1,'REAL',$2,true) RETURNING *",[workspace,profile.id])).rows[0];

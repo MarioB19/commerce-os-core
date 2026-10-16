@@ -20,6 +20,8 @@ FILES = ('release.env', 'api.env', 'ingress.env', 'automation.env', 'channel.env
 LOCKS = ('daily-b02-controller.lock', 'ci-deploy.lock', 'backup-schedule.lock',
          'maintenance-backup.lock')
 TERMINAL = {'SUCCEEDED', 'FAILED', 'FAILED_RECONCILED'}
+# V7 F1 PITR: PostgreSQL may join this egress-only bridge (scripts/v7_pitr.py).
+PITR_NETWORK = 'commerce-os_pitr-edge'
 MAX_PRIVATE = 1024 * 1024
 SOURCE_SHA = 'd36c090161eb7b0af0250cd91d466b38dc810813'
 PORTAL_BASE = Path('/opt/mcl-portal')
@@ -225,7 +227,7 @@ def inventory(command, root, portal=None):
 
 def networks(command, root, services):
     names = set().union(*(set(row['NetworkSettings']['Networks']) for row in services.values()))
-    require(len(names) == 3, 'COPY_NETWORK_SET_INVALID')
+    require(len(names - {PITR_NETWORK}) == 3, 'COPY_NETWORK_SET_INVALID')
     rows = unique_json(command(['docker', 'network', 'inspect', *sorted(names)], root))
     result = {}
     for row in rows:
@@ -248,9 +250,13 @@ def active_proxy_digest(command, root, services):
 
 def topology_guard(command, root, services, network_rows, release):
     core, proxy, edge = 'commerce-os_core', release['COMMERCE_PROXY_NETWORK'], release['COMMERCE_API_EDGE_NETWORK']
-    require(len({core, proxy, edge}) == 3 and set(network_rows) == {core, proxy, edge},
+    pitr = PITR_NETWORK in network_rows
+    require(len({core, proxy, edge}) == 3 and set(network_rows) - {PITR_NETWORK} == {core, proxy, edge},
             'COPY_CLOSED_NETWORK_SET_REQUIRED')
-    expected = {'postgres': {core}, 'web': {proxy}, 'api': {core, proxy, edge}, 'caddy': {proxy, edge}}
+    require(not pitr or (network_rows[PITR_NETWORK]['Internal'] is False and network_rows[PITR_NETWORK]['Driver'] == 'bridge'
+                         and network_rows[PITR_NETWORK]['EnableIPv6'] is False), 'COPY_PITR_NETWORK_UNSAFE')
+    expected = {'postgres': {core} | ({PITR_NETWORK} if pitr else set()), 'web': {proxy},
+                'api': {core, proxy, edge}, 'caddy': {proxy, edge}}
     if 'portal' in services:
         expected['portal'] = {proxy}
     for name, names in expected.items():
@@ -531,8 +537,32 @@ def rebase(private, before, after, current_release, write_atomic, own_report_dir
             'backup_schedule_enabled': False, 'transport_configuration_update_required': True}
 
 
+def _sql_text(value):
+    return "'" + value.replace("'", "''") + "'"
+
+
+def retired_count(table, where):
+    """Count rows of a table that V7 migration 0109 may have dropped (exported
+    and retired V5 modules): an absent table holds none. The count runs as
+    dynamic text (query_to_xml is volatile) only when the table exists."""
+    require(re.fullmatch(r'[a-z_]+', table) is not None, 'RETIRED_TABLE_NAME_INVALID')
+    query = 'SELECT count(*) AS n FROM public.' + table + ' WHERE ' + where
+    return ("(CASE WHEN to_regclass('public." + table + "') IS NULL THEN 0 ELSE (xpath('/row/n/text()',query_to_xml("
+            + _sql_text(query) + ",false,true,'')))[1]::text::bigint END)")
+
+
+def retired_rows(table):
+    """Rows of a table 0109 may have dropped, as ordered JSON ('[]' once
+    absent). The JSON travels hex encoded so XML never rewrites it."""
+    require(re.fullmatch(r'[a-z_]+', table) is not None, 'RETIRED_TABLE_NAME_INVALID')
+    query = ("SELECT encode(convert_to(COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]'::jsonb)::text,'UTF8'),'hex')"
+             " AS v FROM public." + table + ' t')
+    return ("(CASE WHEN to_regclass('public." + table + "') IS NULL THEN '[]'::jsonb ELSE convert_from(decode((xpath('/row/v/text()',"
+            "query_to_xml(" + _sql_text(query) + ",false,true,'')))[1]::text,'hex'),'UTF8')::jsonb END)")
+
+
 # Same closed restore barriers; the legitimate owner sessions/PAT are explicit.
-BARRIERS_SQL = "SELECT json_build_object('database',current_database(),'version_num',current_setting('server_version_num'),'migration_count',(SELECT count(*) FROM schema_migrations),'records',(SELECT count(*) FROM records),'effects',(SELECT count(*) FROM outbox),'workspaces_not_paused',(SELECT count(*) FROM (SELECT DISTINCT workspace_id FROM records) r WHERE NOT EXISTS(SELECT 1 FROM manual_controls m WHERE m.workspace_id=r.workspace_id AND m.scope_type='workspace' AND m.scope_id=r.workspace_id AND m.paused)),'ownership_unfrozen',(SELECT count(*) FROM session_ownership WHERE NOT frozen),'sessions_unsafe',(SELECT count(*) FROM channel_sessions WHERE recovery_enabled OR NOT operational_pause OR desired_state<>'STOPPED' OR observed_state<>'UNKNOWN' OR auth_state<>'UNKNOWN' OR health_expires_at IS NOT NULL),'authorizations_live',(SELECT count(*) FROM operation_authorizations WHERE revoked_at IS NULL),'service_tokens_live',(SELECT count(*) FROM service_tokens WHERE revoked_at IS NULL),'personal_tokens_live',(SELECT count(*) FROM personal_access_tokens WHERE revoked_at IS NULL),'login_sessions',(SELECT count(*) FROM session),'sending_effects',(SELECT count(*) FROM outbox WHERE status='SENDING'),'alerts_enabled',(SELECT count(*) FROM integration_settings WHERE type='alerts' AND enabled),'alerts_pending',(SELECT count(*) FROM operational_alerts WHERE status IN ('PENDING','SENDING')),'mail_enabled',(SELECT count(*) FROM identity_mail_settings WHERE enabled),'mail_pending',(SELECT count(*) FROM identity_mail_jobs WHERE status IN ('PENDING','SENDING')),'reset_links',(SELECT count(*) FROM identity_reset_links),'creative_enabled',(SELECT count(*) FROM creative_settings WHERE enabled),'creative_devices_live',(SELECT count(*) FROM creative_devices WHERE status<>'REVOKED'),'creative_jobs_live',(SELECT count(*) FROM creative_jobs WHERE status IN ('QUEUED','RUNNING','RETRY')),'provider_operations_live',(SELECT count(*) FROM creative_provider_operations WHERE status IN ('RESERVED','RUNNING')),'voice_operations_live',(SELECT count(*) FROM creative_voice_operations WHERE status IN ('QUOTED','REQUESTED','RUNNING','PAID_PENDING_STORAGE')),'warmup_enabled',(SELECT count(*) FROM warmup_pools WHERE enabled OR NOT paused),'programs_live',(SELECT count(*) FROM warmup_programs WHERE status NOT IN ('PAUSED','ARCHIVED','COMPLETED')),'assignment_grants',(SELECT count(*) FROM commercial_assignments WHERE authorization_id IS NOT NULL),'intelligence_tracking',(SELECT count(*) FROM intelligence_searches WHERE tracking_enabled))"
+BARRIERS_SQL = "SELECT json_build_object('database',current_database(),'version_num',current_setting('server_version_num'),'migration_count',(SELECT count(*) FROM schema_migrations),'records',(SELECT count(*) FROM records),'effects',(SELECT count(*) FROM outbox),'workspaces_not_paused',(SELECT count(*) FROM (SELECT DISTINCT workspace_id FROM records) r WHERE NOT EXISTS(SELECT 1 FROM manual_controls m WHERE m.workspace_id=r.workspace_id AND m.scope_type='workspace' AND m.scope_id=r.workspace_id AND m.paused)),'ownership_unfrozen',(SELECT count(*) FROM session_ownership WHERE NOT frozen),'sessions_unsafe',(SELECT count(*) FROM channel_sessions WHERE recovery_enabled OR NOT operational_pause OR desired_state<>'STOPPED' OR observed_state<>'UNKNOWN' OR auth_state<>'UNKNOWN' OR health_expires_at IS NOT NULL),'authorizations_live',(SELECT count(*) FROM operation_authorizations WHERE revoked_at IS NULL),'service_tokens_live',(SELECT count(*) FROM service_tokens WHERE revoked_at IS NULL),'personal_tokens_live',(SELECT count(*) FROM personal_access_tokens WHERE revoked_at IS NULL),'login_sessions',(SELECT count(*) FROM session),'sending_effects',(SELECT count(*) FROM outbox WHERE status='SENDING'),'alerts_enabled',(SELECT count(*) FROM integration_settings WHERE type='alerts' AND enabled),'alerts_pending',(SELECT count(*) FROM operational_alerts WHERE status IN ('PENDING','SENDING')),'mail_enabled',(SELECT count(*) FROM identity_mail_settings WHERE enabled),'mail_pending',(SELECT count(*) FROM identity_mail_jobs WHERE status IN ('PENDING','SENDING')),'reset_links',(SELECT count(*) FROM identity_reset_links),'creative_enabled',"+retired_count('creative_settings','enabled')+",'creative_devices_live',"+retired_count('creative_devices',"status<>'REVOKED'")+",'creative_jobs_live',"+retired_count('creative_jobs',"status IN ('QUEUED','RUNNING','RETRY')")+",'provider_operations_live',"+retired_count('creative_provider_operations',"status IN ('RESERVED','RUNNING')")+",'voice_operations_live',"+retired_count('creative_voice_operations',"status IN ('QUOTED','REQUESTED','RUNNING','PAID_PENDING_STORAGE')")+",'warmup_enabled',(SELECT count(*) FROM warmup_pools WHERE enabled OR NOT paused),'programs_live',(SELECT count(*) FROM warmup_programs WHERE status NOT IN ('PAUSED','ARCHIVED','COMPLETED')),'assignment_grants',(SELECT count(*) FROM commercial_assignments WHERE authorization_id IS NOT NULL),'intelligence_tracking',"+retired_count('intelligence_searches','tracking_enabled')+")"
 BARRIERS = ['alerts_enabled', 'alerts_pending', 'assignment_grants', 'authorizations_live', 'creative_devices_live', 'creative_enabled', 'creative_jobs_live', 'intelligence_tracking', 'login_sessions', 'mail_enabled', 'mail_pending', 'ownership_unfrozen', 'personal_tokens_live', 'programs_live', 'provider_operations_live', 'reset_links', 'sending_effects', 'service_tokens_live', 'sessions_unsafe', 'voice_operations_live', 'warmup_enabled', 'workspaces_not_paused']
 MAX_OWNER_SESSIONS = 32
 MAX_OWNER_USERS = 8

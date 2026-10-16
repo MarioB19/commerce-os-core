@@ -1,0 +1,10 @@
+import {z} from 'zod';
+import {receiptPolicySchema,receiptPolicyOverrideSchema} from './receipt-policy.js';
+export const receiptPolicyId=z.string().uuid().toLowerCase();
+export const receiptPolicyQuery=z.object({environment:z.enum(['REAL','SIMULATION']).default('REAL')}).strict();
+export const receiptPolicyTarget=z.object({variantId:receiptPolicyId.nullable()}).strict();
+const revision=z.number().int().min(0).max(2147483645);
+export const receiptProfilePolicyWrite=z.object({expectedRevision:revision,policy:receiptPolicySchema}).strict();
+export const receiptVariantPolicyWrite=z.object({expectedRevision:revision,override:receiptPolicyOverrideSchema}).strict();
+export const receiptPolicyRef=z.object({id:receiptPolicyId,revision:z.number().int().positive().max(2147483646),sha256:z.string().regex(/^[a-f0-9]{64}$/)}).strict();
+export const receiptPolicyStored=z.object({workspaceId:z.string().min(1),environment:z.enum(['REAL','SIMULATION']),variantId:receiptPolicyId.nullable(),ref:receiptPolicyRef,body:z.union([receiptPolicySchema,receiptPolicyOverrideSchema])}).strict();

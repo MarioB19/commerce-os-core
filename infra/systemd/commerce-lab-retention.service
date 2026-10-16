@@ -1,0 +1,13 @@
+[Unit]
+Description=Commerce OS «Probar número» retention (RF-19.o): shred tests older than 30 days
+After=docker.service
+ConditionPathExists=/opt/commerce-os/private/lab-retention/operator.json
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /opt/commerce-os/current/scripts/v7_lab_retention.py run /opt/commerce-os/private/lab-retention/operator.json
+TimeoutStartSec=30min
+User=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+Nice=10

@@ -49,3 +49,36 @@ describe('WAHA account replacement reception',()=>{
   expect(()=>reconcileWebhook({webhooks:[{url:'http://ingress:3002/webhooks/waha/other/account'}]},target)).toThrow('WEBHOOK_SCOPE_CONFLICT');
  });
 });
+
+describe('durable relay (ADR-V7-08)',()=>{
+ const relayed={...target,relayUrl:'https://relay.example.invalid/relay/synthetic-token/waha/synthetic/new-account'};
+ function relayFixture(status:string,config:Record<string,unknown>){
+  const calls:Array<{method:string;path:string;body?:any}>=[];let state={status,config,me:{id:'synthetic@c.us'}};
+  const provider=new WahaProvider({baseUrl:'http://gateway.invalid',apiKey:'synthetic-api',session:'default',engine:'GOWS',webhook:relayed},async(input,init)=>{
+   const method=init?.method??'GET',path=new URL(String(input)).pathname,body=init?.body?JSON.parse(String(init.body)):undefined;calls.push({method,path,body});
+   if(method==='PUT'){state={...state,config:body.config};return response(state);}
+   if(method==='POST'){state={...state,status:'STARTING'};return response(state);}
+   return response(state);
+  });return{provider,calls,get state(){return state;}};
+ }
+ it('adds the relay with the same HMAC next to the host callback and replaces an older relay token',()=>{
+  const stale={url:'https://relay.example.invalid/relay/old-token/waha/synthetic/new-account',events:['message'],hmac:{key:'x'}};
+  const config=reconcileWebhook({webhooks:[stale]},relayed);
+  expect(config.webhooks.map((h:any)=>h.url)).toEqual([target.url,relayed.relayUrl]);
+  expect(config.webhooks.every((h:any)=>h.hmac.key===target.hmacKey)).toBe(true);
+  expect(webhookConfiguration(config,relayed)).toMatchObject({matches:true,relay_matches:true});
+  expect(()=>reconcileWebhook({},{...target,relayUrl:'http://relay.example.invalid/x'})).toThrow('WEBHOOK_RELAY_INVALID');
+ });
+ it('never restarts a live session to add the relay; a stopped one gets it before start',async()=>{
+  const live=relayFixture('WORKING',reconcileWebhook({},target));
+  await live.provider.lifecycle('start');expect(live.calls.map(c=>c.method)).toEqual(['GET']);
+  const health=await live.provider.health();
+  expect(health.find(h=>h.dimension==='infrastructure')).toMatchObject({status:'OK',value:{matches:true,relay_matches:false}});
+  expect(JSON.stringify(health)).not.toContain('synthetic-token');
+  const stopped=relayFixture('STOPPED',reconcileWebhook({},target));
+  await stopped.provider.lifecycle('start');
+  expect(stopped.calls.map(c=>c.method)).toEqual(['GET','PUT','GET','POST']);
+  expect(webhookConfiguration(stopped.state.config,relayed)).toMatchObject({matches:true,relay_matches:true});
+ });
+});
+

@@ -51,6 +51,8 @@ it.each(['simulator','cloud'])('preserves all history, edge ties and arbitrary t
   const fresh=await putRecord(c,{workspaceId,environment:'SIMULATION',kind:'health_signal',body:{...base,source:wide,observed_at:new Date(now.getTime()-30000).toISOString()}});
   await putRecord(c,{id:fresh.id,version:fresh.version,workspaceId,environment:'SIMULATION',kind:'health_signal',body:{...fresh.body,status:'BLOCKED'}});
   await c.query('SET LOCAL ROLE commerce_api');
+  // V7 F2: the API role reads only inside its authenticated profile context.
+  await c.query("SELECT pg_catalog.set_config('app.workspace_id',$1,true),pg_catalog.set_config('app.environment','SIMULATION',true)",[workspaceId]);
   const rows=(await c.query(original,[workspaceId,'SIMULATION',account.id,dimension,start,now])).rows;
   expect(rows).toHaveLength(10);
   const history=rows.map(r=>({...r,observed_at:new Date(r.observed_at).toISOString(),expires_at:r.expires_at?new Date(r.expires_at).toISOString():''})) as Evidence[];

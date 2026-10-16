@@ -2,6 +2,8 @@ import type {DomainRecord} from '../../packages/contracts/src/index.js';
 import {afterAll,expect,it} from 'vitest';
 import {randomUUID} from 'node:crypto';
 import {pool,putRecord,getRecord,withTransaction,hash,encrypt,stableJson,readOperationalSettings} from '../../packages/db/src/index.js';
+import {fixtureProfiles} from '../support/profile-fixture.js';
+import {disposeAllFixtureProfiles} from '../support/migrated-database.js';
 import {warmupProfileSchema,localWindow} from '../../packages/domain/src/warmup/policy.js';
 import {reserveWarmupRate,commercialWarmupGuard} from '../../packages/db/src/warmup.js';
 import {planWarmupPool,reconcileWarmupPool,evaluateWarmupPool,processWarmup} from '../../apps/automation-worker/src/warmup.js';
@@ -15,6 +17,8 @@ afterAll(async()=>pool.end());
 const owner='warmup-fixture-owner';
 async function fixture(count=2,contentCount=2){
  const workspace='warmup-runtime-'+randomUUID(),now=new Date(),offset=now.getUTCHours()-12,zone=`Etc/GMT${offset>=0?'+':''}${offset}`;
+ // V7 F2: each case owns a fresh adopted profile; earlier cases' fixtures are disposed.
+ await disposeAllFixtureProfiles(pool);await fixtureProfiles(workspace);
  const profile=warmupProfileSchema.parse({policy_version:'legacy-30d/v1',name:'Synthetic own-pool profile',timezone:zone,start_hour:0,end_hour:23,profile_wait_hours:12,weekend_factor:1});
  const p=(await pool.query("INSERT INTO warmup_profiles(workspace_id,environment,config) VALUES($1,'SIMULATION',$2) RETURNING *",[workspace,profile])).rows[0];
  const group=(await pool.query("INSERT INTO warmup_pools(workspace_id,environment,profile_id,enabled,allow_small_pool_concentration) VALUES($1,'SIMULATION',$2,true,true) RETURNING *",[workspace,p.id])).rows[0];
@@ -84,16 +88,19 @@ it('re-reserves both endpoints across minute boundaries without erasing earlier 
 });
 it.each([{tail:'SENT',days:0,plan:'MISSED'},{tail:'DELIVERED',days:1,plan:'COMPLETED'}])('requires fully ACKed conversation ($tail) and never advances while paused',async expected=>{
  const f=await fixture();await f.plan();const all=await f.effects(),today=localWindow(f.profile,new Date()).date;
- await pool.query("UPDATE warmup_plans SET local_date=($2::date-1) WHERE workspace_id=$1",[f.workspace,today]);await pool.query("UPDATE warmup_conversations SET local_date=($2::date-1) WHERE workspace_id=$1",[f.workspace,today]);
+ // Simulated day change: the V7 origin guard forbids moving a plan's day, so the fixture shifts it with triggers bypassed.
+ await withTransaction(async c=>{await c.query("SET LOCAL session_replication_role=replica");await c.query("UPDATE warmup_plans SET local_date=($2::date-1) WHERE workspace_id=$1",[f.workspace,today]);});await pool.query("UPDATE warmup_conversations SET local_date=($2::date-1) WHERE workspace_id=$1",[f.workspace,today]);
  await pool.query("UPDATE outbox SET status='DELIVERED' WHERE workspace_id=$1",[f.workspace]);await pool.query("UPDATE outbox SET status=$2 WHERE id=$1",[all.at(-1)!.id,expected.tail]);
  await withTransaction(c=>evaluateWarmupPool(c,{...f.group,paused:true},new Date()));expect((await f.state()).effective_days).toBe(0);
  await withTransaction(c=>evaluateWarmupPool(c,f.group,new Date()));expect((await f.state()).effective_days).toBe(expected.days);
  expect((await pool.query('SELECT status FROM warmup_plans WHERE account_id=$1',[f.accounts[0]!.id])).rows[0].status).toBe(expected.plan);
 });
 it('opens breaker from two distinct failures of ten, and a restart cannot clear it',async()=>{
- const f=await fixture(10,0);
- for(const a of f.accounts.slice(0,2))for(let i=0;i<3;i++)await pool.query("INSERT INTO warmup_observations(workspace_id,environment,account_id,kind,evidence_ref,observed_at) VALUES($1,'SIMULATION',$2,'FAILED',$3,now())",[f.workspace,a.id,randomUUID()]);
- await withTransaction(c=>evaluateWarmupPool(c,f.group,new Date()));expect((await f.refresh()).breaker_open).toBe(true);
+ const f=await fixture(10,0),evaluatedAt=new Date(),failedAt=new Date(evaluatedAt.getTime()-1000);
+ // One explicit observation clock avoids Docker PostgreSQL/host clock skew;
+ // future observations remain rejected by the production breaker.
+ for(const a of f.accounts.slice(0,2))for(let i=0;i<3;i++)await pool.query("INSERT INTO warmup_observations(workspace_id,environment,account_id,kind,evidence_ref,observed_at) VALUES($1,'SIMULATION',$2,'FAILED',$3,$4)",[f.workspace,a.id,randomUUID(),failedAt]);
+ await withTransaction(c=>evaluateWarmupPool(c,f.group,evaluatedAt));expect((await f.refresh()).breaker_open).toBe(true);
  await withTransaction(c=>reconcileWarmupPool(c,{...f.group,breaker_open:true},new Date()));expect((await f.refresh()).breaker_open).toBe(true);
  await processWarmup(new Date());const runs=(await pool.query('SELECT kind,status FROM warmup_schedule_runs WHERE pool_id=$1',[f.group.id])).rows;expect(runs).toHaveLength(3);await processWarmup(new Date());expect((await pool.query('SELECT count(*)::int n FROM warmup_schedule_runs WHERE pool_id=$1',[f.group.id])).rows[0].n).toBe(3);
 });

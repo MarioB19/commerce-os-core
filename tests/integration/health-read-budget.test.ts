@@ -1,4 +1,5 @@
-import {afterAll,expect,it} from 'vitest';
+import {afterAll,beforeAll,expect,it} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {pool,putRecord} from '../../packages/db/src/index.js';
@@ -9,6 +10,9 @@ import {operationalStatistics} from '../../packages/domain/src/health/operationa
 import type {Evidence} from '../../packages/domain/src/health/number-health.js';
 
 afterAll(async()=>{await pool.end();});
+// V7 F2: delivery attempts reference an adopted profile.
+const unsentWorkspace='health-unsent-'+randomUUID();
+beforeAll(()=>fixtureProfiles(unsentWorkspace));
 
 it('indexes valid instants without changing evidence and ignores malformed/future/invalid windows',async()=>{
  const workspaceId='health-projection-'+randomUUID(),now=new Date('2026-09-27T12:00:00Z');
@@ -79,7 +83,7 @@ it('bounds an exhausted pool and releases a client acquired after the deadline',
 
 
 it('does not count a locally released claim as a physical send or a duplicate attempt',async()=>{
- const workspaceId='health-unsent-'+randomUUID(),now=new Date(),account=await putRecord(pool,{workspaceId,environment:'SIMULATION',kind:'channel_account',body:{name:'Unsent fixture',provider:'simulator'}}),effect=randomUUID();
+ const workspaceId=unsentWorkspace,now=new Date(),account=await putRecord(pool,{workspaceId,environment:'SIMULATION',kind:'channel_account',body:{name:'Unsent fixture',provider:'simulator'}}),effect=randomUUID();
  await pool.query("INSERT INTO outbox(id,workspace_id,environment,account_id,conversation_id,contact_id,logical_key,payload,status,config_hash,created_at) VALUES($1,$2,'SIMULATION',$3,$4,$5,$6,'{}','BLOCKED','fixture',$7)",[effect,workspaceId,account.id,randomUUID(),randomUUID(),randomUUID(),new Date(now.getTime()-1000)]);
  await pool.query("INSERT INTO effect_attempts(id,effect_id,claim_id,status,started_at,result) VALUES($1,$2,$3,'NOT_SENT',$4,$5)",[randomUUID(),effect,randomUUID(),new Date(now.getTime()-500),{external_attempt:false}]);
  const read=async()=>(await numberHealth(pool,account,now)).statistics.find(row=>row.purpose==='SIMULATION')!.windows[0];

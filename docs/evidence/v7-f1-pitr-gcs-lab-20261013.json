@@ -1,0 +1,184 @@
+{
+ "agent": "Claude",
+ "cloud_effects": 0,
+ "date": "2026-10-13",
+ "note": "Laboratorio sint\u00e9tico local: Docker + fake-gcs-server 1.52.2 (protocolo GCS JSON, TLS autofirmado, token est\u00e1tico). Ejecuta scripts/v7_pitr.py real a trav\u00e9s de scripts/compose-release.sh (alcance api-web) con infra/compose/postgres-pitr.yaml. No acredita GCS real, RPO/RTO de producci\u00f3n ni capacidad.",
+ "pgbackrest": "pgBackRest 2.59.3",
+ "postgres": "postgres:17.11-bookworm",
+ "production_data": false,
+ "repository_bytes": 7468745,
+ "repository_objects": 1327,
+ "state": "SYNTHETIC_GCS_PITR_LAB_VERIFIED",
+ "steps": {
+  "backup_incr": {
+   "at": "2026-10-13T19:28:02.681492Z",
+   "command": "backup",
+   "database_bytes": 48178629,
+   "finished_at": "2026-10-13T19:28:02.272525Z",
+   "kind": "PITR_INCR",
+   "label": "20261013-192743F_20261013-192753I",
+   "recorded_in_database": true,
+   "repository_bytes": 312896,
+   "started_at": "2026-10-13T19:27:52.886333Z",
+   "state": "PITR_BACKUP",
+   "status": "SUCCEEDED",
+   "wal_start": "000000010000000000000005",
+   "wal_stop": "000000010000000000000005"
+  },
+  "build_image": {
+   "at": "2026-10-13T19:27:27.931218Z",
+   "command": "build-image",
+   "image": "commerce-os-postgres:pitr",
+   "image_id": "sha256:94ee521410b976aa4cb6abc5b3cc98e92b524915d18a0b849aa261d915610114",
+   "pgbackrest": "pgBackRest 2.59.3",
+   "state": "PITR_IMAGE_BUILT"
+  },
+  "disable": {
+   "at": "2026-10-13T19:29:44.412342Z",
+   "command": "disable",
+   "container": "3c69b434556c",
+   "image": "sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826",
+   "repository_preserved": true,
+   "state": "PITR_DISABLED",
+   "system_identifier": "7696236218183221285"
+  },
+  "enable": {
+   "at": "2026-10-13T19:27:52.135656Z",
+   "client_backends_at_switch": 0,
+   "command": "enable",
+   "container": "04fb6b4341e5",
+   "first_full": {
+    "database_bytes": 64726469,
+    "finished_at": "2026-10-13T19:27:51.795135Z",
+    "kind": "PITR_FULL",
+    "label": "20261013-192743F",
+    "recorded_in_database": true,
+    "repository_bytes": 3748464,
+    "started_at": "2026-10-13T19:27:43.082996Z",
+    "status": "SUCCEEDED",
+    "wal_start": "000000010000000000000002",
+    "wal_stop": "000000010000000000000003"
+   },
+   "image_id": "sha256:94ee521410b976aa4cb6abc5b3cc98e92b524915d18a0b849aa261d915610114",
+   "previous_container": "716189ef057a",
+   "previous_image": "sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826",
+   "state": "PITR_ENABLED",
+   "steps": [
+    "recreated",
+    "stanza",
+    "archive_checked",
+    "full_backup"
+   ],
+   "system_identifier": "7696236218183221285"
+  },
+  "health": {
+   "last_archived_at": true,
+   "last_backup_at": true,
+   "last_full_at": true
+  },
+  "preflight": {
+   "archive_mode": "off",
+   "at": "2026-10-13T19:27:26.526111Z",
+   "command": "preflight",
+   "container": "716189ef057a",
+   "data_volume": "commerce-os_pg",
+   "database_bytes": 8230579,
+   "enabled": false,
+   "image": "sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826",
+   "lab": true,
+   "networks": [
+    "commerce-os_core"
+   ],
+   "pitr_network": {
+    "driver": "bridge",
+    "internal": false,
+    "ipv6": false
+   },
+   "rendered": false,
+   "state": "PITR_PREFLIGHT_READ_ONLY",
+   "system_identifier": "7696236218183221285",
+   "wal_level": "replica"
+  },
+  "rehearse_exact": {
+   "at": "2026-10-13T19:28:14.988290Z",
+   "command": "rehearse",
+   "container_removed": true,
+   "expected_rows": 7004,
+   "migrations": {
+    "count": 1,
+    "last": "0110_v7_meta_profile_sync.sql"
+   },
+   "ready_seconds": 8.4,
+   "restore_seconds": 4.0,
+   "rows": 7004,
+   "state": "PITR_REHEARSAL_VERIFIED_EXACT",
+   "tables": 4,
+   "target": "restore_point"
+  },
+  "rehearse_latest": {
+   "at": "2026-10-13T19:28:25.282055Z",
+   "command": "rehearse",
+   "container_removed": true,
+   "migrations": {
+    "count": 1,
+    "last": "0110_v7_meta_profile_sync.sql"
+   },
+   "ready_seconds": 8.1,
+   "restore_seconds": 4.2,
+   "rows": 7004,
+   "state": "PITR_REHEARSAL_RESTORED",
+   "tables": 4,
+   "target": "latest"
+  },
+  "render": {
+   "at": "2026-10-13T19:27:28.459350Z",
+   "cipher_created": true,
+   "cluster_id": "7696236218183221285",
+   "command": "render",
+   "config_sha256": "7efbb2ca1d4edc92777e7b146178facc104394b3766e4a67a064f67dd7ef58f1",
+   "state": "PITR_RENDERED"
+  },
+  "status": {
+   "archive": {
+    "archived": 9,
+    "current_wal": "000000010000000000000008",
+    "failed": 0,
+    "last_archived_at": "2026-10-13T19:29:04.42215+00:00",
+    "last_archived_wal": "000000010000000000000007",
+    "last_failed_at": null,
+    "last_failed_wal": null,
+    "oldest_pending_age_s": null,
+    "pending": 0
+   },
+   "archive_range": [
+    {
+     "max": "000000010000000000000007",
+     "min": "000000010000000000000001"
+    }
+   ],
+   "at": "2026-10-13T19:29:31.086527Z",
+   "backups": [
+    {
+     "database_bytes": 64726469,
+     "label": "20261013-192743F",
+     "repository_delta_bytes": 3748464,
+     "stop": 1791919670,
+     "type": "full"
+    },
+    {
+     "database_bytes": 48178629,
+     "label": "20261013-192743F_20261013-192753I",
+     "repository_delta_bytes": 312896,
+     "stop": 1791919681,
+     "type": "incr"
+    }
+   ],
+   "command": "status",
+   "enabled": true,
+   "oldest_restorable": 1791919670,
+   "problems": [],
+   "stanza_status": "ok",
+   "state": "PITR_STATUS_READ_ONLY"
+  }
+ }
+}

@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily «Probar número» retention (09:10 UTC)
+[Timer]
+OnCalendar=*-*-* 09:10:00 UTC
+RandomizedDelaySec=300
+Persistent=true
+Unit=commerce-lab-retention.service
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,4 @@
+import {type Body,type DomainRecord,flatten} from '../../../packages/contracts/src/index.js';
+
+export function sanitize(value:any,field=''):any{if(value instanceof Date)return value.toISOString();if(Array.isArray(value))return value.map(x=>sanitize(x,field));if(value&&typeof value==='object'){const result:Body={};for(const[key,item]of Object.entries(value)){if(/ciphertext|storage_path|storage_key|gateway_ref|account_number|holder|delivery_reference|token_hash|^password$|^access_token$|^refresh_token$|access_code|signed_url/i.test(key))continue;result[key]=sanitize(item,key);}return result;}if(typeof value==='string'&&!field.endsWith('_id')&&/text|identity|phone|account|recipient/.test(field))return value.replace(/(?<![a-zA-Z0-9])[0-9][0-9 -]{10,32}[0-9](?![a-zA-Z0-9])/g,match=>'••••'+match.replace(/[^0-9]/g,'').slice(-4));return value;}
+export function present(record:DomainRecord){return sanitize(flatten(record));}

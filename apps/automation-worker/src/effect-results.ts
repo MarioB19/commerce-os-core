@@ -1,23 +1,26 @@
-import {query,withTransaction,getRecord,putRecord,setRemarketingAttemptStatus} from '@commerce/db';
+import {withNumberLabEngine,type NumberLabEngineLease} from '../../../packages/db/src/number-lab-engine-runtime.js';
+import type {ProfileQuery} from '../../../packages/db/src/profile-context.js';
+import {bindNumberLabDispatch,type NumberLabDispatch} from '../../channel-worker/src/catalog-simulator.js';
+import {query,withTransaction,getRecord,putRecord,setRemarketingAttemptStatus,type QueryExecutor} from '@commerce/db';
 import {summarizeDelivery} from '../../../packages/domain/src/sales/delivery-status.js';
 import {save} from './shared.js';
 import {resumeRecipeAfterSellerConfirmation} from './recipe-interruptions.js';
 import {resumeClosingSaleAfterDelivery,resumePrepaymentAfterDelivery} from './workflows.js';
 
 /** Channel owns execution rows; automation projects their durable facts into sales records. */
-export async function materializeEffectResults(limit=100) {
- const rows=(await query(`SELECT o.* FROM outbox o WHERE o.kind<>'warmup' AND COALESCE(o.payload->>'kind','text') NOT IN('grant','warmup')
+async function materializeEffectResultsImpl(store:{query:ProfileQuery;transaction<T>(work:(db:QueryExecutor)=>Promise<T>):Promise<T>},limit:number,lab?:ReturnType<typeof bindNumberLabDispatch>) {
+ const rows=(await store.query(`SELECT o.* FROM outbox o WHERE o.kind<>'warmup' ${lab?"AND o.workspace_id=$2 AND o.environment='SIMULATION' AND o.account_id=$3 AND o.conversation_id=$4":''} AND COALESCE(o.payload->>'kind','text') NOT IN('grant','warmup')
  AND o.status IN('SENT','DELIVERED','READ','FAILED','UNKNOWN','CANCELLED') AND (
  NOT EXISTS(SELECT 1 FROM records m WHERE m.workspace_id=o.workspace_id AND m.environment=o.environment AND m.kind='message' AND m.body->>'effect_id'=o.id::text)
  OR EXISTS(SELECT 1 FROM records m WHERE m.workspace_id=o.workspace_id AND m.environment=o.environment AND m.kind='message' AND m.body->>'effect_id'=o.id::text AND m.body->>'status' IS DISTINCT FROM o.status)
  OR EXISTS(SELECT 1 FROM records f WHERE f.workspace_id=o.workspace_id AND f.environment=o.environment AND f.kind='fulfillment' AND f.id::text=o.payload->>'fulfillment_id' AND (f.body->>'status' IS DISTINCT FROM o.status OR f.body->>'delivery_projection_version' IS DISTINCT FROM '2')))
- ORDER BY o.updated_at LIMIT $1`,[limit])).rows;
- for(const effect of rows) await withTransaction(async client=>{
+ ORDER BY o.updated_at LIMIT $1`,lab?[limit,lab.scope.workspaceId,lab.scope.accountId,lab.scope.conversationId]:[limit])).rows;
+ for(const effect of rows) await store.transaction(async client=>{
   await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[effect.conversation_id]);
   const current=(await client.query('SELECT * FROM outbox WHERE id=$1',[effect.id])).rows[0];
   if(!current||current.kind==='warmup'||['grant','warmup'].includes(current.payload.kind))return;
   const message=(await client.query(`SELECT * FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='message' AND body->>'effect_id'=$3`,[current.workspace_id,current.environment,current.id])).rows[0];
-  const body={conversation_id:current.conversation_id,contact_id:current.contact_id,account_id:current.account_id,direction:'OUTBOUND',kind:current.payload.kind,text:current.payload.text??'',asset_id:current.payload.asset_id,status:current.status,effect_id:current.id,provider_message_id:current.provider_message_id,stage_at_creation:current.payload.stage_at_creation??null};
+  const body={conversation_id:current.conversation_id,contact_id:current.contact_id,account_id:current.account_id,direction:'OUTBOUND',kind:current.payload.kind,text:current.payload.text??'',asset_id:current.payload.asset_id,status:current.status,effect_id:current.id,provider_message_id:current.provider_message_id,stage_at_creation:current.payload.stage_at_creation??null,...(lab?await lab.projection(current,client):{})};
   if(!message)await putRecord(client,{workspaceId:current.workspace_id,environment:current.environment,kind:'message',body});
   else if(message.body.status!==current.status)await save(client,message,{...message.body,status:current.status});
   if(current.payload.purpose==='seller_reply'&&['SENT','DELIVERED','READ'].includes(current.status)){
@@ -48,4 +51,10 @@ export async function materializeEffectResults(limit=100) {
   if(conversation&&conversation.environment===current.environment){await resumePrepaymentAfterDelivery(client,conversation,current.id);await resumeClosingSaleAfterDelivery(client,conversation,current.id);}
  });
  return rows.length;
+}
+
+export async function materializeEffectResults(limit=100){return materializeEffectResultsImpl({query,transaction:work=>withTransaction(work)},limit);}
+export async function materializeNumberLabEffectResults(lease:NumberLabEngineLease,handle:NumberLabDispatch,limit=100){
+ if(!Number.isInteger(limit)||limit<1||limit>100)throw Error('LAB_ENGINE_BATCH_LIMIT');
+ return withNumberLabEngine(lease,ports=>materializeEffectResultsImpl({query:ports.query,transaction:work=>ports.transaction(work)},limit,bindNumberLabDispatch(handle,ports)));
 }

@@ -1,7 +1,7 @@
 import {consumeProviderObservations} from '../../apps/channel-worker/src/observations.js';
-import {beforeAll,afterAll,it,expect} from 'vitest';
+import {beforeAll,beforeEach,afterAll,it,expect} from 'vitest';
+import {fixtureProfiles,releaseFixtureNumbers} from '../support/profile-fixture.js';
 import {randomUUID,randomBytes} from 'node:crypto';
-import {createApp} from '../../apps/api/src/app.js';
 import {provisionUser} from '../../apps/api/src/auth.js';
 import {pool,putRecord,withTransaction,getRecord,appendEvent,writeOperationalSettings,readOperationalSettings} from '../../packages/db/src/index.js';
 import {observeChannelSession,readChannelSession} from '../../packages/db/src/channel-sessions.js';
@@ -11,9 +11,13 @@ import {superviseSessions} from '../../apps/channel-worker/src/session-superviso
 import {collectSessionAlerts} from '../../apps/automation-worker/src/session-alerts.js';
 import {SimulatorProvider,type HealthSignal} from '../../packages/messaging/src/index.js';
 import type {DomainRecord} from '../../packages/contracts/src/index.js';
-const workspace='continuity-'+randomUUID(),origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0]!;
-let app:Awaited<ReturnType<typeof createApp>>,cookie:string,user:string;
-const request=(method:any,url:string,body?:any,key=randomUUID())=>app.inject({method,url:url+(url.includes('?')?'&':'?')+'environment=REAL',payload:body,headers:{cookie,origin,'idempotency-key':key}});
+const workspace='continuity-'+randomUUID(),outsider='other-'+workspace;
+// V7 F2: fixture workspaces are adopted profiles (max three per installation).
+beforeAll(()=>fixtureProfiles({id:workspace,numbers:19},{id:outsider,numbers:1}));
+// V7 F2: the installation admits 20 connected numbers; each case starts with
+// the earlier synthetic numbers' quota reservations released.
+beforeEach(()=>releaseFixtureNumbers(pool));
+let user:string;
 const signals=(state='WORKING',fingerprint='fixture-identity',at=new Date()):HealthSignal[]=>[{dimension:'session',status:state==='WORKING'?'OK':'BLOCKED',value:state,source:'provider_read',scope:'account',availability:'supported',observedAt:at.toISOString(),expiresAt:new Date(at.getTime()+60000).toISOString()},...(state==='WORKING'?[{dimension:'transport' as const,status:'OK' as const,value:{identity_fingerprint:fingerprint},source:'provider_read' as const,scope:'account' as const,availability:'supported' as const,observedAt:at.toISOString(),expiresAt:new Date(at.getTime()+60000).toISOString()}]:[])];
 async function account(provider='waha'){return putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'channel_account',body:{name:'Synthetic continuity',provider,gateway_ref:'fixture-'+randomUUID(),status:'STOPPED',sending_enabled:false}});}
 const session=async(a:DomainRecord)=>(await pool.query('SELECT * FROM channel_sessions WHERE account_id=$1',[a.id])).rows[0];
@@ -25,18 +29,8 @@ async function recoveryEvidence(a:DomainRecord,owner:string,frozen=false){
  await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'health_signal',body:{account_id:a.id,dimension:'session',status:'BLOCKED',value:'STOPPED',source:'provider_read',scope:'account',availability:'supported',observed_at:new Date(now-2000).toISOString(),expires_at:new Date(now+60000).toISOString()}});
  await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'health_signal',body:{account_id:a.id,dimension:'restriction',status:'OK',value:{latest_read:{timelock:true,capping:true}},source:'provider_read',scope:'account',availability:'supported',observed_at:new Date(now-1000).toISOString(),expires_at:new Date(now+60000).toISOString()}});
 }
-beforeAll(async()=>{app=await createApp();const email=randomUUID()+'@example.invalid',password=randomBytes(24).toString('base64url');await provisionUser({name:'Continuity operator',email,password,workspace_id:workspace,role:'owner'});const login=await app.inject({method:'POST',url:'/api/auth/sign-in/email',remoteAddress:'192.0.2.143',payload:{email,password},headers:{origin}});expect(login.statusCode).toBe(200);cookie=[login.headers['set-cookie']].flat().filter(Boolean).map(x=>String(x).split(';')[0]).join('; ');user=login.json().user.id;});
-afterAll(async()=>{await app.close();await pool.end();});
-it('backfills conservative state, validates scope, revisions and primary declarations without enabling sending',async()=>{
- const a=await account(),url=`/v1/channel-accounts/${a.id}`;expect(await session(a)).toMatchObject({desired_state:'STOPPED',observed_state:'UNKNOWN',recovery_enabled:false,operational_pause:true,primary_last_used_at:null});
- expect((await request('GET',url+'/session')).statusCode).toBe(200);
- const key=randomUUID(),body={expected_version:1,source:'operator_confirmation',used_at:new Date(Date.now()-1000).toISOString(),reason:'Opened primary app manually'};
- const response=await request('POST',url+'/primary-usage',body,key);expect(response.statusCode,response.body).toBe(200);expect((await request('POST',url+'/primary-usage',body,key)).json()).toEqual(response.json());expect((await request('POST',url+'/primary-usage',body)).statusCode).toBe(409);
- expect((await request('POST',url+'/primary-usage',{...body,expected_version:2,used_at:new Date(Date.now()+86400000).toISOString()})).statusCode).toBe(400);
- expect((await request('PATCH',url+'/session',{expected_version:2,responsible_user_id:'other-workspace',reason:'bad scope'})).statusCode).toBe(400);
- const outside=await putRecord(pool,{workspaceId:'other-'+workspace,environment:'REAL',kind:'channel_account',body:{provider:'cloud'}});expect((await request('GET',`/v1/channel-accounts/${outside.id}/session`)).statusCode).toBe(404);
- const saved=await session(a);expect(saved.primary_usage_source).toBe('operator_confirmation');expect(saved.primary_usage_recorded_by).toBe(user);expect((await getRecord(pool,workspace,'channel_account',a.id))!.body.sending_enabled).toBe(false);
-});
+beforeAll(async()=>{const email=randomUUID()+'@example.invalid',password=randomBytes(24).toString('base64url');user=(await provisionUser({name:'Continuity operator',email,password,workspace_id:workspace,role:'owner'})).id;});
+afterAll(async()=>{await pool.end();});
 it('observations require identity, preserve expected identity and reject older or future observations',async()=>{
  const a=await account(),provider=new SimulatorProvider();provider.health=async()=>signals();await recordHealth(a,()=>provider);const s=await session(a);expect(s.observed_state).toBe('CONNECTED');expect(s.primary_last_used_at).toBeNull();const at=s.provider_observed_at;
  await withTransaction(c=>observeChannelSession(c,a,signals('STOPPED','x',new Date(at.getTime()-1000))));expect((await session(a)).observed_state).toBe('CONNECTED');
@@ -90,7 +84,9 @@ it('fences a replacement check-health read with a verified isolation receipt bef
  provider.lifecycle=async()=>{lifecycleCalls++;throw Error('LIFECYCLE_MUST_NOT_RUN');};
  await recordHealth(a,()=>provider);
  await pool.query("UPDATE session_ownership SET lease_expires_at=now()-interval '1 second' WHERE account_id=$1",[a.id]);
- const queueCheck=async()=>{const setup=(await request('GET',`/v1/numbers/${a.id}/setup`)).json().data;const queued=await request('POST',`/v1/numbers/${a.id}/setup/commands`,{action:'check_health',expected_version:setup.account_version,expected_session_version:setup.session_version,reason:'Verify current health after worker replacement'});expect(queued.statusCode,queued.body).toBe(202);return queued.json().data.command_id as string;};
+ // V7 F8-D: the V5 setup assistant that queued this check was retired; the
+ // channel worker still processes a check queued before the cutover.
+ const queueCheck=async()=>(await withTransaction(async c=>(await c.query("INSERT INTO commands(workspace_id,environment,kind,resource_id,actor_id,payload,idempotency_key) VALUES($1,'REAL','channel_command',$2,$3,$4,$5) RETURNING id",[workspace,a.id,user,{type:'check_health',expected_version:(await getRecord(c,workspace,'channel_account',a.id))!.version,reason:'Verify current health after worker replacement'},randomUUID()])).rows[0].id)) as string;
  const first=await queueCheck();provider.health=async()=>{healthCalls++;return observed('OK');};
  await processChannelCommands(100,candidate=>candidate.id===a.id&&candidate.workspace_id===a.workspace_id?provider:new SimulatorProvider(),newOwner);
  expect((await pool.query('SELECT status,result FROM commands WHERE id=$1',[first])).rows[0]).toMatchObject({status:'FAILED',result:{error:'VERIFIED_ISOLATION_PROOF_REQUIRED',remote_outcome:'NOT_ATTEMPTED'}});
@@ -138,7 +134,9 @@ it('deduplicates per-account maintenance alerts and preserves unknown notificati
 });
 it('polls 20 accounts fairly with bounded concurrency, including absent owners, without provider mutations',async()=>{
  // Existing fixtures are marked recently polled to isolate this synthetic scale sample.
- await pool.query('UPDATE channel_sessions SET last_health_at=now()');const accounts=[];for(let i=0;i<20;i++)accounts.push(await account());
+ await pool.query('UPDATE channel_sessions SET last_health_at=now()');
+ // The whole platform allocation (20 numbers) goes to this profile for the sample.
+ await fixtureProfiles({id:workspace,numbers:20},{id:outsider,numbers:0});const accounts=[];for(let i=0;i<20;i++)accounts.push(await account());
  let active=0,peak=0;const seen=new Set<string>();const start=performance.now();
  await collectHealth(a=>{const p=new SimulatorProvider();p.health=async()=>{active++;peak=Math.max(peak,active);await new Promise(r=>setTimeout(r,8));active--;seen.add(a.id);return signals();};p.lifecycle=async()=>{throw Error('NO_MUTATIONS_EXPECTED');};return p;});
  expect(accounts.every(a=>seen.has(a.id))).toBe(true);expect(peak).toBeLessThanOrEqual(4);expect(seen.size).toBe(20);expect(performance.now()-start).toBeLessThan(90000);
@@ -162,10 +160,11 @@ it('database rejects cross-workspace session and history writes',async()=>{
 it('a pause after queuing recovery cancels the mutation before contacting the provider',async()=>{
  const a=await account();await configureRecovery(a);await recoveryEvidence(a,'pause-owner');
  await superviseSessions();const queued=await session(a);expect(queued.last_attempt_id).toBeTruthy();
- const paused=await request('PATCH',`/v1/channel-accounts/${a.id}/session`,{expected_version:queued.revision,operational_pause:true,reason:'Pause wins before provider call'});expect(paused.statusCode,paused.body).toBe(200);
+ // V7: unlinking or pausing from Números sets the operational pause the worker honours.
+ await pool.query('UPDATE channel_sessions SET operational_pause=true,revision=revision+1,updated_at=now() WHERE id=$1 AND revision=$2',[queued.id,queued.revision]);
  let calls=0;const provider=new SimulatorProvider();provider.lifecycle=async()=>{calls++;return{status:'WORKING'};};await processChannelCommands(100,candidate=>candidate.id===a.id&&candidate.workspace_id===a.workspace_id?provider:new SimulatorProvider(),'pause-owner');expect(calls).toBe(0);
  expect((await pool.query('SELECT result FROM commands WHERE id=$1',[queued.last_attempt_id])).rows[0].result.remote_outcome).toBe('NOT_ATTEMPTED');
- const result=await request('GET',`/v1/commands/${queued.last_attempt_id}`);expect(result.statusCode,result.body).toBe(200);expect(result.json().data.status).toBe('FAILED');expect(result.json().data.result.remote_outcome).toBe('NOT_ATTEMPTED');
+ expect((await pool.query('SELECT status FROM commands WHERE id=$1',[queued.last_attempt_id])).rows[0].status).toBe('FAILED');
 });
 
 it('never queues or calls a provider while ownership, incidents or canonical health block recovery',async()=>{
@@ -202,4 +201,71 @@ it('accepts a lifecycle-equal health read only when it carries the post-command 
  expect((await pool.query("SELECT count(*)::int n FROM records WHERE workspace_id=$1 AND kind='health_signal' AND body->>'account_id'=$2",[workspace,a.id])).rows[0].n).toBe(0);
  await recordHealth(a,()=>provider,{owner_id:owner,generation:acquired.generation!});
  expect((await pool.query("SELECT count(*)::int n FROM records WHERE workspace_id=$1 AND kind='health_signal' AND body->>'account_id'=$2 AND body->>'dimension'='session'",[workspace,a.id])).rows[0].n).toBe(1);
+});
+
+// V7 F3 (ADR-V7-03, D-17, RNF-01.d/f): a live permanent continuity grant resumes
+// the account's own ownership after a reconnection, a takeover or a release; a
+// human pause, a revoked grant or another identity's grant never does.
+async function qrGrant(a:DomainRecord,fingerprint:string,options:{humanPaused?:boolean;revoked?:boolean}={}){
+ const connection=randomUUID(),id=randomUUID(),createdAt=new Date().toISOString();
+ await withTransaction(async c=>{
+  await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','REAL',true)",[workspace]);
+  await c.query("INSERT INTO commands(id,workspace_id,environment,kind,resource_id,actor_id,payload,status,idempotency_key,created_at) VALUES($1::uuid,$2,'REAL','channel_command',$3,'synthetic','{\"type\":\"connect\"}','APPLIED',$1::uuid::text,clock_timestamp()-interval '2 minutes')",[connection,workspace,a.id]);
+  // Synthetic source evidence the grant validates (a verified connection of
+  // this identity); the session's own expected identity is restored after.
+  const before=(await c.query('SELECT expected_identity_fingerprint FROM channel_sessions WHERE account_id=$1',[a.id])).rows[0].expected_identity_fingerprint;
+  await c.query("UPDATE channel_sessions SET observed_state='CONNECTED',auth_state='VERIFIED',expected_identity_fingerprint=$2,provider_observed_at=clock_timestamp()-interval '90 seconds',health_expires_at=clock_timestamp()+interval '5 minutes' WHERE account_id=$1",[a.id,fingerprint]);
+  const state={id,workspaceId:workspace,environment:'REAL',accountId:a.id,source:{kind:'VERIFIED_QR_CONNECTION',connectionId:connection,identityFingerprint:fingerprint},
+   createdBy:'synthetic',createdAt,version:1,humanPaused:false,revokedAt:null,protections:[]};
+  await c.query('INSERT INTO continuous_authorizations(id,workspace_id,environment,account_id,qr_command_id,source_hash,version,state) VALUES($1,$2,$3,$4,$5,$6,1,$7)',[id,workspace,'REAL',a.id,connection,randomBytes(32).toString('hex'),state]);
+  await c.query("INSERT INTO continuous_authorization_events(workspace_id,environment,authorization_id,version,operation_id,event,state) VALUES($1,'REAL',$2,1,$3,$4,$5)",[workspace,id,randomUUID(),{type:'CREATED',actorId:'synthetic',source:state.source,at:createdAt},state]);
+  await c.query('UPDATE channel_sessions SET expected_identity_fingerprint=$2 WHERE account_id=$1',[a.id,before]);
+  if(options.humanPaused||options.revoked){
+   const next={...state,version:2,...(options.humanPaused?{humanPaused:true}:{}),...(options.revoked?{revokedAt:new Date().toISOString()}:{})};
+   await c.query('UPDATE continuous_authorizations SET version=2,state=$2 WHERE id=$1',[id,next]);
+   await c.query("INSERT INTO continuous_authorization_events(workspace_id,environment,authorization_id,version,operation_id,event,state) VALUES($1,'REAL',$2,2,$3,$4,$5)",[workspace,id,randomUUID(),{type:options.revoked?'REVOKED':'HUMAN_PAUSED',actorId:'synthetic',at:new Date().toISOString()},next]);
+  }
+ });
+}
+async function openRealPolicy(){const current=await readOperationalSettings(pool,workspace,'REAL');await withTransaction(c=>writeOperationalSettings(c,workspace,'REAL',current.version,{...current.body,dispatch_frozen:false,real_sends_enabled:true,allow_real_operations:true},'synthetic-v7-continuity'));}
+const continuityProvider=(fingerprint:string)=>{const provider=new SimulatorProvider();provider.health=async()=>{const at=new Date(Date.now()-1000);return[...signals('WORKING',fingerprint,at),{dimension:'restriction',status:'OK',value:{latest_read:{timelock:true,capping:true}},source:'provider_read',scope:'account',availability:'supported',observedAt:at.toISOString(),expiresAt:new Date(at.getTime()+60000).toISOString()}];};return provider;};
+async function frozenConnected(fingerprint:string,release=false){
+ const a=await account(),owner='v7-continuity-'+randomUUID(),fence=await acquireOwnership(a,owner);expect(fence.acquired).toBe(true);
+ await pool.query('UPDATE channel_sessions SET expected_identity_fingerprint=$2 WHERE account_id=$1',[a.id,fingerprint]);
+ await pool.query('UPDATE session_ownership SET frozen=true,release_frozen=$2 WHERE account_id=$1',[a.id,release]);
+ return{a,owner,fence};
+}
+const ownershipOf=async(a:DomainRecord)=>(await pool.query('SELECT frozen,release_frozen FROM session_ownership WHERE account_id=$1',[a.id])).rows[0];
+it('V7: the current verified QR grant resumes a reconnected account automatically; paused, revoked or foreign-identity grants never do',async()=>{
+ await openRealPolicy();
+ const fingerprint='b'.repeat(64),provider=continuityProvider(fingerprint);
+ const live=await frozenConnected(fingerprint);await qrGrant(live.a,fingerprint);
+ const paused=await frozenConnected(fingerprint);await qrGrant(paused.a,fingerprint,{humanPaused:true});
+ const revoked=await frozenConnected(fingerprint);await qrGrant(revoked.a,fingerprint,{revoked:true});
+ const foreign=await frozenConnected(fingerprint);await qrGrant(foreign.a,'c'.repeat(64));
+ const none=await frozenConnected(fingerprint);
+ for(const item of [live,paused,revoked,foreign,none])await recordHealth(item.a,()=>provider);
+ expect(await ownershipOf(live.a)).toEqual({frozen:false,release_frozen:false});
+ for(const item of [paused,revoked,foreign,none])expect(await ownershipOf(item.a)).toEqual({frozen:true,release_frozen:false});
+ expect((await pool.query("SELECT payload->>'authority' authority FROM domain_events WHERE aggregate_id=$1 AND event_type='channel.continuity_resumed'",[live.a.id])).rows).toEqual([{authority:'V7_CONTINUITY'}]);
+ // A manual pause of the number is never lifted by a grant.
+ const manual=await frozenConnected(fingerprint);await qrGrant(manual.a,fingerprint);
+ await pool.query("INSERT INTO manual_controls(workspace_id,scope_type,scope_id,paused,reason,actor_id) VALUES($1,'channel_account',$2,true,'Pausado por ti','synthetic')",[workspace,manual.a.id]);
+ await recordHealth(manual.a,()=>provider);expect((await ownershipOf(manual.a)).frozen).toBe(true);
+ expect((await pool.query('SELECT count(*)::int n FROM outbox WHERE workspace_id=$1',[workspace])).rows[0].n).toBe(0);
+});
+it('V7: a release-frozen account resumes through its permanent grant without a legacy expiring authorization',async()=>{
+ await openRealPolicy();
+ const fingerprint='d'.repeat(64),provider=continuityProvider(fingerprint);
+ const held=await frozenConnected(fingerprint,true);await qrGrant(held.a,fingerprint);
+ const legacyOnly=await frozenConnected(fingerprint,true);
+ for(const item of [held,legacyOnly])await recordHealth(item.a,()=>provider,{owner_id:item.owner,generation:item.fence.generation!});
+ expect(await ownershipOf(held.a)).toEqual({frozen:false,release_frozen:false});
+ expect(await ownershipOf(legacyOnly.a)).toEqual({frozen:true,release_frozen:true});
+ expect((await pool.query("SELECT count(*)::int n FROM domain_events WHERE aggregate_id=$1 AND event_type='channel.release_recovered'",[held.a.id])).rows[0].n).toBe(1);
+ // A release hold still wins over any grant.
+ const during=await frozenConnected(fingerprint,true);await qrGrant(during.a,fingerprint);
+ await pool.query("UPDATE operational_settings SET release_hold=true,release_hold_at=now() WHERE workspace_id=$1 AND environment='REAL'",[workspace]);
+ try{await recordHealth(during.a,()=>provider,{owner_id:during.owner,generation:during.fence.generation!}).catch(()=>undefined);expect((await ownershipOf(during.a)).frozen).toBe(true);}
+ finally{await pool.query("UPDATE operational_settings SET release_hold=false WHERE workspace_id=$1 AND environment='REAL'",[workspace]);}
 });

@@ -1,4 +1,5 @@
-import {afterAll,expect,it} from 'vitest';
+import {afterAll,expect,it,beforeAll} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomUUID} from 'node:crypto';
 import {pool,putRecord,getRecord,withTransaction,appendEvent,hash} from '../../packages/db/src/index.js';
 import type {Body,DomainRecord} from '../../packages/contracts/src/index.js';
@@ -12,6 +13,8 @@ import {materializeEffectResults} from '../../apps/automation-worker/src/effect-
 import {consumeProviderObservations} from '../../apps/channel-worker/src/observations.js';
 
 const workspace='preschool-operational-'+randomUUID();
+// V7 F2: fixture workspaces are adopted profiles (max three per installation).
+beforeAll(()=>fixtureProfiles(workspace));
 afterAll(async()=>pool.end());
 const record=(kind:string,body:Body)=>putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind,body});
 async function fixture(){

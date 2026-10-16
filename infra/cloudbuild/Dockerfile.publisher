@@ -1,0 +1,30 @@
+# syntax=docker/dockerfile:1.7.1@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+# Trusted publisher image. The protected build context supplies credential-free
+# resource config, baked into this image and validated before a native run.
+FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+ENV DEBIAN_FRONTEND=noninteractive PYTHONDONTWRITEBYTECODE=1 \
+    CLOUDSDK_PYTHON=/usr/bin/python3 CLOUDSDK_CORE_DISABLE_PROMPTS=1 \
+    CLOUDSDK_CORE_DISABLE_USAGE_REPORTING=true CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK=1 \
+    PATH=/opt/google-cloud-sdk/bin:/usr/local/bin:/usr/bin:/bin
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends python3 python3-cryptography git openssh-client ca-certificates tar gzip \
+    && rm -rf /var/lib/apt/lists/* && chmod 0700 /root \
+    && mkdir -p /opt/trusted /var/lib/commerce-publisher \
+    && chmod 0700 /var/lib/commerce-publisher
+ADD --checksum=sha256:e38ceac43022bb5a4d94d5a4a9c9c51f90f28c910b59a018ae07011e220c4412 https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-588.0.0-linux-x86_64.tar.gz /tmp/google-cloud-cli.tar.gz
+RUN tar -xzf /tmp/google-cloud-cli.tar.gz -C /opt \
+    && rm /tmp/google-cloud-cli.tar.gz \
+    && test "$(cat /opt/google-cloud-sdk/VERSION)" = 588.0.0 \
+    && rm -rf /opt/google-cloud-sdk/platform/bundledpythonunix \
+    # Only compute SSH/SCP/OS Login is allowed by the transport. GCS packages
+    # use the authenticated Python reader with SHA256+MD5, not gcloud storage.
+    # Exclude that unused Go CRC helper rather than ship its vulnerable runtime.
+    && test -f /opt/google-cloud-sdk/bin/gcloud-crc32c \
+    && rm /opt/google-cloud-sdk/bin/gcloud-crc32c \
+    && gcloud version && ssh -V && python3 --version
+COPY scripts/*.py /opt/trusted/
+COPY runtime-config.json /opt/trusted/runtime-config.json
+RUN chmod 0444 /opt/trusted/* && chmod 0755 /opt/trusted \
+    && python3 -I -c 'import sys; sys.path.insert(0,"/opt/trusted"); from cloudbuild_publisher_worker import validate_config; from cloudbuild_runtime import read_installed_document; validate_config(read_installed_document())'
+WORKDIR /workspace
+ENTRYPOINT ["/usr/bin/python3", "-I", "/opt/trusted/cloudbuild-publish.py"]

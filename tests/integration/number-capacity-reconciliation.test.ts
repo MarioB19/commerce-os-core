@@ -1,4 +1,6 @@
 import {afterAll,beforeAll,expect,it} from 'vitest';
+import {retireLegacyNumber} from '../support/channel-commands.js';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomBytes,randomUUID} from 'node:crypto';
 import {createApp} from '../../apps/api/src/app.js';
 import {provisionUser} from '../../apps/api/src/auth.js';
@@ -7,6 +9,8 @@ import {saveIntegrationSetting} from '../../packages/db/src/integration-settings
 import {roleExecutor} from '../support/database-role.js';
 
 const workspace='capacity-reconcile-'+randomUUID(),origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0]!,withRole=roleExecutor(pool);
+// V7 F2: fixture workspaces are adopted profiles (max three per installation).
+beforeAll(()=>fixtureProfiles(workspace));
 let app:Awaited<ReturnType<typeof createApp>>,cookie='',fixtureAccountId:string|undefined;
 const call=(method:any,path:string,body?:any,key=randomUUID())=>withRole('commerce_api',()=>app.inject({method,url:path+'?environment=REAL',payload:body,headers:{origin,cookie,'idempotency-key':key}}));
 const data=(response:any,status=200)=>{expect(response.statusCode,response.body).toBe(status);return response.json().data;};
@@ -19,8 +23,7 @@ beforeAll(async()=>{
 afterAll(async()=>{
  try {
   if(fixtureAccountId){
-   const account=data(await call('GET','/v1/channel-accounts/'+fixtureAccountId));
-   data(await call('DELETE','/v1/channel-accounts/'+fixtureAccountId,{expected_version:account.version,confirmation:'DELETE_CHANNEL_ACCOUNT',reason:'Retire isolated reconciliation fixture'}));
+   await retireLegacyNumber(workspace,fixtureAccountId);
   }
  } finally {await app.close();await pool.end();}
 });
@@ -46,5 +49,5 @@ it('adopts an exact legacy gateway idempotently and uses its inventory as previe
  expect((await pool.query("SELECT count(*)::int n FROM domain_events WHERE workspace_id=$1 AND event_type='number.capacity.legacy_adopted'",[workspace])).rows[0].n).toBe(1);
  const mismatchedSlot=slot===20?19:slot+1;await pool.query("UPDATE channel_sessions SET gateway_id='http://waha-'||lpad($2::text,2,'0')||':3000',revision=revision+1 WHERE account_id=$1",[account.id,mismatchedSlot]);
  const mismatch=data(await call('GET','/v1/number-capacity/reconciliation')).items.find((item:any)=>item.code==='GATEWAY_SLOT_MISMATCH'&&item.account_id===account.id);expect(mismatch).toMatchObject({canonical_slot:slot,session_gateway_slot:mismatchedSlot});
- const blocked=await call('POST','/v1/numbers',{alias:'Must not reuse physical slot',responsible:'Synthetic owner',device_ref:'Blocked by mismatch'});expect(blocked.statusCode,blocked.body).toBe(409);expect(blocked.json().error.code).toBe('GATEWAY_SLOT_MISMATCH');
+ const blocked=await call('POST','/v1/numbers/quick',{alias:'Must not reuse physical slot',country:'MX'});expect(blocked.statusCode,blocked.body).toBe(409);expect(blocked.json().error.code).toBe('GATEWAY_SLOT_MISMATCH');
 },60000);

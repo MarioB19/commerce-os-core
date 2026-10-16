@@ -1,0 +1,132 @@
+import {readFile} from 'node:fs/promises';
+import {randomBytes,randomUUID,createHash} from 'node:crypto';
+import pg from 'pg';
+import {beforeAll,afterAll,describe,it,expect,beforeEach} from 'vitest';
+import {requireMigratedProfileSchema,fenceSessionsExited} from '../support/migrated-database.js';
+import {localInventoryTarget} from '../../scripts/profile-inventory.js';
+import {readProfileCatalog} from '../../packages/db/src/profile-inventory.js';
+import {buildPrivacyInventoryPlan,privacyInventoryPolicy,type PrivacyInventoryCatalog} from '../../packages/db/src/privacy-inventory-plan.js';
+import {buildPrivacyWriterFencePlan} from '../../packages/db/src/privacy-writer-fence.js';
+import {preparePrivacyJob,PRIVACY_JOB_INVENTORY_BINDING_SQL} from '../../packages/db/src/privacy-jobs.js';
+import {buildPrivacyReferenceFencePlan,withPrivacyReferenceFence} from '../../packages/db/src/privacy-reference-fence.js';
+import {buildPrivacyAssetReferencePlan} from '../../packages/db/src/privacy-asset-reference-plan.js';
+import {buildPrivacyBackupRowPlan} from '../../packages/db/src/privacy-backup-row-plan.js';
+import {capturePrivacyOpaqueCopies} from '../../packages/db/src/privacy-opaque-attestation.js';
+import {createNativePrivateFileCandidatePort} from '../../packages/db/src/privacy-file-native-candidates.js';
+import {privateFileManifestHash} from '../../packages/db/src/privacy-file-custody.js';
+const w='privacy_assets_a',other='privacy_assets_b',owner='synthetic-privacy-owner';
+const implementation=randomUUID();
+const suffix=randomBytes(8).toString('hex'),workerLogin='privacy_jobs_'+suffix,attestorLogin='privacy_attestor_'+suffix,apiLogin='privacy_api_'+suffix;
+let admin:pg.Pool,worker:pg.Pool,attestor:pg.Pool,api:pg.Pool;
+async function tx<T>(pool:pg.Pool,role:string,work:(c:pg.PoolClient)=>Promise<T>,workspace=w,isolation:'READ COMMITTED'|'REPEATABLE READ'='REPEATABLE READ'){const c=await pool.connect();try{await c.query('BEGIN ISOLATION LEVEL '+isolation);await c.query('SET LOCAL ROLE '+role);await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','REAL',true)",[workspace]);const r=await work(c);await c.query('COMMIT');return r;}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}}
+async function importPolicy(workspace=w,version=0,evidence='a'.repeat(64),id:string=randomUUID()){return tx(attestor,'commerce_privacy_attestor',async c=>(await c.query('SELECT import_privacy_policy($1,$2,$3,$4) r',[id,owner,evidence,version])).rows[0].r,workspace);}
+async function backup(workspace=w,patch:Record<string,unknown>={}){const id=randomUUID();return tx(attestor,'commerce_privacy_attestor',async c=>{const times=(await c.query("SELECT clock_timestamp()-interval '1 hour' snapshot,clock_timestamp()-interval '30 minutes' restored,privacy_runtime_fingerprint() topology")).rows[0];const v={id,run:'gcp-'+'a'.repeat(32),originals:'b'.repeat(64),restore:'c'.repeat(64),...times,...patch};return (await c.query('SELECT import_privacy_backup($1,$2,$3,$4,$5,$6,$7) r',[v.id,v.run,v.snapshot,v.restored,v.originals,v.restore,v.topology])).rows[0].r;},workspace);}
+async function seedJourney(workspace=w,age=200,classification='COMMERCIAL'){
+ // Only synthetic restore fixtures: all timestamps/commands/events/versions are
+ // inserted as one internally consistent historical image by the fixture admin.
+ // Runtime tests below use real non-superuser logins and all original triggers.
+ const id=randomUUID(),cmd=randomUUID();return tx(admin,'NONE',async c=>{
+  const at=(await c.query("SELECT clock_timestamp()-($1::integer*interval '24 hours') AS clock_value",[age])).rows[0].clock_value;
+  const body={status:'CLOSED',closed_at:at.toISOString(),closed_by:owner,closed_reason:'SYNTHETIC_RESOLVED',commercial_classification:classification,private_note:'PRIVATE_SENTINEL'};
+  await c.query('SET LOCAL session_replication_role=replica');
+  await c.query("INSERT INTO records(id,workspace_id,environment,kind,version,body,created_at,updated_at) VALUES($1,$2,'REAL','conversation',2,$3,$4::timestamptz-interval '1 day',$4)",[id,workspace,body,at]);
+  await c.query("INSERT INTO record_versions(record_id,workspace_id,environment,kind,version,body,created_at) VALUES($1,$2,'REAL','conversation',1,'{\"status\":\"OPEN\"}',$4::timestamptz-interval '1 day'),($1,$2,'REAL','conversation',2,$3,$4)",[id,workspace,body,at]);
+  await c.query("INSERT INTO commands(id,workspace_id,environment,kind,resource_id,actor_id,payload,idempotency_key,status,result,created_at,updated_at) VALUES($1,$2,'REAL','conversation_command',$3,$4,$5,$6,'APPLIED',$7,$8,$8)",[cmd,workspace,id,owner,{type:'close_conversation',reason:'SYNTHETIC_RESOLVED'},randomUUID(),{status:'CLOSED',conversation_id:id,commercial_resolution:{schema_version:1,kind:'EXPLICIT_HUMAN_COMMERCIAL_CLOSURE',classification:'COMMERCIAL',orders:[]}},at]);
+  await c.query("INSERT INTO domain_events(workspace_id,environment,event_type,aggregate_id,correlation_id,causation_id,actor,payload,occurred_at,recorded_at) VALUES($1,'REAL','conversation.closed',$2,$3,$3,$4,$5,$6,$6)",[workspace,id,cmd,{type:'automation'},{actor_id:owner,reason:'SYNTHETIC_RESOLVED'},at]);
+  await c.query('SET LOCAL session_replication_role=origin');return{id,w:workspace,version:2};
+ },workspace);
+}
+async function prepared(j:Awaited<ReturnType<typeof seedJourney>>,b:string,id:string=randomUUID()){return preparePrivacyJob(worker,{workspaceId:j.w,jobId:id,journeyId:j.id,sourceVersion:j.version,backupId:b});}
+describe('038 native asset minimization with035/036/037 evidence and permanent guards',()=>{
+ beforeAll(async()=>{
+  const url=new URL(localInventoryTarget(process.env.DATABASE_URL));if(!/^\/commerce_test_[a-zA-Z0-9_]+$/.test(url.pathname))throw Error('ISOLATED_TEST_DATABASE_REQUIRED');admin=new pg.Pool({connectionString:url.toString(),max:4});
+  // V7 F2: the canonical chain, its components and the isolation model are
+  // installed by the migrations (0069-0100); no transition source is applied here.
+  await requireMigratedProfileSchema(admin);
+  for(const[id,email]of[[owner,'privacy@example.invalid'],[owner+'-backup','privacy-backup@example.invalid']])await admin.query('INSERT INTO "user"(id,name,email,"emailVerified","createdAt","updatedAt") VALUES($1,$2,$3,true,now(),now())',[id,'Synthetic privacy Owner',email]);
+  for(const workspace of[w,other]){await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic privacy jobs','UTC',0,0,100)",[workspace]);for(const id of[owner,owner+'-backup'])await admin.query("INSERT INTO memberships(user_id,workspace_id,role,active) VALUES($1,$2,'owner',true)",[id,workspace]);await tx(admin,'NONE',c=>c.query('SELECT adopt_profile_quota_inventory($1,profile_quota_inventory($1))',[workspace]),workspace);}
+  // Fixture-only adoption of preparation/apply. The product grants neither.
+  for(const role of ['commerce_api','commerce_automation','commerce_privacy_job_worker'])for(const fn of ['prepare_privacy_record_minimization(uuid,uuid,uuid)','apply_privacy_record_minimization(uuid,uuid)'])expect((await admin.query("SELECT has_function_privilege($1,$2,'EXECUTE') allowed",[role,fn])).rows[0].allowed).toBe(false);
+  await admin.query('GRANT EXECUTE ON FUNCTION prepare_privacy_record_minimization(uuid,uuid,uuid),apply_privacy_record_minimization(uuid,uuid),capture_financial_retention(uuid,integer),capture_result_financial_context(uuid,integer),verify_financial_retention(uuid),correct_retained_financial_classification(uuid) TO commerce_privacy_job_worker');
+  for(const role of['commerce_api','commerce_automation','commerce_privacy_job_worker'])for(const fn of['prepare_privacy_asset_minimization(uuid,uuid,uuid,uuid)','apply_privacy_asset_minimization(uuid,uuid,uuid)','read_privacy_asset_candidates(uuid,uuid,uuid)'])expect((await admin.query("SELECT has_function_privilege($1,$2,'EXECUTE') allowed",[role,fn])).rows[0].allowed).toBe(false);
+  await admin.query('GRANT EXECUTE ON FUNCTION prepare_privacy_asset_minimization(uuid,uuid,uuid,uuid),apply_privacy_asset_minimization(uuid,uuid,uuid),read_privacy_asset_candidates(uuid,uuid,uuid),privacy_opaque_sources(uuid,integer,uuid,uuid),import_privacy_opaque_pass(uuid,uuid,integer,uuid,uuid,uuid,jsonb) TO commerce_privacy_job_worker');
+  for(const workspace of[w,other])await admin.query("INSERT INTO privacy_opaque_implementations(id,workspace_id,parser_sha256,capture_sha256,evidence_sha256) VALUES($1,$2,repeat('a',64),repeat('b',64),repeat('c',64))",[workspace===w?implementation:randomUUID(),workspace]);
+  const catalog=await readProfileCatalog(admin,[]) as PrivacyInventoryCatalog;
+  await admin.query(buildPrivacyWriterFencePlan(catalog).sql);
+  await admin.query(buildPrivacyReferenceFencePlan(catalog).sql);
+  await admin.query(buildPrivacyAssetReferencePlan(catalog).sql);
+  await admin.query(buildPrivacyBackupRowPlan(catalog,privacyInventoryPolicy(catalog.tables.map(t=>t.name))).sql);
+  // 038_private_asset_authority depends on the generated privacy plans above; it
+  // is not a migration (erasure activation phase) and is applied from its source.
+  await admin.query(await readFile(new URL('../../packages/db/profile-transition/components/038_private_asset_authority.sql',import.meta.url),'utf8'));
+  const plan=buildPrivacyInventoryPlan(catalog,privacyInventoryPolicy(catalog.tables.map(t=>t.name)));await admin.query(plan.prepare_sql);await admin.query(PRIVACY_JOB_INVENTORY_BINDING_SQL);
+  for(const[name,roles]of[[workerLogin,'commerce_privacy_job_worker,commerce_privacy_fence_worker,commerce_privacy_reference_worker'],[attestorLogin,'commerce_privacy_attestor'],[apiLogin,'commerce_api']]){const secret=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${name}" LOGIN PASSWORD '${secret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION; GRANT ${roles} TO "${name}"`);const u=new URL(url);u.username=name;u.password=secret;const pool=new pg.Pool({connectionString:u.toString(),max:3});if(name===workerLogin)worker=pool;else if(name===attestorLogin)attestor=pool;else api=pool;}
+  await admin.query(plan.seal_sql);await importPolicy();await importPolicy(other);
+ },60000);
+ beforeEach(async()=>{if(admin)await fenceSessionsExited(admin);});
+ afterAll(async()=>{await worker?.end();await attestor?.end();await api?.end();if(admin){try{await admin.query(`DROP ROLE IF EXISTS "${workerLogin}","${attestorLogin}","${apiLogin}"`);}finally{await admin.end();}}});
+ type Journey=Awaited<ReturnType<typeof seedJourney>>;
+ type Source=Journey&{asset:string;message:string;kind:'file'|'link'};
+ const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
+ async function source(kind:'file'|'link'='file'):Promise<Source>{
+  const j=await seedJourney(),asset=randomUUID(),message=randomUUID();
+  await tx(admin,'NONE',async c=>{
+   const at=(await c.query('SELECT updated_at FROM records WHERE id=$1',[j.id])).rows[0].updated_at;
+   const body=kind==='file'?{name:'PRIVATE_FILENAME',kind,adapter:'private_file',status:'READY',storage_key:asset+'-'+'a'.repeat(64),sha256:'a'.repeat(64),size_bytes:10}:{name:'PRIVATE_LINK',kind,adapter:'link',status:'READY',url:'https://example.invalid/PRIVATE_LINK'};
+   await c.query('SET LOCAL session_replication_role=replica');
+   for(const[id,k,b]of[[asset,'asset',body],[message,'message',{conversation_id:j.id,asset_id:asset,text:'PRIVATE_MESSAGE'}]] as [string,string,unknown][]){
+    await c.query("INSERT INTO records(id,workspace_id,environment,kind,version,body,created_at,updated_at) VALUES($1,$2,'REAL',$3,2,$4,$5::timestamptz-interval '1 day',$5)",[id,w,k,b,at]);
+    await c.query("INSERT INTO record_versions(record_id,workspace_id,environment,kind,version,body,created_at) VALUES($1,$2,'REAL',$3,1,$4,$5::timestamptz-interval '1 day'),($1,$2,'REAL',$3,2,$4,$5)",[id,w,k,b,at]);
+   }await c.query('SET LOCAL session_replication_role=origin');
+  });return{...j,asset,message,kind};
+ }
+ type Pin={relation:string;key_sha256:string;source_sha256:string};
+ async function importRows(backupId:string,omitId?:string){
+  const captured=await tx(attestor,'commerce_privacy_attestor',async c=>{const d=(await c.query('SELECT begin_privacy_backup_row_capture() r')).rows[0].r,pages=[];do{pages.push((await c.query('SELECT read_privacy_backup_row_page($1) r',[d.token])).rows[0].r);}while(!pages.at(-1).complete);return{catalog:d.catalog_sha256,entries:pages.flatMap(p=>p.entries) as Pin[]};});
+  // Each fixture models a separately authenticated restored image. The negative
+  // fixture intentionally omits a row; production's original-verifier never does.
+  if(omitId){const key=(await admin.query("SELECT encode(digest(jsonb_build_object('id',$1::uuid)::text,'sha256'),'hex') k",[omitId])).rows[0].k;captured.entries=captured.entries.filter(e=>e.relation!=='public.records'||e.key_sha256!==key);}
+  const pages:Pin[][]=[];for(let i=0;i<captured.entries.length;i+=2000)pages.push(captured.entries.slice(i,i+2000));if(!pages.length)pages.push([]);
+  let root=hash('PRIVACY_BACKUP_ROWS_V1');for(const page of pages)root=hash(root+'\n'+hash(page.map(e=>e.relation+':'+e.key_sha256+':'+e.source_sha256+'\n').join('')));
+  for(const[page_index,entries]of pages.entries())await tx(attestor,'commerce_privacy_attestor',c=>c.query('SELECT import_privacy_backup_rows($1,$2,$3,$4)',[backupId,'c'.repeat(64),'d'.repeat(64),{schema_version:1,catalog_sha256:captured.catalog,row_count:String(captured.entries.length),page_count:pages.length,root_sha256:root,page_index,entries}]));
+  await tx(attestor,'commerce_privacy_attestor',c=>c.query('SELECT seal_privacy_backup_rows($1,$2,$3)',[backupId,'c'.repeat(64),'d'.repeat(64)]));
+ }
+ async function stage(j:Source,options:{omitRow?:boolean;omitFile?:boolean}={}){
+  const b=await backup(),job=await prepared(j,b.id);await importRows(b.id,options.omitRow?j.asset:undefined);
+  const files=j.kind==='file'&&!options.omitFile?[{asset_id:j.asset,storage_key:j.asset+'-'+'a'.repeat(64),ciphertext_sha256:'b'.repeat(64),ciphertext_bytes:'48'}]:[];
+  await tx(attestor,'commerce_privacy_attestor',c=>c.query('SELECT import_privacy_backup_files($1,$2,$3,$4)',[b.id,'c'.repeat(64),'d'.repeat(64),JSON.stringify(files)]));
+  return withPrivacyReferenceFence(worker,w,async(c,leases)=>{
+   await c.query('SET LOCAL ROLE commerce_privacy_job_worker');
+   const retained=(await c.query('SELECT capture_financial_retention($1,2) r',[j.id])).rows[0].r;
+   await c.query('SELECT prepare_privacy_record_minimization($1,$2,$3)',[job.job_id,retained.receipt_uuid,leases.profile]);
+   const pass=await capturePrivacyOpaqueCopies({workspaceId:w,query:c.query.bind(c)},{receiptId:randomUUID(),journeyId:j.id,sourceVersion:2,backupId:b.id,leaseId:leases.profile,implementationId:implementation},Buffer.alloc(32,7));
+   return{j,job:job.job_id,backup:b.id,retained:retained.receipt_uuid,pass:pass.receipt_uuid};
+  });
+ }
+ type Staged=Awaited<ReturnType<typeof stage>>;
+ async function prepare(s:Staged){return withPrivacyReferenceFence(worker,w,async(c,l)=>{await c.query('SET LOCAL ROLE commerce_privacy_job_worker');return(await c.query('SELECT prepare_privacy_asset_minimization($1,$2,$3,$4) r',[s.job,s.pass,l.profile,l.references])).rows[0].r;});}
+ async function admission(c:pg.PoolClient,s:Staged,l:{profile:string;references:string}){
+  await c.query('SET LOCAL ROLE commerce_privacy_job_worker');await c.query('SELECT prepare_privacy_asset_minimization($1,$2,$3,$4)',[s.job,s.pass,l.profile,l.references]);
+  // Explicit synthetic final assembler; product grants no admission insertion.
+  await c.query('SET LOCAL ROLE NONE');await c.query("INSERT INTO privacy_asset_apply_admissions(batch_id,workspace_id,journey_id,backend_pid,transaction_id,profile_lease,reference_lease,manifest_sha256,reference_epoch) SELECT id,workspace_id,journey_id,pg_backend_pid(),pg_current_xact_id(),$2,$3,manifest_sha256,privacy_reference_fence_assert($3) FROM privacy_asset_batches WHERE id=$1",[s.job,l.profile,l.references]);
+  await c.query('SET LOCAL ROLE commerce_privacy_job_worker');
+ }
+ async function apply(s:Staged,after?:(c:pg.PoolClient,l:{profile:string;references:string})=>Promise<void>){return withPrivacyReferenceFence(admin,w,async(c,l)=>{await admission(c,s,l);const result=(await c.query('SELECT apply_privacy_asset_minimization($1,$2,$3) r',[s.job,l.profile,l.references])).rows[0].r;if(after)await after(c,l);return result;});}
+ async function image(s:Staged){return{current:(await admin.query('SELECT * FROM records WHERE id=$1',[s.j.asset])).rows,history:(await admin.query('SELECT * FROM record_versions WHERE record_id=$1 ORDER BY version',[s.j.asset])).rows};}
+ it('no runtime can create an admission, assume the file owner, or change a batch',async()=>{for(const pool of[api,worker]){await expect(pool.query('INSERT INTO privacy_asset_apply_admissions DEFAULT VALUES')).rejects.toThrow('permission denied');await expect(pool.query('SET ROLE commerce_privacy_file_owner')).rejects.toThrow('permission denied');await expect(pool.query("UPDATE privacy_asset_batches SET manifest='[]'")).rejects.toThrow('permission denied');}});
+ it('derives current and all history, using restored ciphertext rather than the plaintext digest',async()=>{const s=await stage(await source()),candidate=await prepare(s);expect(candidate.files).toHaveLength(1);expect(candidate.files[0]).toMatchObject({asset_id:s.j.asset,ciphertext_sha256:'b'.repeat(64),ciphertext_bytes:'48'});const b=(await admin.query('SELECT * FROM privacy_asset_batches WHERE id=$1',[s.job])).rows[0];expect(b.manifest[0].history).toHaveLength(2);expect(JSON.stringify(b)).not.toContain('PRIVATE_');expect(b.file_manifest_sha256).toBe(privateFileManifestHash(b.file_manifest));});
+ it('candidate capture rereads stable pins across separate global/profile fence epochs',async()=>{const s=await stage(await source()),first=await prepare(s),port=createNativePrivateFileCandidatePort(worker),a=await port.load({jobId:s.job,workspaceId:w}),b=await port.load({jobId:s.job,workspaceId:w});const strip=({observed_at:_,...v}:any)=>v;expect(strip(a)).toEqual(strip(first));expect(strip(b)).toEqual(strip(first));});
+ it('minimizes every body without changing metadata or appending a version',async()=>{const s=await stage(await source()),before=await image(s);expect(await apply(s)).toMatchObject({status:'MINIMIZED',assets:1,versions:2,files:1,erasure_authorized:false});const after=await image(s),meta=(rows:any[])=>rows.map(({body:_,...r})=>r);expect(meta(after.current)).toEqual(meta(before.current));expect(meta(after.history)).toEqual(meta(before.history));for(const r of[...after.current,...after.history])expect(r.body).toEqual({privacy_erased:true,status:'RETAINED'});});
+ it('minimizes a solely owned link without a filesystem descriptor',async()=>{const s=await stage(await source('link'));expect((await prepare(s)).files).toEqual([]);expect(await apply(s)).toMatchObject({assets:1,files:0});expect(JSON.stringify(await image(s))).not.toContain('PRIVATE_LINK');});
+ it('preserves a shared catalog asset and produces no file erasure candidate',async()=>{const j=await source();await tx(admin,'NONE',async c=>{await c.query('SET LOCAL session_replication_role=replica');await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','product',$2)",[w,{name:'Catalog',nested:{asset_id:j.asset}}]);await c.query('SET LOCAL session_replication_role=origin');});const s=await stage(j),before=await image(s);expect((await prepare(s)).files).toEqual([]);expect(await apply(s)).toMatchObject({assets:0,versions:0,files:0});expect(await image(s)).toEqual(before);});
+ it('missing restored row or ciphertext blocks preparation with no permanent mark',async()=>{for(const options of[{omitRow:true},{omitFile:true}]){const s=await stage(await source(),options);await expect(prepare(s)).rejects.toThrow();expect((await admin.query('SELECT 1 FROM privacy_minimized_assets WHERE batch_id=$1',[s.job])).rowCount).toBe(0);expect(JSON.stringify(await image(s))).toContain('PRIVATE_FILENAME');}});
+ it('older timestamps do not rescue bytes that differ from the restored row',async()=>{const s=await stage(await source());await tx(admin,'NONE',async c=>{await c.query('SET LOCAL session_replication_role=replica');await c.query("UPDATE records SET body=body||'{\"private_note\":\"CHANGED_WITH_OLD_DATE\"}' WHERE id=$1",[s.j.asset]);await c.query('SET LOCAL session_replication_role=origin');});await expect(prepare(s)).rejects.toThrow();});
+ it('no private admission means zero minimization',async()=>{const s=await stage(await source());await prepare(s);const before=await image(s);await expect(withPrivacyReferenceFence(worker,w,async(c,l)=>{await c.query('SET LOCAL ROLE commerce_privacy_job_worker');await c.query('SELECT apply_privacy_asset_minimization($1,$2,$3)',[s.job,l.profile,l.references]);})).rejects.toThrow('ADMISSION_REQUIRED');expect(await image(s)).toEqual(before);});
+ it('a committed admission cannot be replayed in another transaction',async()=>{const s=await stage(await source());await withPrivacyReferenceFence(admin,w,(c,l)=>admission(c,s,l));await expect(withPrivacyReferenceFence(worker,w,async(c,l)=>{await c.query('SET LOCAL ROLE commerce_privacy_job_worker');await c.query('SELECT apply_privacy_asset_minimization($1,$2,$3)',[s.job,l.profile,l.references]);})).rejects.toThrow('ADMISSION_REQUIRED');});
+ it('rollback after mutation restores content and removes all marks/receipts',async()=>{const s=await stage(await source()),before=await image(s);await expect(apply(s,async()=>{throw Error('ABORT_AFTER_ASSETS');})).rejects.toThrow('ABORT_AFTER_ASSETS');expect(await image(s)).toEqual(before);for(const t of['privacy_asset_apply_admissions','privacy_minimized_assets','privacy_asset_completions'])expect((await admin.query(`SELECT 1 FROM ${t} WHERE batch_id=$1`,[s.job])).rowCount).toBe(0);});
+ it('same transaction replay is no-effect with one completion',async()=>{const s=await stage(await source());await apply(s,async(c,l)=>{expect((await c.query('SELECT apply_privacy_asset_minimization($1,$2,$3) r',[s.job,l.profile,l.references])).rows[0].r.status).toBe('NO_EFFECT');});expect((await admin.query('SELECT 1 FROM privacy_asset_completions WHERE batch_id=$1',[s.job])).rowCount).toBe(1);});
+ it('revocation and legal hold after capture stop the final native admission',async()=>{for(const mode of['hold','revoke']){const s=await stage(await source());await prepare(s);if(mode==='hold')await tx(attestor,'commerce_privacy_attestor',c=>c.query('SELECT import_privacy_hold($1,$2,$3,true,$4,0)',[randomUUID(),randomUUID(),s.j.id,'d'.repeat(64)]));else await tx(attestor,'commerce_privacy_attestor',c=>c.query('SELECT revoke_privacy_backup($1,$2,$3)',[randomUUID(),s.backup,'d'.repeat(64)]));await expect(apply(s)).rejects.toThrow();expect((await admin.query('SELECT 1 FROM privacy_minimized_assets WHERE batch_id=$1',[s.job])).rowCount).toBe(0);}});
+ it('permanent markers reject body edits, deletion, new history and nested references',async()=>{const s=await stage(await source());await apply(s);for(const[sql,args]of[["UPDATE records SET body='{}',version=version+1 WHERE id=$1",[s.j.asset]],['DELETE FROM records WHERE id=$1',[s.j.asset]],["UPDATE record_versions SET body='{}' WHERE record_id=$1",[s.j.asset]],["INSERT INTO record_versions(record_id,workspace_id,environment,kind,version,body) VALUES($1,$2,'REAL','asset',3,'{}')",[s.j.asset,w]],["INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','message',$2)",[w,{nested:{unexpected_reference:s.j.asset},text:'REINTRODUCED'}]]] as [string,unknown[]][]){await expect(tx(admin,'NONE',c=>c.query(sql,args))).rejects.toThrow('RESURRECTION');}});
+ it('context mismatch cannot hide a mark through RLS',async()=>{const s=await stage(await source());await apply(s);for(const[name,value]of[['app.workspace_id',other],['app.environment','SIMULATION']])await expect(tx(admin,'NONE',async c=>{await c.query('SELECT set_config($1,$2,true)',[name,value]);await c.query("UPDATE records SET body='{}',version=version+1 WHERE id=$1",[s.j.asset]);})).rejects.toThrow('CONTEXT_REQUIRED');});
+ it('same transaction033 record minimization and038 asset minimization preserve their separate admissions',async()=>{const s=await stage(await source());await withPrivacyReferenceFence(admin,w,async(c,l)=>{await admission(c,s,l);await c.query('SET LOCAL ROLE NONE');await c.query('INSERT INTO privacy_record_apply_admissions(batch_id,job_id,workspace_id,journey_id,backend_pid,transaction_id,lease_id) VALUES($1,$1,$2,$3,pg_backend_pid(),pg_current_xact_id(),$4)',[s.job,w,s.j.id,l.profile]);await c.query('SET LOCAL ROLE commerce_privacy_job_worker');await c.query('SELECT apply_privacy_record_minimization($1,$2)',[s.job,l.profile]);expect((await c.query('SELECT apply_privacy_asset_minimization($1,$2,$3) r',[s.job,l.profile,l.references])).rows[0].r.status).toBe('MINIMIZED');});expect(JSON.stringify((await admin.query('SELECT body FROM records WHERE id=ANY($1::uuid[])',[[s.j.id,s.j.message,s.j.asset]])).rows)).not.toContain('PRIVATE_');});
+});

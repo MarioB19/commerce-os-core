@@ -10,19 +10,44 @@ import {providerFor,assertGatewayIsolation,accountIntegrationKey,type ProviderFa
 import {ownerId} from './dispatch.js';
 import {onboardingEnabled,onboardingCode,onboardingFailure} from '../../../packages/messaging/src/onboarding.js';
 import {ProviderError} from '../../../packages/messaging/src/types.js';
+import {recordProfileExecutor} from '../../../packages/db/src/profile-record-context.js';
 type OwnershipFence={owner_id:string;generation:number};
 const leaseGenerations=new Map<string,Map<string,number>>();
+/** Live V7 continuity of this account (record profile bound to the locked
+ * account's own workspace): not revoked, not paused by a human; a commercial
+ * grant only while its assignment revision is ACTIVE, a QR grant only for the
+ * identity currently expected on the session. */
+async function liveContinuityGrant(client:QueryExecutor,account:DomainRecord,identity:string){
+ const db=await recordProfileExecutor(client,account.workspace_id,'REAL');
+ return!!(await db.query(`SELECT 1 FROM continuous_authorizations c WHERE c.workspace_id=$1 AND c.environment='REAL' AND c.account_id=$2
+  AND c.state->'revokedAt'='null'::jsonb AND c.state->'humanPaused'='false'::jsonb
+  AND (c.state->'source'->>'kind'='VERIFIED_QR_CONNECTION' AND c.state->'source'->>'identityFingerprint'=$3
+   OR c.state->'source'->>'kind'='COMMERCIAL_ASSIGNMENT' AND EXISTS(SELECT 1 FROM commercial_assignments a WHERE a.workspace_id=c.workspace_id
+    AND a.environment=c.environment AND a.id=c.assignment_id AND a.account_id=c.account_id AND a.state='ACTIVE' AND a.revision=(c.state->'source'->>'assignmentRevision')::int))
+  LIMIT 1`,[account.workspace_id,account.id,identity])).rowCount;
+}
 async function reconcileHealthyLease(client:QueryExecutor,input:{account:DomainRecord;ownership:Body;observedOwnership?:OwnershipFence;releaseFenced:boolean;health:EffectiveHealthSelection;identityFingerprint?:string;expectedIdentity?:string}){
  const {account,ownership,observedOwnership,releaseFenced,health,identityFingerprint,expectedIdentity}=input;
  const provider=String(account.body.provider),identityMatches=provider!=='waha'||!!identityFingerprint&&!!expectedIdentity&&identityFingerprint===expectedIdentity;
  if(!observedOwnership||!ownership?.live||!ownership.frozen||ownership.owner_id!==observedOwnership.owner_id||ownership.generation!==observedOwnership.generation||!identityMatches||!currentProviderHealthReady(health,provider)||effectiveHealthBlockers(health,['infrastructure']).length)return false;
  if(account.environment==='REAL'&&(await readOperationalSettings(client,account.workspace_id,'REAL')).release_hold)return false;
  const incidents=(await client.query("SELECT * FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='incident' AND body->>'account_id'=$3 AND body->>'reason'='CHANNEL_HEALTH_BLOCKED' AND body->>'status'='OPEN' FOR UPDATE",[account.workspace_id,account.environment,account.id])).rows;
- const releaseCandidate=releaseFenced&&ownership.release_frozen===true&&account.environment==='REAL'&&account.body.sending_enabled===true;
- if(!incidents.length&&!releaseCandidate)return false;
- if(releaseCandidate){
+ // V7 F3 (ADR-V7-03, D-17, RNF-01.d/f): a live permanent continuity grant of
+ // this account (an ACTIVE commercial assignment, or the verified QR connection
+ // of its current identity), neither revoked nor paused by a human, resumes the
+ // ownership after a release, a worker takeover or a reconnection. It never
+ // lifts a manual control, an open foreign incident or an uncertain effect,
+ // checked below; each effect keeps its own authority at its dispatch gate.
+ const continuity=account.environment==='REAL'&&!!expectedIdentity&&identityMatches?await liveContinuityGrant(client,account,expectedIdentity):false;
+ const releaseCandidate=releaseFenced&&ownership.release_frozen===true&&account.environment==='REAL'&&(account.body.sending_enabled===true||continuity);
+ const continuityCandidate=continuity&&!incidents.length;
+ if(!incidents.length&&!releaseCandidate&&!continuityCandidate)return false;
+ if(releaseCandidate||continuityCandidate){
   const policy=await readOperationalSettings(client,account.workspace_id,account.environment);
   if(policy.release_hold||policy.body.dispatch_frozen||!policy.body.real_sends_enabled||!policy.body.allow_real_operations)return false;
+ }
+ if(releaseCandidate&&!continuity){
+  const policy=await readOperationalSettings(client,account.workspace_id,account.environment);
   const grant=(await client.query("SELECT 1 FROM operation_authorizations auth WHERE auth.workspace_id=$1 AND auth.environment='REAL' AND auth.configuration_version=$2 AND auth.revoked_at IS NULL AND auth.expires_at>now() AND auth.scope->'account_ids' ? $3 AND ((auth.scope->>'mode'='product_assignment' AND EXISTS(SELECT 1 FROM commercial_assignments a WHERE a.id::text=auth.scope->>'assignment_id' AND a.account_id::text=$3 AND a.authorization_id=auth.id AND a.state='ACTIVE')) OR (auth.scope->>'mode'='channel_setup' AND EXISTS(SELECT 1 FROM records r WHERE r.id::text=$3 AND r.body->>'active_authorization_id'=auth.id::text))) LIMIT 1",[account.workspace_id,policy.version,account.id])).rowCount;
   if(!grant)return false;
  }
@@ -36,7 +61,7 @@ async function reconcileHealthyLease(client:QueryExecutor,input:{account:DomainR
  const resolvedAt=new Date().toISOString();
  for(const incident of incidents)await putRecord(client,{id:incident.id,workspaceId:incident.workspace_id,environment:incident.environment,kind:incident.kind,version:incident.version,body:{...incident.body,status:'RESOLVED',resolved_at:resolvedAt,resolved_by:'channel-health-readback',resolution_reason:'CURRENT_HEALTH_READBACK_VERIFIED'}});
  await putRecord(client,{workspaceId:account.workspace_id,environment:account.environment,kind:'health_signal',body:{account_id:account.id,dimension:'ownership',status:'OK',value:{owner_id:observedOwnership.owner_id,generation:observedOwnership.generation,frozen:false},source:'local_reconciliation',scope:'account',observed_at:resolvedAt,expires_at:new Date(Date.parse(resolvedAt)+30_000).toISOString()}});
- await appendEvent(client,{workspace_id:account.workspace_id,environment:account.environment,event_type:releaseCandidate?'channel.release_recovered':'channel.health_recovered',aggregate_id:account.id,actor:{type:'channel',id:observedOwnership.owner_id},payload:{owner_id:observedOwnership.owner_id,generation:observedOwnership.generation,incident_ids:incidents.map(incident=>incident.id),evidence:{session_id:health.by_dimension.session?.id??null,transport_id:health.by_dimension.transport?.id??null,restriction_id:health.by_dimension.restriction?.id??null,quality_id:health.by_dimension.quality?.id??null}}});
+ await appendEvent(client,{workspace_id:account.workspace_id,environment:account.environment,event_type:releaseCandidate?'channel.release_recovered':incidents.length?'channel.health_recovered':'channel.continuity_resumed',aggregate_id:account.id,actor:{type:'channel',id:observedOwnership.owner_id},payload:{authority:continuity?'V7_CONTINUITY':'LEGACY_GRANT',owner_id:observedOwnership.owner_id,generation:observedOwnership.generation,incident_ids:incidents.map(incident=>incident.id),evidence:{session_id:health.by_dimension.session?.id??null,transport_id:health.by_dimension.transport?.id??null,restriction_id:health.by_dimension.restriction?.id??null,quality_id:health.by_dimension.quality?.id??null}}});
  return true;
 }
 export async function recordHealth(account:DomainRecord,factory:ProviderFactory=providerFor,expectedFence?:OwnershipFence){const observedOwnership=expectedFence??(await query('SELECT owner_id,generation FROM session_ownership WHERE account_id=$1 AND workspace_id=$2',[account.id,account.workspace_id])).rows[0] as OwnershipFence|undefined;let signals:import('@commerce/messaging').HealthSignal[];try{const observe=async()=>{await assertGatewayIsolation(account);return(await factory(account)).health();};signals=account.environment==='REAL'?await withTransaction(async c=>{const policy=await readOperationalSettings(c,account.workspace_id,'REAL',{lock:'share'});if(policy.release_hold)throw new Error('RELEASE_HOLD_ACTIVE');return observe();}):await observe();}catch(error){if(error instanceof Error&&error.message==='RELEASE_HOLD_ACTIVE'){if(expectedFence)throw error;return [];}signals=[{dimension:'session',status:'UNKNOWN',value:'PROVIDER_CONFIGURATION_OR_CONNECTION_UNAVAILABLE',source:'provider_read',scope:'account',availability:'not_authorized',observedAt:new Date().toISOString(),expiresAt:new Date(Date.now()+60_000).toISOString()}];}

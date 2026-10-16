@@ -1,0 +1,12 @@
+import {z} from 'zod';
+import {resultLatenciesSchema,latencyCoverageValid} from './result-latency.js';
+import {resultsDaySchema,resultDimensionsSchema,countSchema} from './results.js';
+export const resultCounterNames=['started','responded','offered','collection_sent','receipt_received','payment_approved','revenue_minor','sales','attributed_revenue_minor','attributed_sales','response_ms_sum','response_samples','sale_ms_sum','sale_samples','ai_cost_microusd','ai_cost_unknown_attempts','ai_input_tokens','ai_output_tokens','ai_cache_read_tokens','ai_cache_write_tokens','ai_audio_input_tokens','ai_tokens_unknown_attempts'] as const;
+export type ResultCounter=typeof resultCounterNames[number];
+const counters=z.object(Object.fromEntries(resultCounterNames.map(k=>[k,countSchema]))as Record<ResultCounter,typeof countSchema>).strict();
+export const resultGrainSchema=z.object({day:resultsDaySchema,currency:z.string().regex(/^[A-Z]{3}$/).refine(v=>Intl.supportedValuesOf('currency').includes(v)),timezone:z.string().max(128).refine(v=>{try{new Intl.DateTimeFormat('en',{timeZone:v});return true;}catch{return false;}}),dimensions:resultDimensionsSchema,ai_unattributed:z.literal(true).optional()}).strict();
+export const resultContributionSchema=z.object({grain:resultGrainSchema,counters,latencies:resultLatenciesSchema.optional()}).strict().refine(v=>latencyCoverageValid(v.latencies,v.counters),'RESULT_LATENCY_COVERAGE_INVALID');
+export const resultProjectionSchema=z.object({kind:z.enum(['COHORT','FINANCIAL','AI']),source_id:z.uuid(),revision:z.string().regex(/^[1-9]\d{0,18}$/).refine(v=>BigInt(v)<=9223372036854775807n),facts:z.array(resultContributionSchema).max(1000)}).strict();
+export type ResultGrain=z.infer<typeof resultGrainSchema>;
+export type ResultContribution=z.infer<typeof resultContributionSchema>;
+export type ResultProjection=z.infer<typeof resultProjectionSchema>;

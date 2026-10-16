@@ -19,11 +19,13 @@ import sys
 import time
 import uuid
 
+from cloudbuild_bounded_logs import execute as execute_with_log_limits, LogLimitExceeded
+
 NODE_VERSION = '24.20.0'
 PNPM_VERSION = '10.34.5'
 MAX_SUITE_SECONDS = 5400
 GATE_NAME = 'Commerce V7 Cloud Build gate'
-IMAGE_PATTERN = re.compile(r'[a-z0-9-]+-docker\.pkg\.dev/[a-z0-9.-]+/commerce-ci/verify@sha256:[a-f0-9]{64}')
+IMAGE_PATTERN = re.compile(r'[a-z0-9-]+-docker\.pkg\.dev/[a-z0-9.-]+/commerce-ci-public/verify@sha256:[a-f0-9]{64}')
 
 
 class VerificationError(RuntimeError):
@@ -193,15 +195,10 @@ def stop_group(process):
 
 
 def execute(argv, cwd, env, seconds):
-    # Match the existing Actions command environment. The driver retains its
-    # private 077 mask; individual fixtures assert their own custody/modes.
-    process = subprocess.Popen(argv, cwd=cwd, env=env, start_new_session=True,
-                               umask=0o022)
-    try:
-        return process.wait(timeout=seconds)
-    except BaseException:
-        stop_group(process)
-        raise
+    # Individual fixtures retain their normal 022 mask; the driver keeps 077.
+    # Each required stage emits at most 4MiB stdout + 1MiB stderr. Exceeding
+    # either ceiling kills only its own process group and fails that stage.
+    return execute_with_log_limits(argv, cwd, env, seconds, umask=0o022)
 
 
 def save_receipt(path, document):
@@ -262,7 +259,7 @@ def verify(root, expected_sha, build_id, image, seconds=MAX_SUITE_SECONDS, *, ex
             status, reason = 'CANCELLED', 'VERIFICATION_INTERRUPTED'
         else:
             status = 'FAILED'
-            reason = str(error) if isinstance(error, VerificationError) else type(error).__name__
+            reason = str(error) if isinstance(error, (VerificationError, LogLimitExceeded)) else type(error).__name__
         if current is not None and current['status'] == 'RUNNING':
             current.update(status=status, finished_at=utc())
         receipt.update(status=status, failure_code=reason)

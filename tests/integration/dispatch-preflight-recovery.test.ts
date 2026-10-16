@@ -1,4 +1,5 @@
-import {afterAll,describe,expect,it,vi} from 'vitest';
+import {afterAll,describe,expect,it,vi,beforeAll} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomUUID} from 'node:crypto';
 import {performance} from 'node:perf_hooks';
 import {pool,putRecord,withTransaction} from '../../packages/db/src/index.js';
@@ -8,8 +9,11 @@ import {SimulatorProvider,type MessagingProvider} from '../../packages/messaging
 import type {ProviderFactory} from '../../apps/channel-worker/src/providers.js';
 
 afterAll(async()=>pool.end());
+// V7 F2: an installation admits three profiles; fixtures share one adopted profile.
+const fixtureWorkspace='preflight-'+randomUUID();
+beforeAll(()=>fixtureProfiles(fixtureWorkspace));
 async function fixture(){
- const workspace='preflight-'+randomUUID(),owner='preflight-owner-'+randomUUID();
+ const workspace=fixtureWorkspace,owner='preflight-owner-'+randomUUID();
  const account=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'channel_account',body:{name:'Synthetic preflight account',provider:'simulator',status:'WORKING'}});
  const contact=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'contact',body:{identity:'opaque:'+randomUUID(),status:'LEAD'}});
  const conversation=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'conversation',body:{account_id:account.id,contact_id:contact.id,status:'OPEN',last_inbound_at:new Date().toISOString()}});

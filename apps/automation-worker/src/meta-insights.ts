@@ -16,8 +16,8 @@ export function parseInsight(row:Body,account:Body,level:'ad'|'campaign',from:st
  const conversations=action&&/^\d+(?:\.\d+)?$/.test(String(action.value))?Number(action.value):null;
  return{day,level,entity_id:opaque(level==='ad'?row.ad_id:row.campaign_id),campaign_id:opaque(row.campaign_id),ad_set_id:level==='ad'?opaque(row.adset_id):null,name:label(level==='ad'?row.ad_name:row.campaign_name),campaign_name:label(row.campaign_name),currency:account.currency,timezone:account.timezone_name,spend_minor:decimalMinor(row.spend,account.currency),impressions:count(row.impressions),clicks:count(row.clicks),conversations,action_type:action?CONVERSATION_ACTION:null};
 }
-export async function persistInsightAccount(c:QueryExecutor,job:Body,account:Body,rows:Body[],metadata:Body[],metadataComplete=true){
- const {from,to}=job.request;
+export async function persistInsightAccount(c:QueryExecutor,job:Body,account:Body,rows:Body[],metadata:Body[],metadataComplete=true,window:{from:string;to:string}=job.request){
+ const {from,to}=window;
  await c.query(`INSERT INTO meta_insight_accounts(workspace_id,environment,meta_ad_account_id,name,currency,timezone,status,last_success_at)
  VALUES($1,$2,$3,$4,$5,$6,$7,now()) ON CONFLICT(workspace_id,environment,meta_ad_account_id) DO UPDATE SET name=EXCLUDED.name,currency=EXCLUDED.currency,timezone=EXCLUDED.timezone,status=EXCLUDED.status,last_success_at=now(),last_attempt_at=now(),issue=NULL`,[job.workspace_id,job.environment,account.id,label(account.name),account.currency,account.timezone_name,metadataComplete?'SYNCED':'PARTIAL']);
  await c.query('DELETE FROM meta_insight_days WHERE workspace_id=$1 AND environment=$2 AND meta_ad_account_id=$3 AND day BETWEEN $4 AND $5',[job.workspace_id,job.environment,account.id,from,to]);
@@ -25,35 +25,68 @@ export async function persistInsightAccount(c:QueryExecutor,job:Body,account:Bod
  await c.query(`INSERT INTO meta_insight_coverage(workspace_id,environment,meta_ad_account_id,day,job_id) SELECT $1,$2,$3,d::date,$4 FROM generate_series($5::date,$6::date,interval '1 day') d ON CONFLICT(workspace_id,environment,meta_ad_account_id,day) DO UPDATE SET synced_at=now(),job_id=EXCLUDED.job_id`,[job.workspace_id,job.environment,account.id,job.id,from,to]);
  for(const r of metadata)await c.query(`INSERT INTO meta_ad_metadata(workspace_id,environment,meta_ad_account_id,ad_id,campaign_id,ad_set_id,ad_name,campaign_name,source) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(workspace_id,environment,meta_ad_account_id,ad_id) DO UPDATE SET campaign_id=EXCLUDED.campaign_id,ad_set_id=EXCLUDED.ad_set_id,ad_name=EXCLUDED.ad_name,campaign_name=EXCLUDED.campaign_name,observed_at=now(),source=EXCLUDED.source`,[job.workspace_id,job.environment,account.id,opaque(r.id),opaque(r.campaign_id),r.adset_id?opaque(r.adset_id):null,label(r.name),label(r.campaign?.name??rows.find(x=>x.campaign_id===r.campaign_id)?.campaign_name),job.environment==='SIMULATION'?'SIMULATION_FIXTURE':'META_API']);
 }
-export async function executeInsightJob(job:Body,fetcher:typeof fetch=fetch){
+/** Where a sync reads known accounts and writes results: the V5 global pool,
+ * or one profile's WorkerScope phases (V7, meta-profile-sync.ts). */
+export interface InsightStore {
+ known(job:Body):Promise<Body[]>;
+ lostAccess(job:Body,accountId:string,issue:Body):Promise<void>;
+ failed(job:Body,account:Body,issue:Body):Promise<void>;
+ /** Persists one account under the job lease (INSIGHT_LEASE_LOST otherwise). */
+ persist(job:Body,account:Body,rows:Body[],ads:Body[],complete:boolean,window:{from:string;to:string}):Promise<void>;
+}
+const poolStore:InsightStore={
+ known:async job=>(await pool.query(`SELECT * FROM meta_insight_accounts WHERE workspace_id=$1 AND environment='REAL' AND ($2::text IS NULL OR meta_ad_account_id=$2)`,[job.workspace_id,job.request.meta_ad_account_id??null])).rows,
+ lostAccess:async(job,accountId,issue)=>{await pool.query(`UPDATE meta_insight_accounts SET status='UNAVAILABLE',issue=$3,last_attempt_at=now() WHERE workspace_id=$1 AND environment='REAL' AND meta_ad_account_id=$2`,[job.workspace_id,accountId,issue]);},
+ failed:async(job,account,issue)=>{await pool.query(UNAVAILABLE_ACCOUNT_SQL,[job.workspace_id,account.id,label(account.name),account.currency,account.timezone_name,issue]);},
+ persist:(job,account,rows,ads,complete,window)=>withTransaction(async c=>{const current=(await c.query('SELECT lease_token FROM meta_insight_jobs WHERE id=$1 FOR UPDATE',[job.id])).rows[0];if(current?.lease_token!==job.lease_token)throw new Error('INSIGHT_LEASE_LOST');await persistInsightAccount(c,job,account,rows,ads,complete,window);}),
+};
+export const UNAVAILABLE_ACCOUNT_SQL=`INSERT INTO meta_insight_accounts(workspace_id,environment,meta_ad_account_id,name,currency,timezone,status,issue) VALUES($1,'REAL',$2,$3,$4,$5,'UNAVAILABLE',$6) ON CONFLICT(workspace_id,environment,meta_ad_account_id) DO UPDATE SET status='UNAVAILABLE',issue=EXCLUDED.issue,last_attempt_at=now()`;
+export {label as insightLabel};
+/** The account's own calendar day (Meta reads insight days in the account time zone). */
+export function accountDay(timezone:string,now:Date){return new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit'}).format(now);}
+/** A V7 job carries a lookback in days; each account gets that window in its own
+ * time zone. A V5 job carries one explicit from/to for every account. */
+export function insightWindow(job:Body,account:Body,now=new Date()):{from:string;to:string}{
+ const days=Number(job.request.lookback_days);
+ if(!Number.isSafeInteger(days)||job.request.from)return{from:dateString(job.request.from),to:dateString(job.request.to)};
+ if(days<0||days>35)throw new Error('INSIGHT_LOOKBACK_INVALID');
+ const to=accountDay(account.timezone_name,now),from=new Date(Date.parse(to+'T12:00:00Z')-days*86_400_000).toISOString().slice(0,10);
+ return{from,to};
+}
+/** Official GET-only reads with the given tokens; GET and persistence only. */
+export async function syncInsightAccounts(job:Body,tokens:readonly string[],store:InsightStore,fetcher:typeof fetch=fetch){
  if(job.environment!=='REAL')throw new Error('META_REAL_ENVIRONMENT_REQUIRED');
- const profiles=await listIntegrationSettings(pool,job.workspace_id,'REAL',{type:'meta',secrets:true});
  const accounts=new Map<string,{account:Body;reader:MetaReader}>(),issues:Body[]=[];
- for(const profile of profiles.filter(p=>p.enabled&&p.secrets.access_token)){
-  const reader=new MetaReader(profile.secrets.access_token!,fetcher);
+ for(const token of tokens){
+  const reader=new MetaReader(token,fetcher);
   try{const result=await reader.list('me/adaccounts','id,name,currency,timezone_name');if(!result.complete)issues.push({scope:'account_discovery',...(result.issue??{code:'PARTIAL'})});
    for(const account of result.data){if(!/^act_\d+$/.test(account.id)||!account.currency||!account.timezone_name)continue;if(job.request.meta_ad_account_id&&job.request.meta_ad_account_id!==account.id)continue;if(!accounts.has(account.id))accounts.set(account.id,{account,reader});}
   }catch(error){issues.push({scope:'account_discovery',...(error instanceof MetaReadError?error.issue:{code:'META_UNAVAILABLE'})});}
  }
  // Known accounts must remain in source coverage even when discovery loses permission.
- const known=(await pool.query(`SELECT * FROM meta_insight_accounts WHERE workspace_id=$1 AND environment='REAL' AND ($2::text IS NULL OR meta_ad_account_id=$2)`,[job.workspace_id,job.request.meta_ad_account_id??null])).rows;
- for(const a of known)if(!accounts.has(a.meta_ad_account_id)){issues.push({meta_ad_account_id:a.meta_ad_account_id,code:'ACCOUNT_NOT_ACCESSIBLE'});await pool.query(`UPDATE meta_insight_accounts SET status='UNAVAILABLE',issue=$3,last_attempt_at=now() WHERE workspace_id=$1 AND environment='REAL' AND meta_ad_account_id=$2`,[job.workspace_id,a.meta_ad_account_id,{code:'ACCOUNT_NOT_ACCESSIBLE'}]);}
+ for(const a of await store.known(job))if(!accounts.has(a.meta_ad_account_id)){issues.push({meta_ad_account_id:a.meta_ad_account_id,code:'ACCOUNT_NOT_ACCESSIBLE'});await store.lostAccess(job,a.meta_ad_account_id,{code:'ACCOUNT_NOT_ACCESSIBLE'});}
  let succeeded=0;
  for(const {account,reader} of accounts.values()){
   try{
-   const rows:Body[]=[];
-   for(const level of ['ad','campaign'] as const){const fields='account_id,account_currency,date_start,date_stop,campaign_id,campaign_name,spend,impressions,clicks,actions'+(level==='ad'?',ad_id,ad_name,adset_id':'');const result=await reader.list(`${account.id}/insights`,fields,{level,time_increment:'1',time_range:JSON.stringify({since:job.request.from,until:job.request.to}),action_report_time:'conversion',use_unified_attribution_setting:'true'});if(!result.complete)throw new MetaReadError(result.issue!);rows.push(...result.data.map(r=>parseInsight(r,account,level,job.request.from,job.request.to)));}
+   const window=insightWindow(job,account),rows:Body[]=[];
+   for(const level of ['ad','campaign'] as const){const fields='account_id,account_currency,date_start,date_stop,campaign_id,campaign_name,spend,impressions,clicks,actions'+(level==='ad'?',ad_id,ad_name,adset_id':'');const result=await reader.list(`${account.id}/insights`,fields,{level,time_increment:'1',time_range:JSON.stringify({since:window.from,until:window.to}),action_report_time:'conversion',use_unified_attribution_setting:'true'});if(!result.complete)throw new MetaReadError(result.issue!);rows.push(...result.data.map(r=>parseInsight(r,account,level,window.from,window.to)));}
    let ads:Body[]=[],complete=true;try{const result=await reader.list(`${account.id}/ads`,'id,name,campaign_id,adset_id,campaign{name}');ads=result.data;complete=result.complete;if(result.issue)issues.push({meta_ad_account_id:account.id,...result.issue});}catch(error){complete=false;if(error instanceof MetaReadError)issues.push({meta_ad_account_id:account.id,...error.issue});}
    // Insights themselves also prove IDs, even when metadata discovery is partial.
    for(const r of rows.filter(r=>r.level==='ad'))if(!ads.some(a=>a.id===r.entity_id))ads.push({id:r.entity_id,name:r.name,campaign_id:r.campaign_id,adset_id:r.ad_set_id,campaign:{name:r.campaign_name}});
-   await withTransaction(async c=>{const current=(await c.query('SELECT lease_token FROM meta_insight_jobs WHERE id=$1 FOR UPDATE',[job.id])).rows[0];if(current?.lease_token!==job.lease_token)throw new Error('INSIGHT_LEASE_LOST');await persistInsightAccount(c,job,account,rows,ads,complete);});succeeded++;
+   await store.persist(job,account,rows,ads,complete,window);succeeded++;
    if(!complete)issues.push({meta_ad_account_id:account.id,code:'METADATA_PARTIAL'});
-  }catch(error){const issue=error instanceof MetaReadError?error.issue:{code:error instanceof Error&&/^[A-Z_]+$/.test(error.message)?error.message:'META_UNAVAILABLE'};issues.push({meta_ad_account_id:account.id,...issue});await pool.query(`INSERT INTO meta_insight_accounts(workspace_id,environment,meta_ad_account_id,name,currency,timezone,status,issue) VALUES($1,'REAL',$2,$3,$4,$5,'UNAVAILABLE',$6) ON CONFLICT(workspace_id,environment,meta_ad_account_id) DO UPDATE SET status='UNAVAILABLE',issue=EXCLUDED.issue,last_attempt_at=now()`,[job.workspace_id,account.id,label(account.name),account.currency,account.timezone_name,issue]);}
+  }catch(error){const issue=error instanceof MetaReadError?error.issue:{code:error instanceof Error&&/^[A-Z_]+$/.test(error.message)?error.message:'META_UNAVAILABLE'};issues.push({meta_ad_account_id:account.id,...issue});await store.failed(job,account,issue);}
  }
  return{status:succeeded?(issues.length?'PARTIAL':'SYNCED'):'UNAVAILABLE',succeeded,accounts:accounts.size,issues,source:'META_API',graph_api_version:META_GRAPH_VERSION,definition:INSIGHT_DEFINITION,external_mutations:0};
 }
+/** V5 path: the workspace's integration-settings tokens and the global pool. */
+export async function executeInsightJob(job:Body,fetcher:typeof fetch=fetch){
+ if(job.environment!=='REAL')throw new Error('META_REAL_ENVIRONMENT_REQUIRED');
+ const profiles=await listIntegrationSettings(pool,job.workspace_id,'REAL',{type:'meta',secrets:true});
+ return syncInsightAccounts(job,profiles.filter(p=>p.enabled&&p.secrets.access_token).map(p=>p.secrets.access_token!),poolStore,fetcher);
+}
 export async function processInsightJobs(){
- const job=await withTransaction(async c=>(await c.query(`UPDATE meta_insight_jobs SET status='RUNNING',attempts=attempts+1,lease_until=now()+interval '15 minutes',lease_token=$1,updated_at=now() WHERE id=(SELECT id FROM meta_insight_jobs WHERE (status='PENDING' AND next_attempt_at<=now() OR status='RUNNING' AND lease_until<now()) AND attempts<3 ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *`,[uuid()])).rows[0]);
+ const job=await withTransaction(async c=>(await c.query(`UPDATE meta_insight_jobs SET status='RUNNING',attempts=attempts+1,lease_until=now()+interval '15 minutes',lease_token=$1,updated_at=now() WHERE id=(SELECT id FROM meta_insight_jobs WHERE (status='PENDING' AND next_attempt_at<=now() OR status='RUNNING' AND lease_until<now()) AND attempts<3 AND COALESCE(request->>'source','')<>'V7_PROFILE' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING *`,[uuid()])).rows[0]);
  if(!job)return;
  let result:Body;try{result=await executeInsightJob(job);}catch{result={status:'UNAVAILABLE',issues:[{code:'INSIGHT_DEPENDENCY_UNAVAILABLE'}],external_mutations:0};}
  const retry=result.status==='UNAVAILABLE'&&job.attempts<3;
@@ -61,7 +94,7 @@ export async function processInsightJobs(){
  await pool.query(`UPDATE meta_insight_jobs SET status=$3,result=$4,lease_until=NULL,next_attempt_at=$5::timestamptz,updated_at=now() WHERE id=$1 AND lease_token=$2`,[job.id,job.lease_token,retry?'PENDING':result.status,result,retryAt]);
 }
 export async function scheduleRecentInsights(){
- await pool.query(`UPDATE meta_insight_jobs SET status='UNAVAILABLE',result=jsonb_build_object('status','UNAVAILABLE','issues',jsonb_build_array(jsonb_build_object('code','RETRY_EXHAUSTED'))),updated_at=now() WHERE status='RUNNING' AND lease_until<now() AND attempts>=3`);
+ await pool.query(`UPDATE meta_insight_jobs SET status='UNAVAILABLE',result=jsonb_build_object('status','UNAVAILABLE','issues',jsonb_build_array(jsonb_build_object('code','RETRY_EXHAUSTED'))),updated_at=now() WHERE status='RUNNING' AND lease_until<now() AND attempts>=3 AND COALESCE(request->>'source','')<>'V7_PROFILE'`);
  await pool.query(`INSERT INTO meta_insight_jobs(workspace_id,environment,actor_id,request)
  SELECT j.workspace_id,'REAL','insights-scheduler',j.request||jsonb_build_object('from',to_char((now() AT TIME ZONE 'America/Mexico_City')::date-COALESCE((j.request->>'lookback_days')::int,7),'YYYY-MM-DD'),'to',to_char((now() AT TIME ZONE 'America/Mexico_City')::date,'YYYY-MM-DD'),'scheduled',true)
  FROM (SELECT DISTINCT ON(workspace_id) workspace_id,request,created_at,next_attempt_at FROM meta_insight_jobs WHERE environment='REAL' AND COALESCE(request->>'preserve_schedule','false')<>'true' ORDER BY workspace_id,created_at DESC) j

@@ -18,6 +18,7 @@ LABEL org.opencontainers.image.revision="${SOURCE_SHA}"
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build --chown=node:node /app/package.json ./package.json
+RUN test -x /usr/bin/flock
 COPY --from=build --chown=node:node /runtime-server/node_modules ./node_modules
 COPY --from=build --chown=node:node /runtime-source/packages ./packages
 COPY --from=build --chown=node:node /runtime-source/apps/api ./apps/api

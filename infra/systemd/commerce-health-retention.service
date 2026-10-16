@@ -1,0 +1,13 @@
+[Unit]
+Description=Commerce OS health telemetry retention (RNF-03.e): keep 8 days of health signals
+After=docker.service
+ConditionPathExists=/opt/commerce-os/private/health-retention/operator.json
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /opt/commerce-os/current/scripts/v7_health_retention.py run /opt/commerce-os/private/health-retention/operator.json
+TimeoutStartSec=40min
+User=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+Nice=10

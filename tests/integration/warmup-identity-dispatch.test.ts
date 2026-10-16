@@ -1,6 +1,8 @@
 import {afterAll,expect,it} from 'vitest';
 import {randomUUID} from 'node:crypto';
 import {pool,putRecord,getRecord,hash,encrypt,stableJson,withTransaction,readOperationalSettings,writeOperationalSettings} from '../../packages/db/src/index.js';
+import {fixtureProfiles} from '../support/profile-fixture.js';
+import {disposeAllFixtureProfiles} from '../support/migrated-database.js';
 import {canonicalIdentity} from '../../packages/messaging/src/index.js';
 import {warmupProfileSchema} from '../../packages/domain/src/warmup/policy.js';
 import {commercialWarmupGuard} from '../../packages/db/src/warmup.js';
@@ -12,6 +14,8 @@ afterAll(async()=>pool.end());
 // Synthetic REAL records exercise the production guards; no provider or HTTP is invoked.
 async function fixture(){
  const workspace='warm-identity-'+randomUUID(),owner='fixture-'+randomUUID(),now=new Date();
+ // V7 F2: each case owns a fresh adopted profile; earlier cases' fixtures are disposed.
+ await disposeAllFixtureProfiles(pool);await fixtureProfiles(workspace);
  const offset=now.getUTCHours()-12,timezone=`Etc/GMT${offset>=0?'+':''}${offset}`;
  const profile=(await pool.query("INSERT INTO warmup_profiles(workspace_id,environment,config) VALUES($1,'REAL',$2) RETURNING *",[workspace,warmupProfileSchema.parse({policy_version:'legacy-30d/v1',name:'Own identity fixture',timezone,start_hour:0,end_hour:23,profile_wait_hours:12,weekend_factor:1})])).rows[0];
  const group=(await pool.query("INSERT INTO warmup_pools(workspace_id,environment,profile_id,enabled,allow_small_pool_concentration) VALUES($1,'REAL',$2,true,true) RETURNING *",[workspace,profile.id])).rows[0];

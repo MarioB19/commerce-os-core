@@ -25,10 +25,10 @@ it('persists all twelve loops with history and API rejects forged freshness, inc
  let fail=false;const monitor=new AutomationLoopMonitor(),handles=AUTOMATION_LOOP_NAMES.map(name=>monitor.add(name,async()=>{if(name==='operations_monitor'&&fail)throw Error('private diagnostic');}));
  await persistAutomationHeartbeat(instance,monitor.snapshot());expect((await read()).status).toBe('BLOCKED');
  await Promise.all(handles.map(handle=>handle.run()));await persistAutomationHeartbeat(instance,monitor.snapshot());expect((await read()).status).toBe('VERIFIED');
- fail=true;await expect(handles[8]!.run()).rejects.toThrow('private diagnostic');await persistAutomationHeartbeat(instance,monitor.snapshot());expect((await read()).status).toBe('BLOCKED');
- fail=false;await handles[8]!.run();await persistAutomationHeartbeat(instance,monitor.snapshot());expect((await read()).status).toBe('VERIFIED');
+ fail=true;await expect(handles[AUTOMATION_LOOP_NAMES.indexOf('operations_monitor')]!.run()).rejects.toThrow('private diagnostic');await persistAutomationHeartbeat(instance,monitor.snapshot());expect((await read()).status).toBe('BLOCKED');
+ fail=false;await handles[AUTOMATION_LOOP_NAMES.indexOf('operations_monitor')]!.run();await persistAutomationHeartbeat(instance,monitor.snapshot());expect((await read()).status).toBe('VERIFIED');
  let beat=(await pool.query("SELECT id,version,body FROM records WHERE workspace_id=$1 AND kind='service_heartbeat' AND body->>'instance'=$2",[workspace,instance])).rows[0];const healthy=beat.body;
- expect(healthy.loops).toHaveLength(12);expect(healthy.loops[8]).toMatchObject({attempts:3,successes:2,failures:1,consecutive_failures:0});
+ expect(healthy.loops).toHaveLength(AUTOMATION_LOOP_NAMES.length);expect(healthy.loops[AUTOMATION_LOOP_NAMES.indexOf('operations_monitor')]).toMatchObject({attempts:3,successes:2,failures:1,consecutive_failures:0});
  expect((await pool.query('SELECT count(*)::int n FROM record_versions WHERE record_id=$1',[beat.id])).rows[0].n).toBe(4);
  const write=async(body:Body)=>{beat=await putRecord(pool,{id:beat.id,version:beat.version,workspaceId:workspace,environment:'SIMULATION',kind:'service_heartbeat',body});};
  for(const loops of [healthy.loops.slice(1),healthy.loops.map((loop:Body,i:number)=>i===0?{...loop,status:'FAILED'}:loop),healthy.loops.map((loop:Body,i:number)=>i===0?{...loop,last_success_at:new Date(Date.now()-181000).toISOString()}:loop)]){await write({...healthy,status:'OK',loops});expect(await read()).toMatchObject({status:'BLOCKED',message:'AUTOMATION_LOOPS_NOT_READY'});}

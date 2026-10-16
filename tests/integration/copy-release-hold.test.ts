@@ -1,4 +1,6 @@
 import {afterAll,beforeAll,beforeEach,describe,expect,it,vi} from 'vitest';
+import {fixtureProfilesIn} from '../support/profile-fixture.js';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import pg from 'pg';
 import {createHash,randomUUID} from 'node:crypto';
 import {execFile,spawn,type ChildProcess} from 'node:child_process';
@@ -19,6 +21,8 @@ const root=fileURLToPath(new URL('../../',import.meta.url));
 const migration=realpathSync(fileURLToPath(new URL('../../packages/db/src/migrate.ts',import.meta.url)));
 const workerFixture=fileURLToPath(new URL('../fixtures/copy-release-hold-worker.ts',import.meta.url));
 const execute=promisify(execFile),workspace='copy-hold-'+randomUUID(),user=randomUUID();
+// V7 F2: fixture workspaces are adopted profiles (max three per installation).
+beforeAll(()=>fixtureProfiles(workspace));
 let app:FastifyInstance,admin:pg.Pool,pool:pg.Pool,token:string,created=false,changed=false;
 let putRecord:typeof import('../../packages/db/src/index.js').putRecord;
 let defaultPolicy:typeof import('../../packages/contracts/src/index.js').defaultOperationalSettings;
@@ -34,12 +38,11 @@ beforeAll(async()=>{
  defaultPolicy=(await import('../../packages/contracts/src/index.js')).defaultOperationalSettings;
  const personal=await import('../../packages/db/src/personal-access-tokens.js');token=personal.newPersonalToken();
  await admin.query('INSERT INTO "user"(id,name,email) VALUES($1,$2,$3)',[user,'Synthetic hold owner',user+'@example.invalid']);
+ await fixtureProfilesIn(admin,workspace);// V7 F2: memberships belong to an adopted profile.
  await admin.query("INSERT INTO memberships(user_id,workspace_id,role) VALUES($1,$2,'owner')",[user,workspace]);
  await personal.insertPersonalToken(admin,{workspace_id:workspace,user_id:user,name:'Synthetic hold owner API',allowed_environments:['REAL'],expires_at:new Date(Date.now()+3600000).toISOString()},token);
  await admin.query("INSERT INTO operational_settings(workspace_id,environment,version,body,updated_by) VALUES($1,'REAL',1,$2,$3)",[workspace,{...defaultPolicy,allow_channel_onboarding:true},user]);
  await admin.query("INSERT INTO operation_authorizations(workspace_id,environment,actor_id,scope,config_hash,expires_at) VALUES($1,'REAL',$2,'{}','synthetic-held-custody',now()+interval '1 hour')",[workspace,user]);
- await admin.query("INSERT INTO creative_budgets(id,workspace_id,environment,provider,limit_usd,max_units,reserved_usd,spent_usd,reserved_units,spent_units,authorization_source,actor_id,expires_at) VALUES($1,$2,'REAL','openai',20,1000,3,2,30,20,'synthetic-held-budget',$3,now()+interval '1 hour')",[randomUUID(),workspace,user]);
- await admin.query("INSERT INTO creative_global_budgets(workspace_id,limit_usd,external_status,external_reserved_usd,authorization_source,actor_id,expires_at) VALUES($1,20,'NONE',0,'synthetic-held-global-budget',$2,now()+interval '1 hour')",[workspace,user]);
  app=await(await import('../../apps/api/src/app.js')).createApp();
 });
 beforeEach(async()=>{
@@ -74,7 +77,7 @@ async function hold(){
  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
 }
 async function watched(){
- const tables=['records','record_versions','channel_sessions','session_ownership','commands','idempotency','domain_events','operational_settings','integration_settings','integration_setting_versions','integration_secrets','operation_authorizations','manual_controls','number_capacity_slots','number_operations','creative_budgets','creative_global_budgets'];
+ const tables=['records','record_versions','channel_sessions','session_ownership','commands','idempotency','domain_events','operational_settings','integration_settings','integration_setting_versions','integration_secrets','operation_authorizations','manual_controls','number_capacity_slots','number_operations'];
  const values:Record<string,unknown>={};
  for(const table of tables)values[table]=(await admin.query(`SELECT row_to_json(t) data FROM ${table} t WHERE workspace_id=$1 ORDER BY row_to_json(t)::text`,[workspace])).rows;
  return values;
@@ -94,20 +97,21 @@ function worker(mode:'held'|'inflight'|'media-inflight',account:string,jobs=fals
 const integration=(type:'openai'|'waha',extra:Record<string,unknown>={})=>({expected_version:0,label:'Synthetic held integration',enabled:true,config:type==='waha'?{base_url:'http://waha-01:3000'}:{},secrets:type==='waha'?{api_key:'synthetic-fixture-key',webhook_secret:'synthetic-fixture-hook'}:{api_key:'synthetic-fixture-openai'},reason:'Synthetic integration hold regression',...extra});
 
 describe('Copy release hold with real restricted roles and PostgreSQL locks',()=>{
- it('retains the API status boundary and all 68 installed migration hashes',async()=>{
+ it('retains the API status boundary and every installed migration hash (68 historical + every V7 migration from 0069)',async()=>{
   expect((await pool.query("SELECT has_column_privilege(current_user,'commands','status','UPDATE') allowed")).rows[0].allowed).toBe(false);
   const history=(await admin.query('SELECT name,sha256 FROM schema_migrations ORDER BY name')).rows;
   const directory=new URL('../../packages/db/migrations/',import.meta.url);
   const expected=readdirSync(directory).filter(name=>name.endsWith('.sql')).sort().map(name=>({name,sha256:createHash('sha256').update(readFileSync(new URL(name,directory))).digest('hex')}));
-  expect(history).toHaveLength(68);expect(history).toEqual(expected);
+  expect(expected.length).toBeGreaterThanOrEqual(108);expect(history.filter(r=>r.name>='0069').length).toBe(expected.length-68);expect(history).toEqual(expected);
  });
  it('rejects channel/setup/catalog/number and all integration mutations while held without domain delta',async()=>{
   const f=await fixture();await hold();const before=await watched();
   const requests:[any,string,any][]=[
-   ['POST',`/v1/channel-accounts/${f.account.id}/commands`,{type:'connect',expected_version:f.account.version,reason:'Synthetic held connect'}],
-   ['PATCH',`/v1/channel-accounts/${f.account.id}/setup`,{expected_version:f.account.version,product_id:randomUUID(),offer_version_id:randomUUID(),workflow_version_id:randomUUID(),reason:'Synthetic held setup'}],
-   ['PATCH',`/v1/channel-accounts/${f.account.id}`,{expected_version:f.account.version,name:'Synthetic held edit'}],
-   ['POST','/v1/numbers',{alias:'Synthetic held alias',responsible:'Synthetic responsible',device_ref:'synthetic-device'}],
+   // V7 F8-D: the V7 number journey and the kept owner recovery port.
+   ['POST',`/v1/numbers/${f.account.id}/link`,{action:'link'}],
+   ['POST',`/v1/numbers/${f.account.id}/removal`,{expected_version:f.account.version,confirmation:'REMOVE_NUMBER'}],
+   ['POST','/v1/numbers/quick',{alias:'Synthetic held alias',country:'MX'}],
+   ['POST',`/v1/channel-accounts/${f.account.id}/session/recovery`,{expected_version:f.session.revision,action:'open_incident',reason:'Synthetic held recovery'}],
    ['PUT','/v1/settings/integrations/openai:default',integration('openai')],
    ['PUT','/v1/settings/integrations/waha:hold',integration('waha')],
    ['POST','/v1/settings/integrations/waha:hold/disable',{expected_version:1,reason:'Synthetic held disable'}],
@@ -124,13 +128,9 @@ describe('Copy release hold with real restricted roles and PostgreSQL locks',()=
   expect(result).toMatchObject({role:'commerce_channel',processed:0,factoryCalls:0,lifecycleCalls:0,healthCalls:0,qrCalls:0,networkAttempts:0,signals:0,qrStatus:409,qrCode:'RELEASE_HOLD_ACTIVE'});
   expect(await watched()).toEqual(before);
  });
- it('permits canonical cancellation and integration quarantine between publications when no hold is active',async()=>{
-  const f=await fixture(),command=await pending(f.account.id);
+ it('permits integration quarantine between publications when no hold is active',async()=>{
   const profile=await request('PUT','/v1/settings/integrations/waha:phase',integration('waha'));
   expect(profile.statusCode,profile.body).toBe(200);
-  const cancellation=await request('POST',`/v1/numbers/${f.account.id}/setup/commands`,{action:'cancel_pending',command_id:command.id,expected_version:f.account.version,expected_session_version:f.session.revision,reason:'Cancel fixture before next publication'});
-  expect(cancellation.statusCode,cancellation.body).toBe(200);
-  expect((await admin.query('SELECT status,result FROM commands WHERE id=$1',[command.id])).rows[0]).toMatchObject({status:'FAILED',result:{error:'CHANNEL_COMMAND_CANCELLED_BEFORE_EXECUTION',remote_outcome:'NOT_ATTEMPTED'}});
   const disabled=await request('POST','/v1/settings/integrations/waha:phase/disable',{expected_version:1,reason:'Quarantine fixture before next publication'});
   expect(disabled.statusCode,disabled.body).toBe(200);expect(disabled.json().data).toMatchObject({enabled:false,changed:true});
  });
@@ -174,7 +174,7 @@ describe('Copy release hold with real restricted roles and PostgreSQL locks',()=
   try{
    await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`operations:${workspace}:REAL`]);
    const rootPid=(await client.query('SELECT pg_backend_pid() pid')).rows[0].pid;
-   const before=await watched(),pendingRequest=request('POST',`/v1/channel-accounts/${f.account.id}/commands`,{type:'connect',reason:'Queued synthetic request'});
+   const before=await watched(),pendingRequest=request('POST',`/v1/numbers/${f.account.id}/link`,{action:'link'});
    // LightMyRequest starts lazily; attaching the continuation actually queues it.
    const resultPromise=Promise.resolve(pendingRequest);
    await waitFor(async()=>Number((await admin.query("SELECT count(*) n FROM pg_stat_activity WHERE datname=$1 AND application_name='copy-hold-api' AND $2=ANY(pg_blocking_pids(pid))",[database,rootPid])).rows[0].n)>0,'API_DID_NOT_WAIT_ON_CANONICAL_OPERATIONS_LOCK');

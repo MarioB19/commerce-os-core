@@ -139,9 +139,9 @@ def run_deployment_task(root,report_dir,args,phase,timeout,runner=None):
     failure=None
     try:
         result=run_bounded_process(args,cwd=root,
-            log_path=report_dir/({'prepare':'prepare.log','activate':'install.log','rollback':'rollback.log','copy-migrations':'copy-migrations.log'}[phase]),
+            log_path=report_dir/({'prepare':'prepare.log','activate':'install.log','rollback':'rollback.log','copy-migrations':'copy-migrations.log','v7-retirement-export':'v7-retirement-export.log'}[phase]),
             timeout=timeout,env=env,runner=runner)
-        require(result.returncode==0,{'prepare':'PREPARATION_FAILED','activate':'INSTALLER_FAILED','rollback':'ROLLBACK_COMMAND_FAILED','copy-migrations':'COPY_BOUNDED_MIGRATIONS_FAILED'}[phase])
+        require(result.returncode==0,{'prepare':'PREPARATION_FAILED','activate':'INSTALLER_FAILED','rollback':'ROLLBACK_COMMAND_FAILED','copy-migrations':'COPY_BOUNDED_MIGRATIONS_FAILED','v7-retirement-export':'V7_RETIREMENT_EXPORT_FAILED'}[phase])
     except BaseException as error:
         failure=error;journal['phase_error']=error_code(error)
     # A killed docker CLI is not proof that its daemon-owned task stopped.
@@ -1029,7 +1029,9 @@ def main():
     archive,archive_hash,sha,run_id,portal_private_env=sys.argv[1:6]
     scope=sys.argv[6] if len(sys.argv)>=7 else 'full'
     require(scope in ('api-web','full','portal-copy','copy-runtime'),'EXPLICIT_DEPLOYMENT_SCOPE_REQUIRED')
-    require((scope=='portal-copy')==(len(sys.argv)==8),'COPY_PORTAL_INPUT_DIGEST_REQUIRED')
+    cloud_boot=scope=='copy-runtime' and run_id.startswith('cb-')
+    require((scope=='portal-copy' or cloud_boot)==(len(sys.argv)==8),
+            'COPY_PORTAL_INPUT_DIGEST_REQUIRED' if scope=='portal-copy' else 'CANONICAL_PRIVATE_INPUT_DIGEST_REQUIRED')
     require(re.fullmatch(r'[a-f0-9]{40}',sha),'INVALID_SOURCE_SHA')
     require(installation_id(run_id),'INVALID_RUN_ID')
     require(not run_id.startswith(('cb-','cv-')) or scope=='copy-runtime','CLOUD_COPY_RUNTIME_REQUIRED')
@@ -1037,6 +1039,9 @@ def main():
     if scope=='api-web':
         return publish_api_web(archive,archive_hash,sha,run_id,portal_private_env)
     if scope=='copy-runtime':
+        require(cloud_boot,'CANONICAL_CLOUD_BOOT_ADMISSION_REQUIRED')
+        from runtime_boot_admission_host import staged_input
+        globals()['HOST_BOOT_INPUTS_RAW']=staged_input(__file__,sys.argv[7])
         import copy_runtime_deployment
         return copy_runtime_deployment.publish(sys.modules[__name__],archive,archive_hash,sha,run_id,portal_private_env)
     if scope=='portal-copy':

@@ -1,28 +1,23 @@
-import {explicitFixtureEnvironment} from './explicit-fixture-environment.js';
 import {afterAll,beforeAll,describe,expect,it} from 'vitest';
 import {randomBytes,randomUUID} from 'node:crypto';
 import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import type {FastifyInstance} from 'fastify';
-import {createApp} from '../../apps/api/src/app.js';
 import {provisionUser} from '../../apps/api/src/auth.js';
-import {pool,putRecord,getRecord,encrypt,hash} from '../../packages/db/src/index.js';
+import {pool,putRecord,getRecord,encrypt,hash,withTransaction} from '../../packages/db/src/index.js';
 import {processReceiptAnalyses} from '../../apps/automation-worker/src/agents.js';
 import {processCommands} from '../../apps/automation-worker/src/commands.js';
 import {recoverAutomation} from '../../apps/automation-worker/src/runtime.js';
+import {decideReceipt} from '../../packages/db/src/receipt-queue.js';
+import {recordProfileExecutor} from '../../packages/db/src/profile-record-context.js';
 import type {SalesAiProvider} from '../../packages/domain/src/sales/ai.js';
 
 const workspace='receipt-concurrency-'+randomUUID();
-const origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0]!;
-let app:FastifyInstance,cookie:string;
 beforeAll(async()=>{
- app=await createApp();const email=randomUUID()+'@example.invalid',password=randomBytes(24).toString('base64url');
+ const email=randomUUID()+'@example.invalid',password=randomBytes(24).toString('base64url');
  await provisionUser({name:'Synthetic finance concurrency',email,password,workspace_id:workspace,role:'owner'});
- const login=await app.inject(explicitFixtureEnvironment({method:'POST',url:'/api/auth/sign-in/email',remoteAddress:'192.0.2.39',payload:{email,password},headers:{origin}}));
- cookie=(Array.isArray(login.headers['set-cookie'])?login.headers['set-cookie']:[login.headers['set-cookie']]).filter(Boolean).map(x=>String(x).split(';')[0]).join('; ');
 });
-afterAll(async()=>{await app.close();await pool.end();});
+afterAll(async()=>{await pool.end();});
 async function fixture(analysis_status='PENDING'){
  const conversation=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'conversation',body:{status:'OPEN',sequence:1}});
  const order=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'order',body:{conversation_id:conversation.id,status:'RECEIPT_RECEIVED',receipt_status:'RECEIVED',reconciliation_status:'UNRECONCILED',amount_minor:9900,currency:'MXN',offer_snapshot:{fulfillment:[]}}});
@@ -30,7 +25,15 @@ async function fixture(analysis_status='PENDING'){
  const receipt=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'receipt',body:{conversation_id:conversation.id,order_id:order.id,asset_id:asset.id,status:'HUMAN_REVIEW',analysis_status,analysis_started_at:new Date(Date.now()-120_000).toISOString()}});
  return{conversation,order,receipt,asset};
 }
-const review=(id:string,expected_version:number,key=randomUUID())=>app.inject(explicitFixtureEnvironment({method:'POST',url:`/v1/receipts/${id}/review?environment=SIMULATION`,payload:{decision:'APPROVED',reason:'Explicit synthetic human review',expected_version,amount_minor:9900,currency:'MXN'},headers:{cookie,origin,'idempotency-key':key}}));
+// V7 F8-D: the person's decision goes through the V7 receipt queue
+// (decideReceipt, the body of POST /v2/receipts/:id/decision); the V5
+// /v1/receipts/:id/review route was retired.
+type ReviewResult={statusCode:number;json:()=>{data:{id:string};error:{code:string}}};
+async function review(id:string,expected_version:number,key=randomUUID()):Promise<ReviewResult>{
+ try{const data=await withTransaction(async c=>decideReceipt(await recordProfileExecutor(c,workspace,'SIMULATION'),'SIMULATION',id,{decision:'APPROVED',reason:'Explicit synthetic human review',expected_version,amount_minor:9900},{id:'synthetic-reviewer'},key));
+  return{statusCode:202,json:()=>({data:{id:data.command_id},error:{code:''}})};}
+ catch(error){const e=error as {code?:string;statusCode?:number};if(!e.code)throw error;return{statusCode:e.statusCode??409,json:()=>({data:{id:''},error:{code:e.code!}})};}
+}
 async function processUntilAnalyzed(id:string){
  const pending=Number((await pool.query("SELECT count(*)::int n FROM records WHERE kind='receipt' AND body->>'analysis_status'='PENDING' AND body->>'review' IS NULL")).rows[0].n);
  for(let attempt=0;attempt<=pending;attempt++){
@@ -68,7 +71,7 @@ describe('Accepted human receipt review versus asynchronous analysis',()=>{
  });
  it('accepts one concurrent human decision and replays its idempotency key without another command',async()=>{
   const f=await fixture();const keys=[randomUUID(),randomUUID()];const results=await Promise.all(keys.map(key=>review(f.receipt.id,f.receipt.version,key)));
-  expect(results.map(r=>r.statusCode).sort()).toEqual([202,409]);expect(results.find(r=>r.statusCode===409)!.json().error.code).toBe('RECEIPT_REVIEW_PENDING');
+  expect(results.map(r=>r.statusCode).sort()).toEqual([202,409]);expect(results.find(r=>r.statusCode===409)!.json().error.code).toBe('RECEIPT_DECISION_PENDING');
   const index=results.findIndex(r=>r.statusCode===202);const replay=await review(f.receipt.id,f.receipt.version,keys[index]);expect(replay.statusCode).toBe(202);expect(replay.json().data.id).toBe(results[index]!.json().data.id);
   await processCommands(100);expect((await pool.query("SELECT count(*) FROM commands WHERE resource_id=$1",[f.receipt.id])).rows[0].count).toBe('1');
  });

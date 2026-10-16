@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily health telemetry retention (05:30 UTC, before B02 at 06:45)
+[Timer]
+OnCalendar=*-*-* 05:30:00 UTC
+RandomizedDelaySec=300
+Persistent=true
+Unit=commerce-health-retention.service
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,19 @@
+# Rendered by scripts/v7_mail_appengine.py stage; never edited by hand.
+runtime: python312
+service: default
+app_engine_apis: true
+instance_class: F1
+entrypoint: gunicorn -b :$PORT --workers 1 --threads 1 --timeout 60 main:app
+automatic_scaling:
+  min_instances: 0
+  max_instances: 1
+  max_concurrent_requests: 1
+service_account: ${SERVICE_ACCOUNT}
+handlers:
+- url: /.*
+  script: auto
+  secure: always
+env_variables:
+  MAIL_CONFIG: '${MAIL_CONFIG}'
+  MAIL_KEY_VERSION: '${MAIL_KEY_VERSION}'
+  MAIL_JOURNAL_BUCKET: '${MAIL_JOURNAL_BUCKET}'

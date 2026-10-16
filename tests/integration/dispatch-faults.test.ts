@@ -1,5 +1,6 @@
 import {explicitFixtureEnvironment} from './explicit-fixture-environment.js';
-import {describe,it,expect,afterAll} from 'vitest';
+import {describe,it,expect,afterAll,beforeAll} from 'vitest';
+import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomUUID} from 'node:crypto';
 import {pool,putRecord,withTransaction} from '../../packages/db/src/index.js';
 import {proposeEffect} from '../../apps/automation-worker/src/shared.js';
@@ -7,7 +8,9 @@ import {dispatchOutbox,recoverSending,acquireOwnership,recordHealth} from '../..
 import {SimulatorProvider,type MessagingProvider,type SendResult} from '../../packages/messaging/src/index.js';
 import {buildIngress} from '../../apps/ingress/src/server.js';
 import type {DomainRecord} from '../../packages/contracts/src/index.js';
-const workspace='fault-'+randomUUID(),owner='test-channel-owner';
+const workspace='fault-'+randomUUID(),foreignWorkspace='foreign-fault-'+randomUUID(),owner='test-channel-owner';
+// V7 F2: fixture workspaces are adopted profiles (max three per installation).
+beforeAll(()=>fixtureProfiles(workspace,foreignWorkspace));
 const normalSimulator=new SimulatorProvider();
 // The worker scans all workspaces; fault injection belongs only to this fixture.
 const scopedProvider=(provider:MessagingProvider)=>(account:DomainRecord)=>account.workspace_id===workspace?provider:normalSimulator;
@@ -27,7 +30,7 @@ describe('Durable channel fault boundaries with real PostgreSQL',()=>{
   let calls=0,claimedBeforeSend=false;const provider=new SimulatorProvider();provider.send=async()=>{calls++;const r=(await pool.query("SELECT status,attempts FROM outbox WHERE workspace_id=$1 AND status='SENDING'",[workspace])).rows;claimedBeforeSend=r.some(x=>x.attempts===1);return{status:'UNKNOWN',reason:'Simulated accepted then connection lost'};};
   const f=await fixture(provider),successor=await withTransaction(c=>proposeEffect(c,f.conversation,{kind:'text',text:'Must wait'},randomUUID()));
   // A foreign workspace with the same owner is deliberately eligible in this scan.
-  const foreign=await fixture(normalSimulator,undefined,'foreign-fault-'+randomUUID());
+  const foreign=await fixture(normalSimulator,undefined,foreignWorkspace);
   await dispatchOutbox(200,scopedProvider(provider),owner);expect(claimedBeforeSend).toBe(true);expect((await state(f.effect.id)).status).toBe('UNKNOWN');expect((await state(successor.id)).status).toBe('BLOCKED');
   expect(await state(foreign.effect.id)).toMatchObject({status:'SENT',attempts:1,result:{provider:'simulator',reason:null}});
   await recoverSending(0);await dispatchOutbox(200,scopedProvider(provider),owner);expect(calls).toBe(1);expect((await state(f.effect.id)).attempts).toBe(1);

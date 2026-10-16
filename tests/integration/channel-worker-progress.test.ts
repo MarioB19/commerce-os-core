@@ -1,4 +1,5 @@
-import {afterAll,expect,it} from 'vitest';
+import {afterAll,expect,it,beforeAll} from 'vitest';
+import {fixtureProfiles,retireRealAccount} from '../support/profile-fixture.js';
 import {randomUUID} from 'node:crypto';
 import {pool,putRecord} from '../../packages/db/src/index.js';
 import {acquireOwnership,heartbeatOwnership,discoverSessionOwnership} from '../../apps/channel-worker/src/lifecycle.js';
@@ -9,6 +10,8 @@ import {roleExecutor} from '../support/database-role.js';
 
 afterAll(()=>pool.end());
 const owner='lease-progress-'+randomUUID(),workspace='lease-progress-'+randomUUID();
+// V7 F2: fixture workspaces are adopted profiles (max three per installation).
+beforeAll(()=>fixtureProfiles(workspace));
 const withRole=roleExecutor(pool);
 async function fixture(){
  const account=await putRecord(pool,{workspaceId:workspace,environment:'REAL',kind:'channel_account',body:{name:'Synthetic ownership progress',provider:'waha',gateway_ref:'fixture-'+randomUUID(),status:'WORKING',sending_enabled:false}});
@@ -40,7 +43,9 @@ it.each(['frozen','paused','stopped','archived','deleted','foreign-owner','new-g
  if(boundary==='paused')await pool.query('UPDATE channel_sessions SET operational_pause=true WHERE account_id=$1',[account.id]);
  if(boundary==='stopped')await pool.query("UPDATE channel_sessions SET desired_state='STOPPED' WHERE account_id=$1",[account.id]);
  if(boundary==='archived')await pool.query('UPDATE channel_sessions SET archived_at=now() WHERE account_id=$1',[account.id]);
- if(boundary==='deleted')await pool.query("UPDATE records SET body=body||jsonb_build_object('deleted_at',now()),version=version+1 WHERE id=$1",[account.id]);
+ // V7 F2: a REAL number is retired only through the quota path (frozen, paused,
+ // stopped); the expired lease is then reopened to prove discovery still refuses it.
+ if(boundary==='deleted'){await retireRealAccount(workspace,account.id);await pool.query('UPDATE session_ownership SET frozen=false WHERE account_id=$1',[account.id]);}
  if(boundary==='foreign-owner')await pool.query("UPDATE session_ownership SET owner_id='foreign-fixture-owner' WHERE account_id=$1",[account.id]);
  if(boundary==='new-generation')await pool.query('UPDATE session_ownership SET generation=generation+1 WHERE account_id=$1',[account.id]);
  const before=await state(account.id);

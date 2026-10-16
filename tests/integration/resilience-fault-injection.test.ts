@@ -51,13 +51,4 @@ describe('deterministic resilience fault injection',()=>{
   expect(data.accounts.find((item:any)=>item.id===account.id)?.checks.find((check:any)=>check.key==='connection')).toMatchObject({status:'BLOCKED',source:'PROVIDER_SESSION_RECORD'});
   expect((await pool.query('SELECT count(*)::int n FROM outbox WHERE workspace_id=$1',[workspace])).rows[0].n).toBe(0);
  });
-
- it('does not present a deterministic local command failure as an uncertain remote result',async()=>{
-  await pool.query("INSERT INTO commands(workspace_id,environment,kind,resource_id,actor_id,payload,status,result,idempotency_key) VALUES($1,'REAL','conversation_command',$2,'fixture',$3,'FAILED',$4,$5)",[workspace,randomUUID(),{type:'set_stage'},{error:'VERSION_CONFLICT'},randomUUID()]);
-  const response=await app.inject({method:'GET',url:'/v1/home/operations-summary?environment=REAL',headers:{origin,cookie}});
-  expect(response.statusCode,response.body).toBe(200);
-  const operations=response.json().data.sections.find((section:any)=>section.key==='operations');
-  expect(operations.summary.metrics.unknown).toBe(0);
-  expect(operations.queue.some((item:any)=>item.reason_code==='REMOTE_OUTCOME_UNKNOWN')).toBe(false);
- });
 });

@@ -20,20 +20,22 @@ async function synthetic(role:any='viewer'){
  const password=secret(),email=randomUUID()+'@example.invalid';const p=await provisionUser({email,password,name:'Cuenta de prueba',workspace_id:process.env.WORKSPACE_ID??'local',role});return {...p,password,email};
 }
 async function login(page:Page,p:{email:string;password:string}){const r=await page.request.post('/api/auth/sign-in/email',{headers:{Origin:origin},data:{email:p.email,password:p.password}});expect(r.status()).toBe(200);}
+/** V7: a session chooses its profile before any business page. */
+async function selectProfile(page:Page){await page.goto('/home');const chooser=page.getByRole('heading',{name:'Tus perfiles'});await expect(page.getByRole('navigation',{name:'Navegación del perfil'}).or(chooser)).toBeVisible();if(await chooser.isVisible()){await page.getByLabel('Perfil',{exact:true}).selectOption(process.env.WORKSPACE_ID??'local');await page.getByRole('button',{name:'Cambiar a este perfil'}).click();await expect(page.getByRole('navigation',{name:'Navegación del perfil'})).toBeVisible();}}
 async function fillPasswords(page:Page,current:string|undefined,next:string,confirmation=next){if(current)await page.getByLabel('Contraseña actual',{exact:true}).fill(current);await page.getByLabel('Nueva contraseña',{exact:true}).fill(next);await page.getByLabel('Confirmar nueva contraseña',{exact:true}).fill(confirmation);}
 async function axe(page:Page){const r=await new AxeBuilder({page}).analyze();expect(r.violations.map(x=>({id:x.id,nodes:x.nodes.map(n=>n.target)}))).toEqual([]);}
-test.afterAll(async()=>{await pool.end();});
+// The database pool is shared by every spec file of the Playwright worker; the
+// worker process ends it on exit (ending it here broke the files that run later).
 
 test('Mi cuenta: keyboard, validation, current password, renewal and compact/mobile navigation',async({page})=>{
- const p=await synthetic(),next=secret();await login(page,p);await page.goto('/home');
- await page.getByRole('link',{name:'Mi cuenta',exact:true}).click();await expect(page.getByRole('heading',{name:'Seguridad',exact:true})).toBeVisible();
+ const p=await synthetic(),next=secret();await login(page,p);await selectProfile(page);
+ await page.getByText(/^Mi cuenta/).click();await page.getByRole('navigation',{name:'Mi cuenta'}).getByRole('link',{name:'Seguridad',exact:true}).click();await expect(page.getByRole('heading',{name:'Seguridad',exact:true})).toBeVisible();
  await page.getByRole('button',{name:'Cambiar contraseña',exact:true}).click();await expect(page.getByLabel('Contraseña actual',{exact:true})).toBeFocused();await axe(page);
  await fillPasswords(page,p.password,next,secret());await page.getByRole('button',{name:'Cambiar contraseña',exact:true}).click();await expect(page.getByLabel('Confirmar nueva contraseña',{exact:true})).toBeFocused();
  await page.getByRole('button',{name:'Mostrar nueva contraseña',exact:true}).click();await expect(page.getByLabel('Nueva contraseña',{exact:true})).toHaveAttribute('type','text');await page.getByRole('button',{name:'Ocultar nueva contraseña',exact:true}).click();
  await fillPasswords(page,p.password,next);await page.getByRole('button',{name:'Cambiar contraseña',exact:true}).click();await expect(page.getByRole('status').filter({hasText:'Contraseña actualizada'})).toBeVisible();await expect(page.getByLabel('Nueva contraseña',{exact:true})).toHaveValue('');
  await page.reload();await expect(page.getByRole('heading',{name:'Seguridad',exact:true})).toBeVisible();await axe(page);
- await page.getByRole('button',{name:'Contraer menú'}).click();await page.getByRole('link',{name:'Mi cuenta · Seguridad',exact:true}).click();
- await page.setViewportSize({width:390,height:844});await page.getByRole('button',{name:'Abrir menú'}).click();await page.getByRole('link',{name:'Mi cuenta · Seguridad',exact:true}).click();await expect(page.getByRole('heading',{name:'Seguridad',exact:true})).toBeVisible();await axe(page);
+ await page.setViewportSize({width:390,height:844});await selectProfile(page);await page.getByText(/^Mi cuenta/).click();await page.getByRole('navigation',{name:'Mi cuenta'}).getByRole('link',{name:'Seguridad',exact:true}).click();await expect(page.getByRole('heading',{name:'Seguridad',exact:true})).toBeVisible();await axe(page);
  await page.screenshot({path:'test-results/account-security-mobile.png'});await page.setViewportSize({width:1440,height:1050});await page.screenshot({path:'test-results/account-security-desktop.png'});
 });
 
@@ -66,19 +68,19 @@ test('recovery: SMTP loopback, token removed from URL, reset, used link, fresh l
 });
 
 test('account configuration owner UI, inactive permissions, reset refresh and ambiguous network result',async({page})=>{
- const p=await synthetic('owner');await login(page,p);await page.goto('/settings/integrations/mail');await expect(page.getByRole('heading',{name:'Correo transaccional',exact:true})).toBeVisible();await axe(page);
+ const p=await synthetic('owner');await login(page,p);
  await page.goto('/account/security');await page.route('**/api/auth/change-password',route=>route.abort());await fillPasswords(page,p.password,secret());await page.getByRole('button',{name:'Cambiar contraseña',exact:true}).click();await expect(page.getByRole('alert')).toContainText('No pudimos confirmar');await page.unroute('**/api/auth/change-password');
  await page.goto('/reset-password');await expect(page.getByRole('link',{name:'Solicitar otro enlace'})).toBeVisible();await axe(page);
  await page.goto('/forgot-password');await page.setViewportSize({width:390,height:844});await axe(page);await page.screenshot({path:'test-results/forgot-password-mobile.png'});
 });
 
 
-test('Resend preset requires explicit save/key, disables sending and clears the key after save',async({page})=>{
- const p=await synthetic('owner');await login(page,p);
+test('platform mail: Resend preset requires explicit save/key, disables sending and clears the key after save',async({page})=>{
+ const p=await synthetic('owner');await pool.query("INSERT INTO platform_admins(user_id,source) VALUES($1,'INSTALLER') ON CONFLICT DO NOTHING",[p.id]);await login(page,p);
  let metadata={version:1,enabled:true,config:{mode:'local',host:'localhost',port:2527,tls:'none',from:'security@example.invalid',name:'Commerce OS'},credentials_configured:false,diagnostic:'NOT_CONFIGURED',diagnosed_at:null};
  let saves=0;const apiKey=secret();
- await page.route('**/v1/identity/mail/jobs?environment=REAL',route=>route.fulfill({json:{data:[]}}));
- await page.route('**/v1/identity/mail?environment=REAL',async route=>{
+ await page.route('**/v2/platform/mail/jobs',route=>route.fulfill({json:{data:[]}}));
+ await page.route('**/v2/platform/mail',async route=>{
   if(route.request().method()==='PUT'){
    saves++;const body=route.request().postDataJSON();expect(body.enabled).toBe(false);expect(body.username).toBe('resend');expect(body.password===apiKey).toBe(true);
    expect(body.config).toMatchObject({mode:'remote',host:'smtp.resend.com',port:465,tls:'implicit',from:'security@example.invalid'});
@@ -86,7 +88,7 @@ test('Resend preset requires explicit save/key, disables sending and clears the 
   }
   await route.fulfill({json:{data:metadata}});
  });
- await page.goto('/settings/integrations/mail');await page.getByRole('button',{name:'Configurar Resend',exact:true}).click();
+ await page.goto('/platform');await expect(page.getByRole('heading',{name:'Correo transaccional',exact:true})).toBeVisible();await page.getByRole('button',{name:'Configurar Resend',exact:true}).click();
  await expect(page.getByLabel('Correo remitente',{exact:true})).toHaveValue('security@example.invalid');
  await expect(page.getByLabel('Host SMTP',{exact:true})).toHaveValue('smtp.resend.com');await expect(page.getByLabel('Puerto',{exact:true})).toHaveValue('465');await expect(page.getByLabel('Seguridad de conexión')).toHaveValue('implicit');await expect(page.getByLabel('Usuario SMTP')).toHaveValue('resend');await expect(page.getByLabel('Envío de recuperación')).toHaveValue('disabled');expect(saves).toBe(0);
  const field=page.getByLabel('API key de Resend');await expect(field).toHaveAttribute('type','password');await expect(field).toHaveValue('');await expect(field).toHaveAttribute('required','');await axe(page);

@@ -1,0 +1,9 @@
+[Unit]
+Description=Weekly full PostgreSQL base backup (Sunday 08:20 UTC, after the B02 daily window)
+[Timer]
+OnCalendar=Sun *-*-* 08:20:00 UTC
+RandomizedDelaySec=300
+Persistent=true
+Unit=commerce-pitr-backup@full.service
+[Install]
+WantedBy=timers.target

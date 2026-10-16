@@ -1,8 +1,9 @@
 import {getRecord,listRecords,hash,stableJson,type QueryExecutor} from './index.js';
 import type {Body,DomainRecord,Environment} from '../../contracts/src/index.js';
 import {matchAssignedProductAliases} from '../../domain/src/sales/product-routing.js';
+import {recordProfileExecutor} from './profile-record-context.js';
 export const channelIdentityHash=(account:DomainRecord)=>hash(stableJson({provider:account.body.provider,gateway_ref:account.body.gateway_ref??null,identity_fingerprint:account.body.identity_fingerprint??null}));
-export interface CommercialAssignment {id:string;workspace_id:string;environment:Environment;account_id:string;product_id:string;binding_id:string;revision:number;state:string;authorization_id:string|null;authorization_expires_at?:string;authorization_revoked_at?:string;authorization_scope?:Body;body:Body}
+export interface CommercialAssignment {id:string;workspace_id:string;environment:Environment;account_id:string;product_id:string;binding_id:string;revision:number;state:string;authorization_id:string|null;variant_id?:string|null;authorization_expires_at?:string;authorization_revoked_at?:string;authorization_scope?:Body;body:Body}
 export interface LegacyCommercialBinding {id:string;account_id:string;product_id:string;body:Body;created_at:string;updated_at:string}
 export interface AccountCommercialAssignmentSnapshot {observed_at:string;has_canonical:boolean;canonical:CommercialAssignment[];current:CommercialAssignment[];legacy?:LegacyCommercialBinding}
 export interface CommercialAssignmentSnapshot {observed_at:string;canonical:CommercialAssignment[];current:CommercialAssignment[];legacy:LegacyCommercialBinding[];byAccount:Map<string,AccountCommercialAssignmentSnapshot>}
@@ -82,7 +83,7 @@ export function commercialAuthorizationStatus(a:CommercialAssignment|undefined,a
  return activeAt(a,at)&&scope.mode==='product_assignment'&&scope.assignment_id===a.id&&scope.assignment_revision===a.revision&&scope.binding_id===a.binding_id&&scope.product_id===a.product_id?'REGISTERED':'INVALIDATED';
 }
 export async function assignmentGate(c:QueryExecutor,conversation:DomainRecord,effectiveAt?:string){
- if(!effectiveAt&&conversation.environment==='SIMULATION'&&conversation.body.simulation_id){const simulation=await getRecord(c,conversation.workspace_id,'simulation',conversation.body.simulation_id);effectiveAt=simulation?.body.virtual_now;}
+ if(!effectiveAt&&conversation.environment==='SIMULATION'&&conversation.body.simulation_id){const simulation=await getRecord(c,conversation.workspace_id,'simulation',conversation.body.simulation_id);if(simulation?.environment===conversation.environment)effectiveAt=simulation.body.virtual_now;}
  effectiveAt??=new Date().toISOString();
  if(conversation.body.routing_state==='PRODUCT_SELECTION_REQUIRED')return 'PRODUCT_SELECTION_REQUIRED';
  if(conversation.body.assignment_id){const a=await assignmentFor(c,conversation.workspace_id,conversation.environment,conversation.body.assignment_id,'share');if(!a||!activeAt(a,effectiveAt))return 'ASSIGNMENT_RETIRED_OR_EXPIRED';if(a.revision!==conversation.body.assignment_revision||a.binding_id!==conversation.body.binding_id)return 'ASSIGNMENT_CHANGED';}
@@ -101,8 +102,16 @@ export async function resolveCommercialRoute(c:QueryExecutor,account:DomainRecor
  const current=assignments.filter(a=>activeAt(a,input.providerAt));
  const products=new Map((await listRecords(c,account.workspace_id,'product',account.environment)).map(product=>[product.id,product]));
  const offers=new Map((await listRecords(c,account.workspace_id,'offer',account.environment)).map(offer=>[offer.id,offer]));
+ // V7 F4: an assignment following a variant routes with its current release's offer.
+ const following=current.filter(a=>a.variant_id);
+ const releaseOffers=new Map<string,string>();
+ if(following.length){
+  const scoped=await recordProfileExecutor(c,account.workspace_id,account.environment);
+  for(const row of (await scoped.query(`SELECT v.id,r.body->'configuration'->'offer'->>'id' AS offer_id FROM market_variants v JOIN market_releases r ON r.workspace_id=v.workspace_id AND r.environment=v.environment AND r.id=v.current_release_id
+   WHERE v.workspace_id=$1 AND v.environment=$2 AND v.id=ANY($3::uuid[])`,[account.workspace_id,account.environment,following.map(a=>a.variant_id)])).rows)releaseOffers.set(row.id,row.offer_id);
+ }
  const routeAliases=current.map(assignment=>{
-  const product=products.get(assignment.product_id),offer=offers.get(assignment.body.offer_version_id);
+  const product=products.get(assignment.product_id),offer=offers.get((assignment.variant_id&&releaseOffers.get(assignment.variant_id))||assignment.body.offer_version_id);
   const configured=[
    ...(assignment.body.entry_rules??[]).filter((rule:Body)=>rule.kind==='keyword').map((rule:Body)=>rule.value),
    ...(Array.isArray(assignment.body.aliases)?assignment.body.aliases:[]),
@@ -144,6 +153,13 @@ export async function resolveCommercialRoute(c:QueryExecutor,account:DomainRecor
  // Generic replies/payment evidence cannot be assigned by latest selection when two journeys exist.
  if(journeys.filter(j=>j.body.status==='OPEN'||!j.body.status).length>1&&(input.media||/^(si|sí|ya pagu[eé]|pagado|listo|acepto|\$?\d+(?:[.,]\d+)?)$/i.test(input.text?.trim()??'')))return{state:'PRODUCT_SELECTION_REQUIRED',reason:'ORDER_CONTEXT_REQUIRED',sources,choices:current,options:routeOptions};
  if(chat.selected_assignment_id){const selected=current.find(a=>a.id===chat.selected_assignment_id);if(selected&&Date.parse(chat.selection_at)<=Date.parse(input.providerAt))return{state:'RESOLVED',source:'EXPLICIT_OPERATOR_CHOICE',product_id:selected.product_id,assignment:selected,journey:journeys.find(j=>j.body.assignment_id===selected.id&&j.body.assignment_revision===selected.revision),choices:current,options:routeOptions};}
+ // V7 F6 (RF-19.f, continuity): with no new evidence, the chat's only open
+ // journey continues. An entry by advertisement or by a test selection leaves
+ // no written choice; without this a generic reply ("Sí, acepto") on a number
+ // that sells several products would ask the customer to choose again.
+ const open=journeys.filter(j=>(j.body.status==='OPEN'||!j.body.status)&&j.body.routing_state!=='PRODUCT_SELECTION_REQUIRED');
+ if(open.length===1&&open[0]!.id===chat.active_journey_id){const journey=open[0]!,assignment=current.find(a=>a.id===journey.body.assignment_id&&a.revision===journey.body.assignment_revision);
+  if(assignment)return{state:'RESOLVED',source:'OPEN_JOURNEY_CONTINUITY',product_id:assignment.product_id,assignment,journey,choices:current,options:routeOptions};}
  const options=[...current.map(a=>({product_id:a.product_id,assignment:a,binding:undefined as DomainRecord|undefined})),...[...legacy].map(([product_id,{binding}])=>({product_id,assignment:undefined,binding}))];
  if(options.length===1){const selected=options[0]!;return{state:'RESOLVED',source:'SINGLE_UNAMBIGUOUS_ROUTE',...selected,journey:journeys.find(j=>j.body.product_id===selected.product_id&&(!selected.assignment||j.body.assignment_revision===selected.assignment.revision)),choices:current,options:routeOptions};}
  if(!assignments.length&&!options.length){const offerId=input.trustedOfferId??account.body.offer_version_id;const offer=offerId?await getRecord(c,account.workspace_id,'offer',offerId):undefined;if(offer?.body.product_id)return{state:'RESOLVED',source:'LEGACY_SINGLE_ASSIGNMENT',product_id:offer.body.product_id,journey:journeys.find(j=>j.body.product_id===offer.body.product_id),choices:current,options:routeOptions};}

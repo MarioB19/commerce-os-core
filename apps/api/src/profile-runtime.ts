@@ -1,0 +1,53 @@
+import type {FastifyInstance} from 'fastify';
+import {profileIdentityRoutes,type ProfileIdentityDependencies} from './profile-identity.js';
+import {invitationRegistrationRoutes,type InvitationRegistrationDependencies} from './profile-invitation-registration.js';
+import {invitationAcceptanceRoutes,type InvitationAcceptanceDependencies} from './profile-invitation-acceptance.js';
+import type {ProfileRequestDependencies} from './profile-request.js';
+import {profileOverviewRoutes} from './profile-overview.js';
+import {profileSettingsRoutes} from './profile-settings.js';
+import {profileEmployeeRoutes} from './profile-employees.js';
+import {profileInvitationRoutes} from './profile-invitations.js';
+import {profileTokenRoutes} from './profile-tokens.js';
+import {marketVariantRoutes} from './market-variants.js';
+import {continuousAuthorizationRoutes} from './continuous-authorization.js';
+import {paymentsRegisterRoutes} from './payments-register.js';
+import {receiptPolicyRoutes} from './receipt-policies.js';
+import {resultsRoutes} from './results.js';
+import {resultGoalRoutes} from './result-goals.js';
+import {platformProfileRoutes,type PlatformRouteDependencies} from './platform-profiles.js';
+import {profileIntegrationRoutes,type IntegrationRouteDependencies} from './profile-integrations.js';
+import {profileReadRoutes} from './profile-reads.js';
+import {variantWorkspaceRoutes} from './variant-workspace.js';
+import {profileMaterialRoutes} from './profile-materials.js';
+import {receiptQueueRoutes} from './receipt-queue.js';
+import {numberTestRoutes} from './number-tests.js';
+import {campaignsV2Routes} from './campaigns-v2.js';
+import {helpRoutes} from './help.js';
+
+export interface ProfileRuntimeDependencies {
+ request?:ProfileRequestDependencies;
+ identity?:ProfileIdentityDependencies;
+ registration?:InvitationRegistrationDependencies;
+ acceptance?:InvitationAcceptanceDependencies;
+ platform?:PlatformRouteDependencies;
+ integrations?:IntegrationRouteDependencies;
+}
+/** Fixed composition of the reviewed V2 consumers. Each family retains its own
+ * native authorization and transaction; no legacy principal or catch fallback.
+ * Register as a Fastify plugin so its privacy headers remain encapsulated.
+ */
+export async function profileRuntimeRoutes(app:FastifyInstance,deps:ProfileRuntimeDependencies={}){
+ app.addHook('onRequest',async(_req,reply)=>{reply.header('Cache-Control','no-store').header('X-Content-Type-Options','nosniff');});
+ await app.register(async identity=>{
+  await profileIdentityRoutes(identity,deps.identity);
+  await invitationRegistrationRoutes(identity,deps.registration);
+  await invitationAcceptanceRoutes(identity,deps.acceptance);
+ });
+ await app.register(async platform=>{await platformProfileRoutes(platform,deps.platform);});
+ await app.register(async integrations=>{await profileIntegrationRoutes(integrations,{...deps.integrations,request:deps.integrations?.request??deps.request});});
+ for(const routes of [profileOverviewRoutes,profileSettingsRoutes,profileEmployeeRoutes,
+  profileInvitationRoutes,profileTokenRoutes,marketVariantRoutes,
+  continuousAuthorizationRoutes,paymentsRegisterRoutes,receiptPolicyRoutes,resultsRoutes,resultGoalRoutes,profileReadRoutes,variantWorkspaceRoutes,profileMaterialRoutes,receiptQueueRoutes,numberTestRoutes,campaignsV2Routes,helpRoutes]){
+  await app.register(async family=>{await routes(family,deps.request);});
+ }
+}
