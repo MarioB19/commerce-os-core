@@ -108,8 +108,9 @@ Reglas que gobiernan toda la ventana:
     `/data/laboratory`;
   - al llegar a `OPERATING` instala `commerce-runtime-boot.service`.
 - Gate: estado `SUCCEEDED`, 117 migraciones con hash, recibo de exportación.
-  Las migraciones deben entrar en 300 s: el ensayo sobre la copia después del
-  corte del §2 fija el tiempo esperado (evidencia de la Fase B).
+  La transacción de migraciones V7 tiene 600 s (las demás publicaciones, 300 s)
+  dentro del plazo total de 1500 s del instalador. Ensayo sobre la copia de
+  producción después del corte del §2: 90–270 s (sin el corte: 850 s).
 
 ## 6. Infraestructura F1 (orden fijo)
 

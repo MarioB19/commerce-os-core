@@ -25,6 +25,16 @@ def history(count=68):
 
 
 class OperatingMigration(unittest.TestCase):
+    def test_only_the_v7_cutover_gets_the_longer_migration_bound(self):
+        # Rehearsal on a production copy: 90–270 s for 68→117 after the health telemetry cut.
+        v7 = {'migration_hashes': history() | {name: 'd'*64 for name in c.V7_PROFILE_MIGRATION_NAMES}}
+        self.assertEqual((c.migration_deadline(v7), c.migration_deadline({'migration_hashes': history()}),
+                          c.migration_deadline({'migration_hashes': history(67)})), (600, 300, 300))
+        server = types.SimpleNamespace(migrations=lambda _: self.fail('the bound is checked first'))
+        for meta, timeout in ((v7, 601), ({'migration_hashes': history()}, 301), (v7, 0), (v7, True)):
+            with self.subTest(timeout=timeout), self.assertRaisesRegex(ReleaseError, 'MIGRATION_DEADLINE_INVALID'):
+                c.apply_reviewed_migrations(server, Path('/x'), Path('/x'), meta, {}, timeout, stage='OPERATING')
+
     def test_only_exact_reviewed_transition_or_complete_operating_schema(self):
         meta = {'migration_hashes': history()}
         for applied in (history(67), history()):

@@ -579,6 +579,23 @@ V7_PROFILE_MIGRATION_NAMES = frozenset({
 V7_PROFILE_MIGRATION_TOTAL = 68 + len(V7_PROFILE_MIGRATION_NAMES)
 
 
+# Bound of the single migration transaction. The 68→117 V7 cutover touches every
+# profile-scoped table; on the production disk class (pd-standard) a rehearsal on
+# a copy of production after the health telemetry cut measured 90–270 s, so the
+# V7 profile alone gets 600 s inside the same 1500 s installation deadline.
+MIGRATION_DEADLINE_SECONDS = 300
+V7_MIGRATION_DEADLINE_SECONDS = 600
+
+
+def migration_deadline(metadata):
+    # An inadmissible set keeps the short bound; apply_reviewed_migrations rejects it.
+    try:
+        names = reviewed_migration_names(metadata)
+    except ReleaseError:
+        return MIGRATION_DEADLINE_SECONDS
+    return V7_MIGRATION_DEADLINE_SECONDS if names == V7_PROFILE_MIGRATION_NAMES else MIGRATION_DEADLINE_SECONDS
+
+
 def reviewed_migration_names(metadata):
     expected = metadata.get('migration_hashes')
     require(type(expected) is dict and MIGRATION_NAMES <= set(expected),
@@ -1270,7 +1287,8 @@ def ensure_lab_storage(server):
 
 
 def apply_reviewed_migrations(server, root, report_dir, metadata, review, timeout=300, *, stage='INITIAL'):
-    require(type(timeout) is int and 0 < timeout <= 300, 'COPY_RUNTIME_MIGRATION_DEADLINE_INVALID')
+    bound = migration_deadline(metadata)
+    require(type(timeout) is int and 0 < timeout <= bound, 'COPY_RUNTIME_MIGRATION_DEADLINE_INVALID')
     applied = server.migrations(root); expected = metadata['migration_hashes']
     migration_stage_guard(applied, metadata, initial=stage == 'INITIAL', stage=stage)
     names = reviewed_migration_names(metadata)
@@ -1292,7 +1310,7 @@ def apply_reviewed_migrations(server, root, report_dir, metadata, review, timeou
             *[part for name in sorted(names) for part in ('-v', str(Path(root)/'packages/db/migrations'/name)+':/copy-sql/'+name+':ro')],
             env['COMMERCE_IMAGE'],
             'node', '--import', 'tsx', '--input-type=module', '-e', BOUNDED_MIGRATION_JS]
-    require(type(timeout) is int and 0 < timeout <= 300, 'COPY_RUNTIME_MIGRATION_DEADLINE_INVALID')
+    require(type(timeout) is int and 0 < timeout <= bound, 'COPY_RUNTIME_MIGRATION_DEADLINE_INVALID')
     server.run_deployment_task(root, report_dir, args, 'copy-migrations', timeout)
     verify_migrations(server.migrations(root), expected, complete=True)
     result = {'status': 'APPLIED_BOUNDED', 'migration_count': len(expected), 'bootstrap_or_import': False}
@@ -2034,7 +2052,7 @@ def publish(server, archive, archive_hash, source_sha, run_id, portal_private_en
                 report['stage'] = 'reviewed-migrations'; server._write_report(report_dir/'report.json', report)
                 remaining = deadline_check(deadline)
                 report['bounded_migrations'] = apply_reviewed_migrations(
-                    server, root, report_dir, metadata, review, min(300, remaining), stage='OPERATING')
+                    server, root, report_dir, metadata, review, min(migration_deadline(metadata), remaining), stage='OPERATING')
                 require(commercial_snapshot(server, previous_root) == configuration,
                         'COPY_RUNTIME_COMMERCIAL_CONFIGURATION_CHANGED')
             mutation_started = True

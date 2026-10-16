@@ -35,21 +35,48 @@ un temporizador y un paso de la ventana.
    (`scripts/v7_health_retention_batch.sql`). No toca filas con número o
    dimensión vacíos ni instantes no finitos. `plan` sólo cuenta. Imprime
    conteos y segundos.
-2. **Excepción acotada a la inmutabilidad (ADR-005).** `record_versions`
-   conserva `immutable_versions`; el superusuario de la instalación la
-   desactiva sólo dentro de la transacción de cada lote y la reactiva antes del
-   COMMIT, así que ninguna otra sesión la ve desactivada (esperan el candado,
-   con `lock_timeout` de 5 s del lote). Sólo `kind='health_signal'`. Las llaves
-   foráneas y los demás disparadores (guardas de privacidad V7, cuotas) siguen
-   activos: una señal referenciada aborta su lote. La telemetría de salud es
-   evidencia operativa, no comercial: órdenes, comprobantes, mensajes,
-   conversaciones y versiones de cuentas no se tocan.
+2. **Excepción acotada a la inmutabilidad (ADR-005).** Sólo el superusuario
+   de la instalación, sólo `kind='health_signal'` y sólo dentro de la
+   transacción de cada lote (ver «Cómo se borra»). `immutable_versions` nunca
+   se desactiva para nadie. Una señal referenciada por cualquier llave foránea
+   aborta su lote. La telemetría de salud es evidencia operativa, no comercial:
+   órdenes, comprobantes, mensajes, conversaciones y versiones de cuentas no se
+   tocan.
 3. **Ventana de la Fase C.** Después del snapshot frío verificado y antes del
-   B02 fresco: purga de corte que conserva 2 días (más la última por llave) y
-   `VACUUM FULL` de las tres tablas. Así el B02 vuelve a caber y las
-   migraciones quedan dentro de 300 s. Las estadísticas de 168 h muestran
-   historia parcial durante la primera semana después de V7; desde el día 8
-   el temporizador mantiene 8 días.
+   B02 fresco: corte que conserva 2 días (más la última por llave) en una sola
+   transacción (`cutover`, exige productores detenidos) y `VACUUM FULL` de las
+   tres tablas (`compact`). Las estadísticas de 168 h muestran historia
+   parcial durante la primera semana después de V7; desde el día 8 el
+   temporizador mantiene 8 días.
+4. **Límite de la transacción de migraciones V7: 600 s** (las demás
+   publicaciones siguen en 300 s), dentro del mismo plazo total de 1500 s del
+   instalador (`scripts/copy_runtime_deployment.py`, `migration_deadline`).
+
+### Cómo se borra (sin cargar la producción)
+
+Cada lote bloquea con `FOR UPDATE` sólo sus filas (el corte, con productores
+detenidos, toma candados `SHARE` sobre las tablas que referencian), verifica
+por conjuntos que ninguna llave foránea apunte a ellas (y que ninguna esté
+minimizada por privacidad) y sólo entonces borra con
+`session_replication_role=replica` en esa transacción: sin `immutable_versions`
+y sin sondeos de llave foránea fila por fila, que en pd-standard cuestan horas.
+No toma candados de tabla en el modo diario, así que nunca detiene a los
+escritores. Al terminar vuelve a `origin` y comprueba que no quede nada del
+conjunto y que los conteos coincidan.
+
+### Ensayo sobre la copia de producción (16-oct)
+
+| Paso | Resultado |
+|---|---|
+| Corte (conserva 2 días) | 3.33 M señales, proyección y versiones en 295–372 s |
+| `VACUUM FULL` | índice 33–38 s · versiones 248–981 s · records 83–134 s |
+| Base | 9.06 GB → 2.13 GB |
+| Volcado `pg_dump -Fc` (B02) | 212 MB en 97 s (límite 1 GiB) |
+| Exportación de retirados | 6 s, 529 filas |
+| Migraciones 68→117 | 90–270 s según caché (antes del corte: 850 s) |
+
+Los discos restaurados desde snapshot se hidratan bajo demanda: las primeras
+lecturas del laboratorio son más lentas que en el disco de producción.
 
 ## Alternativas descartadas
 
@@ -69,7 +96,9 @@ un temporizador y un paso de la ventana.
   errores sin datos de filas.
 - `tests/integration/v7-health-retention.test.ts` sobre el esquema V7
   completo: borra sólo la llave pedida y sus versiones, conserva la última y
-  lo reciente, exige superusuario, rechaza cortes de menos de dos días, aborta
-  con una referencia foránea y deja `immutable_versions` activa.
-- Laboratorio sobre la copia de producción: tiempos de purga, compactación,
-  B02 y migraciones en la evidencia de la Fase B.
+  lo reciente, aplica el corte a todas las llaves, exige superusuario, rechaza
+  cortes de menos de dos días, aborta ante una referencia foránea y deja
+  `immutable_versions` y `session_replication_role` como estaban.
+- `tests/ci/test_copy_runtime_operating_migration.py`: sólo el corte V7 tiene
+  600 s.
+- Laboratorio sobre la copia de producción: tabla anterior.
