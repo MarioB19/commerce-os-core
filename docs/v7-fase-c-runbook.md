@@ -202,6 +202,21 @@ migraciones. Cualquier diferencia dispara el §4.
 
 ## 10. Fase D (después de la ventana)
 
-Verificación F9 sobre las 171 filas y 7 días de observación: PITR al día,
-copias diarias, B02 natural, alertas, costos reales contra el techo y
-continuidad de ventas.
+Verificación F9 sobre las 171 filas, con evidencia de «Publicado» y
+«Verificado en producción» por fila. HA y BD HA siguen diferidas (D-16) y
+nunca reciben PASS.
+
+**Sin periodo de observación como compuerta** (decisión del dueño,
+17-oct-2026, vigente también para los releases siguientes): el release se cierra
+al terminar la verificación F9, sin esperar 7 días. Lo que sólo ocurre con días
+de diferencia se revisa cuando ocurre y se registra en la bitácora, sin retener
+el cierre:
+
+- primer full semanal de PITR y su `status`;
+- copias diarias de archivos;
+- regreso de B02 a `SCHEDULED` y su primera corrida natural;
+- alertas recibidas;
+- costos reales contra el techo;
+- continuidad de ventas.
+
+Un hallazgo posterior se corrige hacia adelante con otro release.
