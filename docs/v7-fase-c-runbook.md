@@ -20,6 +20,13 @@ producción desde el 17-oct (8 días, temporizador
 (se libera el 6-nov 12:01): el respaldo lógico previo es el último B02 natural
 con su restauración aislada (§3). La renovación de B02 hasta el 2026-12-04 se
 aplica en §6.6 (`docs/adr-v7-b02-renewal.md`).
+
+**Revisión del 17-oct (tarde):** la V7 se instala como paquete
+`canonical-local` y el arranque durable queda diferido
+(`docs/adr-v7-canonical-local-install.md`, autorizado por Brandon). El disco de
+la VM pasó de 100 a 130 GB el 17-oct, porque B02 fallaba con
+`BACKUP_INSUFFICIENT_FREE_DISK`.
+
 **HA multizona y BD HA siguen diferidas (D-16)**: la ventana entrega
 recuperación medida, nunca failover.
 
@@ -118,8 +125,15 @@ snapshot frío del §1.
   - crea `<assets>/number-lab` (0700) y aplica las migraciones 0069→0117;
   - recrea los servicios de aplicación; `automation-worker` añade el montaje
     `/data/laboratory`;
-  - al llegar a `OPERATING` instala `commerce-runtime-boot.service`.
-- Gate: estado `SUCCEEDED`, 117 migraciones con hash, recibo de exportación.
+  - al llegar a `OPERATING` **no** instala `commerce-runtime-boot.service`:
+    el paquete es `canonical-local` (`cv-`) y el reporte registra
+    `host_boot.status = HOST_BOOT_DEFERRED_CANONICAL_LOCAL`
+    (`docs/adr-v7-canonical-local-install.md`).
+- Transporte: `deploy-ci-client.py` con `COMMERCE_CLOUD_RELEASE_ADMISSION`
+  apuntando a la admisión protegida del paquete local, sin adaptador nativo ni
+  `host-boot-inputs.json`, desde la VM temporal de empaquetado.
+- Gate: estado `SUCCEEDED`, 117 migraciones con hash, recibo de exportación y
+  `host_boot` diferido (cualquier otro valor de `host_boot` detiene la ventana).
   La transacción de migraciones V7 tiene 600 s (las demás publicaciones, 300 s)
   dentro del plazo total de 1500 s del instalador. Ensayo sobre la copia de
   producción después del corte del §2: 90–270 s (sin el corte: 850 s).
@@ -172,9 +186,9 @@ snapshot frío del §1.
    `commerce-health-retention-interim.timer` y su servicio (17-oct).
 8. **Alertas**: reapuntar el uptime check existente a `/healthz/platform`
    después de `enable`; canal de correo verificado. No se crean checks nuevos.
-9. **Arranque durable**: reinicio controlado de la VM; comprobar que
-   `commerce-runtime-boot.service` valida la custodia y deja gateways sanos
-   sin iniciar sesiones.
+9. **Arranque durable: diferido** (`docs/adr-v7-canonical-local-install.md`).
+   No hay reinicio controlado en la ventana. Lo instala una publicación nativa
+   posterior, después del primer B02 con la V7 y su restauración aislada.
 
 ## 7. Verificación de identidad del software
 

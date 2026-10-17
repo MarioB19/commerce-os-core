@@ -1513,6 +1513,27 @@ def stage_continuity(before, services, candidate, after_owner, server, private):
             'COPY_RUNTIME_PRESERVED_BOUNDARY_CHANGED')
 
 
+def canonical_local_package(report):
+    """Root-validated RELEASE.json identity of a canonical-local package (cv-)."""
+    context = report.get('provider_evidence')
+    return (type(context) is dict and context.get('package_origin') == 'canonical-local'
+            and type(report.get('run_id')) is str and bool(provider_evidence.LOCAL_RUN.fullmatch(report['run_id'])))
+
+
+def deferred_host_boot(report):
+    """Canonical-local packages never install the durable boot.
+
+    Its admission needs a native package build and a historical B02 restore made
+    with the candidate's own migrations and tools; neither exists for a package
+    built outside Cloud Build or before its first installation. The host keeps
+    the boot behaviour of the previous release (no commerce-runtime-boot unit is
+    added or changed). A later native publication installs it.
+    """
+    require(canonical_local_package(report), 'COPY_RUNTIME_DEFERRED_BOOT_REQUIRES_LOCAL_PACKAGE')
+    return {'status': 'HOST_BOOT_DEFERRED_CANONICAL_LOCAL', 'installation_verified': False,
+            'reason': 'NO_NATIVE_PACKAGE_BOOT_ADMISSION', 'run_id': report['run_id'], 'units_changed': 0}
+
+
 def commit_stage(server, root, report_dir, before, services, report, stage, review, locks, deadline=None, gateway_extension=False, before_terminal=None):
     """Native B02 tool installation then one journal-bound pair CAS, no SQL rollback."""
     if deadline is not None: deadline_check(deadline)
@@ -1608,8 +1629,13 @@ def commit_stage(server, root, report_dir, before, services, report, stage, revi
             # Installation errors leave the applied pair without SUCCEEDED.
             # The hook never starts containers or sessions during installation.
             import runtime_boot_install
-            completed['host_boot'] = (gateway_boot.apply(actual_state, actual_plan, backup) if gateway_extension else
-                runtime_boot_install.install(server, root, report_dir, before, report, actual_state, actual_plan, backup, locks, deadline))
+            if gateway_extension:
+                completed['host_boot'] = gateway_boot.apply(actual_state, actual_plan, backup)
+            elif canonical_local_package(report):
+                completed['host_boot'] = deferred_host_boot(report)
+            else:
+                completed['host_boot'] = runtime_boot_install.install(server, root, report_dir, before, report,
+                    actual_state, actual_plan, backup, locks, deadline)
         if before_terminal is not None: before_terminal()
         server._write_report(report_dir/'report.json', completed)
         report.update(completed)

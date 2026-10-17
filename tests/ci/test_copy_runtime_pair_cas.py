@@ -4,17 +4,19 @@ from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'scripts'))
 import copy_runtime_deployment as c
+LOCAL_FULL='8c4008b5-f960-4ccb-817a-73372dfdd1d8'
 import runtime_boot_install as boot
 from ci_release import ReleaseError
 
 class PairCAS(unittest.TestCase):
- def run_case(self,failure=None,gateway=False):
+ def run_case(self,failure=None,gateway=False,local=False):
   with tempfile.TemporaryDirectory(prefix='review-pair-cas-') as directory:
    private=Path(directory);(private/'daily-b02').mkdir();report_dir=private/'deployments'/'101-1';report_dir.mkdir(parents=True)
    plan=private/'daily-b02'/'plan.json';state=private/'api-web-adoption.json'
    old_plan=b'{"synthetic_old_plan":true}';old_state=b'{"synthetic_old_state":true}'
    plan.write_bytes(old_plan);state.write_bytes(old_state);(private/'release.env').write_bytes(b'PUBLIC_SYNTHETIC=1\n')
    report={'status':'RUNNING','source_sha':'a'*40,'run_id':'101-1'}
+   if local:report.update(run_id='cv-'+LOCAL_FULL+'-1',provider_evidence={'package_origin':'canonical-local'})
    (report_dir/'report.json').write_text(json.dumps(report))
    before={'state':{'active_proxy_sha256':'b'*64,'portal':{}},'workspace':'synthetic-workspace',
     'policy':{'version':98},'policy_observed':{},'plan_raw':old_plan,'state_raw':old_state}
@@ -69,7 +71,7 @@ class PairCAS(unittest.TestCase):
      (c,'reviewed_backup_module'):lambda *_:contextlib.nullcontext(backup),
      (c,'validate_state'):lambda *_:None,(c,'validate_inventory'):lambda *_:None,(c,'validate_plan'):lambda *_:None,
      (c,'atomic_bytes'):atomic,(boot,'install'):install_boot,(boot,'gateway_admission'):admit,
-     (c,'gateway_continuity'):lambda *_:None}
+     (c,'gateway_continuity'):lambda *_:None,(c.provider_evidence,'installed_components'):lambda *_:None}
     for (module,name),value in mocks.items():stack.enter_context(patch.object(module,name,value))
     def final_guard():
      calls.append('GUARD')
@@ -80,7 +82,8 @@ class PairCAS(unittest.TestCase):
    terminal=json.loads((report_dir/'report.json').read_text())
    journal=json.loads((report_dir/'copy-runtime-transition.json').read_text())
    if failure is None:
-    self.assertIsNone(actual_error);self.assertEqual(terminal['status'],'SUCCEEDED');self.assertEqual(journal['status'],'APPLIED');self.assertEqual(calls,['ADMIT','BOOT-FENCE','TOOLS','BOOT-FENCE','PLAN','STATE','MARK','BOOT-POLICY','GUARD'] if gateway else ['TOOLS','PLAN','STATE','MARK','BOOT','GUARD'])
+    self.assertIsNone(actual_error);self.assertEqual(terminal['status'],'SUCCEEDED');self.assertEqual(journal['status'],'APPLIED');self.assertEqual(calls,['ADMIT','BOOT-FENCE','TOOLS','BOOT-FENCE','PLAN','STATE','MARK','BOOT-POLICY','GUARD'] if gateway else ['TOOLS','PLAN','STATE','MARK','GUARD'] if local else ['TOOLS','PLAN','STATE','MARK','BOOT','GUARD'])
+    if local:self.assertEqual(terminal['host_boot'],{'status':'HOST_BOOT_DEFERRED_CANONICAL_LOCAL','installation_verified':False,'reason':'NO_NATIVE_PACKAGE_BOOT_ADMISSION','run_id':report['run_id'],'units_changed':0})
    else:
     self.assertIsNotNone(actual_error);self.assertEqual(report['status'],'RUNNING');self.assertEqual(terminal['status'],'RUNNING');self.assertEqual(journal['status'],'APPLIED' if failure in ('boot','guard','terminal-keyboard','terminal-systemexit') else 'PREWRITE')
     self.assertEqual((report_dir/'adoption-applied.json').exists(),failure in ('boot','guard','terminal-keyboard','terminal-systemexit'))
@@ -99,5 +102,15 @@ class PairCAS(unittest.TestCase):
  def test_competing_adoption_after_tools_stops_before_plan_write(self):self.run_case('drift')
  def test_mark_failure_preserves_pair_without_terminal_success(self):self.run_case('mark')
  def test_boot_hook_failure_after_applied_pair_never_publishes_success(self):self.run_case('boot')
+ def test_canonical_local_package_defers_boot_without_calling_the_installer(self):self.run_case(local=True)
+ def test_canonical_local_guard_failure_still_never_publishes_success(self):self.run_case('guard',local=True)
+ def test_deferred_boot_requires_both_local_origin_and_local_run_identity(self):
+  local={'run_id':'cv-'+LOCAL_FULL+'-1','provider_evidence':{'package_origin':'canonical-local'}}
+  self.assertTrue(c.canonical_local_package(local))
+  for changed in ({'run_id':'cb-'+LOCAL_FULL+'-1'},{'run_id':'101-1'},{'provider_evidence':{'package_origin':'cloud-build'}},
+                  {'provider_evidence':None},{'run_id':'cv-'+LOCAL_FULL+'-1;x'}):
+   report=dict(local,**changed)
+   self.assertFalse(c.canonical_local_package(report))
+   with self.assertRaisesRegex(ReleaseError,'COPY_RUNTIME_DEFERRED_BOOT_REQUIRES_LOCAL_PACKAGE'):c.deferred_host_boot(report)
 
 if __name__=='__main__':unittest.main(verbosity=2)

@@ -11,7 +11,7 @@ import time
 from ci_release import digest, require
 from deployment_scope import deployment_scope, NO_PORTAL
 from ephemeral_os_login import remove_ephemeral_key
-from ci_provider_evidence import unit_name, installation_id
+from ci_provider_evidence import unit_name, installation_id, LOCAL_RUN
 
 ROOT=Path(__file__).resolve().parent.parent
 # The forward install may use its full bounded stage time. If systemd reaches
@@ -174,6 +174,11 @@ def main(*, native=None, environment=None):
         admitted=(deployment_admission(Path(cloud_admission), ROOT,
             environment.get('COMMERCE_INSTALLATION_ATTEMPT','1')) if native is None else native.admission(ROOT))
         sha=admitted['source_sha'];run_id=admitted['installation_run_id']
+        # A native package (cb-) carries the worker-produced boot admission that
+        # only the trusted publisher adapter supplies. A canonical-local package
+        # (cv-) has no native package build: Root installs it and defers the
+        # durable boot (docs/adr-v7-canonical-local-install.md).
+        require((native is None)==bool(LOCAL_RUN.fullmatch(run_id)),'CANONICAL_WORKER_BOOT_ADMISSION_REQUIRED')
     else:
         sha=environment['GITHUB_SHA']
         run_id=environment['GITHUB_RUN_ID']+'-'+environment['GITHUB_RUN_ATTEMPT']
@@ -212,8 +217,7 @@ def main(*, native=None, environment=None):
             require(scope!='portal-copy' or portal_source=='local','COPY_PORTAL_INITIAL_INPUT_REQUIRED')
             portal_env,portal_files,portal_argument=portal_transport(environment['RUNNER_TEMP'],portal_source)
         boot_files=[];boot_argument=''
-        if cloud_admission:
-            require(native is not None,'CANONICAL_WORKER_BOOT_ADMISSION_REQUIRED')
+        if cloud_admission and native is not None:
             boot_file=native.boot_input_file()
             require(boot_file==ROOT/'release/host-boot-inputs.json'
                     and digest(boot_file)==native.boot_input_sha256,'CANONICAL_BOOT_INPUT_CHANGED')
