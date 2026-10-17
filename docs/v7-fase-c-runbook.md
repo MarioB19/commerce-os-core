@@ -167,8 +167,8 @@ snapshot frío del §1.
    `commerce-files-backup.timer` (primera corrida manual y `restore` de
    prueba), `commerce-lab-retention.timer` (config `operator.json`) y
    `commerce-health-retention.timer` (config
-   `<private>/health-retention/operator.json` con `keep_days: 8`; primera
-   corrida `plan`). Al activarlo, deshabilitar y retirar
+   `<private>/health-retention/operator.json` con `keep_days: 8` y
+   `batch: 1000000`; primera corrida `plan`). Al activarlo, deshabilitar y retirar
    `commerce-health-retention-interim.timer` y su servicio (17-oct).
 8. **Alertas**: reapuntar el uptime check existente a `/healthz/platform`
    después de `enable`; canal de correo verificado. No se crean checks nuevos.

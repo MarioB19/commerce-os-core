@@ -1,9 +1,10 @@
 -- V7 F1 (RNF-03.e): one retention batch of health telemetry. Installation
 -- superuser only; scripts/v7_health_retention.py runs it inside its own
 -- transaction after setting (set_config(..., true)):
---   commerce.health_retention_mode   'key' (daily) or 'all' (Fase C cut)
+--   commerce.health_retention_mode   'sweep' (daily, online), 'key' (one number
+--                                    and dimension) or 'all' (Fase C cut)
 --   commerce.health_retention_bound  instant; never later than now − 2 days
---   commerce.health_retention_limit  key: 1..200000 · all: 1..50000000
+--   commerce.health_retention_limit  key: 1..200000 · sweep: 1..2000000 · all: 1..50000000
 --   key mode also: app.workspace_id, app.environment,
 --   commerce.health_retention_account, commerce.health_retention_dimension
 -- A key is (profile, environment, number, dimension). Only health_signal
@@ -11,17 +12,20 @@
 -- observation of their key, together with their projection rows and versions.
 --
 -- How (bulk maintenance, ADR docs/adr-v7-health-retention.md):
--- 1. key mode locks the doomed records FOR UPDATE, so no new row can start
---    referencing them while this transaction lives (an insert that references
---    one waits and then fails its own foreign key check, as usual); the cut
---    locks every referencing table in SHARE mode instead;
+-- 1. key and sweep modes lock the doomed records FOR UPDATE, so no new row can
+--    start referencing them while this transaction lives (an insert that
+--    references one waits and then fails its own foreign key check, as usual);
+--    the cut locks every referencing table in SHARE mode instead. sweep selects
+--    every key at once (hash joins, sequential reads): in production health
+--    rows are scattered over the whole heap, so key-by-key index probes ran at
+--    ~25 rows/s (17-oct) while one sequential pass reads each page once;
 -- 2. every foreign key that points at records, record_versions or
 --    health_observation_index (except the two rows this batch deletes itself) is
 --    checked set-based: any reference aborts the batch;
 -- 3. only then, with session_replication_role=replica for these three DELETEs,
 --    the rows go without per-row trigger work: no immutable_versions (ADR-005)
---    and no per-row foreign key probes, which on pd-standard cost hours. No
---    table-level lock is taken, so production writers are never blocked;
+--    and no per-row foreign key probes, which on pd-standard cost hours. key and
+--    sweep take no table-level lock, so production writers are never blocked;
 -- 4. back to origin, the batch verifies that nothing of the doomed set remains
 --    in any of the three tables and that the counts agree.
 DO $retention$
@@ -35,8 +39,8 @@ BEGIN
  IF NOT EXISTS(SELECT 1 FROM pg_catalog.pg_roles WHERE rolname=current_user AND rolsuper) THEN
   RAISE EXCEPTION 'HEALTH_RETENTION_SUPERUSER_REQUIRED';
  END IF;
- IF mode NOT IN('key','all') OR NOT isfinite(bound) OR bound>now()-interval '2 days'
-    OR lim<1 OR lim>(CASE mode WHEN 'key' THEN 200000 ELSE 50000000 END) THEN
+ IF mode NOT IN('key','sweep','all') OR NOT isfinite(bound) OR bound>now()-interval '2 days'
+    OR lim<1 OR lim>(CASE mode WHEN 'key' THEN 200000 WHEN 'sweep' THEN 2000000 ELSE 50000000 END) THEN
   RAISE EXCEPTION 'HEALTH_RETENTION_BOUNDS_INVALID';
  END IF;
  -- The cut belongs to the maintenance window: producers must be stopped.
@@ -60,7 +64,7 @@ BEGIN
                   AND isfinite(n.observed_at) AND n.observed_at>=bound)
    ORDER BY h.observed_at LIMIT lim;
  ELSE
-  -- Optional profile scope (tests); the Fase C cut leaves it empty.
+  -- sweep and the cut: every key. Optional profile scope (tests); production leaves it empty.
   ws:=coalesce(current_setting('commerce.health_retention_scope',true),'');
   CREATE TEMP TABLE health_retention_doomed ON COMMIT DROP AS
    SELECT record_id FROM (
@@ -75,11 +79,11 @@ BEGIN
  SELECT count(*) INTO d FROM pg_temp.health_retention_doomed;
  ni:=0; nv:=0; nr:=0;
  IF d>0 THEN
-  -- 1. Key mode locks exactly the doomed rows (cheap, never blocks writers).
-  --    The Fase C cut (all) runs with producers stopped and instead takes SHARE
+  -- 1. key and sweep lock exactly the doomed rows (never blocks writers). The
+  --    Fase C cut (all) runs with producers stopped and instead takes SHARE
   --    locks on every referencing table below: row locks on millions of tuples
   --    would rewrite them once more on pd-standard.
-  IF mode='key' OR ws<>'' THEN
+  IF mode IN('key','sweep') OR ws<>'' THEN
    WITH l AS (SELECT r.id FROM public.records r JOIN pg_temp.health_retention_doomed x ON r.id=x.record_id
               WHERE r.kind='health_signal' FOR UPDATE OF r) SELECT count(*) INTO locked FROM l;
   ELSE
