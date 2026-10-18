@@ -61,7 +61,8 @@ def propose_recovery(meter_raw, *, meter_generation, ledger_before_raw,
     The caller must obtain ``proof`` from validate_evidence using adopted native
     originals, and authenticate the readback origin/generation of ledger_after.
     Historical 480-minute originals use the closed historical-abort API; they
-    never become operational admission under the current 420-minute limit.
+    never become operational admission under the current pools (420 reduced,
+    1,200 since the 2026-10-18 extension).
     No write permission is returned: expected_generation only binds an external
     reviewed single-CAS adapter. All input documents are left unchanged.
     """

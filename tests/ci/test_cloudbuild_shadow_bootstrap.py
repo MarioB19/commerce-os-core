@@ -40,9 +40,10 @@ class BootstrapTests(unittest.TestCase):
         manifest, _, _ = self.manifest_config()
         self.assertNotIn('service', manifest)
         self.assertEqual(manifest['cloud_builds_admitted'], 0)
-        # A newly proposed ledger follows the current strict ceiling. Historical
-        # native SHADOW bytes remain immutable and are not recreated by this test.
-        self.assertEqual(manifest['objects']['ledger']['document']['monthly_limit_seconds'], 25200)
+        # A newly proposed ledger follows the current ceiling (1,200 min since
+        # 2026-10-18). Historical native SHADOW bytes remain immutable and are
+        # not recreated by this test.
+        self.assertEqual(manifest['objects']['ledger']['document']['monthly_limit_seconds'], 72000)
         self.assertEqual(manifest['objects']['ledger']['document']['external_builds'][b.KNOWN_BUILD]
             ['observation']['status'], 'FAILURE')
         self.assertEqual(set(manifest['objects']), {'ledger', 'control', 'meter'})

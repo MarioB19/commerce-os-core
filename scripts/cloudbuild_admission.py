@@ -42,12 +42,19 @@ Commands (unknown fields are rejected):
 * reduce_monthly_limit: from_seconds=28800, to_seconds=25200,
   evidence_sha256, native_verified=True. Protected operator only: no live or
   blocked attempt, preserved usage/history and one immutable reduction receipt.
+* raise_monthly_limit: from_seconds=25200, to_seconds=72000, evidence_sha256,
+  native_verified=True. Protected operator only, after the owner's economic
+  decision of 2026-10-18 (1,200 minutes per month): no live or blocked attempt,
+  preserved usage/history and one immutable extension receipt. A document keeps
+  admitting under its own recorded pool until the extension is applied; a pool
+  never grows implicitly.
 * account_external: observation, native_verified=True. Imports already-terminal
   bootstrap/unmanaged builds into the same budget, deduplicated by native UUID.
 * block: reason, evidence_sha256. Closed admission is not automatically reopened.
 
-Only one attempt may reserve globally. The fixed operational pool is 420 minutes per UTC
-month, including every stage, bootstrap and failures. Unknown work retains its
+Only one attempt may reserve globally. The operational pool is the one recorded in
+the ledger document: 1,200 minutes per UTC month since the 2026-10-18 extension
+(420 before it), including every stage, bootstrap and failures. Unknown work retains its
 full reservation in every touched month, also reserving a possible queue/run
 crossing into the next month. Verified usage is conservatively rounded UP to a
 minute per touched month. It is never refunded simply because a build failed.
@@ -71,8 +78,14 @@ import re
 from typing import Protocol
 import uuid
 
-MONTHLY_LIMIT_SECONDS = 420 * 60
+MONTHLY_LIMIT_SECONDS = 1200 * 60
+REDUCED_MONTHLY_LIMIT_SECONDS = 420 * 60
 HISTORICAL_MONTHLY_LIMIT_SECONDS = 480 * 60
+# Pools a document may record. Operational admission accepts the reduced pool and
+# the extended one (each admits only up to its own recorded limit); the 480-minute
+# originals stay read-only history.
+OPERATING_LIMITS = frozenset({MONTHLY_LIMIT_SECONDS, REDUCED_MONTHLY_LIMIT_SECONDS})
+KNOWN_LIMITS = OPERATING_LIMITS | {HISTORICAL_MONTHLY_LIMIT_SECONDS}
 GROSS_CAP_MICROUSD = 100 * 1_000_000
 STAGE_LIMITS = {'full': 5700, 'attestation': 120, 'package': 1800,
                 'publisher': 900, 'toolchain': 5700, 'diagnostic': 5700}
@@ -202,7 +215,7 @@ def new_ledger():
 def validate_ledger(doc):
     """Operational validation: historical 480-minute ledgers cannot admit work."""
     _validate_ledger(doc)
-    need(doc['monthly_limit_seconds'] == MONTHLY_LIMIT_SECONDS, 'OPERATING_POOL_REDUCTION_REQUIRED')
+    need(doc['monthly_limit_seconds'] in OPERATING_LIMITS, 'OPERATING_POOL_REDUCTION_REQUIRED')
 
 
 def validate_historical_ledger(doc):
@@ -213,10 +226,11 @@ def validate_historical_ledger(doc):
 def _validate_ledger(doc):
     need(type(doc) is dict, 'LEDGER_FIELDS_INVALID')
     extra = ' limit_reduction' if 'limit_reduction' in doc else ''
+    extra += ' limit_extension' if 'limit_extension' in doc else ''
     exact(doc, 'schema_version revision updated_at monthly_limit_seconds events attempts external_builds active_attempt blocked' + extra,
           'LEDGER_FIELDS_INVALID')
     need(type(doc['schema_version']) is int and doc['schema_version'] == 1
-         and type(doc['monthly_limit_seconds']) is int and doc['monthly_limit_seconds'] in {MONTHLY_LIMIT_SECONDS, HISTORICAL_MONTHLY_LIMIT_SECONDS},
+         and type(doc['monthly_limit_seconds']) is int and doc['monthly_limit_seconds'] in KNOWN_LIMITS,
          'LEDGER_POLICY_CHANGED')
     need(type(doc['revision']) is int and doc['revision'] >= 0, 'LEDGER_REVISION_INVALID')
     for key in ('events', 'attempts', 'external_builds'):
@@ -230,10 +244,25 @@ def _validate_ledger(doc):
         receipt = doc['limit_reduction']
         exact(receipt, 'from_seconds to_seconds evidence_sha256 reduced_at', 'LIMIT_REDUCTION_FIELDS_INVALID')
         need(type(receipt['from_seconds']) is int and receipt['from_seconds'] == HISTORICAL_MONTHLY_LIMIT_SECONDS
-             and type(receipt['to_seconds']) is int and receipt['to_seconds'] == MONTHLY_LIMIT_SECONDS
-             and doc['monthly_limit_seconds'] == MONTHLY_LIMIT_SECONDS, 'LIMIT_REDUCTION_POLICY_CHANGED')
+             and type(receipt['to_seconds']) is int and receipt['to_seconds'] == REDUCED_MONTHLY_LIMIT_SECONDS
+             and doc['monthly_limit_seconds'] in OPERATING_LIMITS, 'LIMIT_REDUCTION_POLICY_CHANGED')
         digest(receipt['evidence_sha256'])
         need(timestamp(receipt['reduced_at']) <= updated, 'DURABLE_CHRONOLOGY_INVALID')
+    if 'limit_extension' in doc:
+        receipt = doc['limit_extension']
+        exact(receipt, 'from_seconds to_seconds evidence_sha256 extended_at', 'LIMIT_EXTENSION_FIELDS_INVALID')
+        need(type(receipt['from_seconds']) is int and receipt['from_seconds'] == REDUCED_MONTHLY_LIMIT_SECONDS
+             and type(receipt['to_seconds']) is int and receipt['to_seconds'] == MONTHLY_LIMIT_SECONDS
+             and doc['monthly_limit_seconds'] == MONTHLY_LIMIT_SECONDS, 'LIMIT_EXTENSION_POLICY_CHANGED')
+        digest(receipt['evidence_sha256'])
+        extended = timestamp(receipt['extended_at'])
+        need(extended <= updated, 'DURABLE_CHRONOLOGY_INVALID')
+        if 'limit_reduction' in doc:
+            need(timestamp(doc['limit_reduction']['reduced_at']) <= extended, 'DURABLE_CHRONOLOGY_INVALID')
+    elif doc['monthly_limit_seconds'] == MONTHLY_LIMIT_SECONDS and doc['revision'] > 0:
+        # An operated document reaches the extended pool only through its receipt;
+        # a document bootstrapped after the decision starts there without one.
+        need('limit_reduction' not in doc, 'LIMIT_EXTENSION_RECEIPT_REQUIRED')
     if doc['blocked'] is not None:
         validate_reason(doc['blocked'])
     active = []
@@ -498,6 +527,7 @@ def _transition(document, command, *, now, validator):
         'reconcile': 'op attempt_id evidence_sha256 native_verified',
         'abort_before_dispatch': 'op attempt_id evidence_sha256 native_verified',
         'reduce_monthly_limit': 'op from_seconds to_seconds evidence_sha256 native_verified',
+        'raise_monthly_limit': 'op from_seconds to_seconds evidence_sha256 native_verified',
         'account_external': 'op observation native_verified', 'block': 'op reason evidence_sha256',
     }
     need(op in fields, 'COMMAND_UNKNOWN')
@@ -531,7 +561,7 @@ def _transition(document, command, *, now, validator):
         need(command['native_verified'] is True, 'NATIVE_VERIFICATION_REQUIRED')
         digest(command['evidence_sha256'])
         need(type(command['from_seconds']) is int and command['from_seconds'] == HISTORICAL_MONTHLY_LIMIT_SECONDS
-             and type(command['to_seconds']) is int and command['to_seconds'] == MONTHLY_LIMIT_SECONDS,
+             and type(command['to_seconds']) is int and command['to_seconds'] == REDUCED_MONTHLY_LIMIT_SECONDS,
              'LIMIT_REDUCTION_POLICY_CHANGED')
         if 'limit_reduction' in doc:
             need(doc['limit_reduction']['evidence_sha256'] == command['evidence_sha256'], 'LIMIT_REDUCTION_EVIDENCE_CHANGED')
@@ -539,11 +569,26 @@ def _transition(document, command, *, now, validator):
         need(doc['monthly_limit_seconds'] == HISTORICAL_MONTHLY_LIMIT_SECONDS, 'HISTORICAL_POOL_REQUIRED')
         need(doc['active_attempt'] is None, 'LIMIT_REDUCTION_ACTIVE_ATTEMPT')
         need(doc['blocked'] is None, 'LIMIT_REDUCTION_BLOCKED')
-        need(all(row['total_seconds'] <= MONTHLY_LIMIT_SECONDS
+        need(all(row['total_seconds'] <= REDUCED_MONTHLY_LIMIT_SECONDS
                  for row in _budget_usage(doc, now=moment).values()), 'REDUCED_MONTHLY_POOL_EXCEEDED')
-        doc['monthly_limit_seconds'] = MONTHLY_LIMIT_SECONDS
+        doc['monthly_limit_seconds'] = REDUCED_MONTHLY_LIMIT_SECONDS
         doc['limit_reduction'] = {k: command[k] for k in ('from_seconds', 'to_seconds', 'evidence_sha256')}
         doc['limit_reduction']['reduced_at'] = stamp(moment)
+    elif op == 'raise_monthly_limit':
+        need(command['native_verified'] is True, 'NATIVE_VERIFICATION_REQUIRED')
+        digest(command['evidence_sha256'])
+        need(type(command['from_seconds']) is int and command['from_seconds'] == REDUCED_MONTHLY_LIMIT_SECONDS
+             and type(command['to_seconds']) is int and command['to_seconds'] == MONTHLY_LIMIT_SECONDS,
+             'LIMIT_EXTENSION_POLICY_CHANGED')
+        if 'limit_extension' in doc:
+            need(doc['limit_extension']['evidence_sha256'] == command['evidence_sha256'], 'LIMIT_EXTENSION_EVIDENCE_CHANGED')
+            return replay()
+        need(doc['monthly_limit_seconds'] == REDUCED_MONTHLY_LIMIT_SECONDS, 'REDUCED_POOL_REQUIRED')
+        need(doc['active_attempt'] is None, 'LIMIT_EXTENSION_ACTIVE_ATTEMPT')
+        need(doc['blocked'] is None, 'LIMIT_EXTENSION_BLOCKED')
+        doc['monthly_limit_seconds'] = MONTHLY_LIMIT_SECONDS
+        doc['limit_extension'] = {k: command[k] for k in ('from_seconds', 'to_seconds', 'evidence_sha256')}
+        doc['limit_extension']['extended_at'] = stamp(moment)
     elif op == 'account_external':
         need(command['native_verified'] is True, 'NATIVE_VERIFICATION_REQUIRED')
         value = command['observation']; validate_observation(value, moment)
@@ -575,7 +620,7 @@ def _transition(document, command, *, now, validator):
             validate_admission(command['admission'], moment, attempt['approval'])
             attempt.update(state='RESERVED', reserved_at=stamp(moment), admission=deepcopy(command['admission']))
             doc['active_attempt'] = attempt_id
-            need(all(row['total_seconds'] <= MONTHLY_LIMIT_SECONDS for row in _budget_usage(doc, now=moment).values()),
+            need(all(row['total_seconds'] <= doc['monthly_limit_seconds'] for row in _budget_usage(doc, now=moment).values()),
                  'MONTHLY_POOL_EXCEEDED')
         elif op in {'submit_intent', 'approve_intent'}:
             target = 'gate' if op == 'approve_intent' else 'source'
@@ -588,7 +633,7 @@ def _transition(document, command, *, now, validator):
             need(doc['blocked'] is None, 'ADMISSION_BLOCKED')
             validate_approval(attempt['approval'], attempt['plan'], moment)
             validate_admission(attempt['admission'], moment, attempt['approval'])
-            need(all(row['total_seconds'] <= MONTHLY_LIMIT_SECONDS for row in _budget_usage(doc, now=moment).values()),
+            need(all(row['total_seconds'] <= doc['monthly_limit_seconds'] for row in _budget_usage(doc, now=moment).values()),
                  'MONTHLY_POOL_EXCEEDED')
             for other in doc['attempts'].values():
                 if 'intent' in other:
@@ -666,7 +711,7 @@ def _transition(document, command, *, now, validator):
             if sum(charges(attempt['terminal']).values()) > attempt['plan']['timeout_seconds']:
                 doc['blocked'] = {'reason': 'OBSERVED_USAGE_EXCEEDS_RESERVATION', 'evidence_sha256': command['evidence_sha256']}
     if op in {'reconcile', 'account_external'}:
-        if any(row['total_seconds'] > MONTHLY_LIMIT_SECONDS for row in _budget_usage(doc, now=moment).values()):
+        if any(row['total_seconds'] > doc['monthly_limit_seconds'] for row in _budget_usage(doc, now=moment).values()):
             doc['blocked'] = {'reason': 'OBSERVED_MONTHLY_POOL_EXCEEDED',
                               'evidence_sha256': command.get('evidence_sha256', command.get('observation', {}).get('evidence_sha256'))}
     doc['revision'] += 1
