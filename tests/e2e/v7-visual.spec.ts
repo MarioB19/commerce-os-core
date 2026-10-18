@@ -28,8 +28,10 @@ async function signIn(page:Page){
  if(await chooser.isVisible()){await page.getByLabel('Perfil',{exact:true}).selectOption(profile);await page.getByRole('button',{name:'Cambiar a este perfil'}).click();}
  await expect(page.getByRole('navigation',{name:'Navegación del perfil'})).toBeVisible();
 }
-// Shell regions fed by the profile's counters and goal vary between databases.
-const dynamic=(page:Page)=>[page.locator('.nav-count'),page.locator('.sidebar-goal'),page.locator('.profile-switch')];
+// Shell regions fed by the profile's counters, alerts and goal vary between
+// databases; the account card shows the random address of the test owner.
+const dynamic=(page:Page)=>[page.locator('.nav-count'),page.locator('.sidebar-goal'),page.locator('.profile-switch'),
+ page.getByRole('button',{name:/^Avisos/}),page.locator('#security-identity ~ p')];
 
 test('login page keeps its layout on desktop and at 375 px',async({page})=>{
  await page.goto('/login');await settle(page);
