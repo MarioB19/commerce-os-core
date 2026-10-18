@@ -25,6 +25,13 @@ async function cut(c:pg.PoolClient,scope:string,bound:Date){
  await c.query(batchSql);
  return (await c.query('SELECT doomed::int,projection::int,versions::int,records::int FROM health_retention_result')).rows[0];
 }
+// The daily online sweep over every key, in chunks, with row locks only (scoped to the fixture here).
+async function sweep(c:pg.PoolClient,scope:string,bound:Date,limit:number){
+ await c.query(`SELECT set_config('commerce.health_retention_mode','sweep',true),set_config('commerce.health_retention_scope',$1,true),
+  set_config('commerce.health_retention_bound',$2,true),set_config('commerce.health_retention_limit',$3,true)`,[scope,bound.toISOString(),String(limit)]);
+ await c.query(batchSql);
+ return (await c.query('SELECT doomed::int,projection::int,versions::int,records::int FROM health_retention_result')).rows[0];
+}
 const left=async(c:pg.PoolClient,ws:string,account:string,dimension:string)=>(await c.query(
  `SELECT h.observed_at,(SELECT count(*)::int FROM record_versions v WHERE v.record_id=h.record_id) versions
   FROM health_observation_index h WHERE h.workspace_id=$1 AND h.account_id=$2 AND h.dimension=$3 ORDER BY h.observed_at NULLS FIRST`,
@@ -80,6 +87,21 @@ it('deletes old health telemetry by key, keeps the latest and recent evidence, a
   expect((await c.query('SHOW session_replication_role')).rows[0].session_replication_role).toBe('origin');
   await c.query('ROLLBACK TO SAVEPOINT cut');
 
+  // The daily sweep reaches the same result in chunks and keeps the same guards.
+  await c.query('SAVEPOINT sweep');
+  const first=await sweep(c,ws,cutoff,4),second=await sweep(c,ws,cutoff,4);
+  expect([first.doomed,first.projection,first.records,second.doomed,second.projection,second.records]).toEqual([4,4,4,2,2,2]);
+  expect(first.versions+second.versions).toBe(7);
+  expect(await sweep(c,ws,cutoff,4)).toEqual({doomed:0,projection:0,versions:0,records:0});
+  expect((await left(c,ws,account.id,'session')).length).toBe(3);
+  expect((await left(c,ws,account.id,'quality')).length).toBe(1);
+  expect((await left(c,ws,other.id,'session')).length).toBe(1);
+  expect((await c.query('SHOW session_replication_role')).rows[0].session_replication_role).toBe('origin');
+  await c.query('ROLLBACK TO SAVEPOINT sweep');
+  await c.query('SAVEPOINT sweep_bound');
+  await expect(sweep(c,ws,cutoff,2000001)).rejects.toThrow(/HEALTH_RETENTION_BOUNDS_INVALID/);
+  await c.query('ROLLBACK TO SAVEPOINT sweep_bound');
+
   // Bounds: never within two days, never an application role, never a referenced signal.
   await c.query('SAVEPOINT recent');
   await expect(batch(c,{ws,env:'SIMULATION',account:account.id,dimension:'session',bound:new Date(now-day),limit:10})).rejects.toThrow(/HEALTH_RETENTION_BOUNDS_INVALID/);
@@ -99,6 +121,9 @@ it('deletes old health telemetry by key, keeps the latest and recent evidence, a
   await c.query('SAVEPOINT referenced_cut');
   await expect(cut(c,ws,cutoff)).rejects.toThrow(/HEALTH_RETENTION_REFERENCED/);
   await c.query('ROLLBACK TO SAVEPOINT referenced_cut');
+  await c.query('SAVEPOINT referenced_sweep');
+  await expect(sweep(c,ws,cutoff,1000)).rejects.toThrow(/HEALTH_RETENTION_REFERENCED/);
+  await c.query('ROLLBACK TO SAVEPOINT referenced_sweep');
   expect((await left(c,ws,account.id,'session')).length).toBe(7);
   expect((await c.query("SELECT tgenabled FROM pg_trigger WHERE tgrelid='public.record_versions'::regclass AND tgname='immutable_versions'")).rows).toEqual([{tgenabled:'O'}]);
  }finally{await c.query('ROLLBACK');c.release();}

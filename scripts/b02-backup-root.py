@@ -24,7 +24,7 @@ import urllib.parse
 import uuid
 from b02_backup_contract import (BACKUP_TIMEOUT, DAILY, MAX_BYTES, ORIGINAL_MINIMUM, ORIGINAL_MINIMUM_UID, PRIVATE, SOURCE_FILES,
     TERMINAL, VM_ID, check_run_budget, hash_identity, need, projection_digest, reference,
-    run_identity, backup_run_identity, gcp_run_identity, canonical, utc_time, gcp_binding, gcp_job_guard, gcp_scheduler_guard, gcp_execution_guard, gcp_task_name, GCP_JOB, GCP_SCHEDULER, GCP_EXECUTOR, GCP_BINDING_FIELDS, TARGET, sha256, unique_json, validate_custody, plan_version, PORTAL_HELPER,
+    run_identity, backup_run_identity, gcp_run_identity, canonical, utc_time, gcp_binding, gcp_job_guard, gcp_scheduler_guard, gcp_execution_guard, gcp_task_name, GCP_JOB, GCP_SCHEDULER, GCP_EXECUTOR, GCP_BINDING_FIELDS, GCP_FINANCIAL_END, GCP_FINANCIAL_ORIGINAL_END, TARGET, sha256, unique_json, validate_custody, plan_version, PORTAL_HELPER,
     PORTAL_BASE, PORTAL_FIELDS, PORTAL_MAX_BYTES, PDF_NAMES, export_names, ciphertext_header, validate_portal_backup)
 
 
@@ -1196,13 +1196,21 @@ def schedule_terminal_guard():
             need(unique_json(read_file(intent)).get('status') == 'APPLIED', 'B02_GCP_CUTOVER_RECONCILIATION_REQUIRED')
 
 
+def financial_renewal(previous, binding):
+    """The single owner-authorized renewal: original end → renewed end, only into MANUAL
+    (SCHEDULED keeps every financial field of its MANUAL binding)."""
+    return (utc_time(previous['valid_until']) == GCP_FINANCIAL_ORIGINAL_END
+            and utc_time(binding['valid_until']) == GCP_FINANCIAL_END and binding['mode'] == 'MANUAL')
+
+
 def cutover_facts(runner, binding, token):
     gcp_binding(binding); schedule_terminal_guard()
     state_raw = gcp_pair(runner, binding)
     old_binding = read_file(GCP_BINDING_PATH) if GCP_BINDING_PATH.exists() or GCP_BINDING_PATH.is_symlink() else None
     if old_binding:
         previous = gcp_binding(unique_json(old_binding))
-        need(binding['valid_from'] == previous['valid_from'] and binding['valid_until'] == previous['valid_until'],
+        need(binding['valid_from'] == previous['valid_from']
+             and (binding['valid_until'] == previous['valid_until'] or financial_renewal(previous, binding)),
              'B02_GCP_FINANCIAL_RENEWAL_FORBIDDEN')
     now = dt.datetime.now(dt.timezone.utc)
     need(utc_time(binding['valid_from']) <= now < utc_time(binding['valid_until']), 'B02_GCP_AUTHORIZATION_EXPIRED')

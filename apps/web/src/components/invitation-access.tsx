@@ -8,7 +8,7 @@ import {takeInvitationToken} from '../lib/invitation-acceptance.js';
 import {InvitationAcceptance} from './invitation-acceptance';
 import {InvitationRegistration} from './invitation-registration';
 import {ProfileSelector} from './profile-selector';
-import {Button} from './ui/button';
+import {Alert,Button,Card,Field,Input,Skeleton} from './ui';
 
 type Selection={workspaceId:string;version:number};
 type Props={invitationToken:string|null;onSelected:(selection:Selection)=>void};
@@ -19,7 +19,7 @@ export function createInvitationAccessPage(onSelected:Props['onSelected']){
 }
 /** Prepared composition: no commercial route or application mount is implied. */
 export function InvitationAccess({invitationToken,onSelected}:Props){
- if(!invitationLinkTokenSchema.safeParse(invitationToken).success)return <p role="alert">El enlace no es válido. Abre el enlace completo del correo de invitación.</p>;
+ if(!invitationLinkTokenSchema.safeParse(invitationToken).success)return <Alert tone="error">El enlace no es válido. Abre el enlace completo del correo de invitación.</Alert>;
  return <InvitationAccessSession key={invitationToken} invitationToken={invitationToken!} onSelected={onSelected}/>;
 }
 function InvitationAccessSession({invitationToken,onSelected}:Props&{invitationToken:string}){
@@ -40,17 +40,17 @@ function InvitationAccessSession({invitationToken,onSelected}:Props&{invitationT
   catch{if(live.current&&generation===epoch.current){setView('UNKNOWN');setError('No se pudo confirmar el inicio de sesión. Comprueba la sesión antes de volver a enviar la contraseña.');}}
   finally{if(live.current&&generation===epoch.current){busy.current=false;setWorking(false);}}
  }
- return <section aria-labelledby={label}><h1 id={label}>Acceso por invitación</h1>
-  {error&&<p role="alert">{error}</p>}{working&&<p role="status">Comprobando acceso…</p>}
-  {view==='CHECKING'&&<p>Consultando tu sesión…</p>}
-  {view==='LOGIN'&&<><form onSubmit={e=>{void login(e);}}><fieldset disabled={working}>
-   <label>Correo electrónico<input type="email" name="email" autoComplete="username" maxLength={254} required value={email} onChange={e=>setEmail(e.target.value)}/></label>
-   <label>Contraseña<input type="password" name="password" autoComplete="current-password" maxLength={128} required value={password} onChange={e=>setPassword(e.target.value)}/></label>
-   <Button type="submit" disabled={working}>Iniciar sesión</Button>
-  </fieldset></form><Button type="button" variant="secondary" disabled={working} onClick={()=>{setError('');setPassword('');setView('REGISTER');}}>Crear una cuenta con esta invitación</Button></>}
+ return <Card aria-labelledby={label}><h1 id={label}>Acceso por invitación</h1>
+  {error&&<Alert tone="error">{error}</Alert>}{working&&<Skeleton lines={2} label="Comprobando acceso…"/>}
+  {view==='CHECKING'&&!working&&<p className="muted">Consultando tu sesión…</p>}
+  {view==='LOGIN'&&<><form onSubmit={e=>{void login(e);}} className="form"><fieldset disabled={working} className="plain">
+   <Field label="Correo electrónico"><Input type="email" name="email" autoComplete="username" maxLength={254} required value={email} onChange={e=>setEmail(e.target.value)}/></Field>
+   <Field label="Contraseña"><Input type="password" name="password" autoComplete="current-password" maxLength={128} required value={password} onChange={e=>setPassword(e.target.value)}/></Field>
+   <div className="form-actions"><Button type="submit" disabled={working}>Iniciar sesión</Button><Button type="button" variant="secondary" disabled={working} onClick={()=>{setError('');setPassword('');setView('REGISTER');}}>Crear una cuenta con esta invitación</Button></div>
+  </fieldset></form></>}
   {view==='REGISTER'&&<InvitationRegistration invitationToken={invitationToken} onLoginRequested={()=>{setView('LOGIN');setError('');}}/>}
   {view==='ACCEPT'&&<InvitationAcceptance invitationToken={invitationToken} onAccepted={()=>{void check('PROFILES');}}/>}
   {view==='PROFILES'&&profiles&&<ProfileSelector initial={profiles} onConfirmed={onSelected}/>}
-  {view==='UNKNOWN'&&<Button type="button" disabled={working} onClick={()=>{void check();}}>Comprobar sesión</Button>}
- </section>;
+  {view==='UNKNOWN'&&<div><Button type="button" disabled={working} onClick={()=>{void check();}}>Comprobar sesión</Button></div>}
+ </Card>;
 }

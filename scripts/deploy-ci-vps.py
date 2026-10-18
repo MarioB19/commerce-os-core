@@ -1030,6 +1030,9 @@ def main():
     scope=sys.argv[6] if len(sys.argv)>=7 else 'full'
     require(scope in ('api-web','full','portal-copy','copy-runtime'),'EXPLICIT_DEPLOYMENT_SCOPE_REQUIRED')
     cloud_boot=scope=='copy-runtime' and run_id.startswith('cb-')
+    # Canonical-local package (cv-): no native package build and no worker boot
+    # admission; copy-runtime installs it and defers the durable boot.
+    local_package=scope=='copy-runtime' and run_id.startswith('cv-')
     require((scope=='portal-copy' or cloud_boot)==(len(sys.argv)==8),
             'COPY_PORTAL_INPUT_DIGEST_REQUIRED' if scope=='portal-copy' else 'CANONICAL_PRIVATE_INPUT_DIGEST_REQUIRED')
     require(re.fullmatch(r'[a-f0-9]{40}',sha),'INVALID_SOURCE_SHA')
@@ -1039,9 +1042,10 @@ def main():
     if scope=='api-web':
         return publish_api_web(archive,archive_hash,sha,run_id,portal_private_env)
     if scope=='copy-runtime':
-        require(cloud_boot,'CANONICAL_CLOUD_BOOT_ADMISSION_REQUIRED')
-        from runtime_boot_admission_host import staged_input
-        globals()['HOST_BOOT_INPUTS_RAW']=staged_input(__file__,sys.argv[7])
+        require(cloud_boot or local_package,'CANONICAL_CLOUD_BOOT_ADMISSION_REQUIRED')
+        if cloud_boot:
+            from runtime_boot_admission_host import staged_input
+            globals()['HOST_BOOT_INPUTS_RAW']=staged_input(__file__,sys.argv[7])
         import copy_runtime_deployment
         return copy_runtime_deployment.publish(sys.modules[__name__],archive,archive_hash,sha,run_id,portal_private_env)
     if scope=='portal-copy':

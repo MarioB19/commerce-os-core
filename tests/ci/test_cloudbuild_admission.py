@@ -185,28 +185,40 @@ class BudgetAndStateTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(m.AdmissionError):
                 step(approved(), 'reserve', admission=value)
 
-    def test_420_minute_limit_includes_imported_bootstrap_and_failures(self):
+    def test_1200_minute_limit_includes_imported_bootstrap_and_failures(self):
         end = NOW
-        observed = observation('FAILURE', start=NOW-timedelta(minutes=386), seconds=386*60)
+        observed = observation('FAILURE', start=NOW-timedelta(minutes=1166), seconds=1166*60)
         doc = step(m.new_ledger(), 'account_external', observation=observed, native_verified=True).document
         doc = approved(doc)
         with self.assertRaisesRegex(m.AdmissionError, 'MONTHLY_POOL_EXCEEDED'):
             step(doc, 'reserve', admission=admission())
-        self.assertEqual(m.budget_usage(doc, now=end)['2026-10']['confirmed_seconds'], 386*60)
+        self.assertEqual(m.budget_usage(doc, now=end)['2026-10']['confirmed_seconds'], 1166*60)
 
-    def test_exact_420_minutes_is_admitted(self):
+    def test_reduced_pool_document_still_admits_only_up_to_420(self):
+        # A document that has not received the extension keeps its own ceiling.
+        reduced = m.new_ledger(); reduced['monthly_limit_seconds'] = 25200
+        observed = observation('FAILURE', start=NOW-timedelta(minutes=386), seconds=386*60)
+        doc = step(reduced, 'account_external', observation=observed, native_verified=True).document
+        with self.assertRaisesRegex(m.AdmissionError, 'MONTHLY_POOL_EXCEEDED'):
+            step(approved(doc), 'reserve', admission=admission())
         observed = observation('FAILURE', start=NOW-timedelta(minutes=325), seconds=325*60)
-        doc = step(m.new_ledger(), 'account_external', observation=observed, native_verified=True).document
+        doc = step(deepcopy(reduced), 'account_external', observation=observed, native_verified=True).document
         doc = step(approved(doc), 'reserve', admission=admission()).document
         self.assertEqual(m.budget_usage(doc, now=NOW)['2026-10']['total_seconds'], 25200)
 
-    def test_historical_74_minutes_are_preserved_under_reduced_future_pool(self):
+    def test_exact_1200_minutes_is_admitted(self):
+        observed = observation('FAILURE', start=NOW-timedelta(minutes=1105), seconds=1105*60)
+        doc = step(m.new_ledger(), 'account_external', observation=observed, native_verified=True).document
+        doc = step(approved(doc), 'reserve', admission=admission()).document
+        self.assertEqual(m.budget_usage(doc, now=NOW)['2026-10']['total_seconds'], 72000)
+
+    def test_historical_74_minutes_are_preserved_under_the_extended_pool(self):
         obs = observation('FAILURE', start=NOW-timedelta(minutes=74), seconds=74*60)
         doc = step(m.new_ledger(), 'account_external', observation=obs, native_verified=True).document
-        self.assertEqual(doc['monthly_limit_seconds'], 420*60)
+        self.assertEqual(doc['monthly_limit_seconds'], 1200*60)
         usage = m.budget_usage(doc, now=NOW)['2026-10']
         self.assertEqual(usage['confirmed_seconds'], 74*60)
-        self.assertEqual(doc['monthly_limit_seconds']-usage['total_seconds'], 346*60)
+        self.assertEqual(doc['monthly_limit_seconds']-usage['total_seconds'], 1126*60)
         self.assertEqual(doc['external_builds'][BUILD]['observation'], obs)
         changed = deepcopy(doc); changed['monthly_limit_seconds'] = 600*60
         with self.assertRaisesRegex(m.AdmissionError, 'LEDGER_POLICY_CHANGED'):
@@ -878,12 +890,136 @@ class ProspectivePoolReductionTests(unittest.TestCase):
         self.assertEqual(m.budget_usage(out,now=later),before)
         self.assertEqual(set(before),{'2026-10','2026-11'})
 
-    def test_new_bootstrap_is_420_but_missing_durable_store_never_resets(self):
-        self.assertEqual(m.new_ledger()['monthly_limit_seconds'],25200)
+    def test_new_bootstrap_is_1200_but_missing_durable_store_never_resets(self):
+        self.assertEqual(m.new_ledger()['monthly_limit_seconds'],72000)
         store=MemoryStore()
         with self.assertRaisesRegex(m.AdmissionError,'LEDGER_MISSING_NO_RESET'):
             m.transact(store,self.command(),now=NOW)
         self.assertEqual(store.cas_count,0)
+
+
+class PoolExtensionTests(unittest.TestCase):
+    """2026-10-18: the owner raised the pool from 420 to 1,200 minutes per month."""
+    def command(self, **changes):
+        return {'op': 'raise_monthly_limit', 'from_seconds': 25200, 'to_seconds': 72000,
+                'evidence_sha256': 'c'*64, 'native_verified': True, **changes}
+
+    def reduced(self, minutes=355, when=NOW):
+        # The native shape of the live ledger: reduced on 11-oct, then operated.
+        obs = observation('FAILURE', start=when-timedelta(minutes=minutes), seconds=minutes*60)
+        doc = step(m.new_ledger(), 'account_external', now=when, observation=obs, native_verified=True).document
+        doc['monthly_limit_seconds'] = 28800
+        reduce = {'op':'reduce_monthly_limit','from_seconds':28800,'to_seconds':25200,'evidence_sha256':'a'*64,'native_verified':True}
+        doc = m.transition(doc, reduce, now=when).document
+        m.validate_ledger(doc)
+        return doc
+
+    def test_extension_preserves_history_adds_receipt_and_opens_the_pool(self):
+        doc = self.reduced()
+        prior = deepcopy(doc)
+        with self.assertRaisesRegex(m.AdmissionError, 'MONTHLY_POOL_EXCEEDED'):
+            step(approved(deepcopy(doc)), 'reserve', admission=admission())
+        out = m.transition(doc, self.command(), now=NOW)
+        self.assertIsNone(out.proposed_effect); self.assertIsNone(out.attempt_id)
+        self.assertEqual(doc, prior)
+        for key in ('attempts','events','external_builds','active_attempt','blocked','limit_reduction'):
+            self.assertEqual(out.document[key], prior[key])
+        self.assertEqual(out.document['monthly_limit_seconds'], 72000)
+        self.assertEqual(out.document['revision'], prior['revision']+1)
+        self.assertEqual(out.document['limit_extension'], {
+            'from_seconds':25200,'to_seconds':72000,'evidence_sha256':'c'*64,'extended_at':m.stamp(NOW)})
+        usage = m.budget_usage(out.document, now=NOW)['2026-10']
+        self.assertEqual(usage['confirmed_seconds'], 355*60)
+        # The same 95-minute reservation that the reduced pool refused is now admitted.
+        admitted = step(approved(out.document), 'reserve', admission=admission()).document
+        self.assertEqual(m.budget_usage(admitted, now=NOW)['2026-10']['total_seconds'], 355*60+5700)
+
+    def test_only_fixed_extension_and_native_evidence_shape(self):
+        for change in ({'from_seconds':28800},{'to_seconds':60000},{'to_seconds':True},{'from_seconds':True},
+                       {'native_verified':1},{'native_verified':False},{'evidence_sha256':'bad'},{'reset':False}):
+            store=MemoryStore(self.reduced())
+            with self.subTest(change=change),self.assertRaises(m.AdmissionError):
+                m.transact(store,self.command(**change),now=NOW)
+            self.assertEqual(store.cas_count,0)
+        with self.assertRaisesRegex(m.AdmissionError,'REDUCED_POOL_REQUIRED'):
+            m.transition(m.new_ledger(),self.command(),now=NOW)
+        historical = m.new_ledger(); historical['monthly_limit_seconds'] = 28800
+        with self.assertRaisesRegex(m.AdmissionError,'OPERATING_POOL_REDUCTION_REQUIRED'):
+            m.transition(historical,self.command(),now=NOW)
+
+    def test_active_blocked_reject_without_cas(self):
+        base = self.reduced()
+        active = approved(self.reduced(200)); active = step(active,'reserve',admission=admission()).document
+        blocked = deepcopy(base); blocked['blocked'] = {'reason':'STOP','evidence_sha256':'8'*64}
+        for doc, code in ((active,'LIMIT_EXTENSION_ACTIVE_ATTEMPT'),(blocked,'LIMIT_EXTENSION_BLOCKED')):
+            store=MemoryStore(doc)
+            with self.subTest(code=code),self.assertRaisesRegex(m.AdmissionError,code):
+                m.transact(store,self.command(),now=NOW+timedelta(seconds=2))
+            self.assertEqual(store.cas_count,0)
+
+    def test_same_evidence_replay_no_write_changed_evidence_rejected(self):
+        store=MemoryStore(self.reduced())
+        first=m.transact(store,self.command(),now=NOW)
+        replay=m.transact(store,self.command(),now=NOW+timedelta(seconds=2))
+        self.assertFalse(replay.changed);self.assertIsNone(replay.effect)
+        self.assertEqual(store.cas_count,1);self.assertEqual(first.document,replay.document)
+        with self.assertRaisesRegex(m.AdmissionError,'LIMIT_EXTENSION_EVIDENCE_CHANGED'):
+            m.transact(store,self.command(evidence_sha256='d'*64),now=NOW)
+        self.assertEqual(store.cas_count,1)
+
+    def test_durable_receipt_policy_and_chronology_corruption_rejected(self):
+        base=m.transition(self.reduced(),self.command(),now=NOW).document
+        changes=(lambda d:d['limit_extension'].update(from_seconds=28800),
+                 lambda d:d['limit_extension'].update(to_seconds=True),
+                 lambda d:d['limit_extension'].update(evidence_sha256='bad'),
+                 lambda d:d['limit_extension'].update(extended_at=m.stamp(NOW+timedelta(seconds=1))),
+                 lambda d:d['limit_extension'].update(refund=True),
+                 lambda d:d.update(monthly_limit_seconds=25200),
+                 lambda d:d.update(monthly_limit_seconds=28800),
+                 lambda d:d.__delitem__('limit_extension'),
+                 lambda d:d['limit_reduction'].update(reduced_at=m.stamp(NOW+timedelta(seconds=1))))
+        for change in changes:
+            doc=deepcopy(base);change(doc)
+            with self.subTest(change=change),self.assertRaises(m.AdmissionError):m.validate_ledger(doc)
+        # Without the extension receipt the reduced document still validates at 420.
+        back=deepcopy(base); del back['limit_extension']; back['monthly_limit_seconds']=25200
+        m.validate_ledger(back)
+
+    def test_reduction_can_no_longer_follow_the_extension(self):
+        base=m.transition(self.reduced(),self.command(),now=NOW).document
+        reduce={'op':'reduce_monthly_limit','from_seconds':28800,'to_seconds':25200,'evidence_sha256':'e'*64,'native_verified':True}
+        with self.assertRaisesRegex(m.AdmissionError,'LIMIT_REDUCTION_EVIDENCE_CHANGED'):
+            m.transition(base,reduce,now=NOW)
+
+    def test_cas_race_has_single_winner_and_no_dispatch(self):
+        store=MemoryStore(self.reduced());store.barrier=threading.Barrier(2)
+        def go():
+            try:return m.transact(store,self.command(),now=NOW)
+            except m.CASConflict:return None
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            results=list(pool.map(lambda _:go(),range(2)))
+        self.assertEqual(sum(r is not None for r in results),1)
+        self.assertTrue(all(r is None or r.effect is None for r in results))
+        self.assertEqual(store.document['monthly_limit_seconds'],72000)
+
+    def test_unknown_commit_is_not_retried_and_exact_readback_replay_has_no_effect(self):
+        store=MemoryStore(self.reduced());store.lose_response=True
+        with self.assertRaises(m.CommitOutcomeUnknown):m.transact(store,self.command(),now=NOW)
+        self.assertEqual(store.cas_count,1)
+        store.lose_response=False
+        outcome=m.transact(store,self.command(),now=NOW)
+        self.assertFalse(outcome.changed);self.assertIsNone(outcome.effect);self.assertEqual(store.cas_count,1)
+
+    def test_extension_does_not_reset_any_month_usage(self):
+        doc=self.reduced(400)
+        later=NOW+timedelta(days=32)
+        second=observation('FAILURE',build='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',start=later-timedelta(minutes=74),seconds=4440)
+        doc['external_builds'][second['build_id']]={'observation':second}
+        doc['updated_at']=m.stamp(later)
+        before=m.budget_usage(doc,now=later)
+        out=m.transition(doc,self.command(),now=later).document
+        self.assertEqual(m.budget_usage(out,now=later),before)
+        self.assertEqual(set(before),{'2026-10','2026-11'})
 
 
 if __name__ == '__main__':

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Render the one finite B02 setup and verify its inactive native readback.
 
-No create, IAM write, resume, delete, or financial renewal action exists here.
+No create, IAM write, resume or delete action exists here. A valid_until after the
+original 2026-11-04 end is the owner's single renewal (renewal=true in the plan).
 Operators review the plan, provision separately, then supply authentic readback.
 """
 import argparse
@@ -15,7 +16,7 @@ import re
 import sys
 from b02_backup_contract import (TARGET, PROJECT_NUMBER, GCP_JOB, GCP_SCHEDULER, GCP_EXECUTOR, GCP_INVOKER,
     canonical, sha256, need, utc_time, gcp_binding, gcp_job_guard, gcp_job_reconciled, gcp_scheduler_guard, daily_cron,
-    GCP_FINANCIAL_START, GCP_FINANCIAL_END)
+    GCP_FINANCIAL_START, GCP_FINANCIAL_END, GCP_FINANCIAL_ORIGINAL_END)
 
 FIELDS={'source_sha','image','sdk_image','schedule_utc','valid_until','bucket','plan_sha256','manual_creator','activation_id'}
 
@@ -43,7 +44,8 @@ def setup_plan(config):
     return {'kind':'B02_GCP_SETUP_PLAN','schema_version':1,'config':config,'job':job,'scheduler':scheduler,
         'scheduler_required_readback_state':'PAUSED','auto_activate':False,'cloud_mutations':0,
         'financial':{'valid_from':GCP_FINANCIAL_START.isoformat(),'valid_until':config['valid_until'],
-            'usd_authorized_total_first_30d':125,'actions_usd':0,'remaining_budget_verified':False,'renewal':False},
+            'usd_authorized_total_first_30d':125,'actions_usd':0,'remaining_budget_verified':False,
+            'renewal':utc_time(config['valid_until'])>GCP_FINANCIAL_ORIGINAL_END},
         'iam_required':[{'principal':GCP_INVOKER,'resource':GCP_JOB,'role':'roles/run.invoker',
             'condition':"request.time < timestamp('"+(utc_time(config['valid_until'])-dt.timedelta(seconds=1800)).isoformat()+"')"},
             {'principal':GCP_EXECUTOR,'resource':TARGET[1],'role':'roles/compute.osAdminLogin'},

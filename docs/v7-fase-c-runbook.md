@@ -12,6 +12,21 @@ mayor a 1 GiB) y las 49 migraciones tardan 850 s contra el límite de 300 s del
 instalador. Por eso el respaldo previo al primer cambio es el snapshot frío
 restaurado y verificado (§1), sigue el corte de telemetría (§2) y sólo después
 el B02 fresco (§3).
+
+**Revisión del 17-oct:** la retención interina de telemetría corre en
+producción desde el 17-oct (8 días, temporizador
+`commerce-health-retention-interim.timer`), así que B02 vuelve a caber en
+1 GiB. La cuota de 37 corridas en 30 días no deja slot del 1 al 3 de noviembre
+(se libera el 6-nov 12:01): el respaldo lógico previo es el último B02 natural
+con su restauración aislada (§3). La renovación de B02 hasta el 2026-12-04 se
+aplica en §6.6 (`docs/adr-v7-b02-renewal.md`).
+
+**Revisión del 17-oct (tarde):** la V7 se instala como paquete
+`canonical-local` y el arranque durable queda diferido
+(`docs/adr-v7-canonical-local-install.md`, autorizado por Brandon). El disco de
+la VM pasó de 100 a 130 GB el 17-oct, porque B02 fallaba con
+`BACKUP_INSUFFICIENT_FREE_DISK`.
+
 **HA multizona y BD HA siguen diferidas (D-16)**: la ventana entrega
 recuperación medida, nunca failover.
 
@@ -36,7 +51,7 @@ Reglas que gobiernan toda la ventana:
 | FULL local de 21 etapas y FULL PR/`main` en Cloud Build `SUCCEEDED` | `scripts/cloudbuild-verify.py`, recibos |
 | Ensayo de restauración en laboratorio con la imagen V7 (PITR + archivos) | `tests/recovery/pitr_gcs_lab.py`, `v7_pitr.py rehearse` |
 | Revisión económica con Billing real: bruto GCP del mes + extra ≤ techo | «💵 Revalidación económica V7» |
-| Autorización financiera de B02 vigente (vence antes del 2026-11-04) | custodia Root B02 |
+| Último B02 natural `SUCCEEDED` (31-oct 06:45 UTC) y renovación de B02 hasta el 2026-12-04 en el código instalado | custodia Root B02, `docs/adr-v7-b02-renewal.md` |
 | Credenciales vigentes: token `claude-cowork` (vence 14-dic-2026), GitHub, ADC | `~/claude-v7-acceso` (sólo lectura) |
 | Lista de acciones físicas de Brandon vacía o no bloqueante | bitácora |
 
@@ -72,15 +87,19 @@ Reglas que gobiernan toda la ventana:
    `health_observation_index`, `record_versions` y `records`.
 3. Registrar conteos, segundos y tamaño de la base.
 
-## 3. B02 fresco y su restauración aislada
+## 3. Último B02 natural y su restauración aislada
 
-1. **B02 fresco**: ejecutar la corrida de B02 (Cloud Run Job) fuera de su
-   horario y esperar `SUCCEEDED` con su atestación `gcp-` (el volcado ya
-   cabe en 1 GiB).
+La cuota de 37 corridas en 30 días está llena del 1 al 6 de noviembre: no se
+puede lanzar un B02 fuera de horario sin quitarle el slot a un diario. El
+respaldo lógico previo es el **último B02 natural** (31-oct 06:45 UTC, con la
+retención interina el volcado cabe en 1 GiB); el punto de regreso exacto es el
+snapshot frío del §1.
+
+1. Confirmar ese B02 `SUCCEEDED` con su atestación `gcp-` y custodia.
 2. **Archivos**: inventario de `<private>/assets` comparado con la copia.
 3. **Restauración aislada**: restaurar ese B02 en un contenedor y volumen
-   temporales, comparar la lista de migraciones (68) y los conteos de todas
-   las tablas con la base viva; borrar el temporal.
+   temporales y comprobar la lista de migraciones (68) y los conteos de todas
+   las tablas (iguales a los de su hora de corte); borrar el temporal.
 4. Registrar en evidencia: ids de corrida, sha del volcado, conteos y tiempos.
 
 ## 4. Plan de regreso a `80a6`
@@ -106,8 +125,15 @@ Reglas que gobiernan toda la ventana:
   - crea `<assets>/number-lab` (0700) y aplica las migraciones 0069→0117;
   - recrea los servicios de aplicación; `automation-worker` añade el montaje
     `/data/laboratory`;
-  - al llegar a `OPERATING` instala `commerce-runtime-boot.service`.
-- Gate: estado `SUCCEEDED`, 117 migraciones con hash, recibo de exportación.
+  - al llegar a `OPERATING` **no** instala `commerce-runtime-boot.service`:
+    el paquete es `canonical-local` (`cv-`) y el reporte registra
+    `host_boot.status = HOST_BOOT_DEFERRED_CANONICAL_LOCAL`
+    (`docs/adr-v7-canonical-local-install.md`).
+- Transporte: `deploy-ci-client.py` con `COMMERCE_CLOUD_RELEASE_ADMISSION`
+  apuntando a la admisión protegida del paquete local, sin adaptador nativo ni
+  `host-boot-inputs.json`, desde la VM temporal de empaquetado.
+- Gate: estado `SUCCEEDED`, 117 migraciones con hash, recibo de exportación y
+  `host_boot` diferido (cualquier otro valor de `host_boot` detiene la ventana).
   La transacción de migraciones V7 tiene 600 s (las demás publicaciones, 300 s)
   dentro del plazo total de 1500 s del instalador. Ensayo sobre la copia de
   producción después del corte del §2: 90–270 s (sin el corte: 850 s).
@@ -137,19 +163,32 @@ Reglas que gobiernan toda la ventana:
    --create-restore-point` (productores detenidos; conteos idénticos).
 5. **Readopción Root** (`v7_infra_adoption.py observe` → `apply <sha>`): sólo
    acepta las variables V7 y el PostgreSQL del recibo PITR.
-6. **Re-vinculación de B02** con el hash del plan nuevo
-   (`gcp-observe` → `seal` → `apply`).
+6. **B02: re-vinculación y renovación** (`docs/adr-v7-b02-renewal.md`). Los
+   archivos Root de B02 cambiaron, así que:
+   1. Construir el transporte con el SHA instalado
+      (`infra/b02-cloud-run.Dockerfile`, misma base del SDK por digest) en la
+      VM temporal de empaquetado y subirlo a `commerce-b02/transport`.
+   2. Actualizar el Job a esa imagen (nueva generación, sin ejecutarlo).
+   3. Condición IAM del invocador: `request.time < 2026-12-03T23:30Z`.
+   4. Pausar el Scheduler.
+   5. `setup-b02-gcp-scheduler.py` `readback`/`bind` con `valid_until`
+      2026-12-04 y el plan nuevo, luego `gcp-observe` → `gcp-seal` →
+      `gcp-apply` en `MANUAL`.
+   6. Fase D: en el primer slot libre (desde el 6-nov 12:01), corrida manual
+      genuina, restauración aislada, `gcp-propose-scheduled` y
+      `observe`/`seal`/`apply` en `SCHEDULED`; reanudar el Scheduler.
 7. **Temporizadores**: `commerce-pitr-full/incr.timer`,
    `commerce-files-backup.timer` (primera corrida manual y `restore` de
    prueba), `commerce-lab-retention.timer` (config `operator.json`) y
    `commerce-health-retention.timer` (config
-   `<private>/health-retention/operator.json` con `keep_days: 8`; primera
-   corrida `plan`).
+   `<private>/health-retention/operator.json` con `keep_days: 8` y
+   `batch: 1000000`; primera corrida `plan`). Al activarlo, deshabilitar y retirar
+   `commerce-health-retention-interim.timer` y su servicio (17-oct).
 8. **Alertas**: reapuntar el uptime check existente a `/healthz/platform`
    después de `enable`; canal de correo verificado. No se crean checks nuevos.
-9. **Arranque durable**: reinicio controlado de la VM; comprobar que
-   `commerce-runtime-boot.service` valida la custodia y deja gateways sanos
-   sin iniciar sesiones.
+9. **Arranque durable: diferido** (`docs/adr-v7-canonical-local-install.md`).
+   No hay reinicio controlado en la ventana. Lo instala una publicación nativa
+   posterior, después del primer B02 con la V7 y su restauración aislada.
 
 ## 7. Verificación de identidad del software
 
@@ -173,11 +212,25 @@ migraciones. Cualquier diferencia dispara el §4.
 
 - Evidencia sanitizada en `00 — Dirección/V7/evidencia/<fecha>/fase-c/`.
 - Bitácora, índice y matriz actualizados con «Agente: Claude».
-- Lista única de acciones de Brandon (QR físicos, buzón de prueba del correo,
-  renovación de B02).
+- Lista única de acciones de Brandon (QR físicos, buzón de prueba del correo).
 
 ## 10. Fase D (después de la ventana)
 
-Verificación F9 sobre las 171 filas y 7 días de observación: PITR al día,
-copias diarias, B02 natural, alertas, costos reales contra el techo y
-continuidad de ventas.
+Verificación F9 sobre las 171 filas, con evidencia de «Publicado» y
+«Verificado en producción» por fila. HA y BD HA siguen diferidas (D-16) y
+nunca reciben PASS.
+
+**Sin periodo de observación como compuerta** (decisión del dueño,
+17-oct-2026, vigente también para los releases siguientes): el release se cierra
+al terminar la verificación F9, sin esperar 7 días. Lo que sólo ocurre con días
+de diferencia se revisa cuando ocurre y se registra en la bitácora, sin retener
+el cierre:
+
+- primer full semanal de PITR y su `status`;
+- copias diarias de archivos;
+- regreso de B02 a `SCHEDULED` y su primera corrida natural;
+- alertas recibidas;
+- costos reales contra el techo;
+- continuidad de ventas.
+
+Un hallazgo posterior se corrige hacia adelante con otro release.

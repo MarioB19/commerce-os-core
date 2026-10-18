@@ -2,7 +2,7 @@ import {useEffect,useId,useRef,useState} from 'react';
 import {profileRoleLabels,profileRoles,type ProfileEmployee,type ProfileRole,type ProfileState} from '../../../../packages/contracts/src/profiles.js';
 import type {ProfileRequestFence} from '../lib/profile-settings.js';
 import {loadProfileEmployees,saveProfileEmployee} from '../lib/profile-employees.js';
-import {Button} from './ui/button';
+import {Alert,Button,Card,CardHead,Field,NativeCheck,NativeSelect,Skeleton} from './ui';
 
 /** Staged administration; server authorization and final profile cutover required. */
 export function ProfileEmployees({selection,role,state,currentUserId}:{selection:ProfileRequestFence;role:ProfileRole;state:ProfileState;currentUserId:string}){
@@ -25,20 +25,21 @@ export function ProfileEmployees({selection,role,state,currentUserId}:{selection
   catch(e){if(generation===epoch.current){setUncertain(true);setError(e instanceof Error?e.message:'Actualiza los empleados antes de continuar.');}}
   finally{if(generation===epoch.current){inflight.current=false;setSaving(false);}}
  }
- return <section className="card" aria-labelledby={id}>
-  <h2 id={id}>Empleados</h2>
-  <p>Los permisos se aplican al perfil seleccionado. Desactivar conserva el historial.</p>
-  {role!=='owner'?<p>Solo Dueño puede consultar y administrar empleados.</p>:<>
-   {state==='SUSPENDED'&&<p>Este perfil está suspendido. El acceso permanece en modo de consulta.</p>}
-   {loading&&<p role="status">Consultando empleados…</p>}{notice&&<p role="status">{notice}</p>}{error&&<p role="alert">{error}</p>}
-   {current?.length===0&&<p>No hay empleados registrados en este perfil.</p>}
-   {current?.map(row=>{const edit=Object.hasOwn(edits,row.user_id)?edits[row.user_id]:{role:row.role,active:row.active};return <fieldset key={row.user_id} disabled={!editable||row.user_id===currentUserId}>
-    <legend>{row.name}</legend><p>{row.email}</p>{row.user_id===currentUserId&&<p>Tu acceso se conserva; otra persona Dueño debe administrar cualquier cambio.</p>}
-    <label>Rol de {row.name}<select value={edit.role} onChange={event=>setEdits(previous=>({...previous,[row.user_id]:{...edit,role:event.target.value as ProfileRole}}))}>{profileRoles.map(value=><option key={value} value={value}>{profileRoleLabels[value]}</option>)}</select></label>
-    <label><input type="checkbox" checked={edit.active} onChange={event=>setEdits(previous=>({...previous,[row.user_id]:{...edit,active:event.target.checked}}))}/>Acceso activo de {row.name}</label>
-    <Button type="button" disabled={!editable||!Object.hasOwn(edits,row.user_id)} onClick={()=>{void save(row);}}>Guardar acceso de {row.name}</Button>
-   </fieldset>;})}
-   <Button type="button" variant="secondary" disabled={loading||saving} onClick={()=>{void refresh();}}>Actualizar empleados</Button>
+ return <Card aria-labelledby={id}>
+  <CardHead id={id} title="Empleados" description="Los permisos se aplican al perfil seleccionado. Desactivar conserva el historial." actions={role==='owner'?<Button type="button" variant="ghost" size="sm" disabled={loading||saving} onClick={()=>{void refresh();}}>Actualizar empleados</Button>:undefined}/>
+  {role!=='owner'?<p className="muted">Solo Dueño puede consultar y administrar empleados.</p>:<>
+   {state==='SUSPENDED'&&<Alert tone="warn">Este perfil está suspendido. El acceso permanece en modo de consulta.</Alert>}
+   {loading&&<Skeleton lines={3} label="Consultando empleados…"/>}{notice&&<Alert tone="success">{notice}</Alert>}{error&&<Alert tone="error">{error}</Alert>}
+   {current?.length===0&&<p className="muted">No hay empleados registrados en este perfil.</p>}
+   {current&&current.length>0&&<ul className="item-list employees">{current.map(row=>{const edit=Object.hasOwn(edits,row.user_id)?edits[row.user_id]:{role:row.role,active:row.active};return <li key={row.user_id}><fieldset disabled={!editable||row.user_id===currentUserId} className="plain employee">
+    <legend><span className="row-title">{row.name}</span><span className="row-sub">{row.email}</span></legend>
+    {row.user_id===currentUserId&&<p className="muted text-sm">Tu acceso se conserva; otra persona Dueño debe administrar cualquier cambio.</p>}
+    <div className="cluster">
+     <Field label={`Rol de ${row.name}`}><NativeSelect value={edit.role} onChange={event=>setEdits(previous=>({...previous,[row.user_id]:{...edit,role:event.target.value as ProfileRole}}))}>{profileRoles.map(value=><option key={value} value={value}>{profileRoleLabels[value]}</option>)}</NativeSelect></Field>
+     <NativeCheck label={`Acceso activo de ${row.name}`} checked={edit.active} onChange={event=>setEdits(previous=>({...previous,[row.user_id]:{...edit,active:event.target.checked}}))}/>
+     <Button type="button" variant="secondary" size="sm" disabled={!editable||!Object.hasOwn(edits,row.user_id)} onClick={()=>{void save(row);}}>Guardar acceso de {row.name}</Button>
+    </div>
+   </fieldset></li>;})}</ul>}
   </>}
- </section>;
+ </Card>;
 }

@@ -63,7 +63,10 @@ journals and portal release identities remain valid and unchanged.
    Google execution/custody receipt; `jobs.run` never proves scheduled delivery.
 
 The binding expires no later than **2026-11-04T00:00:00Z**, within the original
-financial period starting October5. Root authorization and the planned invoker
+financial period starting October5. The owner renewed it once (2026-10-16) for one
+more equal period: a MANUAL re-binding may move `valid_until` from 2026-11-04 to
+**2026-12-04T00:00:00Z** and nothing else ([renewal ADR](adr-v7-b02-renewal.md));
+the 37-run/30-day quota is unchanged. Root authorization and the planned invoker
 IAM condition stop new work 30minutes earlier to reserve the full task deadline.
 This does **not** delete GCP resources. Before expiry, an operator must pause and
 verify the exact own Scheduler, wait for own executions to be terminal, then

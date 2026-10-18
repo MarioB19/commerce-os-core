@@ -50,6 +50,12 @@ variables `GITHUB_SHA`, `GITHUB_RUN_ID` o `GITHUB_RUN_ATTEMPT` mezcladas. Conser
 `RUNNER_TEMP` privado para su clave SSH efímera. El transporte revalida FULL y
 el paquete antes de transferir y conserva el rechazo de un main superado.
 
+Desde el 17-oct-2026 (`docs/adr-v7-canonical-local-install.md`) el transporte
+de un paquete `canonical-local` (`cv-`) no lleva adaptador nativo ni
+`host-boot-inputs.json`. Root lo instala con `copy-runtime` y registra el
+arranque durable como `HOST_BOOT_DEFERRED_CANONICAL_LOCAL`. Un paquete nativo
+(`cb-`) conserva todos sus requisitos.
+
 Este documento no activa la publicación. La despausa y la ejecución sólo
 ocurren cuando el orquestador haya completado los gates del SHA integrado.
 

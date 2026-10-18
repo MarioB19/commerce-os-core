@@ -284,4 +284,101 @@ class LocalCanonicalPackageTests(unittest.TestCase):
             evidence.validate_local_package(archive,package,self.repo)
 
 
+
+class CanonicalLocalTransportTests(unittest.TestCase):
+    """Operator transport of a canonical-local package (cv-): no worker boot input."""
+    def setUp(self):
+        patcher = patch.object(evidence.operator_identity,'local_account',return_value='synthetic-ci@example.invalid')
+        patcher.start(); self.addCleanup(patcher.stop)
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)/'source'; (self.root/'release').mkdir(parents=True); (self.root/'scripts').mkdir()
+        for name in client.STAGING_SCRIPTS: (self.root/'scripts'/name).write_text('synthetic fixture\n')
+        archive = self.root/'release/commerce-os.tar'; archive.write_bytes(b'fixture')
+        self.archive_hash = hashlib.sha256(b'fixture').hexdigest()
+        (self.root/'release/commerce-os.tar.sha256').write_text(self.archive_hash+'  commerce-os.tar\n')
+        self.runner_temp = Path(self.temp.name)/'runner'; self.runner_temp.mkdir(mode=0o700)
+        self.env = {'COMMERCE_CLOUD_RELEASE_ADMISSION':'/custody/release.json','COMMERCE_DEPLOY_PAUSED':'false',
+            'COMMERCE_DEPLOY_SCOPE':'copy-runtime','GCP_PROJECT_ID':contract.PROJECT,'GCP_INSTANCE':'commerce-os-test',
+            'GCP_ZONE':'us-east1-d','RUNNER_TEMP':str(self.runner_temp)}
+
+    def admitted(self,run):
+        return {'context':context(),'source_sha':SHA,'installation_run_id':run,'archive_sha256':self.archive_hash,'artifact_uri':None}
+
+    def transport(self,run):
+        calls = []
+        def executor(argv,check=True,capture=False):
+            calls.append(argv); out = ''; code = 0
+            if argv[0] == 'ssh-keygen':
+                Path(argv[-1]).write_text('synthetic-private'); Path(argv[-1]+'.pub').write_text('ssh-ed25519 c3ludGhldGlj fixture')
+            if argv[0] == 'gh': out = SHA
+            command = next((v[10:] for v in argv if v.startswith('--command=')),'')
+            if command.startswith('sudo systemctl show'): out = 'LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\n'
+            if command.startswith('sudo test -s'): code = 1
+            return subprocess.CompletedProcess(argv,code,out,'')
+        report = {'source_sha':SHA,'run_id':run,'status':'SUCCEEDED','deployment_scope':'copy-runtime',
+            'runtime_stage':'OPERATING','consumers_started':True,'healthy_services':6,'physical_sales_proven':False,
+            'host_boot':{'status':'HOST_BOOT_DEFERRED_CANONICAL_LOCAL'}}
+        with patch.object(client,'ROOT',self.root), patch.object(client,'run',executor), \
+             patch.object(client,'verify_local_source'), patch.object(client,'remove_ephemeral_key'), \
+             patch.object(client,'wait_for_report',return_value=report), \
+             patch.object(evidence,'deployment_admission',return_value=self.admitted(run)):
+            client.main(environment=self.env)
+        return calls
+
+    def test_canonical_local_package_is_transported_without_a_boot_input(self):
+        run = contract.cloud_installation_id(VERIFY,1,local_package=True)
+        calls = self.transport(run)
+        scp = [argv for argv in calls if argv[:3] == ['gcloud','compute','scp']]
+        self.assertEqual(len(scp),1)
+        self.assertFalse(any('host-boot-inputs.json' in value for value in scp[0]))
+        starts = [v for argv in calls for v in argv if v.startswith('--command=') and 'systemd-run' in v]
+        self.assertEqual(len(starts),1)
+        self.assertTrue(starts[0].endswith(' '+SHA+' '+run+' @not-selected copy-runtime'))
+        self.assertNotIn('host-boot-inputs',starts[0])
+        self.assertTrue(all('--account=synthetic-ci@example.invalid' in argv for argv in calls if argv[:2] == ['gcloud','compute']))
+
+    def test_native_package_admission_without_the_publisher_adapter_never_transports(self):
+        run = contract.cloud_installation_id(PACKAGE,1)
+        with self.assertRaisesRegex(ReleaseError,'CANONICAL_WORKER_BOOT_ADMISSION_REQUIRED'): self.transport(run)
+        self.assertFalse(list(self.runner_temp.iterdir()))
+
+
+class CanonicalLocalRootEntryTests(unittest.TestCase):
+    """deploy-ci-vps.py argument contract for copy-runtime (no Root effect)."""
+    def setUp(self):
+        self.vps = module('canonical_local_vps','deploy-ci-vps.py')
+        sys.modules['canonical_local_vps'] = self.vps; self.addCleanup(sys.modules.pop,'canonical_local_vps',None)
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        base = Path(self.temp.name); (base/'releases/r').mkdir(parents=True); (base/'current').symlink_to(base/'releases/r')
+        self.base = base
+
+    def enter(self,*argv):
+        published = []
+        import copy_runtime_deployment
+        def publish(server,*args):
+            published.append((args,getattr(server,'HOST_BOOT_INPUTS_RAW',None))); return 0
+        with patch.object(self.vps,'BASE',self.base), patch.object(self.vps.sys,'argv',['deploy-ci-vps.py',*argv]), \
+             patch.object(self.vps.os,'geteuid',return_value=0), patch.object(copy_runtime_deployment,'publish',publish):
+            self.vps.main()
+        return published
+
+    def test_local_package_enters_copy_runtime_without_boot_input(self):
+        run = contract.cloud_installation_id(VERIFY,1,local_package=True)
+        published = self.enter('/stage/commerce-os.tar','e'*64,SHA,run,'@not-selected','copy-runtime')
+        self.assertEqual(published,[(('/stage/commerce-os.tar','e'*64,SHA,run,'@not-selected'),None)])
+
+    def test_local_package_never_accepts_a_boot_input_argument(self):
+        run = contract.cloud_installation_id(VERIFY,1,local_package=True)
+        with self.assertRaisesRegex(ReleaseError,'CANONICAL_PRIVATE_INPUT_DIGEST_REQUIRED'):
+            self.enter('/stage/commerce-os.tar','e'*64,SHA,run,'@not-selected','copy-runtime','f'*64)
+
+    def test_native_package_still_requires_its_boot_input(self):
+        with self.assertRaisesRegex(ReleaseError,'CANONICAL_PRIVATE_INPUT_DIGEST_REQUIRED'):
+            self.enter('/stage/commerce-os.tar','e'*64,SHA,contract.cloud_installation_id(PACKAGE,1),'@not-selected','copy-runtime')
+
+    def test_legacy_run_identity_cannot_select_copy_runtime(self):
+        with self.assertRaisesRegex(ReleaseError,'CANONICAL_CLOUD_BOOT_ADMISSION_REQUIRED'):
+            self.enter('/stage/commerce-os.tar','e'*64,SHA,'123456-1','@not-selected','copy-runtime')
+
+
 if __name__ == '__main__': unittest.main()

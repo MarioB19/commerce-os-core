@@ -8,6 +8,12 @@ de la dependencia de protección de rama privada.
 
 Guía de trabajo de Commerce OS. Contrato V5 comprobado contra el workflow, los scripts y el release139af485 el14-sep-2026. Los antecedentes de publicación se conservan en CI/CD.
 
+**Cierre de un release (desde el 17-oct-2026, decisión del dueño):** un release
+se cierra al terminar su verificación en producción (SHA instalado = servido
+por HTTPS, filas afectadas con evidencia). No hay periodo de observación de
+varios días como compuerta. Lo que ocurre después (respaldos programados,
+alertas, costos) se revisa cuando ocurre y se corrige hacia adelante.
+
 **Recorrido habitual:** implementar en una rama `codex/...` → probar → revisar y llevar a `main` → esperar CI/CD → comprobar el cambio en producción. GitHub construye y transfiere las imágenes; el Mac sólo necesita permanecer disponible mientras se trabaja localmente.
 
 Accesos: [producción](https://commerce-os.inovaris.online) · [ejecuciones de CI/CD](https://github.com/MarioB19/commerce-os/actions/workflows/ci.yml) · [pull requests](https://github.com/MarioB19/commerce-os/pulls) · [arquitectura y recuperación](ci-cd.md).

@@ -15,7 +15,7 @@
     "validate": "node scripts/validate.mjs",
     "validate:bundle": "node scripts/validate-bundle.mjs",
     "smoke:http": "node scripts/smoke-http.mjs",
-    "verify": "npm run validate && npm run test && npm run lint && npm run build && npm run validate:bundle && node scripts/test-standalone.mjs",
+    "verify": "node -e \"require('node:fs').mkdirSync('public',{recursive:true})\" && npm run validate && npm run test && npm run lint && npm run build && npm run validate:bundle && node scripts/test-standalone.mjs",
     "pdf:build": "python3 scripts/build-unified-pdfs.py",
     "test": "node scripts/test-access-attempts.mjs"
   },

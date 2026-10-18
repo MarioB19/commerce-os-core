@@ -155,7 +155,12 @@ def utc_time(value):
 
 
 GCP_FINANCIAL_START = dt.datetime(2026,10,5,tzinfo=dt.timezone.utc)
-GCP_FINANCIAL_END = dt.datetime(2026,11,4,tzinfo=dt.timezone.utc)
+# The original 30-day authorization ended 2026-11-04. The owner renewed it once,
+# for one more equal period with the same 37-run quota (V7 log, 2026-10-16):
+# a binding may now run until 2026-12-04. Root accepts the change of
+# valid_until only as that exact renewal (b02-backup-root.py cutover_facts).
+GCP_FINANCIAL_ORIGINAL_END = dt.datetime(2026,11,4,tzinfo=dt.timezone.utc)
+GCP_FINANCIAL_END = dt.datetime(2026,12,4,tzinfo=dt.timezone.utc)
 GCP_REGION = 'us-east1'
 GCP_JOB = 'projects/' + TARGET[0] + '/locations/' + GCP_REGION + '/jobs/commerce-b02-daily'
 GCP_SCHEDULER = GCP_JOB

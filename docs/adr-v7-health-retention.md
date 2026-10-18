@@ -28,13 +28,21 @@ un temporizador y un paso de la ventana.
 
 1. **Retención diaria (8 días).** `scripts/v7_health_retention.py run` (Root,
    `commerce-health-retention.timer`, 05:30 UTC, antes de B02 a las 06:45)
-   borra, por llave (perfil, entorno, número, dimensión) y en transacciones
-   pequeñas, las señales observadas antes de `now − keep_days` (mínimo 2,
-   configurado 8), **siempre conservando la última observación de cada
-   llave**, junto con su fila de proyección y sus versiones
-   (`scripts/v7_health_retention_batch.sql`). No toca filas con número o
-   dimensión vacíos ni instantes no finitos. `plan` sólo cuenta. Imprime
-   conteos y segundos.
+   borra en una pasada sobre todas las llaves (perfil, entorno, número,
+   dimensión), en bloques de `batch` filas (modo `sweep`), las señales
+   observadas antes de `now − keep_days` (mínimo 2, configurado 8), **siempre
+   conservando la última observación de cada llave**, junto con su fila de
+   proyección y sus versiones (`scripts/v7_health_retention_batch.sql`). Cada
+   bloque es una transacción con candados de fila sólo sobre sus señales
+   viejas y joins hash (lectura secuencial), así que los productores siguen
+   corriendo. No toca filas con número o dimensión vacíos ni instantes no
+   finitos. `plan` sólo cuenta. Imprime conteos, bloques y segundos; un error
+   de PostgreSQL se reporta por su SQLSTATE.
+   - **Por qué no llave por llave (medido el 17-oct en producción):** las
+     señales están dispersas por todo el heap, así que el modo `key` (sondeos
+     por índice) borró ~25 filas/s con el disco ocupado; se detuvo a los
+     8 min con 12,764 filas borradas. El modo `key` queda para limpiar un
+     número y dimensión puntuales.
 2. **Excepción acotada a la inmutabilidad (ADR-005).** Sólo el superusuario
    de la instalación, sólo `kind='health_signal'` y sólo dentro de la
    transacción de cada lote (ver «Cómo se borra»). `immutable_versions` nunca
@@ -54,13 +62,13 @@ un temporizador y un paso de la ventana.
 
 ### Cómo se borra (sin cargar la producción)
 
-Cada lote bloquea con `FOR UPDATE` sólo sus filas (el corte, con productores
+Cada lote (`sweep` o `key`) bloquea con `FOR UPDATE` sólo sus filas (el corte, con productores
 detenidos, toma candados `SHARE` sobre las tablas que referencian), verifica
 por conjuntos que ninguna llave foránea apunte a ellas (y que ninguna esté
 minimizada por privacidad) y sólo entonces borra con
 `session_replication_role=replica` en esa transacción: sin `immutable_versions`
 y sin sondeos de llave foránea fila por fila, que en pd-standard cuestan horas.
-No toma candados de tabla en el modo diario, así que nunca detiene a los
+No toma candados de tabla en los modos `sweep` y `key`, así que nunca detiene a los
 escritores. Al terminar vuelve a `origin` y comprueba que no quede nada del
 conjunto y que los conteos coincidan.
 
@@ -96,7 +104,8 @@ lecturas del laboratorio son más lentas que en el disco de producción.
   errores sin datos de filas.
 - `tests/integration/v7-health-retention.test.ts` sobre el esquema V7
   completo: borra sólo la llave pedida y sus versiones, conserva la última y
-  lo reciente, aplica el corte a todas las llaves, exige superusuario, rechaza
+  lo reciente, aplica el corte a todas las llaves, el barrido diario llega al
+  mismo resultado en bloques, exige superusuario, rechaza
   cortes de menos de dos días, aborta ante una referencia foránea y deja
   `immutable_versions` y `session_replication_role` como estaban.
 - `tests/ci/test_copy_runtime_operating_migration.py`: sólo el corte V7 tiene

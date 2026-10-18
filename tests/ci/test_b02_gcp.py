@@ -157,11 +157,26 @@ class IdentityAndNativeContracts(unittest.TestCase):
 
     def test_expiry_is_original_window_and_reserves_entire_task_budget(self):
         _,b,j,_,_,e,t=fixtures()
-        for patch in ({'valid_from':'2026-10-09T00:00:00Z'},{'valid_until':'2026-11-05T00:00:00Z'},
+        for patch in ({'valid_from':'2026-10-09T00:00:00Z'},{'valid_until':'2026-12-04T00:00:01Z'},
                       {'schedule_utc':'24:00'},{'schema_version':True}):
             with self.subTest(patch=patch),self.assertRaises(RuntimeError):c.gcp_binding(b|patch)
         near=c.utc_time(b['valid_until'])-dt.timedelta(seconds=1799)
         with self.assertRaisesRegex(RuntimeError,'EXPIRED'):c.gcp_execution_guard(b,j,e,t,near)
+
+    def test_single_owner_renewal_extends_the_window_to_december_4(self):
+        _,b,*_=fixtures()
+        self.assertEqual(c.GCP_FINANCIAL_ORIGINAL_END,dt.datetime(2026,11,4,tzinfo=dt.timezone.utc))
+        self.assertEqual(c.GCP_FINANCIAL_END,dt.datetime(2026,12,4,tzinfo=dt.timezone.utc))
+        self.assertEqual(c.gcp_binding(b|{'valid_until':'2026-12-04T00:00:00Z'})['valid_until'],'2026-12-04T00:00:00Z')
+        renewed=b|{'valid_until':'2026-12-04T00:00:00Z'}
+        self.assertTrue(r.financial_renewal(b,renewed))
+        for previous,candidate in ((b,renewed|{'mode':'SCHEDULED'}),(b,b|{'valid_until':'2026-11-20T00:00:00Z'}),
+                                   (b|{'valid_until':'2026-11-03T00:00:00Z'},renewed),(renewed,b)):
+            with self.subTest(candidate=candidate['valid_until'],mode=candidate['mode']):self.assertFalse(r.financial_renewal(previous,candidate))
+        config,*_=fixtures()
+        self.assertIs(s.setup_plan(config)['financial']['renewal'],False)
+        self.assertIs(s.setup_plan(config|{'valid_until':'2026-12-04T00:00:00Z'})['financial']['renewal'],True)
+        with self.assertRaisesRegex(RuntimeError,'FINANCIAL_EXPIRY'):s.setup_plan(config|{'valid_until':'2026-12-04T00:00:01Z'})
 
     def test_schedule_exact_window_invoker_retry_and_inactive_readback(self):
         _,b,j,sc,_,e,t=fixtures('SCHEDULED')
@@ -510,7 +525,7 @@ class NeverStartedAuthorizationReconciliation(unittest.TestCase):
 
 
 class CutoverNativeFacts(unittest.TestCase):
-    def exercise(self, *, drift=None):
+    def exercise(self, *, drift=None, renewal_until=None):
         _,binding,*_=fixtures();plan={'schedule_enabled':False,'preserved':'unchanged'}
         raw=(json.dumps(plan,sort_keys=True)+'\n').encode();binding['plan_sha256']=c.sha256(raw)
         class Clock(dt.datetime):
@@ -532,6 +547,7 @@ class CutoverNativeFacts(unittest.TestCase):
             if drift=='clock':candidate['schedule_utc']='11:00'
             if drift=='renewal':candidate['valid_until']='2026-11-03T00:00:00Z'
             if drift=='plan':candidate['plan_sha256']='f'*64
+            if renewal_until:candidate=binding|{'valid_until':renewal_until,'activation_id':'synthetic-renewal-1'}
             runner=SimpleNamespace(runs=runs,plan=plan,plan_sha256=c.sha256(raw),report=lambda _:first)
             for name,value in [('PRIVATE',private),('DAILY',daily),('GCP_BINDING_PATH',pointer),('GCP_PERMITS',daily/'none')]:stack.enter_context(mock.patch.object(r,name,value))
             stack.enter_context(mock.patch.object(r.dt,'datetime',Clock));stack.enter_context(mock.patch.object(r,'schedule_terminal_guard'))
@@ -544,7 +560,7 @@ class CutoverNativeFacts(unittest.TestCase):
                 observed.assert_not_called()
             else:
                 facts=r.cutover_facts(runner,candidate,TOKEN)
-                self.assertEqual(facts['plan_after'],dict(plan,schedule_enabled=True));self.assertEqual(facts['state_after']['sentinel'],'preserved')
+                self.assertEqual(facts['plan_after'],dict(plan,schedule_enabled=renewal_until is None));self.assertEqual(facts['state_after']['sentinel'],'preserved')
                 self.assertEqual(pointer.read_bytes(),c.canonical(binding));self.assertEqual((daily/'plan.json').read_bytes(),raw)
                 self.assertIs(observed.call_args.kwargs['paused'],True)
 
@@ -552,6 +568,11 @@ class CutoverNativeFacts(unittest.TestCase):
     def test_first_custody_cleanup_clock_financial_and_plan_drift_block_activation(self):
         for drift in ('unfinished','cleanup','clock','renewal','plan'):
             with self.subTest(drift=drift):self.exercise(drift=drift)
+
+    def test_owner_renewal_rebinds_manual_until_december_4_only(self):
+        self.exercise(renewal_until='2026-12-04T00:00:00Z')
+        for until in ('2026-11-20T00:00:00Z','2026-12-04T00:00:01Z','2026-11-03T00:00:00Z'):
+            with self.subTest(until=until):self.exercise(drift='renewal-other',renewal_until=until)
 
     def test_publication_blocks_unreconciled_permission_and_partial_cutover(self):
         import copy_runtime_deployment as runtime

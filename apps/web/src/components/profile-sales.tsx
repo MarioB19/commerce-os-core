@@ -1,11 +1,12 @@
 import {SalesNav} from './sales-nav.js';
 import {useEffect,useMemo,useRef,useState,type FormEvent} from 'react';
+import {MessageSquare,Search,ShoppingBag} from 'lucide-react';
 import type {ProfileRole,ProfileState} from '../../../../packages/contracts/src/profiles.js';
 import type {ProfileSalesRow} from '../../../../packages/contracts/src/profile-sales-consumer.js';
 import {sessionProfileSales} from '../../../../packages/commerce-client/src/profile-sales.js';
 import {salesMutationView,salesPendingStore,nextSalesPage,type SalesMutationInput,type SalesMutationState} from '../lib/profile-sales.js';
 import {marketPriceText} from '../lib/market-price.js';
-import {Button} from './ui/button.js';
+import {Alert,Badge,Button,Card,CardHead,EmptyState,ErrorState,Field,Input,PageHeader,Skeleton,Textarea,toneOf} from './ui';
 type Resource='conversations'|'orders';
 const labels={conversations:'Conversaciones',orders:'Pedidos'};
 const words:Record<string,string>={OPEN:'Abierta',CLOSED:'Cerrada',PENDING:'Pendiente',READY:'Preparado',APPROVED:'Aprobado',REJECTED:'Rechazado',HUMAN_REVIEW:'Revisión humana',PAID:'Pagado',UNPAID:'Sin pagar',FULFILLED:'Entregado',RECEIVED:'Recibido',PROCESSING:'En proceso',VALID:'Válido',INVALID:'No válido'};
@@ -15,7 +16,8 @@ const object=(v:unknown):Record<string,unknown>=>v&&typeof v==='object'&&!Array.
 function moment(v:unknown,timezone:string){if(typeof v!=='string'||!Number.isFinite(Date.parse(v)))return 'Fecha no disponible';return new Intl.DateTimeFormat('es-MX',{dateStyle:'medium',timeStyle:'short',timeZone:timezone}).format(new Date(v));}
 function amount(row:Record<string,unknown>){const minor=row.amount_minor??row.total_minor,currency=row.currency;return typeof minor==='number'&&Number.isSafeInteger(minor)&&typeof currency==='string'?`${marketPriceText(minor,currency)} ${currency}`:'Importe no confirmado';}
 const empty:SalesMutationState={status:'IDLE',pending:null,command:null,mayResend:false,message:''};
-/** Mounted only under a native selected profile. External file I/O is separate. */
+/** V7 Ventas (RF-09): inbox and orders. Mounted only under a native selected
+ * profile; commands are registered first and applied by the worker. */
 export function ProfileSales({resource,selection,actorId,role,profileState,timezone}:{resource:Resource;selection:{workspaceId:string;version:number};actorId:string;role:ProfileRole;profileState:ProfileState;timezone:string}){
  const scope=JSON.stringify([selection.workspaceId,selection.version,actorId,resource]),client=useMemo(()=>sessionProfileSales(selection),[selection.workspaceId,selection.version]);
  const [search,setSearch]=useState(''),[query,setQuery]=useState(''),[offset,setOffset]=useState(0),[selected,setSelected]=useState<string|null>(()=>{if(resource!=='conversations')return null;try{const id=new URLSearchParams(location.search).get('conversation');return id&&/^[0-9a-f-]{36}$/i.test(id)?id:null;}catch{return null;}}),[reload,setReload]=useState(0);
@@ -34,26 +36,54 @@ export function ProfileSales({resource,selection,actorId,role,profileState,timez
   if(!row)return;const body=type==='send_message'?{type,kind:'text' as const,text:message,expected_version:row.version}:type==='commitment'?{type}:{type,reason};void submit({operation:'conversation.command',resource_id:row.id,body});
  }
  function control(name:'paused'|'takeover',value:boolean){if(row)void submit({operation:'conversation.controls',resource_id:row.id,body:{[name]:value,reason}});}
- return <section className="profile-sales"><h1>{labels[resource]}</h1><SalesNav current={resource}/>
-  {operation.status!=='IDLE'&&<section aria-label="Seguimiento de la solicitud" className="rounded border p-4 my-4"><p role={operation.status==='UNCERTAIN'||operation.status==='ERROR'?'alert':'status'}>{operation.status==='WORKING'?'Confirmando la solicitud…':operation.message}</p>{operation.pending&&<p>Referencia: <code>{operation.pending.operation_id}</code>. Conversación: <code>{operation.pending.resource_id}</code>.</p>}
-   {(operation.pending||operation.command)&&<Button variant="secondary" disabled={operation.status==='WORKING'} onClick={()=>{void mutation.current?.reconcile();}}>Consultar solicitud</Button>}
-   {operation.mayResend&&writable&&<><p>Si recargaste la página, vuelve a abrir el mismo registro y completa exactamente los mismos datos. El contenido del mensaje no se guarda en el navegador.</p></>}
-  </section>}
-  <form onSubmit={filter} className="flex gap-2 my-4"><label className="flex-1">Buscar {labels[resource].toLowerCase()}<input className="w-full rounded border p-2" value={search} maxLength={160} onChange={e=>setSearch(e.target.value)}/></label><Button type="submit">Buscar</Button></form>
-  <div className="grid gap-6 lg:grid-cols-2"><section aria-label={`Lista de ${labels[resource].toLowerCase()}`}>
-   {!current&&<p role="status">Consultando {labels[resource].toLowerCase()}…</p>}{current?.error&&<><p role="alert">No se pudo confirmar la lista. Revisa tu acceso y vuelve a consultar.</p><Button onClick={()=>setReload(n=>n+1)}>Consultar de nuevo</Button></>}
-   {current&&!current.error&&<><p>{current.total} registros</p>{!current.rows.length&&<p>No hay registros con este filtro.</p>}<ul className="grid gap-2">{current.rows.map(item=><li key={item.id}><button className="w-full text-left rounded border p-3" aria-pressed={selected===item.id} onClick={()=>setSelected(item.id)}><strong>{str(item.name??item.title,`${resource==='conversations'?'Conversación':resource==='orders'?'Pedido':'Comprobante'} ${item.id.slice(-8)}`)}</strong><div>{stateLabel(item.status??item.stage)} · {moment(item.updated_at,timezone)}</div>{resource!=='conversations'&&<div>{amount(item)}</div>}</button></li>)}</ul><div className="flex gap-2 my-4"><Button variant="secondary" disabled={!offset} onClick={()=>{setOffset(Math.max(0,offset-20));setSelected(null);}}>Anterior</Button><Button variant="secondary" disabled={nextPage===null} onClick={()=>{if(nextPage!==null){setOffset(nextPage);setSelected(null);}}}>Siguiente</Button></div>{offset>=10000&&current.total>offset+20&&<p>Acota la búsqueda para consultar más registros.</p>}</>}
-  </section><section aria-label="Detalle seleccionado">
-   {!selected&&<p>Elige un registro para consultar su detalle.</p>}{selected&&!chosen&&<p role="status">Consultando detalle…</p>}{chosen?.error&&<><p role="alert">No se pudo confirmar este registro. No se habilitarán cambios.</p><Button onClick={()=>setReload(n=>n+1)}>Consultar detalle</Button></>}
-   {row&&<><h2>{str(row.name??row.title,resource==='conversations'?'Detalle de conversación':resource==='orders'?'Detalle del pedido':'Detalle del comprobante')}</h2><p>{stateLabel(row.status??row.stage)} · Revisión {row.version}</p>
-    {resource==='conversations'?<><p>Contacto: {str(object(row.contact).name,'Sin nombre registrado')}</p>{row.order&&<p>Pedido: {amount(object(row.order))} · {stateLabel(object(row.order).status)}</p>}
-     <ol aria-label="Mensajes" className="grid gap-3 my-4">{(Array.isArray(row.messages)?row.messages:[]).map(value=>{const entry=object(value);return <li className="rounded border p-3" key={String(entry.id)}><strong>{entry.direction==='inbound'?'Cliente':'Negocio'}</strong><p className="whitespace-pre-wrap">{str(entry.text,'Contenido adjunto')}</p><small>{moment(entry.created_at,timezone)}</small></li>;})}</ol>
-     <p>Automatización: {object(row.controls).paused?'pausada':'sin pausa manual'}. Atención manual: {object(row.controls).takeover?'activa':'inactiva'}.</p>
-     {writable&&<fieldset disabled={locked} className="grid gap-3 mt-4"><legend>Atender conversación</legend><label>Mensaje<textarea aria-label="Mensaje" className="w-full rounded border p-2" value={message} maxLength={4096} onChange={e=>setMessage(e.target.value)}/></label><Button disabled={!message.trim()} onClick={()=>command('send_message')}>{operation.mayResend?'Reenviar mensaje con la misma referencia':'Registrar mensaje'}</Button><p>El comando se registra primero. El envío depende de los controles vigentes del número y de la conversación.</p><label>Motivo de la decisión<textarea aria-label="Motivo de la decisión" className="w-full rounded border p-2" value={reason} minLength={3} maxLength={2000} onChange={e=>setReason(e.target.value)}/></label><div className="flex flex-wrap gap-2"><Button variant="secondary" disabled={reason.trim().length<3} onClick={()=>control('paused',!object(row.controls).paused)}>{object(row.controls).paused?'Reanudar automatización':'Pausar automatización'}</Button><Button variant="secondary" disabled={reason.trim().length<3} onClick={()=>control('takeover',!object(row.controls).takeover)}>{object(row.controls).takeover?'Devolver a automatización':'Tomar atención manual'}</Button><Button variant="secondary" disabled={reason.trim().length<3} onClick={()=>command('close_conversation')}>Solicitar cierre</Button><Button variant="secondary" disabled={reason.trim().length<3} onClick={()=>command('opt_out')}>Registrar baja del contacto</Button></div></fieldset>}
-    </>:<><p>{amount(row)}</p><dl><dt>Conversación</dt><dd>{str(row.conversation_id)}</dd></dl>{resource==='orders'&&<a href="/sales/payments">Consultar registro de pagos</a>}
-
-    </>}{!writable&&<p>{role==='viewer'?'Tu rol permite consultar estos registros.':'Este perfil no permite registrar decisiones mientras esté suspendido.'}</p>}{formError&&<p role="alert">{formError}</p>}
-   </>}
-  </section></div>
- </section>;
+ const title=(item:ProfileSalesRow)=>str(item.name??item.title,`${resource==='conversations'?'Conversación':'Pedido'} ${item.id.slice(-8)}`);
+ const Icon=resource==='conversations'?MessageSquare:ShoppingBag;
+ return <>
+  <PageHeader title={labels[resource]} description={resource==='conversations'?'Lo que tus números atienden ahora. Elige una conversación para ver sus mensajes y tomar el control.':'Pedidos registrados por tus números. Cada pedido se paga con un comprobante.'}/>
+  <SalesNav current={resource}/>
+  {operation.status!=='IDLE'&&<Alert tone={operation.status==='UNCERTAIN'||operation.status==='ERROR'?'error':'info'} title={operation.status==='WORKING'?'Confirmando la solicitud…':operation.message} actions={<>{(operation.pending||operation.command)&&<Button variant="secondary" size="sm" disabled={operation.status==='WORKING'} onClick={()=>{void mutation.current?.reconcile();}}>Consultar solicitud</Button>}</>}>
+   {operation.pending&&<span>Referencia: <code>{operation.pending.operation_id}</code>. Conversación: <code>{operation.pending.resource_id}</code>.</span>}
+   {operation.mayResend&&writable&&<span>Si recargaste la página, vuelve a abrir el mismo registro y completa exactamente los mismos datos. El contenido del mensaje no se guarda en el navegador.</span>}
+  </Alert>}
+  <form onSubmit={filter} className="toolbar"><div className="toolbar-search"><Search aria-hidden="true"/><Input type="search" aria-label={`Buscar ${labels[resource].toLowerCase()}`} placeholder={`Buscar ${labels[resource].toLowerCase()}`} value={search} maxLength={160} onChange={e=>setSearch(e.target.value)}/></div><Button type="submit" variant="secondary">Buscar</Button></form>
+  <div className={'layout-1-2 sales-layout'+(selected?' has-selection':'')}>
+   <section aria-label={`Lista de ${labels[resource].toLowerCase()}`} className="stack-tight">
+    {!current&&<Skeleton lines={5}/>}
+    {current?.error&&<ErrorState message="No se pudo confirmar la lista. Revisa tu acceso y vuelve a consultar." onRetry={()=>setReload(n=>n+1)} retryLabel="Consultar de nuevo"/>}
+    {current&&!current.error&&<>
+     <p className="muted text-sm">{current.total} registro{current.total===1?'':'s'}</p>
+     {!current.rows.length&&<EmptyState inline level={3} icon={<Icon aria-hidden="true"/>} title={query?'Sin resultados con este filtro':resource==='conversations'?'Todavía no hay conversaciones':'Todavía no hay pedidos'} description={query?'Prueba con otro texto.':resource==='conversations'?'Cuando un cliente escriba a uno de tus números, aparecerá aquí.':'Los pedidos aparecen cuando un cliente acepta una oferta.'}/>}
+     <ul className="select-list">{current.rows.map(item=><li key={item.id}><button type="button" aria-pressed={selected===item.id} onClick={()=>setSelected(item.id)}>
+      <span className="row-title">{title(item)}</span>
+      <span className="cluster"><Badge tone={toneOf(String(item.status??item.stage??''))} icon={false}>{stateLabel(item.status??item.stage)}</Badge><span className="muted text-sm">{moment(item.updated_at,timezone)}</span></span>
+      {resource!=='conversations'&&<span className="muted text-sm">{amount(item)}</span>}
+     </button></li>)}</ul>
+     {(offset>0||nextPage!==null)&&<div className="cluster"><Button variant="secondary" size="sm" disabled={!offset} onClick={()=>{setOffset(Math.max(0,offset-20));setSelected(null);}}>Anterior</Button><Button variant="secondary" size="sm" disabled={nextPage===null} onClick={()=>{if(nextPage!==null){setOffset(nextPage);setSelected(null);}}}>Siguiente</Button></div>}
+     {offset>=10000&&current.total>offset+20&&<p className="muted text-sm">Acota la búsqueda para consultar más registros.</p>}
+    </>}
+   </section>
+   <section aria-label="Detalle seleccionado">
+    {!selected&&<EmptyState inline level={3} icon={<Icon aria-hidden="true"/>} title={`Elige ${resource==='conversations'?'una conversación':'un pedido'}`} description="El detalle aparece aquí."/>}
+    {selected&&!chosen&&<Skeleton lines={6} label="Consultando detalle…"/>}
+    {chosen?.error&&<ErrorState message="No se pudo confirmar este registro. No se habilitarán cambios." onRetry={()=>setReload(n=>n+1)} retryLabel="Consultar detalle"/>}
+    {row&&<Card aria-labelledby="detail-title">
+     <CardHead id="detail-title" title={str(row.name??row.title,resource==='conversations'?'Detalle de conversación':'Detalle del pedido')} description={`${stateLabel(row.status??row.stage)} · Revisión ${row.version}`}/>
+     {resource==='conversations'?<>
+      <dl className="facts"><div><dt>Contacto</dt><dd>{str(object(row.contact).name,'Sin nombre registrado')}</dd></div>{row.order?<div><dt>Pedido</dt><dd>{amount(object(row.order))} · {stateLabel(object(row.order).status)}</dd></div>:null}<div><dt>Automatización</dt><dd>{object(row.controls).paused?'Pausada':'Sin pausa manual'}</dd></div><div><dt>Atención manual</dt><dd>{object(row.controls).takeover?'Activa':'Inactiva'}</dd></div></dl>
+      <ol aria-label="Mensajes" className="chat">{(Array.isArray(row.messages)?row.messages:[]).map(value=>{const entry=object(value);const inbound=entry.direction==='inbound';return <li className={`bubble ${inbound?'from-customer':'from-business'}`} key={String(entry.id)}><span className="bubble-text">{str(entry.text,'Contenido adjunto')}</span><span className="bubble-meta">{inbound?'Cliente':'Negocio'} · {moment(entry.created_at,timezone)}</span></li>;})}</ol>
+      {writable&&<fieldset disabled={locked} className="plain"><legend>Atender conversación</legend>
+       <Field label="Mensaje" help="El comando se registra primero. El envío depende de los controles vigentes del número y de la conversación."><Textarea value={message} maxLength={4096} rows={3} onChange={e=>setMessage(e.target.value)}/></Field>
+       <div><Button disabled={!message.trim()} onClick={()=>command('send_message')}>{operation.mayResend?'Reenviar mensaje con la misma referencia':'Registrar mensaje'}</Button></div>
+       <Field label="Motivo de la decisión" help="Obligatorio para pausar, tomar la atención, cerrar o dar de baja."><Textarea value={reason} minLength={3} maxLength={2000} rows={2} onChange={e=>setReason(e.target.value)}/></Field>
+       <div className="cluster"><Button variant="secondary" size="sm" disabled={reason.trim().length<3} onClick={()=>control('paused',!object(row.controls).paused)}>{object(row.controls).paused?'Reanudar automatización':'Pausar automatización'}</Button><Button variant="secondary" size="sm" disabled={reason.trim().length<3} onClick={()=>control('takeover',!object(row.controls).takeover)}>{object(row.controls).takeover?'Devolver a automatización':'Tomar atención manual'}</Button><Button variant="secondary" size="sm" disabled={reason.trim().length<3} onClick={()=>command('close_conversation')}>Solicitar cierre</Button><Button variant="ghost" size="sm" disabled={reason.trim().length<3} onClick={()=>command('opt_out')}>Registrar baja del contacto</Button></div>
+      </fieldset>}
+     </>:<>
+      <dl className="facts"><div><dt>Importe</dt><dd>{amount(row)}</dd></div><div><dt>Conversación</dt><dd>{str(row.conversation_id)}</dd></div></dl>
+      <div><a href="/sales/payments" className="btn" data-variant="secondary">Consultar registro de pagos</a></div>
+     </>}
+     {!writable&&<p className="muted text-sm">{role==='viewer'?'Tu rol permite consultar estos registros.':'Este perfil no permite registrar decisiones mientras esté suspendido.'}</p>}{formError&&<Alert tone="error">{formError}</Alert>}
+    </Card>}
+   </section>
+  </div>
+ </>;
 }
