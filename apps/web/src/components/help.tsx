@@ -1,6 +1,7 @@
 import {Fragment,useState,type ReactNode} from 'react';
 import {helpSections,helpMarkdown,HELP_VERSION} from '../../../../packages/contracts/src/help.js';
-import {Button} from './ui/button.js';
+import {Button,PageHeader} from './ui';
+import {Download} from 'lucide-react';
 
 /** V7 F7 Ayuda (RF-16.a/c/d/e): the same text as `/v2/help` and MCP
  * `help_read`, rendered without HTML injection, and downloadable. */
@@ -37,13 +38,12 @@ function Markdown({text}:{text:string}){
 export function Help(){
  const [open,setOpen]=useState<string>(()=>{try{const h=window.location.hash.slice(1);return helpSections.some(s=>s.id===h)?h:'empezar';}catch{return 'empezar';}});
  function download(){const url=URL.createObjectURL(new Blob([helpMarkdown()],{type:'text/markdown;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download=`ayuda-commerce-os-${HELP_VERSION}.md`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
- return <section className="help-v7" aria-labelledby="help-title">
-  <header className="results-head"><h1 id="help-title">Ayuda</h1><Button variant="secondary" onClick={download}>Descargar guía</Button></header>
-  <p className="variant-hint">Versión {HELP_VERSION}. La misma guía está disponible por la API y por el conector MCP.</p>
-  <div className="help-layout">
+ return <>
+  <PageHeader title="Ayuda" description={`Versión ${HELP_VERSION}. La misma guía está disponible por la API y por el conector MCP.`} actions={<Button variant="secondary" onClick={download}><Download aria-hidden="true"/>Descargar guía</Button>}/>
+  <div className="layout-side">
    <nav aria-label="Temas de ayuda" className="help-nav"><ul>{helpSections.map(s=><li key={s.id}><a href={`#${s.id}`} aria-current={open===s.id?'true':undefined} onClick={()=>setOpen(s.id)}>{s.title}</a></li>)}</ul></nav>
-   <div className="help-sections">{helpSections.map(s=><details key={s.id} id={s.id} open={open===s.id} onToggle={e=>{if((e.target as HTMLDetailsElement).open)setOpen(s.id);}}>
-    <summary><strong>{s.title}</strong><span>{s.summary}</span></summary><div className="help-body"><Markdown text={s.body}/></div></details>)}</div>
+   <div className="stack">{helpSections.map(s=><details key={s.id} id={s.id} className="disclosure" open={open===s.id} onToggle={e=>{if((e.target as HTMLDetailsElement).open)setOpen(s.id);}}>
+    <summary><span className="help-summary"><strong>{s.title}</strong><span className="muted text-sm">{s.summary}</span></span></summary><div className="disclosure-body help-body"><Markdown text={s.body}/></div></details>)}</div>
   </div>
- </section>;
+ </>;
 }

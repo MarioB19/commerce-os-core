@@ -2,6 +2,8 @@ import {useCallback,useEffect,useState} from 'react';
 import type {ProfileFence} from '../lib/profile-request.js';
 import {variantRequest,errorText} from '../lib/variants.js';
 import {profileToday} from '../lib/results.js';
+import {Alert,Badge,Button,Card,CardHead,EmptyState,Kpi,NativeSelect,PageHeader,Segmented,Skeleton,Table,TableWrap} from './ui';
+import {Megaphone,RefreshCw} from 'lucide-react';
 
 /** V7 F7 Campañas (RF-11, RF-09.k): what each campaign spent and the sales it
  * brought, crossed with approved payments. Read only: there is no button that
@@ -32,35 +34,34 @@ export function Campaigns({selection,timezone}:{selection:ProfileFence;timezone:
   setSyncNote(r.status==='QUEUED'?'Pedimos una lectura nueva a Meta. Los datos se actualizan en unos minutos.':'Ya hay una lectura en curso.');void load(preset,currency);}
   catch(e){setSyncNote(errorText(e,'No se pudo pedir la lectura. Sólo el dueño del perfil puede hacerlo.'));}};
  const r=view?.report,s=r?.summary,currencies=[...new Set(view?.accounts.map(a=>a.currency)??[])];
- return <section className="results-v7 campaigns-v7" aria-labelledby="campaigns-title">
-  <header className="results-head"><h1 id="campaigns-title">Campañas</h1>
-   <div className="results-presets" role="group" aria-label="Periodo">{([['7','7 días'],['30','30 días'],['month','Este mes']] as [Preset,string][]).map(([k,l])=><button key={k} type="button" aria-pressed={preset===k} onClick={()=>setPreset(k)}>{l}</button>)}</div>
-   {currencies.length>1&&<label className="results-currency">Moneda<select value={currency} onChange={e=>setCurrency(e.target.value)}>{currencies.map(c=><option key={c}>{c}</option>)}</select></label>}
-  </header>
-  <p className="number-test-isolation" role="note">Sólo lectura: aquí ves lo que gastaron tus anuncios y lo que vendieron. Nada de esta página cambia tus campañas ni tu presupuesto en Meta.</p>
-  {error&&<p role="alert">{error}</p>}{!view&&!error&&<p role="status">Consultando campañas…</p>}
-  {view&&!view.connected&&<div className="results-funnel"><h2>Conecta Meta</h2><p>{view.note}</p><p><a href="/account/integrations">Ir a Integraciones</a></p></div>}
-  {view?.connected&&<div className="variant-hint" role="status"><p>{syncText(view.sync)}</p>{!view.report&&view.note&&<p>{view.note}</p>}
-   <button type="button" onClick={()=>void refresh()}>Actualizar datos de Meta</button>{syncNote&&<p role="status">{syncNote}</p>}</div>}
-  {s&&r&&<div className="results-report" aria-busy={busy}>
-   <div className="results-cards">
-    <div className="results-card"><span className="results-card-label">Gasto</span><strong className="results-card-value">{spend(s,currency)}</strong>{s.spend_minor===null&&<span className="results-card-hint">* Faltan días de Meta en el periodo; es lo reportado hasta ahora.</span>}</div>
-    <div className="results-card"><span className="results-card-label">Ventas por anuncios</span><strong className="results-card-value">{s.attributed_sales}</strong><span className="results-card-hint">de {s.sales} ventas en total</span></div>
-    <div className="results-card"><span className="results-card-label">Ingresos por anuncios</span><strong className="results-card-value">{money(s.attributed_revenue_minor,currency)}</strong></div>
-    <div className="results-card"><span className="results-card-label">ROAS</span><strong className="results-card-value">{times(s.roas)}</strong><span className="results-card-hint">Ingresos atribuidos por cada peso invertido.</span></div>
-    <div className="results-card"><span className="results-card-label">Costo por venta</span><strong className="results-card-value">{s.cpa_minor===null?'—':money(Math.round(s.cpa_minor),currency)}</strong></div>
-    <div className="results-card"><span className="results-card-label">Conversaciones de Meta</span><strong className="results-card-value">{s.conversations??'—'}</strong></div>
-   </div>
-   <section className="results-series" aria-labelledby="campaigns-list"><h2 id="campaigns-list">Por campaña</h2>
-    {r.groups.campaigns.length===0?<p>No hubo gasto ni ventas atribuidas en el periodo.</p>:<div className="results-table"><table><thead><tr><th>Campaña</th><th>Gasto</th><th>Conversaciones</th><th>Ventas</th><th>Ingresos</th><th>ROAS</th></tr></thead>
-     <tbody>{r.groups.campaigns.map(c=><tr key={(c.campaign_id??c.name)+c.name}><th>{c.name}</th><td>{spend(c,currency)}</td><td>{c.conversations??'—'}</td><td>{c.sales}</td><td>{money(c.revenue_minor,currency)}</td><td>{times(c.roas)}</td></tr>)}</tbody></table></div>}
-    <details><summary>Por anuncio ({r.groups.ads.length})</summary><div className="results-table"><table><thead><tr><th>Anuncio</th><th>Gasto</th><th>Ventas</th><th>Ingresos</th><th>ROAS</th></tr></thead>
-     <tbody>{r.groups.ads.map(a=><tr key={(a.ad_id??a.name)+a.name}><th>{a.name}</th><td>{spend(a,currency)}</td><td>{a.sales}</td><td>{money(a.revenue_minor,currency)}</td><td>{times(a.roas)}</td></tr>)}</tbody></table></div></details>
-    <details><summary>Por producto</summary><div className="results-table"><table><thead><tr><th>Producto</th><th>Gasto</th><th>Ventas</th><th>Ingresos</th><th>ROAS</th></tr></thead>
-     <tbody>{r.groups.products.map(p=><tr key={p.name+(p.source??'')}><th>{p.name}</th><td>{spend(p,currency)}</td><td>{p.sales}</td><td>{money(p.revenue_minor,currency)}</td><td>{times(p.roas)}</td></tr>)}</tbody></table></div></details>
+ return <>
+  <PageHeader title="Campañas" description="Sólo lectura: lo que gastaron tus anuncios y lo que vendieron, cruzado con los pagos aprobados. Nada de esta página cambia tus campañas ni tu presupuesto en Meta." actions={view?.connected?<Button variant="secondary" onClick={()=>void refresh()}><RefreshCw aria-hidden="true"/>Actualizar datos de Meta</Button>:undefined}/>
+  <div className="toolbar">
+   <Segmented label="Periodo" value={preset} onChange={setPreset} options={[{value:'7',label:'7 días'},{value:'30',label:'30 días'},{value:'month',label:'Este mes'}]}/>
+   {currencies.length>1&&<label className="toolbar-sort"><span className="muted text-sm">Moneda</span><NativeSelect aria-label="Moneda" value={currency} onChange={e=>setCurrency(e.target.value)}>{currencies.map(c=><option key={c}>{c}</option>)}</NativeSelect></label>}
+  </div>
+  {error&&<Alert tone="error">{error}</Alert>}{!view&&!error&&<div className="kpi-grid" aria-hidden="true"><Skeleton block/><Skeleton block/><Skeleton block/></div>}
+  {view&&!view.connected&&<EmptyState icon={<Megaphone aria-hidden="true"/>} title="Conecta Meta" description={view.note} action={<a href="/account/integrations" className="btn" data-variant="default">Ir a Integraciones</a>}/>}
+  {view?.connected&&<Alert tone="info" role="status">{syncText(view.sync)}{!view.report&&view.note?` ${view.note}`:''}{syncNote?` ${syncNote}`:''}</Alert>}
+  {s&&r&&<div className="stack" aria-busy={busy} style={{gap:'var(--space-5)',opacity:busy?0.6:1}}>
+   <section aria-label="Resumen" className="kpi-grid">
+    <Kpi label="Gasto" value={spend(s,currency)} hint={s.spend_minor===null?'* Faltan días de Meta en el periodo; es lo reportado hasta ahora.':undefined}/>
+    <Kpi label="Ventas por anuncios" value={String(s.attributed_sales)} hint={`de ${s.sales} ventas en total`}/>
+    <Kpi label="Ingresos por anuncios" value={money(s.attributed_revenue_minor,currency)}/>
+    <Kpi label="ROAS" value={times(s.roas)} missing={s.roas===null} hint="Ingresos atribuidos por cada peso invertido."/>
+    <Kpi label="Costo por venta" value={s.cpa_minor===null?'Sin ventas atribuidas':money(Math.round(s.cpa_minor),currency)} missing={s.cpa_minor===null}/>
+    <Kpi label="Conversaciones de Meta" value={s.conversations??'Sin dato'} missing={s.conversations===null}/>
    </section>
-   <p className="variant-hint">Ventas e ingresos cuentan pagos aprobados en la hoja de pagos; una venta se atribuye a un anuncio sólo con evidencia del anuncio. {r.quality.unattributed.sales>0?`${r.quality.unattributed.sales} venta${r.quality.unattributed.sales===1?'':'s'} sin anuncio (${money(r.quality.unattributed.revenue_minor,currency)}). `:''}{r.quality.status==='PARTIAL'?'El gasto de algunos días falta o no cuadra con Meta; las cifras con * son lo reportado. ':''}
+   <Card aria-labelledby="campaigns-list"><CardHead id="campaigns-list" title="Por campaña"/>
+    {r.groups.campaigns.length===0?<p className="muted">No hubo gasto ni ventas atribuidas en el periodo.</p>:<TableWrap label="Por campaña"><Table><thead><tr><th scope="col">Campaña</th><th scope="col" className="num">Gasto</th><th scope="col" className="num">Conversaciones</th><th scope="col" className="num">Ventas</th><th scope="col" className="num">Ingresos</th><th scope="col" className="num">ROAS</th></tr></thead>
+     <tbody>{r.groups.campaigns.map(c=><tr key={(c.campaign_id??c.name)+c.name}><th scope="row">{c.name}</th><td data-label="Gasto" className="num">{spend(c,currency)}</td><td data-label="Conversaciones" className="num">{c.conversations??'—'}</td><td data-label="Ventas" className="num">{c.sales}</td><td data-label="Ingresos" className="num">{money(c.revenue_minor,currency)}</td><td data-label="ROAS" className="num">{times(c.roas)}</td></tr>)}</tbody></Table></TableWrap>}
+    <details className="disclosure quiet"><summary>Por anuncio ({r.groups.ads.length})</summary><div className="disclosure-body"><TableWrap label="Por anuncio"><Table><thead><tr><th scope="col">Anuncio</th><th scope="col" className="num">Gasto</th><th scope="col" className="num">Ventas</th><th scope="col" className="num">Ingresos</th><th scope="col" className="num">ROAS</th></tr></thead>
+     <tbody>{r.groups.ads.map(a=><tr key={(a.ad_id??a.name)+a.name}><th scope="row">{a.name}</th><td data-label="Gasto" className="num">{spend(a,currency)}</td><td data-label="Ventas" className="num">{a.sales}</td><td data-label="Ingresos" className="num">{money(a.revenue_minor,currency)}</td><td data-label="ROAS" className="num">{times(a.roas)}</td></tr>)}</tbody></Table></TableWrap></div></details>
+    <details className="disclosure quiet"><summary>Por producto</summary><div className="disclosure-body"><TableWrap label="Por producto"><Table><thead><tr><th scope="col">Producto</th><th scope="col" className="num">Gasto</th><th scope="col" className="num">Ventas</th><th scope="col" className="num">Ingresos</th><th scope="col" className="num">ROAS</th></tr></thead>
+     <tbody>{r.groups.products.map(p=><tr key={p.name+(p.source??'')}><th scope="row">{p.name}</th><td data-label="Gasto" className="num">{spend(p,currency)}</td><td data-label="Ventas" className="num">{p.sales}</td><td data-label="Ingresos" className="num">{money(p.revenue_minor,currency)}</td><td data-label="ROAS" className="num">{times(p.roas)}</td></tr>)}</tbody></Table></TableWrap></div></details>
+   </Card>
+   <p className="muted text-sm">Ventas e ingresos cuentan pagos aprobados en la hoja de pagos; una venta se atribuye a un anuncio sólo con evidencia del anuncio. {r.quality.unattributed.sales>0?`${r.quality.unattributed.sales} venta${r.quality.unattributed.sales===1?'':'s'} sin anuncio (${money(r.quality.unattributed.revenue_minor,currency)}). `:''}{r.quality.status==='PARTIAL'?<Badge tone="warn">Gasto parcial</Badge>:null}{r.quality.status==='PARTIAL'?' El gasto de algunos días falta o no cuadra con Meta; las cifras con * son lo reportado. ':''}
     Cuentas: {view!.accounts.map(a=>`${a.name} (${a.currency}${a.last_success_at?`, leída ${new Date(a.last_success_at).toLocaleString('es-MX')}`:''})`).join(' · ')}.</p>
   </div>}
- </section>;
+ </>;
 }

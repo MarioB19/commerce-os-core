@@ -3,7 +3,7 @@ import {profileRoleLabels,profileRoles,type ProfileRole,type ProfileState} from 
 import {invitationCreateSchema,type InvitationListed,type InvitationPage} from '../../../../packages/contracts/src/profile-invitations.js';
 import type {ProfileRequestFence} from '../lib/profile-settings.js';
 import {loadProfileInvitations,createProfileInvitation,findProfileInvitationOperation,cancelProfileInvitation} from '../lib/profile-invitations.js';
-import {Button} from './ui/button';
+import {Alert,Badge,Button,Card,CardHead,Field,Input,NativeSelect,Skeleton} from './ui';
 import {ApiError} from '../lib/api.js';
 type Draft={operationId:string;email:string;role:ProfileRole};
 /** Prepared interface: sending and recipient acceptance are separate gates. */
@@ -40,16 +40,17 @@ export function ProfileInvitations({selection,role,state}:{selection:ProfileRequ
   catch(e){if(generation===epoch.current){setUncertain(true);setError(e instanceof Error?e.message:'Consulta el estado antes de continuar.');}}
   finally{if(generation===epoch.current||!busy.current){busy.current=false;setSaving(false);}}
  }
- return <section className="card" aria-labelledby={title}><h2 id={title}>Invitaciones</h2><p>Invita a una persona a este perfil. La cola de correo y la entrega tienen estados separados.</p>
- {role!=='owner'?<p>Solo Dueño puede consultar y gestionar invitaciones.</p>:<>
-  {state==='SUSPENDED'&&<p>El perfil está suspendido. Las invitaciones permanecen en modo de consulta.</p>}
-  {loading&&<p role="status">Consultando invitaciones…</p>}{notice&&<p role="status">{notice}</p>}{error&&<p role="alert">{error}</p>}
-  <form onSubmit={event=>{event.preventDefault();void create();}}><fieldset disabled={!editable||Boolean(pending.current)}><legend>Nueva invitación</legend><label>Correo de la persona<input type="email" value={email} maxLength={254} required onChange={event=>setEmail(event.target.value)}/></label><label>Rol de la invitación<select value={inviteRole} onChange={event=>setInviteRole(event.target.value as ProfileRole)}>{profileRoles.map(value=><option key={value} value={value}>{profileRoleLabels[value]}</option>)}</select></label></fieldset>
-  <Button type="submit" disabled={!editable||!current||Boolean(pending.current&&!retryReady)}>{retryReady?'Reintentar la misma solicitud':'Guardar invitación'}</Button></form>
-  {current?.data.length===0&&<p>No hay invitaciones en esta página.</p>}
-  <ul>{current?.data.map(row=><li key={row.id}><p>{row.email} — {profileRoleLabels[row.role]}</p><p>{row.status==='CANCELLED'?'Cancelada':row.delivery==='QUEUED'?'En cola; todavía no enviada':row.delivery==='ACCEPTED'?'Aceptada por el proveedor; recepción no acreditada':row.delivery==='UNCERTAIN'?'Resultado de envío incierto':row.status}</p><Button type="button" variant="secondary" disabled={!editable||Boolean(pending.current)||row.status!=='PENDING'} onClick={()=>{void cancel(row);}}>Cancelar invitación de {row.email}</Button></li>)}</ul>
-  <Button type="button" variant="secondary" disabled={loading||saving} onClick={()=>{void refresh();}}>Consultar estado de invitaciones</Button>
-  {current?.nextAfterId&&<Button type="button" variant="secondary" disabled={loading||saving||uncertain||Boolean(pending.current)} onClick={()=>{void refresh(current.nextAfterId!);}}>Siguiente página de invitaciones</Button>}
- </>}
- </section>;
+ const delivery=(row:InvitationListed)=>row.status==='CANCELLED'?['Cancelada','neutral']:row.delivery==='QUEUED'?['En cola; todavía no enviada','info']:row.delivery==='ACCEPTED'?['Aceptada por el proveedor; recepción no acreditada','success']:row.delivery==='UNCERTAIN'?['Resultado de envío incierto','warn']:[row.status,'neutral'];
+ return <Card aria-labelledby={title}>
+  <CardHead id={title} title="Invitaciones" description="Invita a una persona a este perfil. La cola de correo y la entrega tienen estados separados." actions={role==='owner'?<Button type="button" variant="ghost" size="sm" disabled={loading||saving} onClick={()=>{void refresh();}}>Consultar estado de invitaciones</Button>:undefined}/>
+  {role!=='owner'?<p className="muted">Solo Dueño puede consultar y gestionar invitaciones.</p>:<>
+   {state==='SUSPENDED'&&<Alert tone="warn">El perfil está suspendido. Las invitaciones permanecen en modo de consulta.</Alert>}
+   {loading&&<Skeleton lines={2} label="Consultando invitaciones…"/>}{notice&&<Alert tone="success">{notice}</Alert>}{error&&<Alert tone="error">{error}</Alert>}
+   <form onSubmit={event=>{event.preventDefault();void create();}} className="form"><fieldset disabled={!editable||Boolean(pending.current)} className="plain"><legend>Nueva invitación</legend><div className="form-grid"><Field label="Correo de la persona"><Input type="email" value={email} maxLength={254} required onChange={event=>setEmail(event.target.value)}/></Field><Field label="Rol de la invitación"><NativeSelect value={inviteRole} onChange={event=>setInviteRole(event.target.value as ProfileRole)}>{profileRoles.map(value=><option key={value} value={value}>{profileRoleLabels[value]}</option>)}</NativeSelect></Field></div></fieldset>
+   <div className="form-actions"><Button type="submit" variant="secondary" disabled={!editable||!current||Boolean(pending.current&&!retryReady)}>{retryReady?'Reintentar la misma solicitud':'Guardar invitación'}</Button></div></form>
+   {current?.data.length===0&&<p className="muted">No hay invitaciones en esta página.</p>}
+   {current&&current.data.length>0&&<ul className="item-list">{current.data.map(row=>{const [label,tone]=delivery(row);return <li key={row.id}><span className="item-name">{row.email} — {profileRoleLabels[row.role]}</span><Badge tone={tone as 'neutral'|'info'|'success'|'warn'}>{label}</Badge><Button type="button" variant="ghost" size="sm" disabled={!editable||Boolean(pending.current)||row.status!=='PENDING'} onClick={()=>{void cancel(row);}}>Cancelar invitación de {row.email}</Button></li>;})}</ul>}
+   {current?.nextAfterId&&<div><Button type="button" variant="secondary" size="sm" disabled={loading||saving||uncertain||Boolean(pending.current)} onClick={()=>{void refresh(current.nextAfterId!);}}>Siguiente página de invitaciones</Button></div>}
+  </>}
+ </Card>;
 }

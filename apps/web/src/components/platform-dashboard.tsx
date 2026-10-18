@@ -1,6 +1,8 @@
 import {PlatformMail} from './platform-mail.js';
 import {useEffect,useId,useRef,useState,type FormEvent} from 'react';
-import {Button} from './ui/button';
+import {Alert,Badge,Button,Card,CardHead,Field,Input,NativeCheck,NativeSelect,PageHeader,Skeleton,ToastProvider} from './ui';
+import {Layers3,RefreshCw} from 'lucide-react';
+export function PlainPage({children,title}:{children:React.ReactNode;title?:string}){return <div className="plain-page"><header className="app-topbar"><a href="/home" className="app-brand"><span className="app-brand-mark"><Layers3 size={16} aria-hidden="true"/></span>Commerce OS</a><span className="muted">{title}</span><div className="topbar-actions"><a href="/home" className="btn" data-variant="ghost">Volver a tus perfiles</a></div></header><main className="app-main" id="profile-main" tabIndex={-1}>{children}</main></div>;}
 import {cancelPlatformDeletion,loadPlatformDeletion,requestPlatformDeletion,type PlatformDeletionState,createPlatformProfile,invitePlatformOwner,issuePlatformToken,loadPlatformAccess,loadPlatformProfiles,loadPlatformTokens,platformMessage,platformScopeLabels,revokePlatformToken,signalLabels,updatePlatformProfile,type PlatformCapacity,type PlatformLimits,type PlatformProfile,type PlatformToken} from '../lib/platform-profiles.js';
 
 const timezones=['America/Mexico_City','America/Monterrey','America/Cancun','America/Tijuana','America/Bogota','America/Lima','America/Santiago','America/Argentina/Buenos_Aires','Europe/Madrid','UTC'];
@@ -28,58 +30,51 @@ export function PlatformDashboard(){
   return()=>{epoch.current++;controller.abort();};
  },[]);
  const done=(message:string)=>{setNotice(message);void refresh();};
- if(access==='LOADING')return <main className="main-content" aria-busy="true"><p role="status">Confirmando tu acceso a la plataforma…</p></main>;
- if(access==='DENIED')return <main className="main-content"><h1>Plataforma</h1><p role="alert">Tu cuenta no administra la plataforma.</p><a href="/home">Volver a tus perfiles</a></main>;
- if(access==='ERROR')return <main className="main-content"><h1>Plataforma</h1><p role="alert">{error}</p><a href="/home">Volver a tus perfiles</a></main>;
- return <main className="main-content platform-dashboard" aria-labelledby={heading}>
-  <a href="/home">Volver a tus perfiles</a>
-  <h1 id={heading}>Plataforma</h1>
-  <p>Estado de cada perfil y capacidad de la instalación. Aquí no se consultan conversaciones, contactos ni pagos de ningún perfil.</p>
-  {notice&&<p role="status">{notice}</p>}{error&&<p role="alert">{error}</p>}
-  {capacity&&<section className="card" aria-label="Capacidad de la plataforma">
-   <h2>Capacidad</h2>
-   <dl className="platform-capacity">
-    <div><dt>Perfiles</dt><dd>{capacity.profiles.used} de {capacity.profiles.max}</dd></div>
-    <div><dt>Números asignados a perfiles</dt><dd>{capacity.numbers.allocated} de {capacity.numbers.max}</dd></div>
-    <div><dt>Números registrados</dt><dd>{capacity.numbers.registered} de {capacity.numbers.max}</dd></div>
-   </dl>
+ if(access==='LOADING')return <main className="boot" aria-busy="true"><p role="status" className="muted">Confirmando tu acceso a la plataforma…</p></main>;
+ if(access==='DENIED')return <PlainPage title="Plataforma"><PageHeader title="Plataforma"/><Alert tone="error">Tu cuenta no administra la plataforma.</Alert></PlainPage>;
+ if(access==='ERROR')return <PlainPage title="Plataforma"><PageHeader title="Plataforma"/><Alert tone="error">{error}</Alert></PlainPage>;
+ return <ToastProvider><PlainPage title="Plataforma">
+  <PageHeader id={heading} title="Plataforma" description="Estado de cada perfil y capacidad de la instalación. Aquí no se consultan conversaciones, contactos ni pagos de ningún perfil." actions={<Button type="button" variant="secondary" disabled={loading} loading={loading} onClick={()=>{setNotice('');void refresh();}}><RefreshCw aria-hidden="true"/>Actualizar</Button>}/>
+  {notice&&<Alert tone="success">{notice}</Alert>}{error&&<Alert tone="error">{error}</Alert>}
+  {capacity&&<section className="kpi-grid" aria-label="Capacidad de la plataforma">
+   <div className="kpi"><span className="kpi-label">Perfiles</span><strong className="kpi-value">{capacity.profiles.used} <span className="muted" style={{fontSize:16,fontWeight:400}}>de {capacity.profiles.max}</span></strong></div>
+   <div className="kpi"><span className="kpi-label">Números asignados a perfiles</span><strong className="kpi-value">{capacity.numbers.allocated} <span className="muted" style={{fontSize:16,fontWeight:400}}>de {capacity.numbers.max}</span></strong></div>
+   <div className="kpi"><span className="kpi-label">Números registrados</span><strong className="kpi-value">{capacity.numbers.registered} <span className="muted" style={{fontSize:16,fontWeight:400}}>de {capacity.numbers.max}</span></strong></div>
   </section>}
-  <Button type="button" variant="secondary" disabled={loading} onClick={()=>{setNotice('');void refresh();}}>{loading?'Actualizando…':'Actualizar'}</Button>
-  {loading&&!profiles&&<p role="status">Consultando perfiles…</p>}
-  {profiles?.length===0&&<p>Todavía no hay perfiles.</p>}
-  <ul className="platform-profiles" aria-label="Perfiles">
+  {loading&&!profiles&&<Skeleton lines={4} label="Consultando perfiles…"/>}
+  {profiles?.length===0&&<p className="muted">Todavía no hay perfiles.</p>}
+  <ul className="card-grid cols-2 plain-list" aria-label="Perfiles">
    {profiles?.map(profile=><li key={profile.id}><PlatformProfileCard profile={profile} onDone={done}/></li>)}
   </ul>
   {capacity&&capacity.profiles.used<capacity.profiles.max&&<CreateProfile onDone={done} freeNumbers={Math.max(0,capacity.numbers.max-capacity.numbers.allocated)}/>}
-  {capacity&&capacity.profiles.used>=capacity.profiles.max&&<p>La instalación ya usa sus {capacity.profiles.max} perfiles. Para crear otro hace falta ampliar la capacidad.</p>}
+  {capacity&&capacity.profiles.used>=capacity.profiles.max&&<Alert tone="info">La instalación ya usa sus {capacity.profiles.max} perfiles. Para crear otro hace falta ampliar la capacidad.</Alert>}
   <PlatformTokens onDone={done}/>
   <PlatformMail/>
- </main>;
+ </PlainPage></ToastProvider>;
 }
 function PlatformProfileCard({profile,onDone}:{profile:PlatformProfile;onDone:(message:string)=>void}){
  const id=useId(),[mode,setMode]=useState<'NONE'|'STATE'|'LIMITS'|'INVITE'|'DELETE'>('NONE');
- return <article className="card" aria-labelledby={id}>
-  <h2 id={id}>{profile.businessName}</h2>
-  <p><strong>{profile.state==='ACTIVE'?'Activo':'Suspendido'}</strong> · Última actividad: {activity(profile.lastActivityAt)}</p>
-  <dl className="platform-counts">
-   <div><dt>Números</dt><dd>{profile.numbers.connected} conectados de {profile.numbers.registered} registrados (límite {profile.limits.numbers})</dd></div>
+ return <Card as="article" aria-labelledby={id}>
+  <div className="card-head"><div><h2 id={id}>{profile.businessName}</h2><p>Última actividad: {activity(profile.lastActivityAt)}</p></div><Badge tone={profile.state==='ACTIVE'?'success':'warn'}>{profile.state==='ACTIVE'?'Activo':'Suspendido'}</Badge></div>
+  <dl className="facts">
+   <div><dt>Números</dt><dd>{profile.numbers.connected} conectados de {profile.numbers.registered} (límite {profile.limits.numbers})</dd></div>
    <div><dt>Productos</dt><dd>{profile.products} (límite {profile.limits.products})</dd></div>
    <div><dt>Variantes</dt><dd>{profile.variants}</dd></div>
    <div><dt>Ofertas</dt><dd>{profile.offers}</dd></div>
    <div><dt>Conversaciones por día</dt><dd>Límite {profile.limits.dailyConversations}</dd></div>
   </dl>
-  {profile.signals.length>0&&<p role="note">Atención: {profile.signals.map(signal=>signalLabels[signal]??signal).join(' · ')}</p>}
-  <div className="platform-actions">
-   <Button type="button" variant="secondary" aria-expanded={mode==='STATE'} onClick={()=>setMode(mode==='STATE'?'NONE':'STATE')}>{profile.state==='ACTIVE'?'Suspender':'Reactivar'}</Button>
-   <Button type="button" variant="secondary" aria-expanded={mode==='LIMITS'} onClick={()=>setMode(mode==='LIMITS'?'NONE':'LIMITS')}>Ajustar límites</Button>
-   {profile.owners===0&&profile.state==='ACTIVE'&&<Button type="button" variant="secondary" aria-expanded={mode==='INVITE'} onClick={()=>setMode(mode==='INVITE'?'NONE':'INVITE')}>Invitar a la persona Dueño</Button>}
-   {profile.state==='SUSPENDED'&&<Button type="button" variant="secondary" aria-expanded={mode==='DELETE'} onClick={()=>setMode(mode==='DELETE'?'NONE':'DELETE')}>Eliminación del perfil</Button>}
+  {profile.signals.length>0&&<Alert tone="warn" role="note">Atención: {profile.signals.map(signal=>signalLabels[signal]??signal).join(' · ')}</Alert>}
+  <div className="cluster">
+   <Button type="button" variant="secondary" size="sm" aria-expanded={mode==='STATE'} onClick={()=>setMode(mode==='STATE'?'NONE':'STATE')}>{profile.state==='ACTIVE'?'Suspender':'Reactivar'}</Button>
+   <Button type="button" variant="secondary" size="sm" aria-expanded={mode==='LIMITS'} onClick={()=>setMode(mode==='LIMITS'?'NONE':'LIMITS')}>Ajustar límites</Button>
+   {profile.owners===0&&profile.state==='ACTIVE'&&<Button type="button" variant="secondary" size="sm" aria-expanded={mode==='INVITE'} onClick={()=>setMode(mode==='INVITE'?'NONE':'INVITE')}>Invitar a la persona Dueño</Button>}
+   {profile.state==='SUSPENDED'&&<Button type="button" variant="ghost" size="sm" aria-expanded={mode==='DELETE'} onClick={()=>setMode(mode==='DELETE'?'NONE':'DELETE')}>Eliminación del perfil</Button>}
   </div>
   {mode==='STATE'&&<ChangeState profile={profile} onDone={message=>{setMode('NONE');onDone(message);}}/>}
   {mode==='LIMITS'&&<ChangeLimits profile={profile} onDone={message=>{setMode('NONE');onDone(message);}}/>}
   {mode==='INVITE'&&<InviteOwner profile={profile} onDone={message=>{setMode('NONE');onDone(message);}}/>}
   {mode==='DELETE'&&<ProfileDeletion profile={profile} onDone={message=>{setMode('NONE');onDone(message);}}/>}
- </article>;
+ </Card>;
 }
 function useSubmit(){
  const [busy,setBusy]=useState(false),[error,setError]=useState(''),operation=useOperation();
@@ -91,11 +86,10 @@ function useSubmit(){
 }
 function ChangeState({profile,onDone}:{profile:PlatformProfile;onDone:(message:string)=>void}){
  const submit=useSubmit(),target=profile.state==='ACTIVE'?'SUSPENDED':'ACTIVE';
- return <div className="platform-confirm" role="group" aria-label={target==='SUSPENDED'?'Confirmar suspensión':'Confirmar reactivación'}>
-  <p>{target==='SUSPENDED'?`${profile.businessName} dejará de operar: sus ventas, envíos y calentamientos se detienen. Sus datos se conservan y puedes reactivarlo después.`:`${profile.businessName} volverá a operar con su configuración actual.`}</p>
-  {submit.error&&<p role="alert">{submit.error}</p>}
-  <Button type="button" disabled={submit.busy} onClick={()=>{void submit.run(operationId=>updatePlatformProfile(profile.id,{operationId,expectedVersion:profile.version,state:target}),()=>onDone(target==='SUSPENDED'?`${profile.businessName} quedó suspendido.`:`${profile.businessName} quedó activo.`));}}>{submit.busy?'Guardando…':target==='SUSPENDED'?'Sí, suspender':'Sí, reactivar'}</Button>
- </div>;
+ return <Alert tone={target==='SUSPENDED'?'warn':'info'} role="region" title={target==='SUSPENDED'?'Confirmar suspensión':'Confirmar reactivación'} actions={<Button type="button" variant={target==='SUSPENDED'?'destructive':'default'} size="sm" disabled={submit.busy} loading={submit.busy} onClick={()=>{void submit.run(operationId=>updatePlatformProfile(profile.id,{operationId,expectedVersion:profile.version,state:target}),()=>onDone(target==='SUSPENDED'?`${profile.businessName} quedó suspendido.`:`${profile.businessName} quedó activo.`));}}>{target==='SUSPENDED'?'Sí, suspender':'Sí, reactivar'}</Button>}>
+  <span>{target==='SUSPENDED'?`${profile.businessName} dejará de operar: sus ventas, envíos y calentamientos se detienen. Sus datos se conservan y puedes reactivarlo después.`:`${profile.businessName} volverá a operar con su configuración actual.`}</span>
+  {submit.error&&<span role="alert">{submit.error}</span>}
+ </Alert>;
 }
 /** RF-01.5: deletion request of a suspended profile. Requires the owner's
  * export from the last 7 days and the exact business name. It erases nothing:
@@ -103,67 +97,67 @@ function ChangeState({profile,onDone}:{profile:PlatformProfile;onDone:(message:s
 function ProfileDeletion({profile,onDone}:{profile:PlatformProfile;onDone:(message:string)=>void}){
  const id=useId(),submit=useSubmit(),[state,setState]=useState<PlatformDeletionState>(),[loadError,setLoadError]=useState(''),[confirmation,setConfirmation]=useState(''),[reason,setReason]=useState('');
  useEffect(()=>{const c=new AbortController();loadPlatformDeletion(profile.id,c.signal).then(setState).catch(e=>{if(!c.signal.aborted)setLoadError(platformMessage(e));});return()=>c.abort();},[profile.id,profile.version]);
- if(loadError)return <p role="alert">{loadError}</p>;
- if(!state)return <p role="status">Consultando la eliminación…</p>;
+ if(loadError)return <Alert tone="error">{loadError}</Alert>;
+ if(!state)return <Skeleton lines={2} label="Consultando la eliminación…"/>;
  const pending=state.deletion?.status==='PENDING_ERASURE'?state.deletion:null,exported=state.lastExport;
- if(pending)return <form className="platform-confirm" aria-labelledby={id} onSubmit={event=>{event.preventDefault();void submit.run(operationId=>cancelPlatformDeletion(profile.id,{operationId,deletionId:pending.id,reason:reason.trim()}),()=>onDone(`Se canceló la eliminación de ${profile.businessName}.`));}}>
+ if(pending)return <form className="form policy-section" aria-labelledby={id} onSubmit={event=>{event.preventDefault();void submit.run(operationId=>cancelPlatformDeletion(profile.id,{operationId,deletionId:pending.id,reason:reason.trim()}),()=>onDone(`Se canceló la eliminación de ${profile.businessName}.`));}}>
   <h3 id={id}>Eliminación pendiente</h3>
   <p>Solicitada el {dateTime.format(new Date(pending.requestedAt))}. {profile.businessName} sigue suspendido y no puede reactivarse mientras la eliminación esté pendiente. El borrado definitivo lo ejecuta la ventana de privacidad.</p>
-  <label>Motivo de la cancelación<textarea required minLength={8} maxLength={500} value={reason} onChange={event=>setReason(event.target.value)}/></label>
-  {submit.error&&<p role="alert">{submit.error}</p>}
-  <Button type="submit" variant="secondary" disabled={submit.busy||reason.trim().length<8}>{submit.busy?'Guardando…':'Cancelar la eliminación'}</Button>
+  <Field label="Motivo de la cancelación"><Input required minLength={8} maxLength={500} value={reason} onChange={event=>setReason(event.target.value)}/></Field>
+  {submit.error&&<Alert tone="error">{submit.error}</Alert>}
+  <div><Button type="submit" variant="secondary" disabled={submit.busy||reason.trim().length<8} loading={submit.busy}>Cancelar la eliminación</Button></div>
  </form>;
  const ready=exported?.usable===true;
- return <form className="platform-confirm" aria-labelledby={id} onSubmit={event=>{event.preventDefault();if(!exported)return;void submit.run(operationId=>requestPlatformDeletion(profile.id,{operationId,expectedVersion:state.version,confirmation:confirmation.trim(),exportId:exported.id,reason:reason.trim()}),()=>onDone(`Eliminación de ${profile.businessName} solicitada. El perfil queda suspendido hasta el borrado definitivo.`));}}>
+ return <form className="form policy-section" aria-labelledby={id} onSubmit={event=>{event.preventDefault();if(!exported)return;void submit.run(operationId=>requestPlatformDeletion(profile.id,{operationId,expectedVersion:state.version,confirmation:confirmation.trim(),exportId:exported.id,reason:reason.trim()}),()=>onDone(`Eliminación de ${profile.businessName} solicitada. El perfil queda suspendido hasta el borrado definitivo.`));}}>
   <h3 id={id}>Eliminar {profile.businessName}</h3>
   {exported?<p>Última exportación de la persona Dueño: {dateTime.format(new Date(exported.createdAt))} · {exported.rows} filas · huella <code>{exported.sha256.slice(0,16)}…</code>{ready?'':' (tiene más de 7 días)'}</p>:<p>Este perfil no tiene exportación de datos.</p>}
-  {!ready&&<p role="note">Antes de pedir la eliminación, la persona Dueño debe exportar los datos del perfil desde Perfil del negocio → Exportar datos. La plataforma no puede leer ni descargar ese contenido.</p>}
+  {!ready&&<Alert tone="info" role="note">Antes de pedir la eliminación, la persona Dueño debe exportar los datos del perfil desde Perfil del negocio → Exportar datos. La plataforma no puede leer ni descargar ese contenido.</Alert>}
   {ready&&<>
    <p>La solicitud deja el perfil suspendido de forma permanente hasta el borrado definitivo. Se puede cancelar mientras esté pendiente.</p>
-   <label>Motivo<textarea required minLength={8} maxLength={500} value={reason} onChange={event=>setReason(event.target.value)}/></label>
-   <label>Escribe el nombre exacto del negocio para confirmar<input autoComplete="off" required maxLength={160} value={confirmation} onChange={event=>setConfirmation(event.target.value)}/></label>
-   {submit.error&&<p role="alert">{submit.error}</p>}
-   <Button type="submit" variant="destructive" disabled={submit.busy||confirmation.trim()!==profile.businessName||reason.trim().length<8}>{submit.busy?'Solicitando…':'Solicitar eliminación'}</Button>
+   <Field label="Motivo"><Input required minLength={8} maxLength={500} value={reason} onChange={event=>setReason(event.target.value)}/></Field>
+   <Field label="Escribe el nombre exacto del negocio para confirmar"><Input autoComplete="off" required maxLength={160} value={confirmation} onChange={event=>setConfirmation(event.target.value)}/></Field>
+   {submit.error&&<Alert tone="error">{submit.error}</Alert>}
+   <div><Button type="submit" variant="destructive" disabled={submit.busy||confirmation.trim()!==profile.businessName||reason.trim().length<8} loading={submit.busy}>Solicitar eliminación</Button></div>
   </>}
  </form>;
 }
 function LimitFields({value,onChange,maxNumbers}:{value:PlatformLimits;onChange:(next:PlatformLimits)=>void;maxNumbers:number}){
- const field=(key:keyof PlatformLimits,label:string,max:number)=><label>{label}<input type="number" inputMode="numeric" min={0} max={max} required value={value[key]} onChange={event=>onChange({...value,[key]:Math.max(0,Math.trunc(Number(event.target.value)||0))})}/></label>;
- return <>{field('numbers','Números',maxNumbers)}{field('products','Productos',100000)}{field('dailyConversations','Conversaciones por día',100000)}</>;
+ const field=(key:keyof PlatformLimits,label:string,max:number)=><Field label={label}><Input type="number" inputMode="numeric" min={0} max={max} required value={value[key]} onChange={event=>onChange({...value,[key]:Math.max(0,Math.trunc(Number(event.target.value)||0))})}/></Field>;
+ return <div className="form-grid">{field('numbers','Números',maxNumbers)}{field('products','Productos',100000)}{field('dailyConversations','Conversaciones por día',100000)}</div>;
 }
 function ChangeLimits({profile,onDone}:{profile:PlatformProfile;onDone:(message:string)=>void}){
  const submit=useSubmit(),[limits,setLimits]=useState<PlatformLimits>(profile.limits);
  function save(event:FormEvent){event.preventDefault();void submit.run(operationId=>updatePlatformProfile(profile.id,{operationId,expectedVersion:profile.version,limits}),()=>onDone(`Límites de ${profile.businessName} actualizados.`));}
- return <form onSubmit={save} aria-label={`Límites de ${profile.businessName}`}>
+ return <form onSubmit={save} aria-label={`Límites de ${profile.businessName}`} className="form policy-section">
   <LimitFields value={limits} onChange={setLimits} maxNumbers={20}/>
-  {submit.error&&<p role="alert">{submit.error}</p>}
-  <Button type="submit" disabled={submit.busy}>{submit.busy?'Guardando…':'Guardar límites'}</Button>
+  {submit.error&&<Alert tone="error">{submit.error}</Alert>}
+  <div><Button type="submit" variant="secondary" disabled={submit.busy} loading={submit.busy}>Guardar límites</Button></div>
  </form>;
 }
 function InviteOwner({profile,onDone}:{profile:PlatformProfile;onDone:(message:string)=>void}){
  const submit=useSubmit(),[email,setEmail]=useState('');
  function send(event:FormEvent){event.preventDefault();void submit.run(operationId=>invitePlatformOwner(profile.id,{operationId,email:email.trim()}),()=>onDone(`Invitación para la persona Dueño de ${profile.businessName} en cola de envío.`));}
- return <form onSubmit={send} aria-label={`Invitar a la persona Dueño de ${profile.businessName}`}>
-  <label>Correo de la persona Dueño<input type="email" autoComplete="off" required maxLength={254} value={email} onChange={event=>setEmail(event.target.value)}/></label>
-  <p>Recibirá un enlace válido 24 horas. La plataforma no obtiene acceso al perfil.</p>
-  {submit.error&&<p role="alert">{submit.error}</p>}
-  <Button type="submit" disabled={submit.busy}>{submit.busy?'Enviando…':'Enviar invitación'}</Button>
+ return <form onSubmit={send} aria-label={`Invitar a la persona Dueño de ${profile.businessName}`} className="form policy-section">
+  <Field label="Correo de la persona Dueño" help="Recibirá un enlace válido 24 horas. La plataforma no obtiene acceso al perfil."><Input type="email" autoComplete="off" required maxLength={254} value={email} onChange={event=>setEmail(event.target.value)}/></Field>
+  {submit.error&&<Alert tone="error">{submit.error}</Alert>}
+  <div><Button type="submit" variant="secondary" disabled={submit.busy} loading={submit.busy}>Enviar invitación</Button></div>
  </form>;
 }
 function CreateProfile({onDone,freeNumbers}:{onDone:(message:string)=>void;freeNumbers:number}){
  const id=useId(),submit=useSubmit(),[name,setName]=useState(''),[timezone,setTimezone]=useState('America/Mexico_City'),[limits,setLimits]=useState<PlatformLimits>({numbers:Math.min(2,freeNumbers),products:50,dailyConversations:300});
  function create(event:FormEvent){event.preventDefault();void submit.run(operationId=>createPlatformProfile({operationId,businessName:name.trim(),timezone,limits}),()=>{onDone(`Perfil ${name.trim()} creado. Invita ahora a su persona Dueño.`);setName('');});}
- return <section className="card" aria-labelledby={id}>
-  <h2 id={id}>Crear perfil</h2>
-  <form onSubmit={create}>
-   <label>Nombre del negocio<input required maxLength={160} value={name} onChange={event=>setName(event.target.value)}/></label>
-   <label>Zona horaria<select value={timezone} onChange={event=>setTimezone(event.target.value)}>{timezones.map(zone=><option key={zone} value={zone}>{zone}</option>)}</select></label>
+ return <Card aria-labelledby={id}>
+  <CardHead id={id} title="Crear perfil" description={`Quedan ${freeNumbers} números sin asignar en la plataforma.`}/>
+  <form onSubmit={create} className="form">
+   <div className="form-grid">
+    <Field label="Nombre del negocio"><Input required maxLength={160} value={name} onChange={event=>setName(event.target.value)}/></Field>
+    <Field label="Zona horaria"><NativeSelect value={timezone} onChange={event=>setTimezone(event.target.value)}>{timezones.map(zone=><option key={zone} value={zone}>{zone}</option>)}</NativeSelect></Field>
+   </div>
    <LimitFields value={limits} onChange={setLimits} maxNumbers={freeNumbers}/>
-   <p>Quedan {freeNumbers} números sin asignar en la plataforma.</p>
-   {submit.error&&<p role="alert">{submit.error}</p>}
-   <Button type="submit" disabled={submit.busy}>{submit.busy?'Creando…':'Crear perfil'}</Button>
+   {submit.error&&<Alert tone="error">{submit.error}</Alert>}
+   <div className="form-actions"><Button type="submit" disabled={submit.busy} loading={submit.busy}>Crear perfil</Button></div>
   </form>
- </section>;
+ </Card>;
 }
 /** RF-02.c: the same actions through MCP with a platform token bound to this
  * admin. The bearer is shown once; afterwards only its metadata remains. */
@@ -173,18 +167,16 @@ function PlatformTokens({onDone}:{onDone:(message:string)=>void}){
  useEffect(()=>{void reload();},[]);
  function create(event:FormEvent){event.preventDefault();setSecret('');const span=Number(days);
   void run(async()=>{const issued=await issuePlatformToken({name,scopes,expiresAt:new Date(Date.now()+Math.min(90,Math.max(1,span))*86400000).toISOString()});setSecret(issued.token);},()=>{void reload();onDone('Acceso creado. Copia el token ahora: no se volverá a mostrar.');});}
- return <section className="card" aria-labelledby={id}>
-  <h2 id={id}>Accesos MCP de plataforma</h2>
-  <p>Permiten a un cliente MCP hacer las mismas acciones de esta página con tu cuenta. Caducan en un máximo de 90 días y dejan de funcionar si se revocan.</p>
-  {error&&<p role="alert">{error}</p>}
-  {secret&&<p role="status">Token (sólo se muestra una vez): <code className="platform-secret">{secret}</code></p>}
-  <ul className="platform-tokens">{tokens?.map(t=><li key={t.id}><strong>{t.name}</strong> · {t.scopes.map(s=>platformScopeLabels[s]??s).join(', ')} · {t.revokedAt?'Revocado':'Vence '+dateTime.format(new Date(t.expiresAt))}
-   {!t.revokedAt&&<Button type="button" variant="ghost" disabled={busy} onClick={()=>{void run(()=>revokePlatformToken(t.id),()=>{void reload();onDone('Acceso revocado.');});}}>Revocar</Button>}</li>)}</ul>
-  <form onSubmit={create}>
-   <label>Nombre<input value={name} maxLength={100} required onChange={e=>setName(e.target.value)}/></label>
-   <label>Vigencia en días<input inputMode="numeric" value={days} onChange={e=>setDays(e.target.value)}/></label>
-   <fieldset><legend>Permisos</legend>{Object.entries(platformScopeLabels).map(([scope,label])=><label key={scope}><input type="checkbox" checked={scopes.includes(scope)} onChange={e=>setScopes(e.target.checked?[...scopes,scope]:scopes.filter(s=>s!==scope))}/> {label}</label>)}</fieldset>
-   <Button type="submit" disabled={busy||!scopes.length}>Crear acceso</Button>
+ return <Card aria-labelledby={id}>
+  <CardHead id={id} title="Accesos MCP de plataforma" description="Permiten a un cliente MCP hacer las mismas acciones de esta página con tu cuenta. Caducan en un máximo de 90 días y dejan de funcionar si se revocan."/>
+  {error&&<Alert tone="error">{error}</Alert>}
+  {secret&&<Alert tone="success" title="Token (sólo se muestra una vez)"><code style={{overflowWrap:'anywhere'}}>{secret}</code></Alert>}
+  {tokens&&tokens.length>0&&<ul className="item-list">{tokens.map(t=><li key={t.id}><span className="item-name">{t.name}<span className="row-sub">{t.scopes.map(s=>platformScopeLabels[s]??s).join(', ')}</span></span><Badge tone={t.revokedAt?'neutral':'success'}>{t.revokedAt?'Revocado':'Vence '+dateTime.format(new Date(t.expiresAt))}</Badge>
+   {!t.revokedAt&&<Button type="button" variant="ghost" size="sm" disabled={busy} onClick={()=>{void run(()=>revokePlatformToken(t.id),()=>{void reload();onDone('Acceso revocado.');});}}>Revocar</Button>}</li>)}</ul>}
+  <form onSubmit={create} className="form">
+   <div className="form-grid"><Field label="Nombre"><Input value={name} maxLength={100} required onChange={e=>setName(e.target.value)}/></Field><Field label="Vigencia en días"><Input inputMode="numeric" value={days} onChange={e=>setDays(e.target.value)}/></Field></div>
+   <fieldset className="plain"><legend>Permisos</legend><div className="cluster">{Object.entries(platformScopeLabels).map(([scope,label])=><NativeCheck key={scope} label={label} checked={scopes.includes(scope)} onChange={e=>setScopes(e.target.checked?[...scopes,scope]:scopes.filter(s=>s!==scope))}/>)}</div></fieldset>
+   <div className="form-actions"><Button type="submit" variant="secondary" disabled={busy||!scopes.length}>Crear acceso</Button></div>
   </form>
- </section>;
+ </Card>;
 }

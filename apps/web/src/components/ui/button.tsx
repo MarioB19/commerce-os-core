@@ -1,41 +1,26 @@
-import * as React from "react";
-import { Slot } from "@radix-ui/react-slot";
-import { cva, type VariantProps } from "class-variance-authority";
-import { cn } from "../../lib/utils";
-const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-55 [&_svg]:size-4 [&_svg]:shrink-0",
-  {
-    variants: {
-      variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/90",
-        secondary:
-          "bg-white text-foreground border border-border hover:bg-muted",
-        ghost: "hover:bg-muted text-foreground",
-        destructive: "bg-red-600 text-white hover:bg-red-700",
-      },
-      size: {
-        default: "h-10 px-4 py-2",
-        sm: "h-8 rounded-md px-3 text-xs",
-        icon: "h-9 w-9",
-      },
-    },
-    defaultVariants: { variant: "default", size: "default" },
-  },
-);
-export function Button({
-  className,
-  variant,
-  size,
-  asChild = false,
-  ...props
-}: React.ComponentProps<"button"> &
-  VariantProps<typeof buttonVariants> & { asChild?: boolean }) {
-  const Comp = asChild ? Slot : "button";
-  return (
-    <Comp
-      data-variant={variant ?? "default"}
-      className={cn(buttonVariants({ variant, size, className }))}
-      {...props}
-    />
-  );
+import * as React from 'react';
+import {Slot} from '@radix-ui/react-slot';
+import {cn} from '../../lib/utils';
+
+export type ButtonVariant='default'|'secondary'|'ghost'|'destructive';
+export type ButtonSize='default'|'sm'|'icon';
+export interface ButtonProps extends React.ComponentProps<'button'> {
+ variant?:ButtonVariant;
+ size?:ButtonSize;
+ asChild?:boolean;
+ /** Shows a spinner, keeps the width and disables the control. */
+ loading?:boolean;
+}
+/** V7 button. `data-variant="default"` is the single primary action of a page
+ * (RF-17.b); the E2E suite counts it, so the attribute is part of the contract. */
+export function Button({className,variant='default',size='default',asChild=false,loading=false,disabled,children,...props}:ButtonProps){
+ const Comp=asChild?Slot:'button';
+ return <Comp data-variant={variant} data-size={size} data-loading={loading?'true':undefined} className={cn('btn',className)} disabled={disabled||loading} aria-busy={loading||undefined} {...props}>
+  {loading&&<span className="spinner" aria-hidden="true"/>}
+  {children}
+ </Comp>;
+}
+/** A link that looks like a button (keeps `data-variant` for the primary rule). */
+export function ButtonLink({className,variant='default',size='default',...props}:React.ComponentProps<'a'>&{variant?:ButtonVariant;size?:ButtonSize}){
+ return <a data-variant={variant} data-size={size} className={cn('btn',className)} {...props}/>;
 }

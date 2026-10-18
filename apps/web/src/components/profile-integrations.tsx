@@ -2,7 +2,8 @@ import {useEffect,useId,useRef,useState,type FormEvent} from 'react';
 import type {ProfileRole,ProfileState} from '../../../../packages/contracts/src/profiles.js';
 import {aiProviderLabels,aiStateText,failureText,loadIntegrations,metaStateText,saveAiKey,saveAiPreferences,saveMetaToken,setAiKeyEnabled,setMetaEnabled,usd,type AiProvider,type AiProviderStatus,type Integrations} from '../lib/profile-integrations.js';
 import type {ProfileFence} from '../lib/profile-request.js';
-import {Button} from './ui/button';
+import {Alert,Badge,Button,Card,CardHead,Field,Input,NativeSelect,PageHeader,Progress,Skeleton,Tabs,TabsContent,TabsList,TabsTrigger,toneOf} from './ui';
+import {Bot,Megaphone} from 'lucide-react';
 
 /** RF-13.a: the profile's only configuration areas besides employees — its own
  * AI keys and its own Meta token. Secrets are write-only; the page shows the
@@ -13,17 +14,18 @@ export function ProfileIntegrations({selection,role,state}:{selection:ProfileFen
  async function refresh(signal?:AbortSignal){const generation=++epoch.current;setError('');try{const value=await loadIntegrations(selection,signal);if(epoch.current===generation)setData(value);}catch(failure){if(epoch.current===generation&&!signal?.aborted)setError(failure instanceof Error?failure.message:'No se pudieron consultar las integraciones.');}}
  useEffect(()=>{const controller=new AbortController();setData(undefined);void refresh(controller.signal);return()=>{epoch.current++;controller.abort();};},[selection.workspaceId,selection.version]);
  async function act(work:()=>Promise<string|void>){if(busy)return;setBusy(true);setError('');setNotice('');try{const message=await work();if(message)setNotice(message);}catch(failure){setError(failure instanceof Error?failure.message:'No se pudo completar la acción.');}finally{setBusy(false);}}
- if(role==='viewer')return <section className="card"><h1>Integraciones</h1><p>Las integraciones solo están disponibles para Dueño y Operador.</p></section>;
- return <section className="profile-integrations" aria-busy={!data&&!error}>
-  <h1>Integraciones</h1>
-  <p>Este negocio usa sus propias claves de IA y su propio token de Meta. Nadie más puede leerlas: después de guardarlas solo verás sus últimos cuatro caracteres.</p>
-  {error&&<p role="alert">{error}</p>}{notice&&<p role="status">{notice}</p>}
-  {!data&&!error&&<p role="status">Consultando integraciones…</p>}
-  {data&&<>
-   <AiSection data={data} owner={owner} busy={busy} selection={selection} act={act} setData={setData} refresh={()=>refresh()}/>
-   <MetaSection data={data} owner={owner} busy={busy} selection={selection} act={act} setData={setData} refresh={()=>refresh()}/>
-  </>}
- </section>;
+ const [tab,setTab]=useState<string>(()=>{try{return window.location.hash==='#meta'?'meta':'ai';}catch{return 'ai';}});
+ if(role==='viewer')return <><PageHeader title="Integraciones"/><Alert tone="info">Las integraciones solo están disponibles para Dueño y Operador.</Alert></>;
+ return <>
+  <PageHeader title="Integraciones" description="Este negocio usa sus propias claves de IA y su propio token de Meta. Nadie más puede leerlas: después de guardarlas solo verás sus últimos cuatro caracteres."/>
+  {error&&<Alert tone="error">{error}</Alert>}{notice&&<Alert tone="success">{notice}</Alert>}
+  {!data&&!error&&<Skeleton lines={4} label="Consultando integraciones…"/>}
+  {data&&<Tabs value={tab} onValueChange={v=>{setTab(v);try{history.replaceState(null,'',v==='meta'?'#meta':'#ai');}catch{/* no history */}}}>
+   <TabsList aria-label="Integraciones"><TabsTrigger value="ai"><Bot aria-hidden="true" size={16}/>Inteligencia artificial</TabsTrigger><TabsTrigger value="meta"><Megaphone aria-hidden="true" size={16}/>Meta</TabsTrigger></TabsList>
+   <TabsContent value="ai"><AiSection data={data} owner={owner} busy={busy} selection={selection} act={act} setData={setData} refresh={()=>refresh()}/></TabsContent>
+   <TabsContent value="meta"><MetaSection data={data} owner={owner} busy={busy} selection={selection} act={act} setData={setData} refresh={()=>refresh()}/></TabsContent>
+  </Tabs>}
+ </>;
 }
 type SectionProps={data:Integrations;owner:boolean;busy:boolean;selection:ProfileFence;act:(work:()=>Promise<string|void>)=>Promise<void>;setData:(d:Integrations)=>void;refresh:()=>Promise<void>};
 function AiSection({data,owner,busy,selection,act,setData,refresh}:SectionProps){
@@ -34,41 +36,43 @@ function AiSection({data,owner,busy,selection,act,setData,refresh}:SectionProps)
   const dollars=Number(limit);if(!Number.isFinite(dollars)||dollars<1||dollars>100000)throw new Error('Escribe un límite mensual entre 1 y 100,000 USD.');
   const [p,m]=model?model.split('/') as [AiProvider,string]:[null,null];
   await saveAiPreferences(selection,{expectedVersion:prefs.version,monthlyLimitMicrousd:Math.round(dollars*100)*10_000,defaultProvider:p,defaultModel:m});await refresh();return'Preferencias de IA guardadas.';});}
- return <section className="card" aria-labelledby={id}>
-  <h2 id={id}>Inteligencia artificial</h2>
-  <p>Guarda la clave de al menos un proveedor. Al guardarla hacemos una única consulta mínima con ella para comprobar que funciona; ese costo se descuenta de tu límite mensual.</p>
-  {data.ai.budget?<p>Este mes: {usd(data.ai.budget.usedMicrousd)} usados de {usd(data.ai.budget.limitMicrousd)}.</p>:<p>Aún no hay un límite mensual activo.</p>}
-  <form onSubmit={savePreferences} className="integration-preferences">
-   <label htmlFor={id+'-limit'}>Límite mensual de IA (USD)</label>
-   <input id={id+'-limit'} inputMode="decimal" value={limit} disabled={!owner||busy} onChange={e=>setLimit(e.target.value)} aria-describedby={id+'-limit-help'}/>
-   <p id={id+'-limit-help'}>Un cambio aplica a partir del siguiente periodo; el mes en curso conserva su límite.</p>
-   <label htmlFor={id+'-model'}>Modelo predeterminado</label>
-   <select id={id+'-model'} value={model} disabled={!owner||busy} onChange={e=>setModel(e.target.value)}>
-    <option value="">Sin elegir</option>
-    {data.ai.models.filter(m=>m.capabilities.includes('chat')).map(m=><option key={m.provider+'/'+m.model} value={m.provider+'/'+m.model} disabled={!verified.has(m.provider)}>{aiProviderLabels[m.provider]} · {m.model}{verified.has(m.provider)?'':' (requiere clave verificada)'}</option>)}
-   </select>
-   {owner&&<Button type="submit" disabled={busy}>Guardar preferencias</Button>}
-  </form>
-  <ul className="integration-list">{data.ai.providers.map(p=><AiProviderRow key={p.provider} status={p} owner={owner} busy={busy} selection={selection} act={act} setData={setData} refresh={refresh}/>)}</ul>
- </section>;
+ const b=data.ai.budget,ratio=b&&b.limitMicrousd>0?Math.min(1,b.usedMicrousd/b.limitMicrousd):0;
+ return <div className="stack">
+  <Card aria-labelledby={id}>
+   <CardHead id={id} title="Inteligencia artificial" description="Guarda la clave de al menos un proveedor. Al guardarla hacemos una única consulta mínima con ella para comprobar que funciona; ese costo se descuenta de tu límite mensual."/>
+   {b?<div className="stack-tight"><strong className="kpi-value" style={{fontSize:22}}>{usd(b.usedMicrousd)} <span className="muted" style={{fontWeight:400,fontSize:16}}>de {usd(b.limitMicrousd)} este mes</span></strong><Progress value={ratio*100} label="Presupuesto de IA usado" tone={ratio>0.9?'warn':undefined} valueText={`${Math.round(ratio*100)} %`}/></div>:<p className="muted">Aún no hay un límite mensual activo.</p>}
+   <form onSubmit={savePreferences} className="form">
+    <div className="form-grid">
+     <Field label="Límite mensual de IA (USD)" id={id+'-limit'} help="Un cambio aplica a partir del siguiente periodo; el mes en curso conserva su límite."><Input inputMode="decimal" value={limit} disabled={!owner||busy} onChange={e=>setLimit(e.target.value)}/></Field>
+     <Field label="Modelo predeterminado" id={id+'-model'}><NativeSelect value={model} disabled={!owner||busy} onChange={e=>setModel(e.target.value)}>
+      <option value="">Sin elegir</option>
+      {data.ai.models.filter(m=>m.capabilities.includes('chat')).map(m=><option key={m.provider+'/'+m.model} value={m.provider+'/'+m.model} disabled={!verified.has(m.provider)}>{aiProviderLabels[m.provider]} · {m.model}{verified.has(m.provider)?'':' (requiere clave verificada)'}</option>)}
+     </NativeSelect></Field>
+    </div>
+    {owner&&<div className="form-actions"><Button type="submit" variant="secondary" disabled={busy}>Guardar preferencias</Button></div>}
+   </form>
+  </Card>
+  <Card aria-labelledby={id+'-keys'}>
+   <CardHead id={id+'-keys'} title="Claves por proveedor" level={3}/>
+   <ul className="item-list providers">{data.ai.providers.map(p=><AiProviderRow key={p.provider} status={p} owner={owner} busy={busy} selection={selection} act={act} setData={setData} refresh={refresh}/>)}</ul>
+  </Card>
+ </div>;
 }
 function AiProviderRow({status,owner,busy,selection,act,setData,refresh}:{status:AiProviderStatus}&Omit<SectionProps,'data'>){
  const id=useId(),[key,setKey]=useState(''),[open,setOpen]=useState(false);
  function save(event:FormEvent){event.preventDefault();const value=key.trim();setKey('');void act(async()=>{
   const result=await saveAiKey(selection,status.provider,status.revision,value);setData(result.integrations);setOpen(false);
   return result.verification.state==='VERIFIED'?`Clave de ${aiProviderLabels[status.provider]} verificada.`:`Clave guardada. ${failureText[result.verification.code??'']??'La verificación no se completó.'}`;});}
- return <li className="integration-item">
-  <div><strong>{aiProviderLabels[status.provider]}</strong> <span className={'status status-'+status.state.toLowerCase()}>{aiStateText[status.state]}</span>{status.hint&&<span className="integration-hint"> {status.hint}</span>}</div>
-  {status.failure&&<p>{failureText[status.failure]??'La prueba de la clave no se completó.'}</p>}
-  {owner&&<div className="integration-actions">
-   {!open&&<Button type="button" variant="secondary" disabled={busy} onClick={()=>setOpen(true)}>{status.state==='MISSING'?'Agregar clave':'Reemplazar clave'}</Button>}
-   {status.revision>0&&!open&&<Button type="button" variant="ghost" disabled={busy} onClick={()=>{void act(async()=>{await setAiKeyEnabled(selection,status.provider,status.revision,!status.enabled);await refresh();return status.enabled?'Clave desactivada.':'Clave reactivada.';});}}>{status.enabled?'Desactivar':'Reactivar'}</Button>}
+ return <li className="provider-row">
+  <div className="cluster"><strong className="item-name">{aiProviderLabels[status.provider]}</strong><Badge tone={toneOf(status.state)}>{aiStateText[status.state]}</Badge>{status.hint&&<code>{status.hint}</code>}</div>
+  {status.failure&&<p className="muted text-sm">{failureText[status.failure]??'La prueba de la clave no se completó.'}</p>}
+  {owner&&!open&&<div className="cluster">
+   <Button type="button" variant="secondary" size="sm" disabled={busy} onClick={()=>setOpen(true)}>{status.state==='MISSING'?'Agregar clave':'Reemplazar clave'}</Button>
+   {status.revision>0&&<Button type="button" variant="ghost" size="sm" disabled={busy} onClick={()=>{void act(async()=>{await setAiKeyEnabled(selection,status.provider,status.revision,!status.enabled);await refresh();return status.enabled?'Clave desactivada.':'Clave reactivada.';});}}>{status.enabled?'Desactivar':'Reactivar'}</Button>}
   </div>}
-  {open&&<form onSubmit={save}>
-   <label htmlFor={id}>Clave de {aiProviderLabels[status.provider]}</label>
-   <input id={id} type="password" autoComplete="off" spellCheck={false} value={key} required minLength={8} maxLength={8192} onChange={e=>setKey(e.target.value)}/>
-   <Button type="submit" disabled={busy||key.trim().length<8}>{busy?'Guardando y verificando…':'Guardar y verificar'}</Button>
-   <Button type="button" variant="ghost" disabled={busy} onClick={()=>{setKey('');setOpen(false);}}>Cancelar</Button>
+  {open&&<form onSubmit={save} className="form">
+   <Field label={`Clave de ${aiProviderLabels[status.provider]}`} id={id} help="Se guarda cifrada y se verifica con una consulta mínima."><Input type="password" autoComplete="off" spellCheck={false} value={key} required minLength={8} maxLength={8192} onChange={e=>setKey(e.target.value)}/></Field>
+   <div className="form-actions"><Button type="submit" disabled={busy||key.trim().length<8} loading={busy}>Guardar y verificar</Button><Button type="button" variant="ghost" disabled={busy} onClick={()=>{setKey('');setOpen(false);}}>Cancelar</Button></div>
   </form>}
  </li>;
 }
@@ -77,19 +81,16 @@ function MetaSection({data,owner,busy,selection,act,setData,refresh}:SectionProp
  function save(event:FormEvent){event.preventDefault();const value=token.trim();setToken('');void act(async()=>{
   const result=await saveMetaToken(selection,meta.revision,value);setData(result.integrations);setOpen(false);
   return result.check.state==='VERIFIED'?'Token de Meta verificado.':`Token guardado. ${failureText[result.check.reason??'']??''}`;});}
- return <section className="card" id="meta" aria-labelledby={id}>
-  <h2 id={id}>Meta (opcional)</h2>
-  <p>Con un token de usuario del sistema de tu propio Business Manager, Commerce OS solo consulta tus campañas y resultados; nunca crea, pausa ni modifica anuncios.</p>
-  <p><span className={'status status-'+meta.state.toLowerCase()}>{metaStateText[meta.state]}</span>{meta.hint&&<span className="integration-hint"> {meta.hint}</span>}</p>
-  {meta.reason&&<p>{failureText[meta.reason]??'Meta no aceptó el token.'}</p>}
-  {meta.grantedScopes.length>0&&<p>Permisos concedidos: {meta.grantedScopes.join(', ')}.</p>}
-  {owner&&!open&&<div className="integration-actions"><Button type="button" variant="secondary" disabled={busy} onClick={()=>setOpen(true)}>{meta.state==='MISSING'?'Agregar token':'Reemplazar token'}</Button>
+ return <Card id="meta" aria-labelledby={id}>
+  <CardHead id={id} title="Meta (opcional)" description="Con un token de usuario del sistema de tu propio Business Manager, Commerce OS solo consulta tus campañas y resultados; nunca crea, pausa ni modifica anuncios."/>
+  <div className="cluster"><Badge tone={toneOf(meta.state)}>{metaStateText[meta.state]}</Badge>{meta.hint&&<code>{meta.hint}</code>}</div>
+  {meta.reason&&<Alert tone="warn">{failureText[meta.reason]??'Meta no aceptó el token.'}</Alert>}
+  {meta.grantedScopes.length>0&&<p className="muted text-sm">Permisos concedidos: {meta.grantedScopes.join(', ')}.</p>}
+  {owner&&!open&&<div className="cluster"><Button type="button" variant="secondary" disabled={busy} onClick={()=>setOpen(true)}>{meta.state==='MISSING'?'Agregar token':'Reemplazar token'}</Button>
    {meta.revision>0&&<Button type="button" variant="ghost" disabled={busy} onClick={()=>{void act(async()=>{await setMetaEnabled(selection,meta.revision,!meta.enabled);await refresh();return meta.enabled?'Token desactivado.':'Token reactivado.';});}}>{meta.enabled?'Desactivar':'Reactivar'}</Button>}</div>}
-  {open&&<form onSubmit={save}>
-   <label htmlFor={id+'-token'}>Token de usuario del sistema</label>
-   <input id={id+'-token'} type="password" autoComplete="off" spellCheck={false} value={token} required minLength={20} maxLength={4096} onChange={e=>setToken(e.target.value)}/>
-   <Button type="submit" disabled={busy||token.trim().length<20}>{busy?'Guardando y verificando…':'Guardar y verificar'}</Button>
-   <Button type="button" variant="ghost" disabled={busy} onClick={()=>{setToken('');setOpen(false);}}>Cancelar</Button>
+  {open&&<form onSubmit={save} className="form">
+   <Field label="Token de usuario del sistema" id={id+'-token'} help="Necesita el permiso ads_read. Se guarda cifrado."><Input type="password" autoComplete="off" spellCheck={false} value={token} required minLength={20} maxLength={4096} onChange={e=>setToken(e.target.value)}/></Field>
+   <div className="form-actions"><Button type="submit" disabled={busy||token.trim().length<20} loading={busy}>Guardar y verificar</Button><Button type="button" variant="ghost" disabled={busy} onClick={()=>{setToken('');setOpen(false);}}>Cancelar</Button></div>
   </form>}
- </section>;
+ </Card>;
 }
