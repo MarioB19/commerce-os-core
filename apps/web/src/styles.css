@@ -721,6 +721,9 @@ th.num {
   display: grid;
   gap: var(--space-5);
   align-content: start;
+  /* Focus moves here on every route; a page taller than the viewport must
+   * not scroll its title under the sticky top bar. */
+  scroll-margin-top: var(--topbar-height);
 }
 .app-main:focus,
 .app-main:focus-visible {

@@ -74,6 +74,18 @@ Todo el CSS legado de `styles.css` (líneas 1–~3,950: V5 sidebar/topbar glass,
 4. **`data-variant`** se conserva en el botón para la regla «una acción primaria por página».
 5. **`section` como vista previa del primer mensaje** en Variante se compone con el documento ya cargado (sin llamadas nuevas a la API).
 
+### Decisiones tomadas en R1–R4
+
+6. **Contratos de navegador ajustados** (mismo commit que la pantalla): `scripts/test-profile-application.mjs` busca los productos como `link` (ya no `heading`, porque Productos es una tabla) y responde `GET /v1/conversations` (lectura que Inicio hace para «Conversaciones recientes»); `scripts/test-profile-sales.mjs` responde 404 a las lecturas del shell (`/v2/home`, `/v2/variants`, `/v2/goals`, `/v2/results`, `/v2/alerts`), que antes no existían. Ningún otro contrato cambió.
+7. **Nombres accesibles que cambiaron**: el botón de búsqueda móvil pasa a `Abrir búsqueda` (antes chocaba con el `Buscar` del formulario); el `Skeleton` ya no es `role="status"` (el texto de carga va en `aria-busy` + etiqueta sólo para lector); la insignia de estado va junto al `h1`, no dentro (los headings siguen siendo `Comprobantes`, `Variante…`). El resto de la lista de R0 se conserva tal cual.
+8. **Contadores del shell sin agotar la API.** El límite global de la API es 300 peticiones/min; cada navegación es una carga completa de página. El resumen de Inicio (`/v2/home`) se guarda por pestaña en `sessionStorage` 30 s (`commerce:home-summary:v1`) y la meta del mes sólo se lee en Inicio y Resultados (`commerce:sales-summary:v1`); el resto de páginas reutiliza la última lectura. Nada privado: cifras que el perfil ya muestra.
+9. **Columnas omitidas en Productos**: precio y ventas 30 d no están en `/v2/products`; añadirlas exige `apps/api` y queda fuera de la etapa.
+10. **Regresión visual ligera** (`tests/e2e/v7-visual.spec.ts`): login, Ayuda y Seguridad a 1440 y 375 px, con contadores y meta enmascarados, `maxDiffPixelRatio` 3 %. Las líneas base viven en `tests/e2e/v7-visual.spec.ts-snapshots/` y se aceptan con `playwright test v7-visual --update-snapshots` (fuera de `pnpm test:e2e`, porque el guardián del árbol fuente rechaza escrituras en rutas versionadas).
+
 ## Avance
 
-- 18-oct — R0 inventario escrito. Siguiente: R1 (tokens, fuente, primitivas).
+- 18-oct — R0 inventario escrito.
+- 18-oct — R1: tokens, fuente local, 19 primitivas en `components/ui/` con 9 pruebas vitest.
+- 18-oct — R2: shell nuevo, Inicio y Productos; capturas en el vault (`evidencia/2026-10-18/r2-ui/`).
+- 18-oct — R3: resto de pantallas (Variante, Números, Probar número, Ventas ×4, Resultados, Campañas, Ayuda, Integraciones, Perfil, Empleados, Invitaciones, Accesos MCP, Seguridad, identidad, Plataforma).
+- 18-oct — R4: 13 contratos de navegador y 10 specs Playwright en verde (axe limpio en todas las páginas, sin desbordamiento a 390 px, teclado y 44 px); spec de regresión visual añadido. Pendiente de esta nota: FULL local 21/21 sobre el SHA final.
