@@ -1,7 +1,8 @@
 import {useEffect,useId,useRef,useState,type FormEvent} from 'react';
 import type {ProfileOverview,ProfileRole} from '../../../../packages/contracts/src/profiles.js';
 import {downloadProfileExport,loadProfileSettings,saveProfileSettings,type ProfileRequestFence} from '../lib/profile-settings.js';
-import {Button} from './ui/button';
+import {Alert,Button,Card,CardHead,Field,Input,Skeleton} from './ui';
+import {Download} from 'lucide-react';
 
 /** Prepared for the complete server profile cutover; not mounted by legacy UI. */
 export function ProfileSettings({selection,role}:{selection:ProfileRequestFence;role:ProfileRole}){
@@ -25,26 +26,25 @@ export function ProfileSettings({selection,role}:{selection:ProfileRequestFence;
   }catch(failure){if(epoch.current===generation){setUncertain(true);setError(failure instanceof Error?failure.message:'Actualiza los datos antes de volver a guardar.');}}
   finally{if(epoch.current===generation){inflight.current=false;setSaving(false);}}
  }
- return <section className="card" aria-labelledby={id}>
-  <h2 id={id}>Datos del negocio</h2>
-  <p>El nombre y la zona horaria pertenecen al perfil seleccionado.</p>
-  {error&&<p role="alert">{error}</p>}{notice&&<p role="status">{notice}</p>}{loading&&<p role="status">Consultando el perfil…</p>}
-  {currentData&&<>
-   {currentData.state==='SUSPENDED'&&<p>Este perfil está suspendido. Puedes consultar sus datos, pero no modificarlos.</p>}
-   {role!=='owner'&&<p>La persona dueña del perfil puede editar estos datos.</p>}
-   <form onSubmit={event=>{void submit(event);}}>
-    <label htmlFor={id+'-name'}>Nombre del negocio</label>
-    <input id={id+'-name'} value={name} maxLength={160} required disabled={!canEdit||loading||saving||uncertain} onChange={event=>setName(event.target.value)}/>
-    <label htmlFor={id+'-zone'}>Zona horaria</label>
-    <input id={id+'-zone'} value={zone} maxLength={128} required disabled={!canEdit||loading||saving||uncertain} aria-describedby={id+'-zone-help'} onChange={event=>setZone(event.target.value)}/>
-    <p id={id+'-zone-help'}>Usa una zona como America/Mexico_City o UTC.</p>
-    {canEdit&&<Button type="submit" disabled={loading||saving||uncertain}>{saving?'Guardando…':'Guardar datos'}</Button>}
-   </form>
-   <dl><dt>Límite de números</dt><dd>{currentData.number_limit}</dd><dt>Límite de productos</dt><dd>{currentData.product_limit}</dd><dt>Conversaciones diarias</dt><dd>{currentData.daily_conversation_limit}</dd></dl>
-  </>}
-  <Button type="button" variant="secondary" disabled={loading||saving} onClick={()=>{void refresh();}}>Actualizar datos</Button>
+ return <div className="stack" style={{gap:'var(--space-5)'}}>
+  <Card aria-labelledby={id}>
+   <CardHead id={id} title="Datos del negocio" description="El nombre y la zona horaria pertenecen al perfil seleccionado." actions={<Button type="button" variant="ghost" size="sm" disabled={loading||saving} onClick={()=>{void refresh();}}>Actualizar datos</Button>}/>
+   {error&&<Alert tone="error">{error}</Alert>}{notice&&<Alert tone="success">{notice}</Alert>}{loading&&<Skeleton lines={2} label="Consultando el perfil…"/>}
+   {currentData&&<>
+    {currentData.state==='SUSPENDED'&&<Alert tone="warn">Este perfil está suspendido. Puedes consultar sus datos, pero no modificarlos.</Alert>}
+    {role!=='owner'&&<p className="muted text-sm">La persona dueña del perfil puede editar estos datos.</p>}
+    <form onSubmit={event=>{void submit(event);}} className="form">
+     <div className="form-grid">
+      <Field label="Nombre del negocio" id={id+'-name'}><Input value={name} maxLength={160} required disabled={!canEdit||loading||saving||uncertain} onChange={event=>setName(event.target.value)}/></Field>
+      <Field label="Zona horaria" id={id+'-zone'} help="Usa una zona como America/Mexico_City o UTC."><Input value={zone} maxLength={128} required disabled={!canEdit||loading||saving||uncertain} onChange={event=>setZone(event.target.value)}/></Field>
+     </div>
+     {canEdit&&<div className="form-actions"><Button type="submit" disabled={loading||saving||uncertain} loading={saving}>Guardar datos</Button></div>}
+    </form>
+    <dl className="facts"><div><dt>Límite de números</dt><dd>{currentData.number_limit}</dd></div><div><dt>Límite de productos</dt><dd>{currentData.product_limit}</dd></div><div><dt>Conversaciones diarias</dt><dd>{currentData.daily_conversation_limit}</dd></div></dl>
+   </>}
+  </Card>
   {role==='owner'&&<ProfileDataExport selection={selection}/>}
- </section>;
+ </div>;
 }
 
 /** RF-01.5: readable export of the profile's own data, owner only. */
@@ -56,11 +56,10 @@ function ProfileDataExport({selection}:{selection:ProfileRequestFence}){
   catch(failure){setError(failure instanceof Error?failure.message:'No se pudo descargar la exportación.');}
   finally{setBusy(false);}
  }
- return <div aria-labelledby={id} className="profile-export">
-  <h3 id={id}>Exportar datos del perfil</h3>
-  <p>Descarga un archivo legible (JSON por líneas, comprimido) con productos, variantes, números, contactos, conversaciones, ventas y comprobantes de este perfil. No incluye llaves, tokens ni contraseñas. La plataforma sólo guarda la huella del archivo.</p>
-  {error&&<p role="alert">{error}</p>}
-  {done&&<p role="status">Exportación descargada ({Math.max(1,Math.round(done.bytes/1024))} KB). Huella: <code>{done.sha256.slice(0,16)}…</code></p>}
-  <Button type="button" variant="secondary" disabled={busy} onClick={()=>{void run();}}>{busy?'Preparando…':'Exportar datos'}</Button>
- </div>;
+ return <Card aria-labelledby={id}>
+  <CardHead id={id} title="Exportar datos del perfil" level={2} description="Descarga un archivo legible (JSON por líneas, comprimido) con productos, variantes, números, contactos, conversaciones, ventas y comprobantes de este perfil. No incluye llaves, tokens ni contraseñas. La plataforma sólo guarda la huella del archivo."/>
+  {error&&<Alert tone="error">{error}</Alert>}
+  {done&&<Alert tone="success">Exportación descargada ({Math.max(1,Math.round(done.bytes/1024))} KB). Huella: <code>{done.sha256.slice(0,16)}…</code></Alert>}
+  <div><Button type="button" variant="secondary" disabled={busy} loading={busy} onClick={()=>{void run();}}><Download aria-hidden="true"/>Exportar datos</Button></div>
+ </Card>;
 }

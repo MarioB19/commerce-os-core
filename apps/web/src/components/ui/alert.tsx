@@ -4,7 +4,7 @@ import {cn} from '../../lib/utils';
 const icons={success:CircleCheck,warn:CircleAlert,error:CircleX,info:Info,neutral:Info};
 /** Inline message with icon + text + colour. `role` follows the tone
  * (`alert` for errors, `status` otherwise) unless overridden. */
-export function Alert({tone='info',title,children,actions,role,className,id,tabIndex}:{tone?:'success'|'warn'|'error'|'info'|'neutral';title?:React.ReactNode;children?:React.ReactNode;actions?:React.ReactNode;role?:'alert'|'status'|'note'|'region';className?:string;id?:string;tabIndex?:number}){
+export function Alert({tone='info',title,children,actions,role,className,id,tabIndex}:{tone?:'success'|'warn'|'error'|'info'|'neutral';title?:React.ReactNode;children?:React.ReactNode;actions?:React.ReactNode;role?:'alert'|'status'|'note'|'region'|'none';className?:string;id?:string;tabIndex?:number}){
  const Icon=icons[tone];
  return <div className={cn('alert',className)} data-tone={tone} role={role??(tone==='error'?'alert':'status')} id={id} tabIndex={tabIndex}>
   <Icon aria-hidden="true"/>

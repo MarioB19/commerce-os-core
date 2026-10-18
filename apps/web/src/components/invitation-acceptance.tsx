@@ -1,7 +1,7 @@
 import {useEffect,useId,useRef,useState} from 'react';
 import {invitationLinkTokenSchema} from '../../../../packages/contracts/src/profile-invitation-acceptance.js';
 import {acceptInvitationLink,readInvitationAcceptance} from '../lib/invitation-acceptance.js';
-import {Button} from './ui/button';
+import {Alert,Button,Skeleton} from './ui';
 
 /** Prepared recipient view; the route bootstrap extracts/removes the fragment.
  * No request selects a profile or registers a new identity. */
@@ -22,14 +22,13 @@ export function InvitationAcceptance({invitationToken,onAccepted}:{invitationTok
   catch{if(generation===epoch.current){setState('UNKNOWN');setBound(invitationToken);setError('El resultado no está confirmado. Comprueba el estado antes de aceptar otra vez.');}}
   finally{if(generation===epoch.current){busy.current=false;setWorking(false);}}
  }
- return <section className="card" aria-labelledby={title}><h2 id={title}>Aceptar invitación</h2>
-  {!valid?<p role="alert">El enlace no es válido. Abre el enlace completo del correo de invitación.</p>:<>
-   <p>Inicia sesión con el correo que recibió la invitación. La aceptación incorpora ese usuario al perfil invitado.</p>
-   {working&&<p role="status">Comprobando la invitación…</p>}{error&&<p role="alert">{error}</p>}
-   {current==='ACCEPTED'?<><p role="status">Invitación aceptada. Puedes elegir el perfil desde tu sesión.</p>{onAccepted&&<Button type="button" disabled={working} onClick={onAccepted}>Elegir perfil</Button>}</>:<>
+ return <section aria-labelledby={title} className="stack"><h2 id={title}>Aceptar invitación</h2>
+  {!valid?<Alert tone="error">El enlace no es válido. Abre el enlace completo del correo de invitación.</Alert>:<>
+   <p className="muted">Inicia sesión con el correo que recibió la invitación. La aceptación incorpora ese usuario al perfil invitado.</p>
+   {working&&<Skeleton lines={1} label="Comprobando la invitación…"/>}{error&&<Alert tone="error">{error}</Alert>}
+   {current==='ACCEPTED'?<><Alert tone="success">Invitación aceptada. Puedes elegir el perfil desde tu sesión.</Alert>{onAccepted&&<div><Button type="button" disabled={working} onClick={onAccepted}>Elegir perfil</Button></div>}</>:<>
     {current==='PENDING'&&<p>La invitación está pendiente. Puedes aceptarla con tu sesión actual.</p>}
-    <Button type="button" disabled={working||current!=='PENDING'} onClick={()=>{void accept();}}>Aceptar invitación</Button>
-    <Button type="button" variant="secondary" disabled={working} onClick={()=>{void check();}}>Comprobar estado</Button>
+    <div className="form-actions"><Button type="button" disabled={working||current!=='PENDING'} onClick={()=>{void accept();}}>Aceptar invitación</Button><Button type="button" variant="secondary" disabled={working} onClick={()=>{void check();}}>Comprobar estado</Button></div>
    </>}
   </>}
  </section>;

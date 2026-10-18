@@ -1,7 +1,7 @@
 import {useEffect,useId,useRef,useState,type FormEvent} from 'react';
 import {profileRoleLabels,type ProfileBootstrap} from '../../../../packages/contracts/src/profiles.js';
 import {loadProfiles,selectProfile} from '../lib/profile-identity.js';
-import {Button} from './ui/button';
+import {Alert,Button,Field,NativeSelect,Skeleton} from './ui';
 
 /** Mounted only when the server's complete profile-auth cutover is active. */
 export function ProfileSelector({initial,onConfirmed=()=>window.location.assign('/home')}:{initial?:ProfileBootstrap;onConfirmed?:(selection:{workspaceId:string;version:number})=>void}){
@@ -23,22 +23,19 @@ export function ProfileSelector({initial,onConfirmed=()=>window.location.assign(
   catch(failure){if(mounted.current){setReconcile(true);setError(failure instanceof Error?failure.message:'No se pudo confirmar el cambio. Actualiza los perfiles antes de continuar.');}}
   finally{inflight.current=false;if(mounted.current)setPending(false);}
  }
- return <section aria-labelledby={label} className="card">
-  <h1 id={label}>Elige el perfil de tu negocio</h1>
-  <p>El perfil determina los datos y permisos con los que vas a trabajar.</p>
-  {nativeSelection&&<p>Perfil actual: <strong>{nativeSelection.businessName}</strong> · {profileRoleLabels[nativeSelection.role]}</p>}
-  {error&&<p role="alert">{error}</p>}
-  {loading&&<p role="status">Consultando tus perfiles…</p>}
-  {data?.profiles.length===0&&!loading&&<p>No tienes acceso a un perfil. Contacta a la persona responsable de tu negocio.</p>}
-  {Boolean(data?.profiles.length)&&<form onSubmit={event=>{void submit(event);}}>
-   <label htmlFor={label+'-select'}>Perfil</label>
-   <select id={label+'-select'} value={target} disabled={pending||loading||reconcile} onChange={event=>setTarget(event.target.value)}>
+ return <div className="stack" aria-labelledby={label}>
+  <div><h2 id={label}>Elige el perfil de tu negocio</h2><p className="muted">El perfil determina los datos y permisos con los que vas a trabajar.</p></div>
+  {nativeSelection&&<p className="muted">Perfil actual: <strong>{nativeSelection.businessName}</strong> · {profileRoleLabels[nativeSelection.role]}</p>}
+  {error&&<Alert tone="error">{error}</Alert>}
+  {loading&&<Skeleton lines={2} label="Consultando tus perfiles…"/>}
+  {data?.profiles.length===0&&!loading&&<Alert tone="info">No tienes acceso a un perfil. Contacta a la persona responsable de tu negocio.</Alert>}
+  {Boolean(data?.profiles.length)&&<form onSubmit={event=>{void submit(event);}} className="form">
+   <Field label="Perfil" id={label+'-select'}><NativeSelect value={target} disabled={pending||loading||reconcile} onChange={event=>setTarget(event.target.value)}>
     <option value="">Selecciona un perfil</option>
     {data!.profiles.map(profile=><option key={profile.id} value={profile.id}>{profile.businessName} · {profileRoleLabels[profile.role]}{profile.state==='SUSPENDED'?' · Suspendido':''}</option>)}
-   </select>
-   {choice?.state==='SUSPENDED'&&<p>Este perfil está suspendido. Puedes consultar su información y gestionar la seguridad de tu cuenta; las operaciones comerciales están detenidas.</p>}
-   <Button type="submit" disabled={!choice||pending||loading||reconcile}>{pending?'Confirmando…':nativeSelection?.id===target?'Continuar con este perfil':'Cambiar a este perfil'}</Button>
+   </NativeSelect></Field>
+   {choice?.state==='SUSPENDED'&&<Alert tone="warn">Este perfil está suspendido. Puedes consultar su información y gestionar la seguridad de tu cuenta; las operaciones comerciales están detenidas.</Alert>}
+   <div className="form-actions"><Button type="submit" disabled={!choice||pending||loading||reconcile} loading={pending}>{nativeSelection?.id===target?'Continuar con este perfil':'Cambiar a este perfil'}</Button><Button type="button" variant="ghost" disabled={pending||loading} onClick={()=>{void refresh();}}>Actualizar perfiles</Button></div>
   </form>}
-  <Button type="button" variant="secondary" disabled={pending||loading} onClick={()=>{void refresh();}}>Actualizar perfiles</Button>
- </section>;
+ </div>;
 }
