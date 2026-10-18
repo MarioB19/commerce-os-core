@@ -6,7 +6,7 @@ export function PageHeader({title,description,actions,badge,back,id='page-title'
  return <header className="page-header">
   <div>
    {back&&<a className="back-link" href={back.href}><ArrowLeft aria-hidden="true"/>{back.label}</a>}
-   <h1 id={id}>{title}{badge}</h1>
+   <div className="page-title-row"><h1 id={id}>{title}</h1>{badge}</div>
    {description&&<p>{description}</p>}
   </div>
   {actions&&<div className="page-header-actions">{actions}</div>}

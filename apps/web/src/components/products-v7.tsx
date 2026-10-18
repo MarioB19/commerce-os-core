@@ -1,5 +1,5 @@
 import {useCallback,useEffect,useId,useMemo,useState,type FormEvent,type ReactNode} from 'react';
-import {Archive,ArrowRight,CircleCheck,CircleDashed,Copy,Package,PencilLine,Search,Store} from 'lucide-react';
+import {Archive,ArrowRight,CircleCheck,CircleDashed,Copy,Package,PencilLine,RefreshCw,Search,Store} from 'lucide-react';
 import type {ProfileRole,ProfileState} from '../../../../packages/contracts/src/profiles.js';
 import type {VariantLocale} from '../../../../packages/contracts/src/variants.js';
 import type {ProfileFence} from '../lib/profile-request.js';
@@ -130,7 +130,7 @@ export function ProductsHome({selection,role,state}:{selection:ProfileFence;role
    {shown.length===0?<EmptyState inline title="Ningún producto coincide" description="Cambia el filtro o la búsqueda." action={<Button variant="secondary" onClick={()=>{setQuery('');setFilter('all');}}>Quitar filtros</Button>}/>
    :<TableWrap label="Productos y mercados"><Table className="products-table"><thead><tr><th scope="col">Producto y mercado</th><th scope="col">Estado</th><th scope="col" className="num">Números</th><th scope="col"><span className="sr-only">Acciones</span></th></tr></thead>
     <tbody>{shown.map(({product:p,variants:vs})=><ProductRows key={p.id} product={p} variants={vs} manage={manage} adopting={adopting===p.id} onAdopt={()=>void adopt(p)}/>)}</tbody>
-    <tfoot><tr><td colSpan={4} className="table-foot-cell"><div className="table-foot"><span>{shown.length} producto{shown.length===1?'':'s'} · {shown.reduce((n,r)=>n+r.variants.length,0)} mercado{shown.reduce((n,r)=>n+r.variants.length,0)===1?'':'s'}</span><span>Actualizado {loadedAt?relative(loadedAt):'—'} · <button type="button" className="link-button" onClick={()=>setTick(t=>t+1)}>Actualizar</button></span></div></td></tr></tfoot>
+    <tfoot><tr><td colSpan={4} className="table-foot-cell"><div className="table-foot"><span>{shown.length} producto{shown.length===1?'':'s'} · {shown.reduce((n,r)=>n+r.variants.length,0)} mercado{shown.reduce((n,r)=>n+r.variants.length,0)===1?'':'s'}</span><span className="cluster">Actualizado {loadedAt?relative(loadedAt):'—'}<Button variant="ghost" size="sm" onClick={()=>setTick(t=>t+1)}><RefreshCw aria-hidden="true"/>Actualizar</Button></span></div></td></tr></tfoot>
    </Table></TableWrap>}
   </>}
   <CreateProduct fence={selection} open={creating} onClose={()=>setCreating(false)} onCreated={(productId,variantId)=>window.location.assign(variantPath(productId,variantId))}/>
@@ -139,10 +139,10 @@ export function ProductsHome({selection,role,state}:{selection:ProfileFence;role
 function ProductRows({product:p,variants,manage,adopting,onAdopt}:{product:ProductSummary;variants:ProductSummary['variants'];manage:boolean;adopting:boolean;onAdopt:()=>void}){
  return <>
   <tr className="row-parent">
-   <td data-label="Producto"><a href={`/products/${p.id}`} className="row-title">{p.name}</a>{p.description&&<span className="row-sub">{p.description}</span>}</td>
+   <td data-label="Producto"><a href={`/products/${p.id}`} className="row-title" id={`product-${p.id}`}>{p.name}</a>{p.description&&<span className="row-sub">{p.description}</span>}</td>
    <td data-label="Estado">{p.archived?<Badge tone="neutral" icon={false}>Archivado</Badge>:<span className="muted text-sm">{variants.length} mercado{variants.length===1?'':'s'}{p.variants.length-variants.length>0?` · ${p.variants.length-variants.length} archivado${p.variants.length-variants.length===1?'':'s'}`:''}</span>}</td>
    <td className="num muted text-sm">{p.variants.reduce((n,v)=>n+v.numbers,0)||''}</td>
-   <td className="actions">{!p.variants.length&&manage&&!p.archived?<Button size="sm" variant="secondary" disabled={adopting} loading={adopting} onClick={onAdopt}>Configurar mercado México</Button>:<a href={`/products/${p.id}`}>Ver producto<span className="sr-only"> {p.name}</span></a>}</td>
+   <td className="actions">{!p.variants.length&&manage&&!p.archived?<Button size="sm" variant="secondary" disabled={adopting} loading={adopting} onClick={onAdopt}>Configurar mercado México</Button>:<a href={`/products/${p.id}`} aria-describedby={`product-${p.id}`}>Ver producto</a>}</td>
   </tr>
   {variants.map(v=><VariantRow key={v.id} product={p} v={v}/>)}
   {!variants.length&&<tr className="row-child"><td colSpan={4} className="muted text-sm">{p.variants.length?'Sus mercados están archivados.':'Este producto aún no tiene mercados configurados.'}</td></tr>}

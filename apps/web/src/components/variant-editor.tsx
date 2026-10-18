@@ -65,7 +65,7 @@ export function VariantEditor({productId,variantId,section,selection,role,state}
   <header className="page-header">
    <div>
     <a className="back-link" href={`/products/${productId}`}>{variant.product.name}</a>
-    <h1 id="variant-title">{d.name} <Badge tone={stateTone(variant.state)}>{variant.state_label}</Badge></h1>
+    <div className="page-title-row"><h1 id="variant-title">{d.name}</h1><Badge tone={stateTone(variant.state)}>{variant.state_label}</Badge></div>
     <p>{languageLabel(d.locale.language)} · {d.locale.currency} · {d.locale.timezone}. Los cambios se aplican a conversaciones nuevas; las conversaciones en curso conservan su configuración.</p>
    </div>
    <div className="page-header-actions">

@@ -64,7 +64,7 @@ describe('ui primitives',()=>{
   expect(tabs).toContain('aria-label="Ventas"');expect(tabs).toContain('href="/sales/orders" aria-current="page"');
  });
  it('skeleton, empty and error states announce themselves',()=>{
-  expect(render(h(Skeleton,{lines:2}))).toContain('role="status"');
+  expect(render(h(Skeleton,{lines:2}))).toContain('aria-busy="true"');
   expect(render(h(EmptyState,{title:'Crea tu primer producto',description:'En 15 minutos.',action:h(Button,null,'Crear producto')}))).toContain('<h2>Crea tu primer producto</h2>');
   const err=render(h(ErrorState,{message:'No pudimos conectar.',onRetry:()=>undefined}));
   expect(err).toContain('role="alert"');expect(err).toContain('Reintentar');

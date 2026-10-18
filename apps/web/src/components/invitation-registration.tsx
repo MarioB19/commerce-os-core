@@ -35,9 +35,10 @@ export function InvitationRegistration({invitationToken,onLoginRequested}:{invit
      <Field label="Nombre"><Input name="name" autoComplete="name" required maxLength={120} value={name} onChange={e=>setName(e.target.value)}/></Field>
      <Field label="Correo invitado"><Input name="email" type="email" autoComplete="email" required maxLength={320} value={email} onChange={e=>setEmail(e.target.value)}/></Field>
      <Field label="Contraseña" help="De 12 a 128 caracteres."><Input name="password" type="password" autoComplete="new-password" required minLength={12} maxLength={128} value={password} onChange={e=>setPassword(e.target.value)}/></Field>
-     <div className="form-actions"><Button type="submit" disabled={!canEdit} loading={current==='SENDING'}>Crear cuenta y aceptar</Button><Button type="button" variant="secondary" disabled={current==='SENDING'} onClick={onLoginRequested}>Iniciar sesión y comprobar invitación</Button></div>
+     <div className="form-actions"><Button type="submit" disabled={!canEdit} loading={current==='SENDING'}>Crear cuenta y aceptar</Button></div>
     </fieldset>
    </form>}
+   <div><Button type="button" variant="secondary" disabled={current==='SENDING'} onClick={onLoginRequested}>Iniciar sesión y comprobar invitación</Button></div>
   </>}
  </section>;
 }

@@ -363,8 +363,14 @@ th.num {
   display: grid;
   gap: 2px;
 }
+.app-nav .nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
 .app-nav a {
   display: flex;
+  flex: 1;
   align-items: center;
   gap: 12px;
   min-height: var(--control-height);
@@ -373,6 +379,13 @@ th.num {
   color: var(--ink);
   font-weight: 500;
   font-size: 15px;
+}
+.app-nav .nav-item .nav-count {
+  position: absolute;
+  right: var(--space-3);
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
 }
 .app-nav a:hover {
   background: var(--surface-2);
@@ -1338,11 +1351,11 @@ fieldset:disabled .textarea {
   gap: var(--space-2);
   align-items: center;
 }
-.page-header .badge {
-  vertical-align: middle;
-}
-.page-header h1 .badge {
-  margin-left: 8px;
+.page-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
 }
 .back-link {
   display: inline-flex;
@@ -2451,11 +2464,10 @@ audio.media-preview {
 }
 .password-control .icon-button {
   position: absolute;
-  right: 2px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 40px;
-  height: 40px;
+  right: 0;
+  top: 0;
+  width: var(--control-height);
+  height: var(--control-height);
 }
 .identity-page {
   min-height: 100dvh;
@@ -2559,8 +2571,9 @@ audio.media-preview {
   padding: 0 !important;
   border-bottom: 0 !important;
 }
-.table-foot .link-button {
-  min-height: 0;
+.table-foot {
+  padding-top: 4px;
+  padding-bottom: 4px;
 }
 @media (max-width: 640px) {
   .table.stack-mobile tfoot,

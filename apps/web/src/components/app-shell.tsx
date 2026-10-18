@@ -4,7 +4,7 @@ import {helpSections} from '../../../../packages/contracts/src/help.js';
 import {profileRoleLabels,type ProfileBrowserBootstrap} from '../../../../packages/contracts/src/profiles.js';
 import {profileRequest,type ProfileFence} from '../lib/profile-request.js';
 import {variantRequest,type ProductSummary} from '../lib/variants.js';
-import {loadHome,loadSales,moneyMinor,type Home,type Sales} from '../lib/home-data.js';
+import {cachedSales,loadHome,loadHomeForShell,loadSales,moneyMinor,type Home,type Sales} from '../lib/home-data.js';
 import {Button,Dialog,DialogContent,Progress} from './ui';
 import {profileSections} from './profile-sections.js';
 
@@ -42,8 +42,10 @@ export function AppShell({path,data,fence,platformAdmin,onSwitchProfile,onLogout
  const [home,setHome]=useState<Home|null>(null),[sales,setSales]=useState<Sales|null>(null),[tick,setTick]=useState(0);
  const refreshCounters=useCallback(()=>setTick(t=>t+1),[]);
  useEffect(()=>{const c=new AbortController();
-  loadHome(fence,c.signal).then(v=>{if(!c.signal.aborted)setHome(v);}).catch(()=>undefined);
-  loadSales(fence,profile.timezone,c.signal).then(v=>{if(!c.signal.aborted)setSales(v);}).catch(()=>undefined);
+  (path==='/home'||path==='/'||tick>0?loadHome(fence,c.signal):loadHomeForShell(fence,c.signal)).then(v=>{if(!c.signal.aborted)setHome(v);}).catch(()=>undefined);
+  // Fresh results only where the page itself reads them; elsewhere the last read of this tab.
+  if(path==='/home'||path==='/'||path.startsWith('/results'))loadSales(fence,profile.timezone,c.signal).then(v=>{if(!c.signal.aborted)setSales(v);}).catch(()=>undefined);
+  else setSales(cachedSales(fence)?.sales??null);
   return()=>c.abort();},[fence.workspaceId,fence.version,profile.timezone,path,tick]);
  const allCrumbs=useMemo<Crumb[]>(()=>{const tail=crumbs.length?crumbs:accountCrumb[path]?[{label:accountCrumb[path]!}]:baseCrumb(path);return [{label:'Inicio',href:'/home'},...tail];},[crumbs,path]);
  const counts:Record<string,number|undefined>={'/sales/inbox':home?.pending.receiptsToReview||undefined,'/numbers':home?.pending.alerts||undefined};
@@ -63,15 +65,15 @@ export function AppShell({path,data,fence,platformAdmin,onSwitchProfile,onLogout
    <a href="#profile-main" className="skip-link">Saltar al contenido</a>
    <aside className="app-sidebar">
     <a href="/home" className="app-brand"><span className="app-brand-mark"><Layers3 size={16} aria-hidden="true"/></span>Commerce OS</a>
-    <button type="button" className="profile-switch" onClick={onSwitchProfile} aria-label={`Cambiar perfil. Perfil actual: ${profile.businessName}, ${profileRoleLabels[profile.role]}`}>
+    <button type="button" className="profile-switch" onClick={onSwitchProfile} aria-label="Cambiar perfil" aria-describedby="profile-switch-current">
      <span className="avatar" aria-hidden="true">{initials(profile.businessName)}</span>
-     <span className="profile-switch-text"><strong>{profile.businessName}</strong><span>{profileRoleLabels[profile.role]}{profile.state==='SUSPENDED'?' · Suspendido':''}</span></span>
+     <span className="profile-switch-text" id="profile-switch-current"><strong>{profile.businessName}</strong><span>{profileRoleLabels[profile.role]}{profile.state==='SUSPENDED'?' · Suspendido':''}</span></span>
      <Repeat size={16} aria-hidden="true" style={{color:'var(--text-2)'}}/>
     </button>
     <nav aria-label="Navegación del perfil" className="app-nav">
-     {profileSections.map(section=>{const Icon=icons[section.href];const count=counts[section.href];return <a key={section.href} href={section.href} aria-current={section.active(path)?'page':undefined}>
-      <Icon aria-hidden="true"/>{section.label}{count?<span className={'nav-count'+(section.href==='/numbers'&&home?.pending.criticalAlerts?' attention':'')} aria-label={`${count} pendiente${count===1?'':'s'}`}>{count}</span>:null}
-     </a>;})}
+     {profileSections.map(section=>{const Icon=icons[section.href];const count=counts[section.href];return <div className="nav-item" key={section.href}><a href={section.href} aria-current={section.active(path)?'page':undefined} aria-describedby={count?`nav-count-${section.href.replace(/\W/g,'')}`:undefined}>
+      <Icon aria-hidden="true"/>{section.label}
+     </a>{count?<span id={`nav-count-${section.href.replace(/\W/g,'')}`} className={'nav-count'+(section.href==='/numbers'&&home?.pending.criticalAlerts?' attention':'')} aria-label={`${count} pendiente${count===1?'':'s'}`}>{count}</span>:null}</div>;})}
     </nav>
     <MonthGoal sales={sales}/>
     <div className="sidebar-footer">
@@ -147,7 +149,7 @@ function SearchBox({fence}:{fence:ProfileFence}){
  const go=(hit:Hit)=>{setOpen(false);window.location.assign(hit.href);};
  return <div className={'topbar-search'+(open?' open':'')} ref={host}>
   <Search aria-hidden="true"/>
-  <button type="button" className="icon-button search-toggle" aria-label="Buscar" aria-expanded={open} onClick={()=>{setOpen(o=>!o);setTimeout(()=>input.current?.focus(),0);}}><Search aria-hidden="true"/></button>
+  <button type="button" className="icon-button search-toggle" aria-label="Abrir búsqueda" aria-expanded={open} onClick={()=>{setOpen(o=>!o);setTimeout(()=>input.current?.focus(),0);}}><Search aria-hidden="true"/></button>
   <input ref={input} id={id} className="input" type="search" placeholder="Buscar" aria-label="Buscar" role="combobox" aria-expanded={open&&hits.length>0} aria-controls={id+'-list'} aria-autocomplete="list" aria-activedescendant={open&&hits[active]?`${id}-opt-${active}`:undefined} value={query} autoComplete="off"
    onFocus={()=>setOpen(true)} onChange={e=>{setQuery(e.target.value);setOpen(true);}}
    onKeyDown={e=>{if(e.key==='ArrowDown'){e.preventDefault();setActive(a=>Math.min(hits.length-1,a+1));}else if(e.key==='ArrowUp'){e.preventDefault();setActive(a=>Math.max(0,a-1));}else if(e.key==='Enter'&&hits[active]){e.preventDefault();go(hits[active]!);}else if(e.key==='Escape'){setOpen(false);}}}/>

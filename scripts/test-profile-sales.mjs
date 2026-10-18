@@ -22,6 +22,8 @@ try{
   const req=route.request(),url=new URL(req.url());if(url.origin!==base)return route.abort();if(!url.pathname.startsWith('/v1/')&&!url.pathname.startsWith('/v2/'))return route.continue();
   if(url.pathname==='/v2/me')return route.fulfill({json:{data:boot()}});
   if(url.pathname==='/v2/platform/access')return route.fulfill({json:{data:{admin:false}}});
+  // V7 shell reads (Inicio summary, month goal): answered as absent data so the page renders without business facts.
+  if(['/v2/home','/v2/variants','/v2/goals','/v2/results','/v2/alerts'].some(p=>url.pathname===p||url.pathname.startsWith(p+'/')))return route.fulfill({status:404,json:{error:{code:'NOT_FOUND',message:'Sin datos'}}});
   const call={path:url.pathname,method:req.method(),headers:req.headers(),body:req.postDataJSON(),query:Object.fromEntries(url.searchParams)};calls.push(call);
   assert.equal(call.headers['x-commerce-profile-id'],workspace);assert.equal(call.headers['x-commerce-profile-version'],String(version));assert.equal(call.headers.authorization,undefined);
   if(url.pathname.startsWith('/v1/sales-operations/')){

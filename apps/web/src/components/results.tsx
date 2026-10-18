@@ -47,9 +47,9 @@ function Choice(p:{client:ResultsClient;kind:typeof kinds[keyof typeof kinds];la
  const id=useId(),[search,setSearch]=useState(''),[page,setPage]=useState<{data:{id:string;label:string}[];next:string|null}>({data:[],next:null}),[error,setError]=useState(''),[busy,setBusy]=useState(false),flight=useRef<AbortController|null>(null),epoch=useRef(0);
  const query=async(after?:string)=>{const n=++epoch.current;flight.current?.abort();const c=new AbortController();flight.current=c;setBusy(true);setError('');try{const r=await p.client({operation:'options',query:{kind:p.kind,limit:50,...(search?{search}:{}),...(after?{after}:{}),...(p.family?{family_id:p.family}:{})}},c.signal);if(n!==epoch.current||c.signal.aborted)return;if(r.operation!=='options')throw Error('OPTIONS_REQUIRED');setPage(old=>({data:after?[...old.data,...r.data]:r.data,next:r.next}));}catch{if(n===epoch.current&&!c.signal.aborted)setError('No se pudieron consultar las opciones.');}finally{if(n===epoch.current&&!c.signal.aborted)setBusy(false);}};
  useEffect(()=>{setPage({data:[],next:null});void query();return()=>{epoch.current++;flight.current?.abort();};},[p.client,p.kind,p.family]);
- return <Field label={p.label} id={id} error={error||undefined}>
+ return <Field label={p.label} htmlFor={id} error={error||undefined}>
   <div className="stack-tight">
-   <NativeSelect value={p.value} disabled={p.disabled} onChange={e=>p.onChange(e.target.value)}><option value="">Todos</option>{p.value&&!page.data.some(x=>x.id===p.value)&&<option value={p.value}>Selección actual</option>}{page.data.map(x=><option key={x.id} value={x.id}>{x.label}</option>)}</NativeSelect>
+   <NativeSelect id={id} value={p.value} disabled={p.disabled} onChange={e=>p.onChange(e.target.value)}><option value="">Todos</option>{p.value&&!page.data.some(x=>x.id===p.value)&&<option value={p.value}>Selección actual</option>}{page.data.map(x=><option key={x.id} value={x.id}>{x.label}</option>)}</NativeSelect>
    {(page.next||search)&&<div className="field-row"><Input aria-label={'Buscar '+p.label.toLowerCase()} maxLength={80} value={search} placeholder="Buscar…" onChange={e=>setSearch(e.target.value)}/><Button type="button" variant="secondary" size="sm" disabled={busy} onClick={()=>{void query();}}>Buscar</Button>{page.next&&<Button type="button" variant="ghost" size="sm" disabled={busy} onClick={()=>{void query(page.next!);}}>Más</Button>}</div>}
   </div>
  </Field>;
@@ -151,13 +151,13 @@ function ReportPanel({report:r,follow,loading}:{report:Report;follow:Report|null
  const label=(from:string,to:string)=>from===to?from.slice(5):`${from.slice(5)}–${to.slice(5)}`;
  return <div className="stack" aria-busy={loading} style={{gap:'var(--space-5)',opacity:loading?0.6:1}}>
   <p className="muted text-sm">Del {r.filters.from} al {r.filters.to} · comparado con {r.previous.from} a {r.previous.to}</p>
-  <section aria-label="Cifras principales" className="kpi-grid">
+  <section aria-label="Cifras principales" className="kpi-grid results-cards">
    <Kpi label="Ingresos" value={money(s.totals.revenue_minor,c)??'—'} before={money(p.totals.revenue_minor,c)} delta={delta(revenue,Number(p.totals.revenue_minor))}/>
    <Kpi label="Ventas" value={s.totals.sales} before={p.totals.sales} delta={delta(sales,Number(p.totals.sales))}/>
    <Kpi label="Conversión" missing={s.conversion.value===null} value={shown(s.conversion,v=>pct(v))} delta={delta(kpi(s.conversion),kpi(p.conversion))} hint="De las conversaciones iniciadas, las que pagaron."/>
    <Kpi label="Ticket promedio" missing={s.average_ticket_minor.value===null} value={shown(s.average_ticket_minor,v=>money(v,c))} delta={delta(kpi(s.average_ticket_minor),kpi(p.average_ticket_minor))}/>
   </section>
-  <section aria-label="Costos" className="kpi-grid">
+  <section aria-label="Costos" className="kpi-grid results-cards">
    <Kpi label="Gasto en anuncios" missing={s.spend_minor.value===null} value={shown(s.spend_minor,v=>money(v,c))} delta={delta(kpi(s.spend_minor),kpi(p.spend_minor),true)}/>
    <Kpi label="Costo por venta" missing={s.cost_per_sale_minor.value===null} value={shown(s.cost_per_sale_minor,v=>money(v,c))} delta={delta(kpi(s.cost_per_sale_minor),kpi(p.cost_per_sale_minor),true)} hint="Gasto entre ventas atribuidas a anuncios."/>
    <Kpi label="ROAS" missing={s.roas.value===null} value={shown(s.roas,v=>`${Number(v).toFixed(2)}×`)} delta={delta(kpi(s.roas),kpi(p.roas))} hint="Ingresos atribuidos por cada peso invertido."/>
@@ -189,7 +189,7 @@ function ReportPanel({report:r,follow,loading}:{report:Report;follow:Report|null
      <tbody>{r.series.map(x=><tr key={x.bucket}><th scope="row">{x.from===x.to?x.from:`${x.from} a ${x.to}`}</th><td className="num">{money(x.summary.totals.revenue_minor,c)}</td><td className="num">{money(x.previous.summary.totals.revenue_minor,c)}</td><td className="num">{x.summary.totals.sales}</td><td className="num">{x.previous.summary.totals.sales}</td><td className="num">{shown(x.summary.spend_minor,v=>money(v,c))}</td></tr>)}</tbody></Table></TableWrap></div></details>
    </Card>
   </div>
-  <details className="disclosure"><summary>Detalle técnico</summary>
+  <details className="disclosure results-tech"><summary>Detalle técnico</summary>
    <div className="disclosure-body">
     <dl className="facts"><div><dt>Tokens de IA (entrada / salida)</dt><dd>{shown(s.ai.tokens.input,v=>v)} / {shown(s.ai.tokens.output,v=>v)}</dd></div>
      <div><dt>Respuesta p95</dt><dd>{shown(s.latency_percentiles.response.p95,v=>duration(v))}</dd></div><div><dt>Pago p95</dt><dd>{shown(s.latency_percentiles.sale.p95,v=>duration(v))}</dd></div>
