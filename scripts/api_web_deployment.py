@@ -566,13 +566,15 @@ BARRIERS_SQL = "SELECT json_build_object('database',current_database(),'version_
 BARRIERS = ['alerts_enabled', 'alerts_pending', 'assignment_grants', 'authorizations_live', 'creative_devices_live', 'creative_enabled', 'creative_jobs_live', 'intelligence_tracking', 'login_sessions', 'mail_enabled', 'mail_pending', 'ownership_unfrozen', 'personal_tokens_live', 'programs_live', 'provider_operations_live', 'reset_links', 'sending_effects', 'service_tokens_live', 'sessions_unsafe', 'voice_operations_live', 'warmup_enabled', 'workspaces_not_paused']
 MAX_OWNER_SESSIONS = 32
 MAX_OWNER_USERS = 8
+MAX_OWNER_TOKENS = 32
 
 
 def database_guard(database, root):
     value = unique_json(database(root, BARRIERS_SQL))
     require(value.get('database') == 'commerce' and value.get('migration_count') == 65
             and type(value.get('login_sessions')) is int and 0 <= value['login_sessions'] <= MAX_OWNER_SESSIONS
-            and type(value.get('personal_tokens_live')) is int and value['personal_tokens_live'] == 1
+            and type(value.get('personal_tokens_live')) is int
+            and 1 <= value['personal_tokens_live'] <= MAX_OWNER_TOKENS
             and all(type(value.get(key)) is int and value[key] == 0
                     for key in BARRIERS if key not in {'login_sessions', 'personal_tokens_live'}),
             'COPY_FROZEN_OWNER_BARRIERS_CHANGED')

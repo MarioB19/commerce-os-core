@@ -117,7 +117,8 @@ class ApiWebOwnerIdentityTests(unittest.TestCase):
     def test_observation_is_bounded_and_empty_sessions_do_not_create_access(self):
         value=self.identity();value['sessions']=[]
         self.assertEqual(vps.compare_owner_auth(value,copy.deepcopy(value))['retained_session_rows'],0)
-        for field,maximum in [('sessions',guards.MAX_OWNER_SESSIONS),('memberships',guards.MAX_OWNER_USERS),('tokens',1)]:
+        for field,maximum in [('sessions',guards.MAX_OWNER_SESSIONS),('memberships',guards.MAX_OWNER_USERS),
+                              ('tokens',guards.MAX_OWNER_TOKENS)]:
             value=self.identity();value[field]=[copy.deepcopy(value[field][0]) for _ in range(maximum+1)]
             with self.subTest(field=field),self.assertRaises(ReleaseError):self.snapshot(value)
 
@@ -139,12 +140,73 @@ class ApiWebOwnerIdentityTests(unittest.TestCase):
             with self.subTest(field=field),patch.object(vps,'database',return_value=json.dumps(value)),self.assertRaises(ReleaseError):
                 guards.database_guard(vps.database,Path('/release'))
 
-    def test_aggregate_login_and_pat_counts_reject_invalid_types_bounds_and_extra_tokens(self):
+    def test_aggregate_login_and_pat_counts_reject_invalid_types_and_bounds(self):
         base={key:0 for key in guards.BARRIERS}
         base.update(database='commerce',migration_count=65,login_sessions=6,personal_tokens_live=1)
         for field,invalid in [('login_sessions',-1),('login_sessions',33),('login_sessions',True),
-                              ('login_sessions','6'),('personal_tokens_live',True),('personal_tokens_live',2)]:
+                              ('login_sessions','6'),('personal_tokens_live',True),('personal_tokens_live',0),
+                              ('personal_tokens_live',guards.MAX_OWNER_TOKENS+1),('personal_tokens_live','2')]:
             with self.subTest(field=field,invalid=invalid),patch.object(vps,'database',return_value=json.dumps(base|{field:invalid})),self.assertRaises(ReleaseError):
+                guards.database_guard(vps.database,Path('/release'))
+
+    def multiple_tokens(self):
+        value=self.expanded_identity()
+        value['tokens'].append(dict(value['tokens'][0],id='second-pat',user_id='owner-two'))
+        return value
+
+    def test_multiple_existing_owner_tokens_are_preserved_with_order_independent_identity(self):
+        before=self.snapshot(self.multiple_tokens());after=copy.deepcopy(before)
+        after['tokens'].reverse()
+        result=vps.compare_owner_auth(before,self.snapshot(after))
+        self.assertEqual(result['valid_nonrevoked_pat_rows'],2)
+        self.assertTrue(result['identity_preserved'])
+        self.assertEqual(result['retained_session_rows'],6)
+
+    def test_each_token_is_validated_not_only_the_first(self):
+        for kind in ('duplicate','foreign-owner','foreign-workspace','expired','revoked','permissions',
+                     'version','identifier','unexpired','created-in-future','fields'):
+            value=self.multiple_tokens();token=value['tokens'][1]
+            if kind=='duplicate':token['id']=value['tokens'][0]['id']
+            if kind=='foreign-owner':token['user_id']='unbound-subject'
+            if kind=='foreign-workspace':token['workspace_id']='foreign-workspace'
+            if kind=='expired':token.update(expires_at='2026-10-07T09:29:00Z',unexpired=False)
+            if kind=='revoked':token['revoked_at']='2026-10-07T09:29:00Z'
+            if kind=='permissions':token['allowed_environments']=['SIMULATION']
+            if kind=='version':token['version']=True
+            if kind=='identifier':token['id']='not an identifier'
+            if kind=='unexpired':token['unexpired']=False
+            if kind=='created-in-future':token['created_at']='2026-10-07T09:31:00Z'
+            if kind=='fields':token['unexpected']='field'
+            with self.subTest(kind=kind),self.assertRaises(ReleaseError):self.snapshot(value)
+
+    def test_any_token_added_removed_or_changed_during_deployment_stops(self):
+        for kind in ('add','remove','id','owner','version','permissions','expiry','creation'):
+            before=self.multiple_tokens();after=copy.deepcopy(before);token=after['tokens'][1]
+            if kind=='add':after['tokens'].append(dict(token,id='third-pat'))
+            if kind=='remove':after['tokens'].pop()
+            if kind=='id':token['id']='replacement-pat'
+            if kind=='owner':token['user_id']='owner-one'
+            if kind=='version':token['version']=2
+            if kind=='permissions':token['allowed_environments']=['REAL']
+            if kind=='expiry':token['expires_at']='2026-10-31T00:00:00Z'
+            if kind=='creation':token['created_at']='2026-10-02T00:00:00Z'
+            with self.subTest(kind=kind),self.assertRaisesRegex(ReleaseError,'COPY_OWNER_AUTH_IDENTITY_CHANGED'):
+                vps.compare_owner_auth(before,after)
+
+    def test_token_bound_accepts_distinct_valid_tokens_and_rejects_empty_inventory(self):
+        value=self.identity()
+        value['tokens']=[dict(value['tokens'][0],id='pat-'+str(i)) for i in range(guards.MAX_OWNER_TOKENS)]
+        self.assertEqual(vps.owner_auth_lifecycle(value)['valid_nonrevoked_pat_rows'],guards.MAX_OWNER_TOKENS)
+        value['tokens']=[]
+        with self.assertRaises(ReleaseError):self.snapshot(value)
+
+    def test_aggregate_multiple_tokens_keeps_closed_effect_barriers(self):
+        base={key:0 for key in guards.BARRIERS}
+        base.update(database='commerce',migration_count=65,login_sessions=6,personal_tokens_live=2)
+        with patch.object(vps,'database',side_effect=[json.dumps(base),'t']):
+            self.assertTrue(guards.database_guard(vps.database,Path('/release')))
+        for field in set(guards.BARRIERS)-{'login_sessions','personal_tokens_live'}:
+            with self.subTest(field=field),patch.object(vps,'database',return_value=json.dumps(base|{field:1})),self.assertRaises(ReleaseError):
                 guards.database_guard(vps.database,Path('/release'))
 
     def test_two_distinct_owners_and_one_subject_are_preserved_readonly(self):

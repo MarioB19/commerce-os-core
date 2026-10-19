@@ -1329,7 +1329,8 @@ def first_start_guard(server, root):
     for name in set(native.BARRIERS)-{'login_sessions', 'personal_tokens_live'}:
         require(type(value.get(name)) is int and value[name] == 0, 'COPY_RUNTIME_FIRST_START_'+name.upper())
     require(type(value.get('login_sessions')) is int and 0 <= value['login_sessions'] <= native.MAX_OWNER_SESSIONS
-            and type(value.get('personal_tokens_live')) is int and value['personal_tokens_live'] == 1, 'COPY_RUNTIME_FIRST_START_OWNER_INVALID')
+            and type(value.get('personal_tokens_live')) is int
+            and 1 <= value['personal_tokens_live'] <= native.MAX_OWNER_TOKENS, 'COPY_RUNTIME_FIRST_START_OWNER_INVALID')
     extra = _parse(server.database(root, "SELECT json_build_object('channel_commands_pending',(SELECT count(*) FROM commands WHERE environment='REAL' AND kind='channel_command' AND status='PENDING'),'channel_profiles_enabled',(SELECT count(*) FROM integration_settings WHERE environment='REAL' AND type IN('waha','cloud','meta') AND enabled));").encode())
     require(type(extra.get('channel_commands_pending')) is int and extra['channel_commands_pending'] == 0, 'COPY_RUNTIME_CANONICAL_CHANNEL_CANCELLATION_REQUIRED')
     require(type(extra.get('channel_profiles_enabled')) is int and extra['channel_profiles_enabled'] == 0, 'COPY_RUNTIME_CANONICAL_CHANNEL_QUARANTINE_REQUIRED')
