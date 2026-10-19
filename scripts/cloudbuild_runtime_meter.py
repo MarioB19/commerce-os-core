@@ -10,8 +10,9 @@ import uuid
 
 from cloudbuild_admission import AdmissionError, canonical_hash
 
-CPU_LIMIT_MS = 20_000_000
-MEMORY_LIMIT_MIB_MS = 40_000_000 * 1024
+# Companion to the 1,200-minute FULL pool; existing reservations are never reset.
+CPU_LIMIT_MS = 40_000_000
+MEMORY_LIMIT_MIB_MS = 80_000_000 * 1024
 REQUEST_LIMIT = 2000
 MEMORY_MIB = 2048
 MAX_SECONDS = 450

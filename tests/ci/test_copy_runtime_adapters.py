@@ -102,6 +102,19 @@ class RuntimeAdapters(unittest.TestCase):
         barriers['personal_tokens_live']=1;answers=[json.dumps(barriers),json.dumps({'channel_commands_pending':0,'channel_profiles_enabled':0}),'f']
         self.fail(c.first_start_guard,types.SimpleNamespace(database=lambda *_:answers.pop(0)),'x')
 
+    def test_first_start_accepts_bounded_existing_tokens_without_opening_effects(self):
+        barriers={'database':'commerce','migration_count':67,**{key:0 for key in c.native.BARRIERS},
+                  'login_sessions':1,'personal_tokens_live':2}
+        for count in (2,c.native.MAX_OWNER_TOKENS):
+            answers=[json.dumps(barriers|{'personal_tokens_live':count}),
+                     json.dumps({'channel_commands_pending':0,'channel_profiles_enabled':0}),'t']
+            self.assertTrue(c.first_start_guard(types.SimpleNamespace(database=lambda *_:answers.pop(0)),'x')['real_dispatch_frozen'])
+        for count in (0,True,'2',c.native.MAX_OWNER_TOKENS+1):
+            self.fail(c.first_start_guard,types.SimpleNamespace(database=lambda *_:json.dumps(barriers|{'personal_tokens_live':count})),'x')
+        for name in set(c.native.BARRIERS)-{'login_sessions','personal_tokens_live'}:
+            with self.subTest(barrier=name):
+                self.fail(c.first_start_guard,types.SimpleNamespace(database=lambda *_:json.dumps(barriers|{name:1})),'x')
+
     def test_edge_overlap_checks_all_docker_subnets_and_host_routes(self):
         definition,_=owned_edge()
         for observation in ({'networks':[network(subnet='172.30.0.0/16')],'routes':[]},

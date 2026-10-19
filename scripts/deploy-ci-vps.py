@@ -820,7 +820,8 @@ def owner_auth_lifecycle(value):
     clock=owner_auth_date(value['clock_utc'])
     sessions=value['sessions'];tokens=value['tokens'];members=value['memberships']
     require(all(type(rows) is list for rows in (sessions,tokens,members))
-            and 0<=len(sessions)<=api_web.MAX_OWNER_SESSIONS and len(tokens)==1
+            and 0<=len(sessions)<=api_web.MAX_OWNER_SESSIONS
+            and 1<=len(tokens)<=api_web.MAX_OWNER_TOKENS
             and 1<=len(members)<=api_web.MAX_OWNER_USERS,
             'COPY_OWNER_AUTH_BINDING_CHANGED')
     session_fields={'id','user_id','created_at','updated_at','expires_at','unexpired'}
@@ -833,25 +834,28 @@ def owner_auth_lifecycle(value):
             'COPY_OWNER_AUTH_FIELDS_CHANGED')
     def identifier(value):
         return type(value) is str and re.fullmatch(r'[A-Za-z0-9_:-]{1,160}',value) is not None
-    token=tokens[0];workspace=token['workspace_id'];owner=token['user_id']
+    workspace=tokens[0]['workspace_id']
     require(all(identifier(row[key]) for row in sessions for key in ('id','user_id'))
-            and all(identifier(token[key]) for key in ('id','user_id','workspace_id'))
+            and all(identifier(token[key]) for token in tokens for key in ('id','user_id','workspace_id'))
             and all(identifier(row[key]) for row in members for key in ('user_id','workspace_id')),
             'COPY_OWNER_AUTH_IDENTIFIERS_REQUIRED')
     require(len({row['id'] for row in sessions})==len(sessions)
             and len({row['created_at'] for row in sessions})==len(sessions),
             'COPY_OWNER_AUTH_BINDING_CHANGED')
-    environments=token['allowed_environments']
-    require(type(environments) is list and 1<=len(environments)<=2
-            and all(type(environment) is str and environment in ('REAL','SIMULATION') for environment in environments)
-            and len(set(environments))==len(environments) and 'REAL' in environments
-            and type(token['version']) is int and token['version']>0,
-            'COPY_OWNER_AUTH_PAT_PERMISSIONS_CHANGED')
-    token_created=owner_auth_date(token['created_at']);token_expiry=owner_auth_date(token['expires_at'])
-    require(token_created<=clock<token_expiry and token['revoked_at'] is None
-            and token['unexpired'] is True,'COPY_OWNER_AUTH_PAT_NOT_VALID')
+    require(len({token['id'] for token in tokens})==len(tokens),'COPY_OWNER_AUTH_BINDING_CHANGED')
+    for token in tokens:
+        environments=token['allowed_environments']
+        require(type(environments) is list and 1<=len(environments)<=2
+                and all(type(environment) is str and environment in ('REAL','SIMULATION') for environment in environments)
+                and len(set(environments))==len(environments) and 'REAL' in environments
+                and type(token['version']) is int and token['version']>0,
+                'COPY_OWNER_AUTH_PAT_PERMISSIONS_CHANGED')
+        token_created=owner_auth_date(token['created_at']);token_expiry=owner_auth_date(token['expires_at'])
+        require(token_created<=clock<token_expiry and token['revoked_at'] is None
+                and token['unexpired'] is True,'COPY_OWNER_AUTH_PAT_NOT_VALID')
     owners={row['user_id'] for row in members}
-    require(len(owners)==len(members) and owner in owners
+    require(len(owners)==len(members)
+            and all(token['user_id'] in owners and token['workspace_id']==workspace for token in tokens)
             and all(row['workspace_id']==workspace and row['active'] is True and row['role']=='owner' for row in members)
             and all(row['user_id'] in owners for row in sessions),'COPY_OWNER_AUTH_NOT_CANONICAL')
     active=0
@@ -865,7 +869,7 @@ def owner_auth_lifecycle(value):
                 'COPY_OWNER_AUTH_CLOCK_FACT_MISMATCH')
         active+=int(row['unexpired'])
     return {'retained_session_rows':len(sessions),'active_sessions':active,'expired_sessions':len(sessions)-active,
-            'valid_nonrevoked_pat_rows':1,'active_owner_users':len(owners)}
+            'valid_nonrevoked_pat_rows':len(tokens),'active_owner_users':len(owners)}
 
 def compare_owner_auth(before,after):
     """Preserve identity across a natural expiry; reject auth changes or revival."""
@@ -874,7 +878,8 @@ def compare_owner_auth(before,after):
             'COPY_OWNER_AUTH_CLOCK_REVERSED')
     def identity(value):
         return {'sessions':sorted((row['id'],row['user_id'],row['created_at']) for row in value['sessions']),
-                'tokens':[{key:row[key] for key in row if key!='unexpired'} for row in value['tokens']],
+                'tokens':sorted(({key:row[key] for key in row if key!='unexpired'} for row in value['tokens']),
+                                key=lambda row:row['id']),
                 'memberships':sorted(value['memberships'],key=lambda row:(row['user_id'],row['workspace_id']))}
     require(identity(before)==identity(after),'COPY_OWNER_AUTH_IDENTITY_CHANGED')
     previous={row['id']:row for row in before['sessions']};renewed=0
@@ -908,7 +913,7 @@ def owner_auth_snapshot(root):
         (SELECT user_id,workspace_id,role,active FROM memberships WHERE workspace_id='"""+workspace+"""'
           AND active AND role='owner') m)); ROLLBACK;"""))
     owner_auth_lifecycle(value)
-    require(value['tokens'][0]['workspace_id']==workspace,'COPY_OWNER_AUTH_NOT_CANONICAL')
+    require(all(token['workspace_id']==workspace for token in value['tokens']),'COPY_OWNER_AUTH_NOT_CANONICAL')
     return value
 
 def publish_api_web(archive,archive_hash,sha,run_id,portal_private_env):
