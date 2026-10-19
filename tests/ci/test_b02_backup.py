@@ -445,6 +445,7 @@ class BackupControllerTests(unittest.TestCase):
             runner.cleanup = mock.Mock(side_effect=cleanup)
             with mock.patch.object(remote, 'ref_read', side_effect=lambda ref, **kwargs: profiles[ref['path'] if isinstance(ref, dict) else ref]), \
                  mock.patch.object(remote, 'bounded', side_effect=backup), \
+                 mock.patch.object(remote.shutil, 'disk_usage', return_value=SimpleNamespace(free=16*1024**3)), \
                  mock.patch.object(remote, 'read_file', side_effect=lambda path, **kwargs: Path(path).read_bytes()), \
                  mock.patch.object(remote, 'file_reference', side_effect=reference):
                 report = runner.execute('123-1', 'a' * 40)
