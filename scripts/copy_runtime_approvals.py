@@ -206,7 +206,8 @@ def package_metadata(package, source_sha, run_id):
         raise ReleaseError('ROOT_REVIEW_RELEASE_IDENTITY') from None
     installation_enabled(context)
     require(value.get('schema_version') in (1,2) and value.get('platform') == 'linux/amd64'
-            and type(value.get('migration_hashes')) is dict and len(value['migration_hashes']) in {67, 68}
+            and type(value.get('migration_hashes')) is dict
+            and len(value['migration_hashes']) in {67, 68, runtime.V7_PROFILE_MIGRATION_TOTAL}
             and runtime.MIGRATION_NAMES <= set(value['migration_hashes']), 'ROOT_REVIEW_RELEASE_IDENTITY')
     runtime.reviewed_migration_names(value)
     actual = {p.name: digest(p) for p in (package/'packages/db/migrations').glob('*.sql')}
