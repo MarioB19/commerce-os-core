@@ -86,7 +86,7 @@ class ApprovalTests(unittest.TestCase):
     def tearDown(self):
         self.stack.close(); self.temp.cleanup()
 
-    def make_archive(self, sha=SHA, run='123', count=67):
+    def make_archive(self, sha=SHA, run='123', count=67, names=None):
         stage = self.base/'source'; stage.mkdir(mode=0o700, exist_ok=True)
         data = {'images.tar.gz': b'synthetic-images', 'images.sha256': b'only-a-fixture',
                 'web-manifest.json': b'{}', 'scripts/install-vps.sh': b'fixture-only'}
@@ -94,7 +94,7 @@ class ApprovalTests(unittest.TestCase):
         migrations = {}
         for i in range(1, count+1):
             name = {66: '0066_pending_channel_cancellation.sql', 67: '0067_copy_source_isolation.sql',
-                    68: '0068_operational_metric_writer.sql'}.get(i, '%04d_fixture.sql'%i)
+                    68: '0068_operational_metric_writer.sql'}.get(i, (names or {}).get(i, '%04d_fixture.sql'%i))
             raw = ('-- synthetic %d\n'%i).encode(); data['packages/db/migrations/'+name] = raw
             migrations[name] = runtime.sha256(raw)
         data['RELEASE.json'] = a.encoded({'schema_version': 1, 'source_sha': sha, 'run_id': run,
@@ -222,6 +222,25 @@ class ApprovalTests(unittest.TestCase):
         pointer = json.loads((self.adapter.private/'copy-runtime-migrations.json').read_bytes())
         self.assertEqual(set(pointer['migration_hashes']), runtime.OPERATING_MIGRATION_NAMES)
         self.assertEqual(pointer['consumer_edge_approval_ref'], edge)
+
+    def test_v7_profile_package_is_reviewed_and_seals_the_49_v7_migrations(self):
+        # The V7 package carries 117 migrations (68 + the 49 of the V7 profile). The identity
+        # gate admits exactly that total and the pointer binds only the V7 profile names.
+        v7 = {int(name[:4]): name for name in runtime.V7_PROFILE_MIGRATION_NAMES}
+        self.archive = self.make_archive(count=runtime.V7_PROFILE_MIGRATION_TOTAL, names=v7)
+        approvals = self.adapter.private/'controller-approvals'; approvals.mkdir(mode=0o700)
+        edge = a.immutable(approvals/'original-edge.json', b'{"synthetic":"original"}\n')
+        self.adapter.facts.update(runtime_stage='OPERATING', consumer_edge_approval_ref=edge,
+                                  migrations={str(i): '2'*64 for i in range(68)})
+        self.seal(self.observe())
+        pointer = json.loads((self.adapter.private/'copy-runtime-migrations.json').read_bytes())
+        self.assertEqual(set(pointer['migration_hashes']), runtime.V7_PROFILE_MIGRATION_NAMES)
+        self.assertEqual(pointer['consumer_edge_approval_ref'], edge)
+        # One migration more than the V7 profile is not a reviewable package.
+        self.archive = self.make_archive(count=runtime.V7_PROFILE_MIGRATION_TOTAL+1, names=v7)
+        with self.assertRaises(a.ReleaseError) as caught:
+            a.observe(self.adapter, self.archive, digest(self.archive), SHA, RUN, 'fixture-two')
+        self.assertEqual(str(caught.exception), 'ROOT_REVIEW_RELEASE_IDENTITY')
 
     def test_expired_or_future_observation_rejected(self):
         observed = self.observe()
