@@ -1260,16 +1260,30 @@ def export_retired_modules(server, root, report_dir, metadata, timeout=300):
             'COPY_RUNTIME_RETIREMENT_EXPORT_DIRECTORY_UNSAFE')
     name = 'export-'+metadata['source_sha'][:12]+'-'+dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     require(not (base/name).exists(), 'COPY_RUNTIME_RETIREMENT_EXPORT_EXISTS')
-    # The V7 image keeps /app as 0600 files of its node user. Root without
-    # capabilities cannot read them (EACCES on /app/package.json, 20-oct), so
-    # only read/search bypass is added; writes stay limited to the private
-    # Root-owned export directory (same pattern as b02-backup-root.py).
-    args = ['docker', 'run', '--rm', '--user', '0:0', '--read-only', '--cap-drop', 'ALL', '--cap-add', 'DAC_READ_SEARCH',
-            '--security-opt', 'no-new-privileges:true',
-            '--tmpfs', '/tmp:size=64m,noexec,nosuid', '--network', 'commerce-os_core',
-            '--env-file', str(server.PRIVATE/'admin.env'), '-v', str(base)+':/v7-retirement-export',
-            candidate_image, 'node', '--import', 'tsx', 'scripts/v7-retirement-export.ts', 'export', '/v7-retirement-export/'+name]
-    server.run_deployment_task(root, report_dir, args, 'v7-retirement-export', timeout)
+    # The exporter seals every table with the application data key, but
+    # admin.env only carries the owner connection (PRIVATE_DATA_KEY_REQUIRED,
+    # 20-oct). Exactly that key is passed through a private 0600 env file in
+    # the report directory, removed as soon as the task ends; never in argv.
+    key = native.env_values(native.protected_bytes(server.PRIVATE/'api.env')).get('PRIVATE_DATA_KEY', '')
+    require(re.fullmatch(r'[a-fA-F0-9]{64}|[A-Za-z0-9+/]{43}=', key), 'COPY_RUNTIME_RETIREMENT_EXPORT_KEY_REQUIRED')
+    key_file = Path(report_dir)/'v7-retirement-export.key.env'
+    descriptor = os.open(key_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'w') as stream:
+        stream.write('PRIVATE_DATA_KEY='+key+'\n')
+    try:
+        # The V7 image keeps /app as 0600 files of its node user. Root without
+        # capabilities cannot read them (EACCES on /app/package.json, 20-oct), so
+        # only read/search bypass is added; writes stay limited to the private
+        # Root-owned export directory (same pattern as b02-backup-root.py).
+        args = ['docker', 'run', '--rm', '--user', '0:0', '--read-only', '--cap-drop', 'ALL', '--cap-add', 'DAC_READ_SEARCH',
+                '--security-opt', 'no-new-privileges:true',
+                '--tmpfs', '/tmp:size=64m,noexec,nosuid', '--network', 'commerce-os_core',
+                '--env-file', str(server.PRIVATE/'admin.env'), '--env-file', str(key_file),
+                '-v', str(base)+':/v7-retirement-export',
+                candidate_image, 'node', '--import', 'tsx', 'scripts/v7-retirement-export.ts', 'export', '/v7-retirement-export/'+name]
+        server.run_deployment_task(root, report_dir, args, 'v7-retirement-export', timeout)
+    finally:
+        key_file.unlink(missing_ok=True)
     require((base/name/'manifest.json').is_file(), 'COPY_RUNTIME_RETIREMENT_EXPORT_UNCONFIRMED')
     return {'status': 'EXPORTED', 'directory': name}
 

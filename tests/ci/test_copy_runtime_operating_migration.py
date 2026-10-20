@@ -99,6 +99,9 @@ class OperatingMigration(unittest.TestCase):
             with self.subTest(good=good), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp); (root/'assets').mkdir()
                 (root/'release.env').write_text('COMMERCE_IMAGE=old-image\nCOMMERCE_PRIVATE_ASSETS_DIR='+str(root/'assets')+'\n')
+                data_key = '0123456789abcdef'*4
+                (root/'api.env').write_text('DATABASE_URL=postgres://api@postgres/commerce\nPRIVATE_DATA_KEY='+data_key+'\nOTHER=1\n')
+                key_seen = []
                 candidate_id = 'sha256:'+'e'*64
                 candidate = {'Id':candidate_id, 'Os':'linux', 'Architecture':'amd64',
                     'RootFS':{'Layers':['sha256:'+'f'*64]},
@@ -115,6 +118,9 @@ class OperatingMigration(unittest.TestCase):
                 def task(*args):
                     tasks.append(args)
                     if args[3] == 'v7-retirement-export':
+                        # Exactly the data key reaches the exporter, through a 0600 file.
+                        key_file = Path(args[2][args[2].index(str(root/'admin.env'))+2])
+                        key_seen.append((key_file.read_text(), oct(key_file.stat().st_mode & 0o777), key_file))
                         target = root/c.V7_RETIREMENT_EXPORT_DIR/args[2][-1].rsplit('/', 1)[1]
                         target.mkdir(mode=0o700); (target/'manifest.json').write_text('{}')
                 server = types.SimpleNamespace(PRIVATE=root, migrations=lambda _: samples.pop(0),
@@ -152,6 +158,15 @@ class OperatingMigration(unittest.TestCase):
                 self.assertEqual(export[-3:-1], ['scripts/v7-retirement-export.ts', 'export'])
                 self.assertRegex(export[-1], r'^/v7-retirement-export/export-aaaaaaaaaaaa-\d{8}T\d{6}Z$')
                 self.assertIn(str(root/'admin.env'), export)
+                # admin.env carries only the owner connection; the data key travels in its
+                # own 0600 env file that holds nothing else, never in argv, and is removed.
+                self.assertEqual(len(key_seen), 1)
+                content, mode, key_file = key_seen[0]
+                self.assertEqual((content, mode), ('PRIVATE_DATA_KEY='+data_key+'\n', '0o600'))
+                self.assertEqual(export[export.index(str(root/'admin.env'))-1:export.index(str(root/'admin.env'))+3],
+                                 ['--env-file', str(root/'admin.env'), '--env-file', str(key_file)])
+                self.assertFalse(key_file.exists())
+                self.assertFalse(any(data_key in arg for arg in export))
                 self.assertIn(str(root/c.V7_RETIREMENT_EXPORT_DIR)+':/v7-retirement-export', export)
                 self.assertEqual(oct((root/c.V7_RETIREMENT_EXPORT_DIR).stat().st_mode & 0o777), '0o700')
                 args = tasks[1][2]
@@ -174,6 +189,33 @@ class OperatingMigration(unittest.TestCase):
             with self.assertRaisesRegex(ReleaseError, 'CANDIDATE_LOADED_IMAGE_CHANGED'):
                 c.export_retired_modules(server, root, root, {'source_sha':'a'*40})
             self.assertFalse((root/c.V7_RETIREMENT_EXPORT_DIR).exists())
+
+    def test_retirement_export_requires_the_data_key_and_removes_its_file_on_failure(self):
+        candidate = {'Id':'sha256:'+'e'*64, 'Os':'linux', 'Architecture':'amd64', 'RootFS':{'Layers':['sha256:'+'f'*64]},
+                     'Config':{'Labels':{'org.opencontainers.image.revision':'a'*40}}}
+        for api_env in ('DATABASE_URL=postgres://api@postgres/commerce\n', 'PRIVATE_DATA_KEY=short\n'):
+            with self.subTest(api_env=api_env), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp); (root/'api.env').write_text(api_env)
+                (root/'images.json').write_text(json.dumps({'commerce-os:release':{
+                    'source_sha':'a'*40, 'id':candidate['Id'], 'layers':candidate['RootFS']['Layers']}}))
+                server = types.SimpleNamespace(PRIVATE=root, command=lambda *_:json.dumps([candidate]),
+                    run_deployment_task=lambda *_:self.fail('the exporter must not run without the data key'))
+                with patch.object(c.native, 'protected_bytes', side_effect=lambda path: path.read_bytes()), \
+                     self.assertRaisesRegex(ReleaseError, 'COPY_RUNTIME_RETIREMENT_EXPORT_KEY_REQUIRED'):
+                    c.export_retired_modules(server, root, root, {'source_sha':'a'*40})
+                self.assertFalse((root/'v7-retirement-export.key.env').exists())
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); (root/'api.env').write_text('PRIVATE_DATA_KEY='+'ab'*32+'\n')
+            (root/'images.json').write_text(json.dumps({'commerce-os:release':{
+                'source_sha':'a'*40, 'id':candidate['Id'], 'layers':candidate['RootFS']['Layers']}}))
+            def failing(*_):
+                self.assertTrue((root/'v7-retirement-export.key.env').exists())
+                raise ReleaseError('V7_RETIREMENT_EXPORT_FAILED')
+            server = types.SimpleNamespace(PRIVATE=root, command=lambda *_:json.dumps([candidate]), run_deployment_task=failing)
+            with patch.object(c.native, 'protected_bytes', side_effect=lambda path: path.read_bytes()), \
+                 self.assertRaisesRegex(ReleaseError, 'V7_RETIREMENT_EXPORT_FAILED'):
+                c.export_retired_modules(server, root, root, {'source_sha':'a'*40})
+            self.assertFalse((root/'v7-retirement-export.key.env').exists())
 
     def test_installed_release_must_match_db_and_private_source(self):
         with tempfile.TemporaryDirectory() as tmp:
