@@ -69,3 +69,26 @@ exportador con exactamente las banderas y archivos del instalador corregido
 su código como Root sin capacidades. Regresiones: contenido y modo del archivo
 de llave, orden de `--env-file`, ausencia de la llave en argv, borrado tras
 éxito y tras fallo, y rechazo sin llave válida.
+
+## Adenda 20-oct-2026 (noche) — comparación comercial de la publicación V7 (Agente: Claude)
+
+La instalación de `727623e0` (paquete `cv-471e9e64-…-1`) exportó los módulos
+retirados y aplicó las 49 migraciones (117), y se detuvo con
+`COPY_RUNTIME_COMMERCIAL_CONFIGURATION_CHANGED` sin activar V7; producción
+regresó al snapshot frío. La comparación hashea filas completas de
+`manual_controls`, `integration_settings`, `commercial_assignments`,
+`operation_authorizations` y de las tablas retiradas: con V7 cambia siempre,
+porque 0109 elimina las tablas retiradas ya exportadas (en producción
+`creative_budgets` 3 filas e `intelligence_searches` 4) y las migraciones
+agregan columnas (`manual_controls.environment`/`scope_record_id`,
+`commercial_assignments.variant_id`).
+
+Decisión: sólo en la publicación del perfil V7 la comparación proyecta cada
+fila sobre las columnas que existían antes de migrar y deja las tablas
+retiradas a los recibos del exportador (0109 los verifica). Cualquier fila
+cambiada, añadida o eliminada sigue deteniendo la instalación. Las demás
+publicaciones conservan la consulta histórica byte a byte.
+
+Verificación con datos reales: la proyección de la base migrada del disco del
+intento fallido (117) y la de producción en V5 (68) dan el mismo hash
+(`801e43f6…`; 27/6/49/21 filas). Regresiones de la consulta y de las columnas.

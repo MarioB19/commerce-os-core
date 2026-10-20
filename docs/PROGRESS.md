@@ -1,5 +1,17 @@
 # Estado de publicación
 
+## 20-oct-2026 (noche) — comparación comercial de la publicación V7 (Agente: Claude)
+
+El cuarto intento (`727623e0`, paquete `cv-471e9e64-…-1`) exportó y migró
+(117) y se detuvo en `COPY_RUNTIME_COMMERCIAL_CONFIGURATION_CHANGED`;
+producción regresó al snapshot frío `…20261020d` (`80a6d6ea`, 68). La
+comparación por filas completas cambia siempre con V7 (tablas retiradas
+eliminadas por 0109 y columnas nuevas). Corrección: proyección sobre las
+columnas previas y tablas retiradas a cargo de los recibos, sólo para la
+publicación V7. Validada con la base migrada real contra producción (mismo
+hash). Incluye la estabilización de dos pruebas con carreras de tiempo que
+tumbaron 3 de 8 FULL. FULL, atestación, paquete e instalación pendientes.
+
 ## 20-oct-2026 (tarde) — llave de datos del exportador (Agente: Claude)
 
 `main` `c629c27f` pasó FULL `e028f78f` (el primer FULL `6a121cd1` falló por
