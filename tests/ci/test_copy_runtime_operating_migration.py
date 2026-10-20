@@ -138,6 +138,15 @@ class OperatingMigration(unittest.TestCase):
                 self.assertEqual([t[3] for t in tasks], ['v7-retirement-export', 'copy-migrations'])
                 export = tasks[0][2]
                 self.assertEqual(export[export.index('node')-1], candidate_id)
+                # Root without capabilities cannot read the V7 image's 0600 files
+                # owned by node: exactly read/search bypass is added, nothing else.
+                options = export[:export.index(candidate_id)]
+                self.assertEqual(options[options.index('--user'):options.index('--user')+2], ['--user', '0:0'])
+                self.assertEqual(options[options.index('--cap-drop'):options.index('--cap-drop')+4],
+                                 ['--cap-drop', 'ALL', '--cap-add', 'DAC_READ_SEARCH'])
+                self.assertEqual([options[i+1] for i, arg in enumerate(options) if arg == '--cap-add'], ['DAC_READ_SEARCH'])
+                self.assertIn('--read-only', options)
+                self.assertIn('no-new-privileges:true', options)
                 self.assertNotIn('old-image', export)
                 self.assertIn('COMMERCE_IMAGE=old-image\n', (root/'release.env').read_text())
                 self.assertEqual(export[-3:-1], ['scripts/v7-retirement-export.ts', 'export'])

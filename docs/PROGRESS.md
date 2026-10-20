@@ -1,5 +1,25 @@
 # Estado de publicación
 
+## 20-oct-2026 — lectura de la imagen V7 en el exportador (Agente: Claude)
+
+`main` `59768f73` pasó FULL `fd09b802` y su atestación `6ecf3514`; el
+paquete `cv-fd09b802-25bc-4f0e-80e5-b9012d51de0d-1` (`ab161b4f…`) se observó
+y selló. La instalación terminó `FAILED` en `reviewed-migrations`, otra vez
+antes de cualquier SQL: el exportador, ya con la imagen candidata, corre como
+Root con `--cap-drop ALL` y no puede leer `/app/package.json` (archivos
+`0600` del usuario `node` en la imagen V7). Producción se reconcilió el mismo
+minuto: `80a6d6ea`, 68 hashes de migración sin cambio, hold liberado,
+workers arriba, REAL congelado, cero envíos.
+
+Corrección: `--cap-add DAC_READ_SEARCH` sólo en esa ejecución (patrón de
+`b02-backup-root.py`). Probada en producción con el modo `status` del
+exportador: sin la capacidad, `EACCES`; con ella, lista de tablas. La
+regresión falla con el código anterior y pasa con el nuevo; 117 pruebas
+`test_copy_runtime*` en verde. FULL, atestación, paquete e instalación del
+nuevo commit siguen pendientes.
+
+Decisión: [adenda del ADR](adr-v7-retirement-candidate-image.md).
+
 ## 19-oct-2026 — corrección del exportador previo a V7
 
 La instalación canónica de `a7558dc1` terminó `FAILED` antes del SQL de V7:
