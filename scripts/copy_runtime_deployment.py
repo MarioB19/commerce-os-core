@@ -1249,6 +1249,9 @@ def export_retired_modules(server, root, report_dir, metadata, timeout=300):
     file back before recording receipts; nothing is printed but counts."""
     require(type(timeout) is int and 0 < timeout <= 300, 'COPY_RUNTIME_RETIREMENT_EXPORT_DEADLINE_INVALID')
     require(re.fullmatch(r'[a-f0-9]{40}', metadata.get('source_sha') or ''), 'COPY_RUNTIME_RETIREMENT_EXPORT_SOURCE_INVALID')
+    # release.env still names the installed V5 image during prepare. Only the
+    # verified candidate contains the V7 exporter; use its immutable loaded ID.
+    candidate_image = loaded_candidate_image(server, root, metadata['source_sha'])
     base = Path(server.PRIVATE)/V7_RETIREMENT_EXPORT_DIR
     if not base.exists():
         base.mkdir(mode=0o700)
@@ -1257,11 +1260,10 @@ def export_retired_modules(server, root, report_dir, metadata, timeout=300):
             'COPY_RUNTIME_RETIREMENT_EXPORT_DIRECTORY_UNSAFE')
     name = 'export-'+metadata['source_sha'][:12]+'-'+dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     require(not (base/name).exists(), 'COPY_RUNTIME_RETIREMENT_EXPORT_EXISTS')
-    env = native.env_values(native.protected_bytes(server.PRIVATE/'release.env'))
     args = ['docker', 'run', '--rm', '--user', '0:0', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
             '--tmpfs', '/tmp:size=64m,noexec,nosuid', '--network', 'commerce-os_core',
             '--env-file', str(server.PRIVATE/'admin.env'), '-v', str(base)+':/v7-retirement-export',
-            env['COMMERCE_IMAGE'], 'node', '--import', 'tsx', 'scripts/v7-retirement-export.ts', 'export', '/v7-retirement-export/'+name]
+            candidate_image, 'node', '--import', 'tsx', 'scripts/v7-retirement-export.ts', 'export', '/v7-retirement-export/'+name]
     server.run_deployment_task(root, report_dir, args, 'v7-retirement-export', timeout)
     require((base/name/'manifest.json').is_file(), 'COPY_RUNTIME_RETIREMENT_EXPORT_UNCONFIRMED')
     return {'status': 'EXPORTED', 'directory': name}

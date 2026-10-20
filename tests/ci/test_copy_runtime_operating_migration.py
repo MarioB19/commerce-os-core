@@ -99,7 +99,18 @@ class OperatingMigration(unittest.TestCase):
             with self.subTest(good=good), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp); (root/'assets').mkdir()
                 (root/'release.env').write_text('COMMERCE_IMAGE=old-image\nCOMMERCE_PRIVATE_ASSETS_DIR='+str(root/'assets')+'\n')
+                candidate_id = 'sha256:'+'e'*64
+                candidate = {'Id':candidate_id, 'Os':'linux', 'Architecture':'amd64',
+                    'RootFS':{'Layers':['sha256:'+'f'*64]},
+                    'Config':{'Labels':{'org.opencontainers.image.revision':'a'*40}}}
+                (root/'images.json').write_text(json.dumps({'commerce-os:release':{
+                    'source_sha':'a'*40, 'id':candidate_id, 'layers':candidate['RootFS']['Layers']}}))
                 samples = [history(), v7 if good else history()]; tasks = []
+
+                def command(args, cwd):
+                    self.assertEqual(args, ['docker', 'image', 'inspect', 'commerce-os:release'])
+                    self.assertEqual(cwd, root)
+                    return json.dumps([candidate])
 
                 def task(*args):
                     tasks.append(args)
@@ -107,6 +118,7 @@ class OperatingMigration(unittest.TestCase):
                         target = root/c.V7_RETIREMENT_EXPORT_DIR/args[2][-1].rsplit('/', 1)[1]
                         target.mkdir(mode=0o700); (target/'manifest.json').write_text('{}')
                 server = types.SimpleNamespace(PRIVATE=root, migrations=lambda _: samples.pop(0),
+                    command=command,
                     _write_report=lambda path, value: path.write_text(json.dumps(value)),
                     run_deployment_task=task)
                 review = {'migration_hashes': {name: 'd'*64 for name in c.V7_PROFILE_MIGRATION_NAMES}}
@@ -125,6 +137,9 @@ class OperatingMigration(unittest.TestCase):
                 # candidate image and the owner connection, into a private 0700 directory.
                 self.assertEqual([t[3] for t in tasks], ['v7-retirement-export', 'copy-migrations'])
                 export = tasks[0][2]
+                self.assertEqual(export[export.index('node')-1], candidate_id)
+                self.assertNotIn('old-image', export)
+                self.assertIn('COMMERCE_IMAGE=old-image\n', (root/'release.env').read_text())
                 self.assertEqual(export[-3:-1], ['scripts/v7-retirement-export.ts', 'export'])
                 self.assertRegex(export[-1], r'^/v7-retirement-export/export-aaaaaaaaaaaa-\d{8}T\d{6}Z$')
                 self.assertIn(str(root/'admin.env'), export)
@@ -135,6 +150,21 @@ class OperatingMigration(unittest.TestCase):
                                  sorted(str(root/'packages/db/migrations'/n)+':/copy-sql/'+n+':ro' for n in c.V7_PROFILE_MIGRATION_NAMES))
                 self.assertEqual(args[-1], c.BOUNDED_MIGRATION_JS)
                 self.assertIn('"'+max(c.V7_PROFILE_MIGRATION_NAMES)+'"]', c.BOUNDED_MIGRATION_JS)
+
+    def test_retirement_export_rejects_another_source_before_creating_files_or_running_tasks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root/'images.json').write_text(json.dumps({'commerce-os:release':{
+                'source_sha':'a'*40, 'id':'sha256:'+'e'*64, 'layers':['sha256:'+'f'*64]}}))
+            wrong = {'Id':'sha256:'+'e'*64, 'Os':'linux', 'Architecture':'amd64',
+                'RootFS':{'Layers':['sha256:'+'f'*64]},
+                'Config':{'Labels':{'org.opencontainers.image.revision':'b'*40}}}
+            server = types.SimpleNamespace(PRIVATE=root,
+                command=lambda *_:json.dumps([wrong]),
+                run_deployment_task=lambda *_:self.fail('an unverified image must never run'))
+            with self.assertRaisesRegex(ReleaseError, 'CANDIDATE_LOADED_IMAGE_CHANGED'):
+                c.export_retired_modules(server, root, root, {'source_sha':'a'*40})
+            self.assertFalse((root/c.V7_RETIREMENT_EXPORT_DIR).exists())
 
     def test_installed_release_must_match_db_and_private_source(self):
         with tempfile.TemporaryDirectory() as tmp:
