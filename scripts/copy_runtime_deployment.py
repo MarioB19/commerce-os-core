@@ -1379,22 +1379,63 @@ def profiles(before, private, *, initial=False):
     return after
 
 
-def commercial_snapshot(server, root):
-    # Private stable configuration and reservations. No row bodies are reported.
-    tables = ('manual_controls', 'integration_settings', 'commercial_assignments', 'operation_authorizations')
-    # V7 F8-E: 0109 exports and drops these retired V5 reservations.
-    retired = ('creative_budgets', 'creative_global_budgets', 'intelligence_searches')
+COMMERCIAL_TABLES = ('manual_controls', 'integration_settings', 'commercial_assignments', 'operation_authorizations')
+# V7 F8-E: 0109 exports and drops these retired V5 reservations.
+COMMERCIAL_RETIRED = ('creative_budgets', 'creative_global_budgets', 'intelligence_searches')
+COMMERCIAL_REAL_QUOTAS = {
+    'warmup_rate_buckets': "JOIN records a ON a.id=t.account_id AND a.kind='channel_account' WHERE a.environment='REAL'",
+    'warmup_rate_reservations': "JOIN outbox e ON e.id=t.effect_id WHERE e.environment='REAL'",
+    'warmup_account_reservations': "JOIN records a ON a.id=t.account_id AND a.kind='channel_account' WHERE a.environment='REAL'"}
+
+
+def commercial_query(columns=None, retired=True):
+    """The commercial configuration read. Without `columns` it is byte-for-byte the
+    historical query (saved hashes stay comparable). With `columns` every row is
+    projected on the columns that existed before a schema-changing publication, so
+    columns the V7 migrations add (manual_controls.environment/scope_record_id,
+    commercial_assignments.variant_id) do not count as a commercial change, while
+    any changed, added or removed row still does. `retired=False` leaves out the
+    V5 tables 0109 exports (with verified receipts) and drops."""
+    def row(name):
+        if columns is None:
+            return 'to_jsonb(t)'
+        names = columns[name]
+        return ("(SELECT jsonb_object_agg(k.key,k.value) FROM jsonb_each(to_jsonb(t)) k WHERE k.key = ANY(ARRAY["
+                + ','.join("'"+column+"'" for column in names) + "]::text[]))")
     query = 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SELECT json_build_object('+','.join(
-        ["'"+name+"',(SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]'::jsonb) FROM "+name+' t)'
-         for name in tables]+["'"+name+"',"+native.retired_rows(name) for name in retired])+'); ROLLBACK;'
-    real_quotas = {
-        'warmup_rate_buckets': "JOIN records a ON a.id=t.account_id AND a.kind='channel_account' WHERE a.environment='REAL'",
-        'warmup_rate_reservations': "JOIN outbox e ON e.id=t.effect_id WHERE e.environment='REAL'",
-        'warmup_account_reservations': "JOIN records a ON a.id=t.account_id AND a.kind='channel_account' WHERE a.environment='REAL'"}
-    query = query.replace('); ROLLBACK;', ','+','.join(
-        "'"+name+"',(SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]'::jsonb) FROM "+name+' t '+join+')'
-        for name, join in real_quotas.items())+'); ROLLBACK;')
-    raw = server.database(root, query).encode()
+        ["'"+name+"',(SELECT COALESCE(jsonb_agg("+row(name)+" ORDER BY "+row(name)+"::text),'[]'::jsonb) FROM "+name+' t)'
+         for name in COMMERCIAL_TABLES]+(["'"+name+"',"+native.retired_rows(name) for name in COMMERCIAL_RETIRED] if retired else []))+'); ROLLBACK;'
+    return query.replace('); ROLLBACK;', ','+','.join(
+        "'"+name+"',(SELECT COALESCE(jsonb_agg("+row(name)+" ORDER BY "+row(name)+"::text),'[]'::jsonb) FROM "+name+' t '+join+')'
+        for name, join in COMMERCIAL_REAL_QUOTAS.items())+'); ROLLBACK;')
+
+
+def commercial_columns(server, root):
+    """Columns of the commercial tables before a schema-changing publication."""
+    names = COMMERCIAL_TABLES + tuple(COMMERCIAL_REAL_QUOTAS)
+    query = ("SELECT COALESCE(json_object_agg(table_name, columns),'{}'::json) FROM (SELECT table_name::text AS table_name,"
+             " json_agg(column_name::text ORDER BY ordinal_position) AS columns FROM information_schema.columns"
+             " WHERE table_schema='public' AND table_name IN (" + ','.join("'"+name+"'" for name in names) + ") GROUP BY table_name) c;")
+    value = _parse(server.database(root, query).encode())
+    require(type(value) is dict and set(value) == set(names)
+            and all(type(found) is list and found and len(set(found)) == len(found)
+                    and all(type(column) is str and re.fullmatch(r'[a-z_][a-z0-9_]{0,62}', column) for column in found)
+                    for found in value.values()), 'COPY_RUNTIME_COMMERCIAL_COLUMNS_INVALID')
+    return value
+
+
+def is_v7_profile_publication(metadata):
+    """True only for the reviewed V7 profile set; an invalid set is rejected later
+    by apply_reviewed_migrations exactly as before."""
+    try:
+        return reviewed_migration_names(metadata) == V7_PROFILE_MIGRATION_NAMES
+    except ReleaseError:
+        return False
+
+
+def commercial_snapshot(server, root, columns=None, retired=True):
+    # Private stable configuration and reservations. No row bodies are reported.
+    raw = server.database(root, commercial_query(columns, retired)).encode()
     require(len(raw) <= MAX_BYTES, 'COPY_RUNTIME_COMMERCIAL_CONFIGURATION_BOUND')
     return sha256(raw)
 
@@ -2094,20 +2135,28 @@ def publish(server, archive, archive_hash, source_sha, run_id, portal_private_en
                                 'stop', 'automation-worker', 'channel-worker'], previous_root)
                 in_flight_guard(server, previous_root)
                 os.environ['COMMERCE_COPY_RUNTIME_PHASE'] = 'runtime'
-            configuration = commercial_snapshot(server, previous_root)
+            # The V7 profile publication adds columns to commercial tables and
+            # 0109 drops the exported retired ones (20-oct: the full-row hash
+            # changed with no commercial change). Its comparison projects rows on
+            # the columns that existed before and leaves the retired tables to the
+            # export receipts; every other publication keeps the historical read.
+            v7_profile = stage == 'OPERATING' and is_v7_profile_publication(metadata)
+            commercial_view = ({'columns': commercial_columns(server, previous_root), 'retired': False}
+                               if v7_profile else {})
+            configuration = commercial_snapshot(server, previous_root, **commercial_view)
             preserved_before = server.preserved_containers()
             if stage == 'OPERATING':
                 report['stage'] = 'reviewed-migrations'; server._write_report(report_dir/'report.json', report)
                 remaining = deadline_check(deadline)
                 report['bounded_migrations'] = apply_reviewed_migrations(
                     server, root, report_dir, metadata, review, min(migration_deadline(metadata), remaining), stage='OPERATING')
-                require(commercial_snapshot(server, previous_root) == configuration,
+                require(commercial_snapshot(server, previous_root, **commercial_view) == configuration,
                         'COPY_RUNTIME_COMMERCIAL_CONFIGURATION_CHANGED')
             mutation_started = True
             report.update(stage='install-consumers', workers_start_invoked=True, consumers_started=None)
             server._write_report(report_dir/'report.json', report)
             install_phase('activate')
-            require(commercial_snapshot(server, root) == configuration, 'COPY_RUNTIME_COMMERCIAL_CONFIGURATION_CHANGED')
+            require(commercial_snapshot(server, root, **commercial_view) == configuration, 'COPY_RUNTIME_COMMERCIAL_CONFIGURATION_CHANGED')
             if hold_active:
                 if capture is not None:
                     server.command(['python3', 'scripts/ownership-isolation-receipts.py', 'attest',

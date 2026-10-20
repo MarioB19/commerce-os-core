@@ -211,6 +211,29 @@ class RuntimeAdapters(unittest.TestCase):
         query=calls[0];self.assertIn('warmup_rate_buckets',query);self.assertIn("a.environment='REAL'",query)
         self.assertIn("e.environment='REAL'",query);self.assertNotIn('UPDATE ',query);self.assertNotIn('DELETE ',query)
 
+    def test_v7_commercial_view_projects_prior_columns_and_leaves_retired_tables_to_receipts(self):
+        # 20-oct: the V7 migrations add manual_controls.environment/scope_record_id and
+        # commercial_assignments.variant_id and 0109 drops the exported retired tables,
+        # so the full-row hash changed with no commercial change.
+        names=c.COMMERCIAL_TABLES+tuple(c.COMMERCIAL_REAL_QUOTAS)
+        columns={name:['id','workspace_id'] for name in names}
+        default=c.commercial_query()
+        self.assertEqual(default.count('to_jsonb(t) ORDER BY to_jsonb(t)::text'),len(names)+len(c.COMMERCIAL_RETIRED))
+        for retired in c.COMMERCIAL_RETIRED:self.assertIn(retired,default)
+        view=c.commercial_query(columns,False)
+        for retired in c.COMMERCIAL_RETIRED:self.assertNotIn(retired,view)
+        for name in names:self.assertIn(' FROM '+name+' t',view)
+        self.assertEqual(view.count("k.key = ANY(ARRAY['id','workspace_id']::text[])"),2*len(names))
+        self.assertNotIn('jsonb_agg(to_jsonb(t)',view);self.assertNotIn('UPDATE ',view);self.assertNotIn('DELETE ',view)
+        self.assertTrue(view.startswith('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;') and view.endswith('ROLLBACK;'))
+        calls=[];server=types.SimpleNamespace(database=lambda root,sql:calls.append(sql) or json.dumps(columns))
+        self.assertEqual(c.commercial_columns(server,'x'),columns)
+        self.assertIn("table_schema='public'",calls[0])
+        for broken in ({},{**columns,'manual_controls':[]},{**columns,'manual_controls':['id','id']},
+                       {**columns,'manual_controls':['id;drop']}):
+            server=types.SimpleNamespace(database=lambda root,sql,broken=broken:json.dumps(broken))
+            with self.assertRaises(c.ReleaseError):c.commercial_columns(server,'x')
+
     def test_deadline_expiry_rejects_before_new_work(self):
         with patch.object(c.time,'monotonic',return_value=100):
             self.fail(c.deadline_check,100);self.assertEqual(c.deadline_check(102),2)
