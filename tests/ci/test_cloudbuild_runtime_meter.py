@@ -107,7 +107,7 @@ class MeterTests(unittest.TestCase):
         self.assertEqual(self.store.document['active_request'], reservation['request_id'])
 
     def test_ceiling_not_credits_controls_admission(self):
-        for _ in range(88):
+        for _ in range(111):
             reservation = self.reserve(450)
             self.meter.finish(reservation, {'ok': True})
         before = copy.deepcopy(self.store.document)
@@ -126,6 +126,22 @@ class MeterTests(unittest.TestCase):
         for key, row in old_rows.items():
             self.assertEqual(self.store.document['requests'][key], row)
         self.assertEqual(usage(self.store.document)['2026-10']['cpu_ms'], 20_250_000)
+
+    def test_october_exhausted_at_previous_ceiling_admits_one_more_operation(self):
+        # 20-oct-2026: October held exactly 40,000 s, so SOURCE could not extend to 450 s.
+        for _ in range(88):
+            reservation = self.reserve(450)
+            self.meter.finish(reservation, {'ok': True})
+        for _ in range(80):
+            reservation = self.reserve()
+            self.meter.finish(reservation, {'ok': True})
+        self.assertEqual(usage(self.store.document)['2026-10']['cpu_ms'], 40_000_000)
+        old_rows = copy.deepcopy(self.store.document['requests'])
+        reservation = self.meter.extend(self.reserve(), 450)
+        self.meter.finish(reservation, {'ok': True})
+        for key, row in old_rows.items():
+            self.assertEqual(self.store.document['requests'][key], row)
+        self.assertEqual(usage(self.store.document)['2026-10']['cpu_ms'], 40_450_000)
 
     def test_conflict_never_retries_cas(self):
         self.store.failure = 'conflict'
