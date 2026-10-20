@@ -44,3 +44,28 @@ Verificación: en producción, con la candidata cargada y el modo `status`
 del exportador (sólo lectura), la llamada actual falla con `EACCES` y la
 llamada con la capacidad lista las tablas a exportar. La regresión exige
 exactamente esa capacidad adicional y falla con el código anterior.
+
+## Adenda 20-oct-2026 (tarde) — llave de datos del exportador (Agente: Claude)
+
+La instalación de `c629c27f` (paquete `cv-e028f78f-…-1`) pasó la lectura de
+la imagen y terminó `V7_RETIREMENT_EXPORT_FAILED` con
+`PRIVATE_DATA_KEY_REQUIRED`, otra vez antes del SQL. El exportador sella cada
+tabla con la llave de datos de la aplicación, pero el instalador sólo le pasa
+`admin.env`, que en producción contiene únicamente la conexión del dueño. La
+llave vive, idéntica, en los `.env` de los servicios.
+
+Decisión: el instalador lee `PRIVATE_DATA_KEY` de `api.env` (64 hex o base64
+de 32 bytes; cualquier otra forma detiene la exportación antes de crear
+archivos o ejecutar tareas), la escribe sola en un archivo `0600` del
+directorio del reporte, lo pasa como segundo `--env-file` y lo borra al
+terminar la tarea, también si falla. La llave nunca va en argv ni en el
+reporte. `admin.env` no cambia.
+
+Verificación: ensayo de punta a punta en la VM temporal de empaquetado, sin
+producción: PostgreSQL desechable en red interna, esquema V5 (0001–0068), el
+exportador con exactamente las banderas y archivos del instalador corregido
+(manifiesto escrito y `verify` correcto) y después 0069–0117 con sus recibos
+(117 migraciones). En producción, la imagen V5 que aplica las migraciones lee
+su código como Root sin capacidades. Regresiones: contenido y modo del archivo
+de llave, orden de `--env-file`, ausencia de la llave en argv, borrado tras
+éxito y tras fallo, y rechazo sin llave válida.

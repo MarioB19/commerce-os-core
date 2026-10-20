@@ -1,5 +1,21 @@
 # Estado de publicación
 
+## 20-oct-2026 (tarde) — llave de datos del exportador (Agente: Claude)
+
+`main` `c629c27f` pasó FULL `e028f78f` (el primer FULL `6a121cd1` falló por
+una carrera de `profile-privacy-writer-fence.test.ts`, ajena al cambio) y su
+atestación `b2aeea77`. El paquete `cv-e028f78f-c407-4268-8afa-db919303e2d3-1`
+(`840657c3…`) se observó y selló; la instalación terminó `FAILED` antes del
+SQL con `PRIVATE_DATA_KEY_REQUIRED`: `admin.env` no trae la llave de datos que
+el exportador usa para sellar las tablas. Producción se reconcilió al minuto
+(`80a6d6ea`, 68 migraciones, hold liberado, workers arriba, cero envíos).
+
+Corrección: la llave se toma de `api.env` y viaja sola en un `--env-file`
+`0600` temporal, borrado al terminar. Ensayo de punta a punta en la VM de
+empaquetado (exportador con las banderas exactas, `verify`, 0069–0117 con
+recibos: 117) y regresiones nuevas. FULL, atestación, paquete e instalación
+del nuevo commit siguen pendientes.
+
 ## 20-oct-2026 — lectura de la imagen V7 en el exportador (Agente: Claude)
 
 `main` `59768f73` pasó FULL `fd09b802` y su atestación `6ecf3514`; el
