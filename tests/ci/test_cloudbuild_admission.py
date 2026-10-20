@@ -610,6 +610,101 @@ class AbortBeforeDispatchTests(unittest.TestCase):
                 m.validate_ledger(doc)
 
 
+class AbandonWithoutNativeTests(unittest.TestCase):
+    """20-oct-2026: an UNKNOWN DISPATCH whose CreateBuild never reached Cloud Build."""
+    def unknown(self, now=NOW, value=None):
+        doc = reserved(now) if value is None else step(approved(now=now, value=value), 'reserve', now,
+                                                       admission=admission(now, value)).document
+        doc = m.transition(doc, intent_command(), now=now).document
+        return step(doc, 'unknown', now, reason='CREATE_OR_BIND_OUTCOME_UNKNOWN', evidence_sha256='8'*64).document
+
+    def command(self, evidence='9'*64):
+        return {'op': 'abandon_without_native', 'attempt_id': ATTEMPT,
+                'evidence_sha256': evidence, 'native_verified': True}
+
+    def test_charges_whole_reservation_keeps_history_and_releases_only_the_lock(self):
+        old = self.unknown(); before = deepcopy(old)
+        later = NOW + timedelta(minutes=20)
+        result = m.transition(old, self.command(), now=later)
+        self.assertEqual(old, before)
+        self.assertIsNone(result.proposed_effect)
+        row = result.document['attempts'][ATTEMPT]
+        self.assertEqual(row['state'], 'ABANDONED_WITHOUT_NATIVE')
+        self.assertEqual(row['abandonment'], {'evidence_sha256': '9'*64, 'abandoned_at': m.stamp(later),
+                                              'charged_seconds': 95*60})
+        self.assertEqual({k: row[k] for k in before['attempts'][ATTEMPT]},
+                         dict(before['attempts'][ATTEMPT], state='ABANDONED_WITHOUT_NATIVE'))
+        self.assertFalse({'build_id', 'terminal', 'bind_evidence_sha256'} & set(row))
+        for key in ('events', 'external_builds', 'monthly_limit_seconds', 'blocked'):
+            self.assertEqual(result.document[key], before[key])
+        self.assertIsNone(result.document['active_attempt'])
+        self.assertEqual(m.budget_usage(result.document, now=later)['2026-10'],
+                         {'confirmed_seconds': 95*60, 'reserved_seconds': 0, 'total_seconds': 95*60})
+        # Another event may reserve; the abandoned event, nonce and source stay consumed.
+        other = '44444444-4444-4444-8444-444444444444'
+        value = plan(event='event-2', sha='9'*40)
+        doc = approved(result.document, later, other, value)
+        doc = step(doc, 'reserve', later, other, admission=admission(later, value)).document
+        self.assertEqual(doc['active_attempt'], other)
+        again = step(result.document, 'discover', later, other, plan=plan())
+        self.assertFalse(again.changed)
+        with self.assertRaises(m.AdmissionError):
+            m.transition(doc, {'op': 'submit_intent', 'attempt_id': other, 'source': source(),
+                               'nonce': NONCE, 'request_sha256': '6'*64}, now=later)
+
+    def test_replay_is_idempotent_and_evidence_cannot_change(self):
+        doc = m.transition(self.unknown(), self.command(), now=NOW).document
+        replay = m.transition(doc, self.command(), now=NOW + timedelta(minutes=1))
+        self.assertFalse(replay.changed)
+        with self.assertRaises(m.AdmissionError):
+            m.transition(doc, self.command('a'*64), now=NOW)
+
+    def test_rejects_states_with_possible_native_build_or_without_intent(self):
+        bound_unknown = step(bound(), 'unknown', reason='CREATE_OR_BIND_OUTCOME_UNKNOWN', evidence_sha256='8'*64).document
+        submitted = m.transition(reserved(), intent_command(), now=NOW).document
+        for doc in (reserved(), submitted, bound(), bound_unknown):
+            with self.subTest(state=doc['attempts'][ATTEMPT]['state']), self.assertRaises(m.AdmissionError):
+                m.transition(doc, self.command(), now=NOW)
+
+    def test_rejects_non_full_stage(self):
+        value = plan(stage='diagnostic')
+        with self.assertRaises(m.AdmissionError):
+            m.transition(self.unknown(value=value), self.command(), now=NOW)
+
+    def test_rejects_unverified_invalid_hash_and_injected_fields_without_mutation(self):
+        old = self.unknown()
+        for fields in ({'native_verified': False}, {'native_verified': 1}, {'evidence_sha256': ''},
+                       {'build_id': BUILD}, {'reservation_refunded': True}):
+            store = MemoryStore(old)
+            with self.subTest(fields=fields), self.assertRaises(m.AdmissionError):
+                m.transact(store, {**self.command(), **fields}, now=NOW)
+            self.assertEqual(store.document, old); self.assertEqual(store.cas_count, 0)
+
+    def test_durable_shape_is_strict(self):
+        doc = m.transition(self.unknown(), self.command(), now=NOW + timedelta(minutes=5)).document
+        m.validate_ledger(doc)
+        def tampered(change):
+            value = deepcopy(doc); change(value['attempts'][ATTEMPT]); return value
+        cases = [lambda a: a['abandonment'].update(charged_seconds=60),
+                 lambda a: a['abandonment'].update(refunded=True),
+                 lambda a: a['abandonment'].update(abandoned_at=m.stamp(NOW - timedelta(minutes=1))),
+                 lambda a: a.pop('uncertainty'), lambda a: a.pop('intent'),
+                 lambda a: a.update(build_id=BUILD, bind_evidence_sha256='7'*64)]
+        for change in cases:
+            with self.assertRaises(m.AdmissionError):
+                m.validate_ledger(tampered(change))
+        live = deepcopy(doc); live['active_attempt'] = ATTEMPT
+        with self.assertRaises(m.AdmissionError):
+            m.validate_ledger(live)
+
+    def test_charge_covers_every_month_the_intent_could_reach(self):
+        start = datetime(2026, 10, 31, 23, 0, tzinfo=timezone.utc)
+        doc = m.transition(self.unknown(start), self.command(), now=start + timedelta(minutes=10)).document
+        usage = m.budget_usage(doc, now=start + timedelta(minutes=10))
+        self.assertEqual(usage['2026-10']['confirmed_seconds'], 95*60)
+        self.assertEqual(usage['2026-11']['confirmed_seconds'], 95*60)
+
+
 class DurableValidationTests(unittest.TestCase):
     def assert_closed(self, doc, now=NOW):
         store = MemoryStore(doc)

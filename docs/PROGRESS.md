@@ -1,5 +1,19 @@
 # Estado de publicación
 
+## 20-oct-2026 (noche, 2) — medidor del controlador y DISPATCH incierto (Agente: Claude)
+
+El FULL de `main` `785b9d37` se detuvo antes de existir un Build. Primero, el
+medidor del controlador agotó su techo de octubre (40,000 s). Brandon aprobó
+subirlo a 50,000 s vCPU y 100,000 GiB-s (≤ USD 0.34/mes). La imagen derivada
+cambia sólo el medidor ([ADR](adr-v7-controller-runtime-pool-2026-10-20.md)).
+Después, el DISPATCH persistió su intención y terminó `UNKNOWN`: un 429 de
+`ListLocations` en el fence. Nunca hubo `CreateBuild` y el inventario nativo
+quedó idéntico al de la admisión. Ese estado bloqueaba el CI para siempre.
+Corrección: transición `abandon_without_native`, que cobra los 95 minutos, no
+reembolsa y sólo libera el bloqueo
+([ADR](adr-v7-abandon-unknown-without-native.md)). FULL, atestación, paquete e
+instalación del commit que la incluya siguen pendientes.
+
 ## 20-oct-2026 (noche) — comparación comercial de la publicación V7 (Agente: Claude)
 
 El cuarto intento (`727623e0`, paquete `cv-471e9e64-…-1`) exportó y migró

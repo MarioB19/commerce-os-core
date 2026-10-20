@@ -39,6 +39,14 @@ Commands (unknown fields are rejected):
   fenced against continuation, source acquire never uploaded, source absent,
   and complete native inventory without dispatch. Retains the historical plan
   and reservation; releases only unexecuted capacity. Never creates a Build ID.
+* abandon_without_native: attempt_id, evidence_sha256, native_verified=True.
+  Full-stage UNKNOWN with a durable submit intent and no native UUID only: the
+  protected operator must prove that CreateBuild never reached Cloud Build
+  (complete native inventory unchanged since admission, no CreateBuild audit
+  record or request metric after the intent, finished request, paused control).
+  Keeps intent, nonce and uncertainty as history, charges the whole reservation
+  as confirmed usage (never a refund) and releases only the global lock. Never
+  creates, binds or replays a Build.
 * reduce_monthly_limit: from_seconds=28800, to_seconds=25200,
   evidence_sha256, native_verified=True. Protected operator only: no live or
   blocked attempt, preserved usage/history and one immutable reduction receipt.
@@ -273,7 +281,8 @@ def _validate_ledger(doc):
         need(type(attempt) is dict, 'ATTEMPT_FIELDS_INVALID')
         state = attempt.get('state')
         need(type(state) is str and state in LIVE_STATES | {
-            'DISCOVERED', 'SOURCE_APPROVED', 'RECONCILED', 'ABORTED_BEFORE_DISPATCH'}, 'STATE_INVALID')
+            'DISCOVERED', 'SOURCE_APPROVED', 'RECONCILED', 'ABORTED_BEFORE_DISPATCH',
+            'ABANDONED_WITHOUT_NATIVE'}, 'STATE_INVALID')
         fields = {'plan', 'state', 'discovered_at'}
         if state != 'DISCOVERED':
             fields |= {'approval'}
@@ -285,6 +294,8 @@ def _validate_ledger(doc):
             fields |= {'abortion'}
         if state == 'UNKNOWN':
             fields |= {'uncertainty'}
+        if state == 'ABANDONED_WITHOUT_NATIVE':
+            fields |= {'uncertainty', 'abandonment'}
         if state in {'UUID_BOUND', 'RUNNING', 'TERMINAL_UNRECONCILED', 'RECONCILED'} or (
                 state == 'UNKNOWN' and 'build_id' in attempt):
             fields |= {'build_id', 'bind_evidence_sha256'}
@@ -345,6 +356,15 @@ def _validate_ledger(doc):
                  abortion['reserved_seconds'] == attempt['plan']['timeout_seconds'],
                  'HISTORICAL_RESERVATION_CHANGED')
             need(reserved <= timestamp(abortion['aborted_at']) <= updated, 'DURABLE_CHRONOLOGY_INVALID')
+        if state == 'ABANDONED_WITHOUT_NATIVE':
+            abandonment = attempt['abandonment']
+            need(attempt['plan']['stage'] == 'full', 'UNDISPATCHED_FULL_REQUIRED')
+            exact(abandonment, 'evidence_sha256 abandoned_at charged_seconds', 'ABANDONMENT_FIELDS_INVALID')
+            digest(abandonment['evidence_sha256'])
+            need(type(abandonment['charged_seconds']) is int and
+                 abandonment['charged_seconds'] == attempt['plan']['timeout_seconds'],
+                 'HISTORICAL_RESERVATION_CHANGED')
+            need(submitted <= timestamp(abandonment['abandoned_at']) <= updated, 'DURABLE_CHRONOLOGY_INVALID')
     need(len(doc['events']) == len(doc['attempts']), 'EVENT_INDEX_MISMATCH')
     need(len(active) <= 1 and doc['active_attempt'] == (active[0] if active else None), 'GLOBAL_LOCK_INVALID')
     for build_id, record in doc['external_builds'].items():
@@ -404,6 +424,12 @@ def _budget_usage(document, *, now):
         if attempt['state'] == 'RECONCILED':
             for month, seconds in charges(attempt['terminal']).items():
                 add(month, 'confirmed_seconds', seconds)
+        elif attempt['state'] == 'ABANDONED_WITHOUT_NATIVE':
+            # The whole reservation stays charged in every month the intent could have reached.
+            plan = attempt['plan']
+            end = utc(attempt['submitted_at']) + timedelta(seconds=plan['timeout_seconds'] + plan['queue_seconds'])
+            for month, _, _ in months(attempt['reserved_at'], end):
+                add(month, 'confirmed_seconds', attempt['abandonment']['charged_seconds'])
         elif attempt['state'] in LIVE_STATES:
             plan = attempt['plan']
             end = moment + timedelta(seconds=plan['timeout_seconds'] + plan['queue_seconds'])
@@ -526,6 +552,7 @@ def _transition(document, command, *, now, validator):
         'terminal': 'op attempt_id observation',
         'reconcile': 'op attempt_id evidence_sha256 native_verified',
         'abort_before_dispatch': 'op attempt_id evidence_sha256 native_verified',
+        'abandon_without_native': 'op attempt_id evidence_sha256 native_verified',
         'reduce_monthly_limit': 'op from_seconds to_seconds evidence_sha256 native_verified',
         'raise_monthly_limit': 'op from_seconds to_seconds evidence_sha256 native_verified',
         'account_external': 'op observation native_verified', 'block': 'op reason evidence_sha256',
@@ -699,6 +726,22 @@ def _transition(document, command, *, now, validator):
                 'evidence_sha256': command['evidence_sha256'], 'aborted_at': stamp(moment),
                 'reserved_seconds': attempt['plan']['timeout_seconds']})
             doc['active_attempt'] = None
+        elif op == 'abandon_without_native':
+            # Native absence, request end and fence are authenticated by the protected
+            # operator, never inferred from UNKNOWN, a timeout or an empty listing here.
+            need(command['native_verified'] is True, 'NATIVE_VERIFICATION_REQUIRED')
+            digest(command['evidence_sha256'])
+            if state == 'ABANDONED_WITHOUT_NATIVE':
+                need(attempt['abandonment']['evidence_sha256'] == command['evidence_sha256'],
+                     'ABANDONMENT_EVIDENCE_CHANGED')
+                return replay()
+            need(state == 'UNKNOWN' and 'intent' in attempt and 'build_id' not in attempt
+                 and doc['active_attempt'] == attempt_id, 'UNKNOWN_WITHOUT_NATIVE_REQUIRED')
+            need(attempt['plan']['stage'] == 'full', 'UNDISPATCHED_FULL_REQUIRED')
+            attempt.update(state='ABANDONED_WITHOUT_NATIVE', abandonment={
+                'evidence_sha256': command['evidence_sha256'], 'abandoned_at': stamp(moment),
+                'charged_seconds': attempt['plan']['timeout_seconds']})
+            doc['active_attempt'] = None
         elif op == 'reconcile':
             need(command['native_verified'] is True, 'NATIVE_VERIFICATION_REQUIRED')
             digest(command['evidence_sha256'])
@@ -710,7 +753,7 @@ def _transition(document, command, *, now, validator):
             doc['active_attempt'] = None
             if sum(charges(attempt['terminal']).values()) > attempt['plan']['timeout_seconds']:
                 doc['blocked'] = {'reason': 'OBSERVED_USAGE_EXCEEDS_RESERVATION', 'evidence_sha256': command['evidence_sha256']}
-    if op in {'reconcile', 'account_external'}:
+    if op in {'reconcile', 'account_external', 'abandon_without_native'}:
         if any(row['total_seconds'] > doc['monthly_limit_seconds'] for row in _budget_usage(doc, now=moment).values()):
             doc['blocked'] = {'reason': 'OBSERVED_MONTHLY_POOL_EXCEEDED',
                               'evidence_sha256': command.get('evidence_sha256', command.get('observation', {}).get('evidence_sha256'))}
