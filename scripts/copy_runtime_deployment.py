@@ -1260,7 +1260,12 @@ def export_retired_modules(server, root, report_dir, metadata, timeout=300):
             'COPY_RUNTIME_RETIREMENT_EXPORT_DIRECTORY_UNSAFE')
     name = 'export-'+metadata['source_sha'][:12]+'-'+dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     require(not (base/name).exists(), 'COPY_RUNTIME_RETIREMENT_EXPORT_EXISTS')
-    args = ['docker', 'run', '--rm', '--user', '0:0', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
+    # The V7 image keeps /app as 0600 files of its node user. Root without
+    # capabilities cannot read them (EACCES on /app/package.json, 20-oct), so
+    # only read/search bypass is added; writes stay limited to the private
+    # Root-owned export directory (same pattern as b02-backup-root.py).
+    args = ['docker', 'run', '--rm', '--user', '0:0', '--read-only', '--cap-drop', 'ALL', '--cap-add', 'DAC_READ_SEARCH',
+            '--security-opt', 'no-new-privileges:true',
             '--tmpfs', '/tmp:size=64m,noexec,nosuid', '--network', 'commerce-os_core',
             '--env-file', str(server.PRIVATE/'admin.env'), '-v', str(base)+':/v7-retirement-export',
             candidate_image, 'node', '--import', 'tsx', 'scripts/v7-retirement-export.ts', 'export', '/v7-retirement-export/'+name]
