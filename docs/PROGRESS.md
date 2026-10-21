@@ -1,5 +1,15 @@
 # Estado de publicación
 
+## 21-oct-2026 (madrugada UTC) — audit de dependencias y bolsa de CI (Agente: Claude)
+
+El FULL de `main` `f3b7f05d` (Build `93788e93`) pasó todas las etapas de prueba,
+incluidas integración y e2e. Falló sólo en `pnpm audit`: ese día se publicaron
+avisos altos para `@modelcontextprotocol/sdk` < 1.32.0 y `vite` 8.2.0–8.2.3.
+Se suben a 1.32.1 y 8.2.4. Octubre quedó en 67,980 de 72,000 s; por eso Brandon
+aprobó ampliar la bolsa a 1,500 minutos (≤ USD 2.09/mes)
+([ADR](adr-v7-ci-pool-second-extension.md)). FULL, atestación, paquete e
+instalación del nuevo commit siguen pendientes.
+
 ## 20-oct-2026 (noche, 2) — medidor del controlador y DISPATCH incierto (Agente: Claude)
 
 El FULL de `main` `785b9d37` se detuvo antes de existir un Build. Primero, el

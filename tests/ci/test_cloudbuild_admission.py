@@ -1117,5 +1117,98 @@ class PoolExtensionTests(unittest.TestCase):
         self.assertEqual(set(before),{'2026-10','2026-11'})
 
 
+
+class SecondPoolExtensionTests(unittest.TestCase):
+    """2026-10-20: the owner raised the pool from 1,200 to 1,500 minutes per month."""
+    def command(self, **changes):
+        return {'op': 'raise_monthly_limit_second', 'from_seconds': 72000, 'to_seconds': 90000,
+                'evidence_sha256': 'f'*64, 'native_verified': True, **changes}
+
+    def extended(self, minutes=1133, when=NOW):
+        # The live shape: reduced on 11-oct, extended to 1,200 on 18-oct, then operated.
+        early = when - timedelta(hours=3)
+        obs = observation('FAILURE', start=early-timedelta(minutes=74), seconds=74*60)
+        doc = step(m.new_ledger(), 'account_external', now=early, observation=obs, native_verified=True).document
+        doc['monthly_limit_seconds'] = 28800
+        reduce = {'op':'reduce_monthly_limit','from_seconds':28800,'to_seconds':25200,'evidence_sha256':'a'*64,'native_verified':True}
+        doc = m.transition(doc, reduce, now=early).document
+        raise_ = {'op':'raise_monthly_limit','from_seconds':25200,'to_seconds':72000,'evidence_sha256':'c'*64,'native_verified':True}
+        doc = m.transition(doc, raise_, now=early).document
+        rest = observation('FAILURE', build='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', start=when-timedelta(minutes=minutes-74),
+                           seconds=(minutes-74)*60)
+        doc = step(doc, 'account_external', now=when, observation=rest, native_verified=True).document
+        m.validate_ledger(doc)
+        return doc
+
+    def test_second_extension_preserves_history_and_admits_one_more_full(self):
+        doc = self.extended(); prior = deepcopy(doc)
+        with self.assertRaisesRegex(m.AdmissionError, 'MONTHLY_POOL_EXCEEDED'):
+            step(approved(deepcopy(doc)), 'reserve', admission=admission())
+        out = m.transition(doc, self.command(), now=NOW)
+        self.assertIsNone(out.proposed_effect); self.assertEqual(doc, prior)
+        for key in ('attempts','events','external_builds','active_attempt','blocked','limit_reduction','limit_extension'):
+            self.assertEqual(out.document[key], prior[key])
+        self.assertEqual(out.document['monthly_limit_seconds'], 90000)
+        self.assertEqual(out.document['limit_second_extension'], {
+            'from_seconds':72000,'to_seconds':90000,'evidence_sha256':'f'*64,'extended_at':m.stamp(NOW)})
+        self.assertEqual(m.budget_usage(out.document, now=NOW), m.budget_usage(prior, now=NOW))
+        admitted = step(approved(out.document), 'reserve', admission=admission()).document
+        self.assertEqual(m.budget_usage(admitted, now=NOW)['2026-10']['total_seconds'], 1133*60+5700)
+
+    def test_born_at_1200_without_receipt_can_also_extend(self):
+        obs = observation('FAILURE', start=NOW-timedelta(minutes=10), seconds=600)
+        doc = step(m.new_ledger(), 'account_external', observation=obs, native_verified=True).document
+        out = m.transition(doc, self.command(), now=NOW).document
+        m.validate_ledger(out); self.assertEqual(out['monthly_limit_seconds'], 90000)
+
+    def test_only_fixed_extension_from_the_1200_pool(self):
+        for change in ({'from_seconds':25200},{'to_seconds':120000},{'to_seconds':True},{'native_verified':False},
+                       {'native_verified':1},{'evidence_sha256':'bad'},{'reset':False}):
+            store = MemoryStore(self.extended())
+            with self.subTest(change=change), self.assertRaises(m.AdmissionError):
+                m.transact(store, self.command(**change), now=NOW)
+            self.assertEqual(store.cas_count, 0)
+        reduced = self.extended(); del reduced['limit_extension']; reduced['monthly_limit_seconds'] = 25200
+        with self.assertRaisesRegex(m.AdmissionError, 'EXTENDED_POOL_REQUIRED'):
+            m.transition(reduced, self.command(), now=NOW)
+
+    def test_active_or_blocked_rejects_without_cas(self):
+        active = step(approved(self.extended(600)), 'reserve', admission=admission()).document
+        blocked = self.extended(); blocked['blocked'] = {'reason':'STOP','evidence_sha256':'8'*64}
+        for doc, code in ((active,'LIMIT_EXTENSION_ACTIVE_ATTEMPT'),(blocked,'LIMIT_EXTENSION_BLOCKED')):
+            store = MemoryStore(doc)
+            with self.subTest(code=code), self.assertRaisesRegex(m.AdmissionError, code):
+                m.transact(store, self.command(), now=NOW+timedelta(seconds=2))
+            self.assertEqual(store.cas_count, 0)
+
+    def test_replay_and_changed_evidence(self):
+        store = MemoryStore(self.extended())
+        m.transact(store, self.command(), now=NOW)
+        replay = m.transact(store, self.command(), now=NOW+timedelta(seconds=2))
+        self.assertFalse(replay.changed); self.assertEqual(store.cas_count, 1)
+        with self.assertRaisesRegex(m.AdmissionError, 'LIMIT_SECOND_EXTENSION_EVIDENCE_CHANGED'):
+            m.transact(store, self.command(evidence_sha256='d'*64), now=NOW)
+        self.assertEqual(store.cas_count, 1)
+
+    def test_durable_receipt_and_implicit_growth_rejected(self):
+        base = m.transition(self.extended(), self.command(), now=NOW).document
+        changes = (lambda d: d['limit_second_extension'].update(from_seconds=25200),
+                   lambda d: d['limit_second_extension'].update(to_seconds=120000),
+                   lambda d: d['limit_second_extension'].update(evidence_sha256='bad'),
+                   lambda d: d['limit_second_extension'].update(extended_at=m.stamp(NOW+timedelta(seconds=1))),
+                   lambda d: d['limit_second_extension'].update(refund=True),
+                   lambda d: d['limit_extension'].update(extended_at=m.stamp(NOW+timedelta(seconds=1))),
+                   lambda d: d.update(monthly_limit_seconds=72000),
+                   lambda d: d.__delitem__('limit_second_extension'))
+        for change in changes:
+            doc = deepcopy(base); change(doc)
+            with self.subTest(change=change), self.assertRaises(m.AdmissionError):
+                m.validate_ledger(doc)
+        grown = self.extended(); grown['monthly_limit_seconds'] = 90000
+        with self.assertRaisesRegex(m.AdmissionError, 'LIMIT_SECOND_EXTENSION_RECEIPT_REQUIRED'):
+            m.validate_ledger(grown)
+        first = {'op':'raise_monthly_limit','from_seconds':25200,'to_seconds':72000,'evidence_sha256':'c'*64,'native_verified':True}
+        self.assertFalse(m.transition(base, first, now=NOW).changed)
+
 if __name__ == '__main__':
     unittest.main()
