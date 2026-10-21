@@ -39,6 +39,11 @@ Commands (unknown fields are rejected):
   fenced against continuation, source acquire never uploaded, source absent,
   and complete native inventory without dispatch. Retains the historical plan
   and reservation; releases only unexecuted capacity. Never creates a Build ID.
+* raise_monthly_limit_second: from_seconds=72000, to_seconds=90000,
+  evidence_sha256, native_verified=True. Protected operator only, after the
+  owner's economic decision of 2026-10-20 (1,500 minutes per month): no live or
+  blocked attempt, preserved usage/history and every earlier receipt, plus one
+  immutable `limit_second_extension` receipt. Never implicit.
 * abandon_without_native: attempt_id, evidence_sha256, native_verified=True.
   Full-stage UNKNOWN with a durable submit intent and no native UUID only: the
   protected operator must prove that CreateBuild never reached Cloud Build
@@ -62,7 +67,8 @@ Commands (unknown fields are rejected):
 
 Only one attempt may reserve globally. The operational pool is the one recorded in
 the ledger document: 1,200 minutes per UTC month since the 2026-10-18 extension
-(420 before it), including every stage, bootstrap and failures. Unknown work retains its
+(420 before it) and 1,500 after the 2026-10-20 receipt, including every stage,
+bootstrap and failures. Unknown work retains its
 full reservation in every touched month, also reserving a possible queue/run
 crossing into the next month. Verified usage is conservatively rounded UP to a
 minute per touched month. It is never refunded simply because a build failed.
@@ -87,12 +93,15 @@ from typing import Protocol
 import uuid
 
 MONTHLY_LIMIT_SECONDS = 1200 * 60
+# Owner decision of 2026-10-20: 1,500 minutes, reached only through its receipt.
+SECOND_EXTENSION_LIMIT_SECONDS = 1500 * 60
 REDUCED_MONTHLY_LIMIT_SECONDS = 420 * 60
 HISTORICAL_MONTHLY_LIMIT_SECONDS = 480 * 60
 # Pools a document may record. Operational admission accepts the reduced pool and
 # the extended one (each admits only up to its own recorded limit); the 480-minute
 # originals stay read-only history.
-OPERATING_LIMITS = frozenset({MONTHLY_LIMIT_SECONDS, REDUCED_MONTHLY_LIMIT_SECONDS})
+OPERATING_LIMITS = frozenset({MONTHLY_LIMIT_SECONDS, REDUCED_MONTHLY_LIMIT_SECONDS,
+                              SECOND_EXTENSION_LIMIT_SECONDS})
 KNOWN_LIMITS = OPERATING_LIMITS | {HISTORICAL_MONTHLY_LIMIT_SECONDS}
 GROSS_CAP_MICROUSD = 100 * 1_000_000
 STAGE_LIMITS = {'full': 5700, 'attestation': 120, 'package': 1800,
@@ -235,6 +244,7 @@ def _validate_ledger(doc):
     need(type(doc) is dict, 'LEDGER_FIELDS_INVALID')
     extra = ' limit_reduction' if 'limit_reduction' in doc else ''
     extra += ' limit_extension' if 'limit_extension' in doc else ''
+    extra += ' limit_second_extension' if 'limit_second_extension' in doc else ''
     exact(doc, 'schema_version revision updated_at monthly_limit_seconds events attempts external_builds active_attempt blocked' + extra,
           'LEDGER_FIELDS_INVALID')
     need(type(doc['schema_version']) is int and doc['schema_version'] == 1
@@ -261,16 +271,30 @@ def _validate_ledger(doc):
         exact(receipt, 'from_seconds to_seconds evidence_sha256 extended_at', 'LIMIT_EXTENSION_FIELDS_INVALID')
         need(type(receipt['from_seconds']) is int and receipt['from_seconds'] == REDUCED_MONTHLY_LIMIT_SECONDS
              and type(receipt['to_seconds']) is int and receipt['to_seconds'] == MONTHLY_LIMIT_SECONDS
-             and doc['monthly_limit_seconds'] == MONTHLY_LIMIT_SECONDS, 'LIMIT_EXTENSION_POLICY_CHANGED')
+             and doc['monthly_limit_seconds'] in {MONTHLY_LIMIT_SECONDS, SECOND_EXTENSION_LIMIT_SECONDS},
+             'LIMIT_EXTENSION_POLICY_CHANGED')
         digest(receipt['evidence_sha256'])
         extended = timestamp(receipt['extended_at'])
         need(extended <= updated, 'DURABLE_CHRONOLOGY_INVALID')
         if 'limit_reduction' in doc:
             need(timestamp(doc['limit_reduction']['reduced_at']) <= extended, 'DURABLE_CHRONOLOGY_INVALID')
-    elif doc['monthly_limit_seconds'] == MONTHLY_LIMIT_SECONDS and doc['revision'] > 0:
+    elif doc['monthly_limit_seconds'] in {MONTHLY_LIMIT_SECONDS, SECOND_EXTENSION_LIMIT_SECONDS} and doc['revision'] > 0:
         # An operated document reaches the extended pool only through its receipt;
         # a document bootstrapped after the decision starts there without one.
         need('limit_reduction' not in doc, 'LIMIT_EXTENSION_RECEIPT_REQUIRED')
+    if 'limit_second_extension' in doc:
+        receipt = doc['limit_second_extension']
+        exact(receipt, 'from_seconds to_seconds evidence_sha256 extended_at', 'LIMIT_SECOND_EXTENSION_FIELDS_INVALID')
+        need(type(receipt['from_seconds']) is int and receipt['from_seconds'] == MONTHLY_LIMIT_SECONDS
+             and type(receipt['to_seconds']) is int and receipt['to_seconds'] == SECOND_EXTENSION_LIMIT_SECONDS
+             and doc['monthly_limit_seconds'] == SECOND_EXTENSION_LIMIT_SECONDS, 'LIMIT_SECOND_EXTENSION_POLICY_CHANGED')
+        digest(receipt['evidence_sha256'])
+        second = timestamp(receipt['extended_at'])
+        need(second <= updated, 'DURABLE_CHRONOLOGY_INVALID')
+        if 'limit_extension' in doc:
+            need(timestamp(doc['limit_extension']['extended_at']) <= second, 'DURABLE_CHRONOLOGY_INVALID')
+    else:
+        need(doc['monthly_limit_seconds'] != SECOND_EXTENSION_LIMIT_SECONDS, 'LIMIT_SECOND_EXTENSION_RECEIPT_REQUIRED')
     if doc['blocked'] is not None:
         validate_reason(doc['blocked'])
     active = []
@@ -555,6 +579,7 @@ def _transition(document, command, *, now, validator):
         'abandon_without_native': 'op attempt_id evidence_sha256 native_verified',
         'reduce_monthly_limit': 'op from_seconds to_seconds evidence_sha256 native_verified',
         'raise_monthly_limit': 'op from_seconds to_seconds evidence_sha256 native_verified',
+        'raise_monthly_limit_second': 'op from_seconds to_seconds evidence_sha256 native_verified',
         'account_external': 'op observation native_verified', 'block': 'op reason evidence_sha256',
     }
     need(op in fields, 'COMMAND_UNKNOWN')
@@ -616,6 +641,22 @@ def _transition(document, command, *, now, validator):
         doc['monthly_limit_seconds'] = MONTHLY_LIMIT_SECONDS
         doc['limit_extension'] = {k: command[k] for k in ('from_seconds', 'to_seconds', 'evidence_sha256')}
         doc['limit_extension']['extended_at'] = stamp(moment)
+    elif op == 'raise_monthly_limit_second':
+        need(command['native_verified'] is True, 'NATIVE_VERIFICATION_REQUIRED')
+        digest(command['evidence_sha256'])
+        need(type(command['from_seconds']) is int and command['from_seconds'] == MONTHLY_LIMIT_SECONDS
+             and type(command['to_seconds']) is int and command['to_seconds'] == SECOND_EXTENSION_LIMIT_SECONDS,
+             'LIMIT_SECOND_EXTENSION_POLICY_CHANGED')
+        if 'limit_second_extension' in doc:
+            need(doc['limit_second_extension']['evidence_sha256'] == command['evidence_sha256'],
+                 'LIMIT_SECOND_EXTENSION_EVIDENCE_CHANGED')
+            return replay()
+        need(doc['monthly_limit_seconds'] == MONTHLY_LIMIT_SECONDS, 'EXTENDED_POOL_REQUIRED')
+        need(doc['active_attempt'] is None, 'LIMIT_EXTENSION_ACTIVE_ATTEMPT')
+        need(doc['blocked'] is None, 'LIMIT_EXTENSION_BLOCKED')
+        doc['monthly_limit_seconds'] = SECOND_EXTENSION_LIMIT_SECONDS
+        doc['limit_second_extension'] = {k: command[k] for k in ('from_seconds', 'to_seconds', 'evidence_sha256')}
+        doc['limit_second_extension']['extended_at'] = stamp(moment)
     elif op == 'account_external':
         need(command['native_verified'] is True, 'NATIVE_VERIFICATION_REQUIRED')
         value = command['observation']; validate_observation(value, moment)
