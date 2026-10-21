@@ -414,6 +414,39 @@ def compare_owner(before, after, workspace, compare_owner_auth):
     return facts
 
 
+def v7_profile_owner_auth(compare_owner_auth):
+    """Owner comparison of the V7 profile publication only (68→117).
+
+    0072 gives every personal token its closed profile scopes once, and the row
+    trigger guard_personal_profile_token_identity raises that token's version by
+    exactly one (21-oct-2026: the window stopped on
+    COPY_OWNER_AUTH_IDENTITY_CHANGED with no owner change). The same tokens,
+    owners and sessions are still required: the after-observation is projected
+    onto the prior versions only when every token differs by exactly that +1,
+    and then the historical comparison runs unchanged. Every other publication
+    keeps the historical comparison, where any version change is a change."""
+    require(callable(compare_owner_auth), 'COPY_RUNTIME_OWNER_VALIDATOR_REQUIRED')
+
+    def compare(before, after):
+        require(type(before) is dict and type(after) is dict and type(before.get('tokens')) is list
+                and type(after.get('tokens')) is list, 'COPY_OWNER_AUTH_BINDING_CHANGED')
+        prior = {}
+        for token in before['tokens']:
+            require(type(token) is dict and type(token.get('id')) is str and token['id'] not in prior
+                    and type(token.get('version')) is int and token['version'] > 0, 'COPY_OWNER_AUTH_BINDING_CHANGED')
+            prior[token['id']] = token['version']
+        projected = copy.deepcopy(after)
+        require(len(projected['tokens']) == len(prior), 'COPY_OWNER_AUTH_IDENTITY_CHANGED')
+        for token in projected['tokens']:
+            require(type(token) is dict and token.get('id') in prior, 'COPY_OWNER_AUTH_IDENTITY_CHANGED')
+            require(type(token.get('version')) is int and token['version'] == prior[token['id']]+1,
+                    'COPY_RUNTIME_V7_TOKEN_VERSION_UNEXPLAINED')
+            token['version'] = prior[token['id']]
+        facts = compare_owner_auth(before, projected)
+        return dict(facts, v7_profile_scoped_tokens=len(prior)) if type(facts) is dict else facts
+    return compare
+
+
 def _legacy_digest(row):
     # Exact existing api_web_deployment.projection_digest/b02 contract v1.
     projection = {key: copy.deepcopy(row[key]) for key in
@@ -1558,10 +1591,11 @@ def state_for_stage(before, services, root, report_ref, stage, observed_policy, 
     return state
 
 
-def stage_continuity(before, services, candidate, after_owner, server, private):
+def stage_continuity(before, services, candidate, after_owner, server, private, v7_profile=False):
     previous = before['state']; initial = previous['schema_version'] == 2
     profiles(before['files'], private, initial=initial)
-    compare_owner(before['owner'], after_owner, before['workspace'], server.compare_owner_auth)
+    compare_owner(before['owner'], after_owner, before['workspace'],
+                  v7_profile_owner_auth(server.compare_owner_auth) if v7_profile is True else server.compare_owner_auth)
     preserved = {'postgres', 'caddy', 'portal'} | (set(before['services']) & GATEWAYS)
     compare_live_snapshot({name: before['services'][name] for name in preserved},
                           {name: services[name] for name in preserved})
@@ -1597,7 +1631,7 @@ def deferred_host_boot(report):
             'reason': 'NO_NATIVE_PACKAGE_BOOT_ADMISSION', 'run_id': report['run_id'], 'units_changed': 0}
 
 
-def commit_stage(server, root, report_dir, before, services, report, stage, review, locks, deadline=None, gateway_extension=False, before_terminal=None):
+def commit_stage(server, root, report_dir, before, services, report, stage, review, locks, deadline=None, gateway_extension=False, before_terminal=None, v7_profile=False):
     """Native B02 tool installation then one journal-bound pair CAS, no SQL rollback."""
     if deadline is not None: deadline_check(deadline)
     if stage == 'OPERATING': provider_evidence.installed_components(report, services)
@@ -1630,7 +1664,8 @@ def commit_stage(server, root, report_dir, before, services, report, stage, revi
     if gateway_extension:
         gateway_continuity(before, services, candidate, server.owner_auth_snapshot(root), server, server.PRIVATE)
     else:
-        stage_continuity(before, services, candidate, server.owner_auth_snapshot(root), server, server.PRIVATE)
+        stage_continuity(before, services, candidate, server.owner_auth_snapshot(root), server, server.PRIVATE,
+                         v7_profile is True and stage == 'OPERATING')
     gateway_boot = None
     if gateway_extension:
         import runtime_boot_install
@@ -2170,7 +2205,8 @@ def publish(server, archive, archive_hash, source_sha, run_id, portal_private_en
             report['consumers_started'] = True
             report.update(server.smoke(root, metadata, preserved_before,
                                         before_policy_raw, True, 'copy-runtime'))
-            commit_stage(server, root, report_dir, before, services, report, 'OPERATING', review, locks, deadline)
+            commit_stage(server, root, report_dir, before, services, report, 'OPERATING', review, locks, deadline,
+                         v7_profile=v7_profile)
         committed = True
     except BaseException as error:
         report.update(status='FAILED', error=server.error_code(error))

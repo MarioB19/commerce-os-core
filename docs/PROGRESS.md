@@ -1,5 +1,19 @@
 # Estado de publicación
 
+## 21-oct-2026 (tarde) — identidad del dueño en la publicación V7 (Agente: Claude)
+
+FULL `7f04216a` de `36231cb1`: SUCCESS. La ventana `cv-7f04216a-…-1` exportó,
+migró a 117 y levantó los seis servicios sanos, `channel-worker` incluido. Se
+detuvo en `commit_stage` con `COPY_OWNER_AUTH_IDENTITY_CHANGED` y producción
+regresó al snapshot frío `…20261021c`.
+
+Causa: 0072 asigna los alcances de perfil a cada token personal y su trigger
+sube la `version` en uno; la comparación del dueño incluye esa versión.
+Corrección: sólo para la publicación V7, la comparación exige los mismos tokens
+con exactamente +1 de versión y después aplica la comparación histórica
+([ADR](adr-v7-owner-auth-token-scopes.md)). FULL, paquete e instalación del
+nuevo commit siguen pendientes.
+
 ## 21-oct-2026 — despacho bajo RLS y atestación sin aprobación (Agente: Claude)
 
 FULL `3dd6b366` de `3ebedd57`: SUCCESS. Dos ventanas de instalación se
