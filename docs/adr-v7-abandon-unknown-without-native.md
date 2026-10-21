@@ -67,3 +67,21 @@ se cubren:
 - rechazo de campos inyectados y de una verificación ausente, sin CAS;
 - forma durable estricta;
 - cargo en ambos meses cuando la ventana cruza el fin de mes.
+
+## Adenda 21-oct-2026 — atestación sin `ApproveBuild` (aprobada por Brandon)
+
+La atestación `4821d6ef` (compuerta `c23c60b1` de `3ebedd57`) persistió su
+`approve_intent` y quedó `UNKNOWN` (`NATIVE_APPROVE_OUTCOME_UNKNOWN`): un 503 de
+`ListBuilds` en el fence previo a `ApproveBuild`. El POST nunca salió: la
+compuerta sigue `PENDING` de aprobación y no hay `ApproveBuild` ni en la
+auditoría ni en la métrica de solicitudes.
+
+La misma transición acepta ahora una etapa `attestation` con intención de
+compuerta y sin UUID nativo, además de `full` con intención de fuente. Cobra el
+timeout del plan (120 s). El UUID de la compuerta queda consumido, así que esa
+compuerta no puede aprobarse después: la atestación nueva usa la compuerta del
+siguiente push a `main`.
+
+Root aplicó la CAS (evidencia `6be5b2ac…`, ledger `1792591159501993`) con el
+controlador `…00011-ns6` y el atestador `…b6f4ffdb` derivados, que cambian sólo
+`cloudbuild_admission.py`.

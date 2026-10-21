@@ -666,10 +666,45 @@ class AbandonWithoutNativeTests(unittest.TestCase):
             with self.subTest(state=doc['attempts'][ATTEMPT]['state']), self.assertRaises(m.AdmissionError):
                 m.transition(doc, self.command(), now=NOW)
 
-    def test_rejects_non_full_stage(self):
+    def test_rejects_stages_other_than_full_and_attestation(self):
         value = plan(stage='diagnostic')
         with self.assertRaises(m.AdmissionError):
             m.transition(self.unknown(value=value), self.command(), now=NOW)
+
+    def gate_unknown(self, now=NOW, bound=False):
+        value = plan(event='gate-1', stage='attestation')
+        doc = step(approved(now=now, value=value), 'reserve', now, admission=admission(now, value)).document
+        gate = {'build_id': BUILD, 'trigger_id': '55555555-5555-4555-8555-555555555555', 'repository_id': 123,
+                'source_sha': 'a'*40, 'source_tree': 'b'*40, 'config_sha256': 'c'*64, 'github_check_name': 'gate'}
+        doc = m.transition(doc, {'op': 'approve_intent', 'attempt_id': ATTEMPT, 'gate': gate, 'nonce': NONCE,
+                                 'request_sha256': '6'*64}, now=now).document
+        if bound:
+            doc = step(doc, 'bind_gate', now, build_id=BUILD, gate=gate, config_sha256='c'*64,
+                       native_evidence_sha256='7'*64).document
+        return step(doc, 'unknown', now, reason='NATIVE_APPROVE_OUTCOME_UNKNOWN', evidence_sha256='8'*64).document
+
+    def test_attestation_with_unsent_approval_is_abandoned_and_its_gate_stays_consumed(self):
+        old = self.gate_unknown(); later = NOW + timedelta(minutes=10)
+        out = m.transition(old, self.command(), now=later).document
+        row = out['attempts'][ATTEMPT]
+        self.assertEqual(row['state'], 'ABANDONED_WITHOUT_NATIVE')
+        self.assertEqual(row['abandonment']['charged_seconds'], 120)
+        self.assertEqual(row['intent'], old['attempts'][ATTEMPT]['intent'])
+        self.assertIsNone(out['active_attempt'])
+        m.validate_ledger(out)
+        self.assertEqual(m.budget_usage(out, now=later)['2026-10']['confirmed_seconds'], 120)
+        # A new attestation attempt cannot approve the same gate UUID again.
+        other = '44444444-4444-4444-8444-444444444444'
+        value = plan(event='gate-2', stage='attestation')
+        doc = step(approved(out, later, other, value), 'reserve', later, other, admission=admission(later, value)).document
+        gate = dict(old['attempts'][ATTEMPT]['intent']['gate'])
+        with self.assertRaises(m.AdmissionError):
+            m.transition(doc, {'op': 'approve_intent', 'attempt_id': other, 'gate': gate,
+                               'nonce': '66666666-6666-4666-8666-666666666666', 'request_sha256': '6'*64}, now=later)
+
+    def test_attestation_bound_to_its_gate_is_never_abandoned(self):
+        with self.assertRaises(m.AdmissionError):
+            m.transition(self.gate_unknown(bound=True), self.command(), now=NOW)
 
     def test_rejects_unverified_invalid_hash_and_injected_fields_without_mutation(self):
         old = self.unknown()

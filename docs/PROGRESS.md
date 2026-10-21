@@ -1,5 +1,25 @@
 # Estado de publicación
 
+## 21-oct-2026 — despacho bajo RLS y atestación sin aprobación (Agente: Claude)
+
+FULL `3dd6b366` de `3ebedd57`: SUCCESS. Dos ventanas de instalación se
+detuvieron en `install-consumers` y regresaron al snapshot frío.
+- Ventana 1: el paquete local se armó con `umask 077` y `web` no podía leer su
+  Caddyfile. Se corrigió en el empaquetador de Root (`umask 022`).
+- Ventana 2: la consulta de candidatos de `channel_dispatch` no usa índices
+  bajo el RLS forzado de V7 (cruces `uuid::text`) y tardaba más de 9 min con
+  datos reales.
+
+Corrección: cruces por uuid dentro de CTE materializadas
+([ADR](adr-v7-dispatch-rls-index.md)). Con la base real migrada tarda 0.5 s, da
+resultados idénticos y `channel-worker` queda READY.
+
+La atestación `4821d6ef` quedó UNKNOWN por un 503 de Cloud Build antes de
+`ApproveBuild` y retenía el bloqueo del CI. Con aprobación de Brandon,
+`abandon_without_native` se extiende a atestaciones sin aprobación nativa: cobra
+los 120 s y la compuerta queda consumida
+([ADR](adr-v7-abandon-unknown-without-native.md)).
+
 ## 21-oct-2026 (madrugada UTC) — audit de dependencias y bolsa de CI (Agente: Claude)
 
 El FULL de `main` `f3b7f05d` (Build `93788e93`) pasó todas las etapas de prueba,
