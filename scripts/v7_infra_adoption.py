@@ -137,7 +137,7 @@ def compare_recreated(name, old, new, *, allowed_env, allowed_prefixes=(), pitr=
     require(o_cfg == n_cfg, 'V7_ADOPTION_CONFIG_CHANGED:'+name)
     require(new['Name'] == old['Name'], 'V7_ADOPTION_NAME_CHANGED:'+name)
     # Host configuration and mounts: identical, or exactly the PITR additions.
-    o_host, n_host = dict(old['HostConfig']), dict(new['HostConfig'])
+    o_host, n_host = runtime.engine_neutral_host(old['HostConfig']), runtime.engine_neutral_host(new['HostConfig'])
     mounts_old = {m.get('Destination'): m for m in old['Mounts']}
     mounts_new = {m.get('Destination'): m for m in new['Mounts']}
     if pitr:

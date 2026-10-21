@@ -298,6 +298,22 @@ def inspect_inventory(rows, *, portal, caddy_id, initial=False):
 
 LAB_MOUNT = '/data/laboratory'
 
+# Unset DNS lists: the application containers installed on 10-oct-2026 carry []
+# and the ones the same host recreates now carry null (21-oct-2026: the V7
+# window stopped on COPY_RUNTIME_APPLICATION_BOUNDARY_CHANGED with no other
+# difference). Both mean "no custom DNS"; any non-empty value is kept.
+ENGINE_UNSET_HOST_LISTS = ('Dns', 'DnsOptions', 'DnsSearch')
+
+
+def engine_neutral_host(host):
+    """A copy of HostConfig where an unset DNS list (null or absent) reads as []."""
+    require(type(host) is dict, 'COPY_RUNTIME_INSPECT_INVALID')
+    view = dict(host)
+    for key in ENGINE_UNSET_HOST_LISTS:
+        if view.get(key) is None:
+            view[key] = []
+    return view
+
 
 def application_boundary_equal(name, old, new):
     """Static projections of one application service before/after a publication.
@@ -306,7 +322,8 @@ def application_boundary_equal(name, old, new):
     automation-worker gains a read-write bind of <private assets>/number-lab at
     /data/laboratory, next to its unchanged read-only /data/private. Only the
     first V7 publication can add it; afterwards plain equality applies again."""
-    if old['HostConfig'] == new['HostConfig'] and old['Mounts'] == new['Mounts']:
+    old_host, new_host = engine_neutral_host(old['HostConfig']), engine_neutral_host(new['HostConfig'])
+    if old_host == new_host and old['Mounts'] == new['Mounts']:
         return old['NetworkSettings'] == new['NetworkSettings']
     if name != 'automation-worker' or old['NetworkSettings'] != new['NetworkSettings']:
         return False
@@ -322,7 +339,7 @@ def application_boundary_equal(name, old, new):
             and lab.get('Source') == str(PurePosixPath(private[0]['Source'])/'number-lab')):
         return False
     rest = lambda value: {k: v for k, v in value.items() if k not in ('Binds', 'Mounts')}
-    if rest(old['HostConfig']) != rest(new['HostConfig']):
+    if rest(old_host) != rest(new_host):
         return False
     old_binds, new_binds = list(old['HostConfig'].get('Binds') or []), list(new['HostConfig'].get('Binds') or [])
     old_specs, new_specs = list(old['HostConfig'].get('Mounts') or []), list(new['HostConfig'].get('Mounts') or [])
@@ -489,8 +506,8 @@ def validate_initial_continuity(previous, candidate, before_rows, after_rows, *,
                 'COPY_RUNTIME_PRESERVED_INFRASTRUCTURE_CHANGED')
     for name in ('api', 'web'):
         old, new = static_projection(before[name]), static_projection(after[name])
-        require(old['HostConfig'] == new['HostConfig'] and old['Mounts'] == new['Mounts']
-                and old['NetworkSettings'] == new['NetworkSettings'],
+        require(engine_neutral_host(old['HostConfig']) == engine_neutral_host(new['HostConfig'])
+                and old['Mounts'] == new['Mounts'] and old['NetworkSettings'] == new['NetworkSettings'],
                 'COPY_RUNTIME_APPLICATION_BOUNDARY_CHANGED')
     for name in FILES - {'release.env', 'api.env'}:
         require(previous['canonical_files'][name] == candidate['canonical_files'][name],
