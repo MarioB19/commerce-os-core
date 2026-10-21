@@ -45,7 +45,11 @@ FALLBACK = b'''  handle {
     reverse_proxy commerce-web:8080
   }
 '''
-CANDIDATE = OTHER + COMMERCE.replace(b'Referrer-Policy same-origin', b'Referrer-Policy no-referrer').replace(proxy.CSP_BEFORE, proxy.CSP_CREATIVE).replace(FALLBACK, DEVICE + VERSION + FALLBACK)
+V2 = b'''  handle /v2/* {
+    reverse_proxy commerce-api:3001
+  }
+'''
+CANDIDATE = OTHER + COMMERCE.replace(b'Referrer-Policy same-origin', b'Referrer-Policy no-referrer').replace(proxy.CSP_BEFORE, proxy.CSP_CREATIVE).replace(FALLBACK, DEVICE + VERSION + V2 + FALLBACK)
 
 CANDIDATE = CANDIDATE[:CANDIDATE.rfind(b'}')] + proxy.ASSET_PREVIEW_BLOCK + CANDIDATE[CANDIDATE.rfind(b'}'):]
 
@@ -140,6 +144,26 @@ class RewriteTests(unittest.TestCase):
             CANDIDATE.replace(VERSION, VERSION.replace(b'/api/version', b'"/api/version"')),
         ]:
             with self.subTest(candidate=candidate[:80]), self.assertRaisesRegex(proxy.ProxyError, 'AMBIGUOUS_VERSION_ROUTE'):
+                proxy.rewrite_policy(candidate)
+
+    def test_v2_route_is_exact_and_inserted_before_fallback(self):
+        candidate = proxy.rewrite_policy(OTHER + COMMERCE)
+        self.assertEqual(candidate, CANDIDATE)
+        self.assertEqual(candidate.count(V2), 1)
+        self.assertLess(candidate.index(V2), candidate.index(FALLBACK))
+        self.assertEqual(proxy.rewrite_policy(CANDIDATE), CANDIDATE)
+        without = CANDIDATE.replace(V2, b'')
+        self.assertEqual(proxy.rewrite_policy(without), CANDIDATE)
+
+    def test_v2_route_with_other_upstream_duplicate_late_order_or_ambiguous_syntax_fails_closed(self):
+        for candidate, code in [
+            (CANDIDATE.replace(V2, V2.replace(b'commerce-api:3001', b'commerce-web:8080')), 'UNEXPECTED_V2_UPSTREAM'),
+            (CANDIDATE.replace(V2, V2 + V2), 'V2_ROUTE_NOT_UNIQUE'),
+            (CANDIDATE.replace(V2, b'').replace(FALLBACK, FALLBACK + V2), 'V2_ROUTE_AFTER_FALLBACK'),
+            (CANDIDATE.replace(V2, V2.replace(b'handle /v2/*', b'handle_path /v2/*')), 'AMBIGUOUS_V2_ROUTE'),
+            (CANDIDATE.replace(V2, V2.replace(b'/v2/*', b'/v2/me')), 'AMBIGUOUS_V2_ROUTE'),
+        ]:
+            with self.subTest(code=code, candidate=candidate[-160:]), self.assertRaisesRegex(proxy.ProxyError, code):
                 proxy.rewrite_policy(candidate)
 
     def test_same_device_path_in_other_site_is_preserved_byte_exactly(self):
@@ -417,6 +441,8 @@ class TemplateTests(unittest.TestCase):
                 self.assertEqual(source.count(proxy.VERSION_ROUTE_BLOCK), 1)
                 self.assertEqual(source.count(FALLBACK), 1)
                 self.assertLess(source.index(proxy.VERSION_ROUTE_BLOCK), source.index(FALLBACK))
+                self.assertEqual(source.count(proxy.V2_ROUTE_BLOCK), 1)
+                self.assertLess(source.index(proxy.V2_ROUTE_BLOCK), source.index(FALLBACK))
                 if name == 'commerce.Caddyfile':
                     self.assertEqual(proxy.rewrite_policy(source), source)
 

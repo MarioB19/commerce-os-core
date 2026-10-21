@@ -29,6 +29,11 @@ VERSION_PATH = b'/api/version'
 VERSION_ROUTE_BLOCK = (b'  handle ' + VERSION_PATH + b' {\n'
                        b'    reverse_proxy commerce-api:3001\n'
                        b'  }\n')
+# V7 profile API: the web reads its identity and data under /v2/* (21-oct-2026).
+V2_PATH = b'/v2/*'
+V2_ROUTE_BLOCK = (b'  handle ' + V2_PATH + b' {\n'
+                  b'    reverse_proxy commerce-api:3001\n'
+                  b'  }\n')
 
 class ProxyError(RuntimeError):
     pass
@@ -224,6 +229,29 @@ def rewrite_policy(source):
         require(pairs[route_open] < fallback_index, 'VERSION_ROUTE_AFTER_FALLBACK')
     else:
         route_insertions.append(VERSION_ROUTE_BLOCK)
+
+    # The V7 profile API must be one exact API route before the SPA fallback.
+    mentions = [i for i in range(opening + 1, closing) if b'/v2/' in items[i].value]
+    if mentions:
+        require(len(mentions) == 1, 'V2_ROUTE_NOT_UNIQUE')
+        route = mentions[0]
+        require(items[route].kind == 'bare' and items[route].raw == V2_PATH
+                and parents[route] == opening, 'AMBIGUOUS_V2_ROUTE')
+        route_open = route + 1
+        require(route > opening + 1 and route_open in pairs
+                and parents[route_open] == opening, 'AMBIGUOUS_V2_ROUTE')
+        declaration = [i for i in range(opening + 1, route_open)
+                       if items[i].line == items[route_open].line]
+        require(declaration == [route - 1, route]
+                and items[route - 1].kind == 'bare'
+                and items[route - 1].raw == b'handle', 'AMBIGUOUS_V2_ROUTE')
+        body = items[route_open + 1:pairs[route_open]]
+        require(len(body) == 2 and all(t.kind == 'bare' for t in body)
+                and [t.raw for t in body] == [b'reverse_proxy', b'commerce-api:3001'],
+                'UNEXPECTED_V2_UPSTREAM')
+        require(pairs[route_open] < fallback_index, 'V2_ROUTE_AFTER_FALLBACK')
+    else:
+        route_insertions.append(V2_ROUTE_BLOCK)
     if route_insertions:
         replacements.append((fallback_start, fallback_start, b''.join(route_insertions)))
     for start, end, replacement in sorted(replacements, reverse=True):

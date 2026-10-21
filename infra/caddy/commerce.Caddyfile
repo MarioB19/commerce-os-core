@@ -27,6 +27,9 @@ commerce-os.inovaris.online {
   handle /api/version {
     reverse_proxy commerce-api:3001
   }
+  handle /v2/* {
+    reverse_proxy commerce-api:3001
+  }
   handle {
     reverse_proxy commerce-web:8080
   }
