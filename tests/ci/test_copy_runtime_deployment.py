@@ -219,6 +219,52 @@ class RuntimeContract(unittest.TestCase):
             if change=='newsession':after['sessions'][0]['id']='new-session'
             with self.subTest(change=change):self.fail(contract.compare_owner,before,after,'synthetic-workspace',compare_owner_auth)
 
+    def test_v7_profile_scopes_raise_each_token_version_exactly_once(self):
+        # 21-oct-2026: 0072 gives every PAT its closed profile scopes and the row
+        # trigger adds one to its version; the historical comparison rejects that.
+        before=owner();after=copy.deepcopy(before);after['tokens'][0]['version']=2
+        self.fail(contract.compare_owner,before,after,'synthetic-workspace',compare_owner_auth)
+        v7=contract.v7_profile_owner_auth(compare_owner_auth)
+        facts=contract.compare_owner(before,after,'synthetic-workspace',v7)
+        self.assertTrue(facts['identity_preserved']);self.assertEqual(facts['v7_profile_scoped_tokens'],1)
+        self.assertEqual(after['tokens'][0]['version'],2)
+        second=dict(before['tokens'][0],id='synthetic-pat-2',version=3)
+        two=copy.deepcopy(before);two['tokens'].append(second);bumped=copy.deepcopy(two)
+        bumped['tokens'][0]['version']=2;bumped['tokens'][1]['version']=4
+        self.assertEqual(contract.compare_owner(two,bumped,'synthetic-workspace',v7)['v7_profile_scoped_tokens'],2)
+        for change in ('unchanged','twice','bool','new','missing','scope','revoked','expiry','newsession','member','one-of-two'):
+            base=two if change=='one-of-two' else before
+            after=copy.deepcopy(bumped if change=='one-of-two' else base)
+            if change!='one-of-two':after['tokens'][0]['version']=2
+            if change=='unchanged':after['tokens'][0]['version']=1
+            if change=='twice':after['tokens'][0]['version']=3
+            if change=='bool':after['tokens'][0]['version']=True
+            if change=='new':after['tokens'].append(dict(after['tokens'][0],id='synthetic-pat-new'))
+            if change=='missing':after['tokens']=[]
+            if change=='scope':after['tokens'][0]['allowed_environments']=['REAL']
+            if change=='revoked':after['tokens'][0]['revoked_at']='2026-10-08T05:00:00Z'
+            if change=='expiry':after['tokens'][0]['expires_at']='2026-12-07T01:00:00Z'
+            if change=='newsession':after['sessions'][0]['id']='new-session'
+            if change=='member':after['memberships'][0]['role']='operator'
+            if change=='one-of-two':after['tokens'][1]['version']=3
+            with self.subTest(change=change):self.fail(contract.compare_owner,base,after,'synthetic-workspace',v7)
+        self.fail(contract.v7_profile_owner_auth,None)
+
+    def test_stage_continuity_projects_token_versions_only_for_the_v7_publication(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        state={'schema_version':3,'portal':{'container_id':checksum(5)},'smtp_transition_ref':None,
+               'caddy_config_ref':None,'active_proxy_sha256':checksum(7)}
+        services={'postgres':{},'caddy':{},'portal':{}}
+        before={'state':state,'files':{},'owner':owner(),'workspace':'synthetic-workspace','services':services}
+        after=copy.deepcopy(before['owner']);after['tokens'][0]['version']=2
+        server=SimpleNamespace(compare_owner_auth=compare_owner_auth)
+        with patch.object(contract,'profiles',lambda *a,**k:None),patch.object(contract,'compare_live_snapshot',lambda *a:None):
+            contract.stage_continuity(before,services,dict(state),after,server,Path('/x'),True)
+            self.fail(contract.stage_continuity,before,services,dict(state),after,server,Path('/x'))
+            self.fail(contract.stage_continuity,before,services,dict(state),after,server,Path('/x'),'yes')
+            contract.stage_continuity(before,services,dict(state),copy.deepcopy(before['owner']),server,Path('/x'))
+
     def test_canonical_revision_chain_requires_adjacent_audit_receipts(self):
         before={'policy_version':93,'policy_body_sha256':checksum(93)}
         after={'policy_version':95,'policy_body_sha256':checksum(95)}
