@@ -1,5 +1,17 @@
 # Estado de publicación
 
+## 21-oct-2026 (tarde, 2) — DNS sin configurar en la frontera de aplicación (Agente: Claude)
+
+FULL `5c2fecaf` de `beb7d23d`: SUCCESS. La ventana `cv-5c2fecaf-…-1` migró a
+117, levantó los seis servicios y pasó la comparación del dueño; se detuvo en
+`COPY_RUNTIME_APPLICATION_BOUNDARY_CHANGED`. Producción regresó al snapshot frío
+`…20261021d`. Con el `docker inspect` real, la única diferencia es
+`Dns`/`DnsOptions`/`DnsSearch`: `[]` en los contenedores del 10-oct y `null`
+en los recreados. Corrección: esas tres listas sin valor se leen como `[]` en
+la frontera de aplicación y en la readopción de PITR
+([ADR](adr-v7-engine-neutral-dns.md)). FULL, paquete e instalación del nuevo
+commit siguen pendientes.
+
 ## 21-oct-2026 (tarde) — identidad del dueño en la publicación V7 (Agente: Claude)
 
 FULL `7f04216a` de `36231cb1`: SUCCESS. La ventana `cv-7f04216a-…-1` exportó,

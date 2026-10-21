@@ -21,8 +21,11 @@ PROFILES = {'api.env': b'DATABASE_URL=postgres://api\nPORT=3001\n', 'ingress.env
             'automation.env': b'DATABASE_URL=postgres://automation\n', 'channel.env': b'DATABASE_URL=postgres://channel\n'}
 
 
-def baseline(gateways=1):
+def baseline(gateways=1, unset_dns=None):
     state, rows, _ = fx.fixture(gateways)
+    if unset_dns is not None:  # encoding of unset DNS lists in containers created before the window
+        for row in rows:
+            row['HostConfig'].update(Dns=copy.deepcopy(unset_dns), DnsOptions=copy.deepcopy(unset_dns), DnsSearch=copy.deepcopy(unset_dns))
     by = {row['Config']['Labels'].get('com.docker.compose.service') or ('caddy' if row['Name'] == '/synthetic-caddy' else 'portal'): row
           for row in rows}
     for name in ('api', 'ingress', 'automation-worker', 'channel-worker'):
@@ -237,3 +240,51 @@ class LaboratoryMountTests(unittest.TestCase):
         text = (ROOT/'infra/compose/production.yaml').read_text()
         self.assertIn("volumes: ['${COMMERCE_PRIVATE_ASSETS_DIR}:/data/private:ro', '${COMMERCE_PRIVATE_ASSETS_DIR}/number-lab:/data/laboratory']", text)
         self.assertEqual(text.count('/data/laboratory'), 1)
+
+
+class EngineEncodingTests(unittest.TestCase):
+    """21-oct-2026: application containers installed on 10-oct carry [] for unset DNS lists and the
+    ones recreated on the same host now carry null. Same definition; nothing else is relaxed."""
+
+    def rows(self):
+        old, new = LaboratoryMountTests().rows()
+        old['HostConfig'].update(Dns=[], DnsOptions=[], DnsSearch=[])
+        new['HostConfig'].update(Dns=None, DnsOptions=None, DnsSearch=None)
+        same = copy.deepcopy(old); same['HostConfig'].update(Dns=None, DnsOptions=None, DnsSearch=None)
+        return old, new, same
+
+    def test_unset_dns_lists_compare_equal_and_any_real_value_still_differs(self):
+        old, new, same = self.rows()
+        for name in ('api', 'web', 'ingress', 'channel-worker', 'automation-worker'):
+            with self.subTest(name):
+                self.assertTrue(runtime.application_boundary_equal(name, old, same))
+        self.assertTrue(runtime.application_boundary_equal('automation-worker', old, new))
+        absent = copy.deepcopy(same)
+        for key in runtime.ENGINE_UNSET_HOST_LISTS:
+            absent['HostConfig'].pop(key)
+        self.assertTrue(runtime.application_boundary_equal('api', old, absent))
+        for key, value in (('Dns', ['8.8.8.8']), ('DnsOptions', ['ndots:1']), ('DnsSearch', ['corp'])):
+            for target in (same, new):
+                bad = copy.deepcopy(target); bad['HostConfig'][key] = value
+                with self.subTest(key=key, lab=target is new):
+                    self.assertFalse(runtime.application_boundary_equal('automation-worker' if target is new else 'api', old, bad))
+        other = copy.deepcopy(old); other['HostConfig']['CapAdd'] = []
+        other_new = copy.deepcopy(same); other_new['HostConfig']['CapAdd'] = None
+        self.assertFalse(runtime.application_boundary_equal('api', other, other_new))
+        self.assertEqual(old['HostConfig']['Dns'], []); self.assertIsNone(new['HostConfig']['Dns'])
+        with self.assertRaises(ReleaseError):
+            runtime.engine_neutral_host(None)
+
+    def test_pitr_postgres_created_by_the_current_host_is_adopted(self):
+        b = baseline(unset_dns=[])
+        pg = b['by']['postgres']
+        self.assertEqual(pg['HostConfig']['Dns'], [])
+        new_pg, receipt = pitr(pg, 401)
+        new_pg['HostConfig'].update(Dns=None, DnsOptions=None, DnsSearch=None)
+        networks = dict(b['networks'], **{native.PITR_NETWORK: {'Name': native.PITR_NETWORK, 'Id': fx.checksum(4343), 'Driver': 'bridge',
+                                                                  'Internal': False, 'EnableIPv6': False, 'IPAM': {}, 'Options': {}, 'Labels': {}}})
+        rows = replace(b['rows'], pg, new_pg)
+        self.assertEqual(run(b, rows=rows, networks=networks, receipt=receipt)[0]['summary']['postgres']['transition'], 'PITR_ENABLED')
+        bad = copy.deepcopy(new_pg); bad['HostConfig']['Dns'] = ['8.8.8.8']
+        with self.assertRaises(ReleaseError):
+            run(b, rows=replace(b['rows'], pg, bad), networks=networks, receipt=receipt)
