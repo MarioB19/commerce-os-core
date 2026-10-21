@@ -51,7 +51,11 @@ Commands (unknown fields are rejected):
   record or request metric after the intent, finished request, paused control).
   Keeps intent, nonce and uncertainty as history, charges the whole reservation
   as confirmed usage (never a refund) and releases only the global lock. Never
-  creates, binds or replays a Build.
+  creates, binds or replays a Build. Since 2026-10-21 (owner-approved) it also
+  applies to an attestation-stage UNKNOWN with a durable approve intent and no
+  native UUID: the operator must prove that ApproveBuild never reached Cloud
+  Build (gate still PENDING approval, no ApproveBuild audit record or request
+  metric). The gate UUID stays consumed, so that gate can never be approved later.
 * reduce_monthly_limit: from_seconds=28800, to_seconds=25200,
   evidence_sha256, native_verified=True. Protected operator only: no live or
   blocked attempt, preserved usage/history and one immutable reduction receipt.
@@ -382,7 +386,7 @@ def _validate_ledger(doc):
             need(reserved <= timestamp(abortion['aborted_at']) <= updated, 'DURABLE_CHRONOLOGY_INVALID')
         if state == 'ABANDONED_WITHOUT_NATIVE':
             abandonment = attempt['abandonment']
-            need(attempt['plan']['stage'] == 'full', 'UNDISPATCHED_FULL_REQUIRED')
+            need(abandonable_intent(attempt), 'ABANDON_STAGE_INTENT_REQUIRED')
             exact(abandonment, 'evidence_sha256 abandoned_at charged_seconds', 'ABANDONMENT_FIELDS_INVALID')
             digest(abandonment['evidence_sha256'])
             need(type(abandonment['charged_seconds']) is int and
@@ -513,6 +517,13 @@ def validate_gate(gate, plan):
     need(type(gate['repository_id']) is int and all(gate[key] == plan['identity'][key]
          for key in ('repository_id', 'source_sha', 'source_tree'))
          and gate['config_sha256'] == plan['config_sha256'], 'GATE_PLAN_BINDING_MISMATCH')
+
+
+def abandonable_intent(attempt):
+    # FULL abandons an unsent CreateBuild; attestation an unsent ApproveBuild.
+    intent = attempt.get('intent', {})
+    return ((attempt['plan']['stage'] == 'full' and 'source' in intent)
+            or (attempt['plan']['stage'] == 'attestation' and 'gate' in intent))
 
 
 def validate_intent(intent, plan):
@@ -778,7 +789,7 @@ def _transition(document, command, *, now, validator):
                 return replay()
             need(state == 'UNKNOWN' and 'intent' in attempt and 'build_id' not in attempt
                  and doc['active_attempt'] == attempt_id, 'UNKNOWN_WITHOUT_NATIVE_REQUIRED')
-            need(attempt['plan']['stage'] == 'full', 'UNDISPATCHED_FULL_REQUIRED')
+            need(abandonable_intent(attempt), 'ABANDON_STAGE_INTENT_REQUIRED')
             attempt.update(state='ABANDONED_WITHOUT_NATIVE', abandonment={
                 'evidence_sha256': command['evidence_sha256'], 'abandoned_at': stamp(moment),
                 'charged_seconds': attempt['plan']['timeout_seconds']})
