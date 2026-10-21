@@ -1,5 +1,18 @@
 # Estado de publicación
 
+## 21-oct-2026 (noche) — V7 instalada; ruta `/v2/*` en el proxy de entrada (Agente: Claude)
+
+`f0d71880` (paquete `cv-b723d978-…-1`) quedó instalada: instalador `SUCCEEDED`,
+117 migraciones, `/api/version` = `f0d71880`. PITR habilitado (full
+`20261021-205216F`, ensayo de restauración OK). Al entrar, la web mostraba «No
+se pudo confirmar tu acceso»: la web V7 lee su identidad y sus datos en `/v2/*`
+(`/v2/me`), pero el Caddy de entrada de producción sólo enviaba `/v1/*` a la
+API, así que `/v2/me` caía en el fallback de la web (HTML). Se añadió en caliente
+con `update-identity-proxy.py` (validación, recarga y respaldo). Este cambio deja
+esa ruta en las plantillas y en la herramienta, que ahora inserta y exige un único
+`handle /v2/*` hacia `commerce-api:3001` antes del fallback. Queda pendiente
+adoptar en el estado Root el proxy nuevo junto con la readopción de F1.
+
 ## 21-oct-2026 (tarde, 2) — DNS sin configurar en la frontera de aplicación (Agente: Claude)
 
 FULL `5c2fecaf` de `beb7d23d`: SUCCESS. La ventana `cv-5c2fecaf-…-1` migró a
