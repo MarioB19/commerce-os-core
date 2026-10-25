@@ -42,8 +42,8 @@ class AdministratorTests(unittest.TestCase):
         calls=[]
         def api(path, body=None, key=None, method=None):
             calls.append((path,body))
-            if path.startswith('/number-operations/'):
-                return {'version':1,'state':'REQUESTED'}
+            if path=='/number-capacity/administration':
+                return [{'id':self.operation,'version':1,'state':'REQUESTED'}]
             if body and body.get('action')=='claim':
                 return {'version':2,'action':'EXPAND','input':{'apply':True},'slots':[{'slot':12}]}
             return {'state':'UNKNOWN'}
@@ -62,15 +62,30 @@ class AdministratorTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'GATEWAY_VOLUME_CHANGED'):
                 self.agent.snapshot(1)
     def test_reconcile_requires_existing_unknown_operation(self):
-        self.agent.api=lambda *args,**kwargs:{'state':'SUCCEEDED','version':3}
-        with self.assertRaisesRegex(ValueError,'UNKNOWN_OPERATION_REQUIRED'):
-            self.agent.execute(self.operation,True)
+        for pending in ([],[{'id':self.operation,'state':'REQUESTED','version':3}]):
+            self.agent.api=lambda path,*args,**kwargs:pending if path=='/number-capacity/administration' else {'state':'SUCCEEDED','version':3}
+            with self.assertRaisesRegex(ValueError,'UNKNOWN_OPERATION_REQUIRED'):
+                self.agent.execute(self.operation,True)
+    def test_operation_is_read_from_the_agent_queue_not_a_retired_route(self):
+        calls=[]
+        def api(path,body=None,key=None,method=None):
+            calls.append(path)
+            return [{'id':'22222222-2222-4222-8222-222222222222','version':1,'state':'REQUESTED'}] if path=='/number-capacity/administration' else {}
+        self.agent.api=api
+        with self.assertRaisesRegex(ValueError,'OPERATION_NOT_PENDING'):
+            self.agent.execute(self.operation)
+        self.assertEqual(calls,['/number-capacity/administration'])
+    def test_ambiguous_or_malformed_queue_is_not_trusted(self):
+        for queue in ({'id':self.operation},[{'id':self.operation,'version':1,'state':'REQUESTED'}]*2):
+            self.agent.api=lambda *args,**kwargs:queue
+            with self.assertRaisesRegex(ValueError,'CAPACITY_ADMINISTRATION_READBACK_REQUIRED'):
+                self.agent.execute(self.operation)
     def test_existing_quarantined_profile_is_not_enabled_or_replaced(self):
         calls=[]
         def api(path,body=None,key=None,method=None):
             calls.append((path,body,method))
-            if path.startswith('/number-operations/'):
-                return {'version':1,'state':'RESERVED'}
+            if path=='/number-capacity/administration':
+                return [{'id':self.operation,'version':1,'state':'RESERVED'}]
             if body and body.get('action')=='claim':
                 return {'version':2,'action':'PROVISION','input':{'existing_account':True},'slots':[{'slot':1}]}
             if path=='/settings/integrations':

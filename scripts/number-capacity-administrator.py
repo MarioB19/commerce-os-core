@@ -240,16 +240,30 @@ class Administrator:
             'measured_gateway_memory_bytes': memory}}
         return self.api('/number-capacity/measurements', measurements)
 
+    def pending_operation(self, operation_id):
+        """V7 F8-D retired GET /v1/number-operations/:id. The capacity agent
+        reads its own pending queue instead (same rows the supervisor lists):
+        REQUESTED, RESERVED, HUMAN_ACTION_REQUIRED, PREPARING or UNKNOWN."""
+        rows = self.api('/number-capacity/administration')
+        if not isinstance(rows, list):
+            raise ValueError('CAPACITY_ADMINISTRATION_READBACK_REQUIRED')
+        found = [row for row in rows if isinstance(row, dict) and row.get('id') == operation_id]
+        if len(found) > 1:
+            raise ValueError('CAPACITY_ADMINISTRATION_READBACK_REQUIRED')
+        return found[0] if found else None
+
     def execute(self, operation_id, reconcile=False):
         if not re.fullmatch(r'[a-f0-9-]{36}', operation_id):
             raise ValueError('OPERATION_ID_REQUIRED')
-        op = self.api('/number-operations/' + operation_id)
+        op = self.pending_operation(operation_id)
         if reconcile:
-            if op['state'] != 'UNKNOWN':
+            if op is None or op['state'] != 'UNKNOWN':
                 raise ValueError('UNKNOWN_OPERATION_REQUIRED')
             slots = [s for s in self.api('/number-capacity?limit=100')['slots'] if s.get('operation_id') == operation_id or s['id'] == op['input'].get('slot_id') or s['id'] in op['input'].get('slot_ids', [])]
             claim = {'version': op['version'], 'slots': slots, 'action': op['action'], 'input': op['input']}
         else:
+            if op is None:
+                raise ValueError('OPERATION_NOT_PENDING')
             claim = self.api('/number-capacity/administration/' + operation_id,
                 {'action': 'claim', 'expected_version': op['version'], 'reason': 'Bounded host administrator'}, operation_id + '-claim')
         slots = [s['slot'] for s in claim['slots']]

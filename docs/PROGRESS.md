@@ -1,5 +1,20 @@
 # Estado de publicación
 
+## 25-oct-2026 — el administrador de capacidad leía una ruta retirada (Agente: Claude)
+
+`scripts/number-capacity-administrator.py` (que también usa
+`gateway_supervisor.py`) leía cada operación con `GET /v1/number-operations/:id`,
+retirada en F8-D. En V7 ninguna operación PROVISION, EXPAND o DRAIN podía
+aplicarse en el host: el supervisor medía y reiniciaba gateways, pero no
+creaba ninguno. Ahora la operación se toma de la cola propia del agente
+(`GET /v1/number-capacity/administration`); si no está pendiente se detiene
+con `OPERATION_NOT_PENDING` antes de reclamar, y una cola ambigua o malformada
+no se usa. Nueva prueba de contrato `tests/ci/test_capacity_agent_routes.py`:
+cada ruta que llaman el administrador y el supervisor debe existir en la API
+(falla con el código anterior). Python CI local: 1,863 pruebas, 2 omitidas.
+FULL, paquete e instalación pendientes; el supervisor sigue sin instalarse en
+producción.
+
 ## 21-oct-2026 (noche) — V7 instalada; ruta `/v2/*` en el proxy de entrada (Agente: Claude)
 
 `f0d71880` (paquete `cv-b723d978-…-1`) quedó instalada: instalador `SUCCEEDED`,
