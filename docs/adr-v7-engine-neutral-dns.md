@@ -97,3 +97,51 @@ listas (`tests/fixtures/docker-hostconfig-dns-encoding.json`).
   - la guarda de B02 lo acepta.
 - Un DNS real en api o caddy se rechaza.
 - La función anterior falla igual que el 21-oct.
+
+## V7.1: lo que además adopta la readopción (25-oct-2026)
+
+Ensayo de `observe` en la copia del laboratorio, con el estado real de
+producción.
+
+| Código | Resultado |
+|---|---|
+| f0d71880 | `V7_ADOPTION_DEFINITION_CHANGED:api` (DNS) |
+| V7.1 sólo con el arreglo de DNS | `V7_ADOPTION_COMPOSE_FILES_CHANGED:postgres` |
+| V7.1 completo | `PROPOSED` |
+
+Faltaban dos adopciones:
+
+- **PostgreSQL de la fundación.** El PostgreSQL de producción lo creó el 6-oct
+  la fundación inicial, con un archivo de composición propio. `v7_pitr.py
+  enable` lo recreó dentro de la cadena de composición del release, igual que
+  los servicios de aplicación, más la capa PITR al final.
+  `foundation_pitr_labels` acepta ese cambio sólo si archivos, carpeta de
+  trabajo y archivos de entorno son exactamente los de api (por
+  `/opt/commerce-os/current` o por la carpeta del release) más
+  `postgres-pitr.yaml`. Cualquier otro proyecto se rechaza.
+- **Proxy de entrada.** El 21-oct, `update-identity-proxy.py` reescribió el
+  Caddyfile (`/v2/*`), y V7.1 añade `/healthz/platform`. Cambiaron
+  `caddy_config_ref` y `active_proxy_sha256`, y sin adoptarlos fallan el
+  instalador, el arranque durable y la readopción. `proxy_decision` sólo los
+  adopta si se cumplen las dos condiciones:
+  - el respaldo privado del Caddyfile registrado
+    (`caddy-backups/identity-proxy-*/original.Caddyfile`) y el archivo actual
+    convergen bajo la reescritura revisada, es decir, sólo difieren en encabezados
+    y rutas propias;
+  - Caddy ejecuta exactamente ese archivo (`caddy adapt` = `/config/`).
+
+En la copia, `observe` propuso:
+
+- `PITR_ENABLED`;
+- la red `commerce-os_pitr-edge`;
+- el proxy (`IDENTITY_PROXY_REWRITE`, estado intermedio con sólo `/v2`);
+- los otros 9 servicios sin cambios.
+
+`apply` escribió el par. Con una captura nueva, después de reiniciar el daemon
+de Docker y levantar los gateways, `observe` dio una propuesta identidad.
+
+**Gateways y reinicios.** Los gateways tienen `restart: no`. Después de
+reiniciar el daemon o la VM no vuelven, y `observe` falla con
+`COPY_RUNTIME_NETWORK_FOREIGN_ENDPOINT` hasta que se levantan. El supervisor
+de gateways los reinicia; la readopción posterior a un reinicio se hace con
+los gateways arriba.
