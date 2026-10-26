@@ -1,6 +1,6 @@
 # Estado de publicación
 
-## 26-oct-2026 — `backup.env` sigue al PostgreSQL de PITR y respaldo previo de 2 GiB (Agente: Claude)
+## 26-oct-2026 — `backup.env` sigue al PostgreSQL de PITR, respaldo previo de 2 GiB y republicación 117→117 (Agente: Claude)
 
 El ensayo de la ventana V7.1 en laboratorio (paquete `cv-5aa41553-…-1` de
 `c3f6df5c`) pasó la readopción y `observe`/`seal`, y la instalación se detuvo
@@ -17,10 +17,15 @@ en el respaldo previo del instalador:
   previo del instalador sube a 2 GiB (`PREDEPLOY_BACKUP_MAX_BYTES`). El límite
   de B02 (1 GiB, atado a su sobre financiero) queda para la sesión B.
 - Con ambos cambios, en el laboratorio la instalación pasó el respaldo, las
-  117 migraciones y la recreación de servicios; sólo falló el smoke HTTPS por
-  falta de red en la copia.
-- Pruebas: `tests/ci/test_v7_backup_env_pitr.py` (7, fallan con el código
-  anterior); suite Python 1,918 OK (2 omitidas). Fusionar no instala.
+  117 migraciones, la recreación de servicios y el smoke HTTPS (contra el Caddy
+  local) y se detuvo en `COPY_RUNTIME_V7_TOKEN_VERSION_UNEXPLAINED`: el
+  instalador trataba la republicación del mismo esquema V7 (117→117,
+  `ALREADY_APPLIED`) como la publicación de perfiles 68→117 y exigía el +1 de
+  versión de token que sólo hace la migración 0072. La comparación del dueño
+  V7 se usa ahora sólo cuando la publicación aplicó esas migraciones
+  (`v7_tokens_migrated`); la vista comercial V7 se conserva.
+- Pruebas: `tests/ci/test_v7_backup_env_pitr.py` (10, fallan con el código
+  anterior); suite Python 1,921 OK (2 omitidas). Fusionar no instala.
 
 ## 26-oct-2026 — la readopción extiende el recibo de la instalación (Agente: Claude)
 

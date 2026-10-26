@@ -1539,6 +1539,12 @@ def commercial_columns(server, root):
     return value
 
 
+def v7_tokens_migrated(result):
+    """True only when this publication applied the V7 migrations (68→117);
+    ALREADY_APPLIED (the same schema republished) never touched a token."""
+    return type(result) is dict and result.get('status') == 'APPLIED_BOUNDED'
+
+
 def is_v7_profile_publication(metadata):
     """True only for the reviewed V7 profile set; an invalid set is rejected later
     by apply_reviewed_migrations exactly as before."""
@@ -2269,6 +2275,10 @@ def publish(server, archive, archive_hash, source_sha, run_id, portal_private_en
                     server, root, report_dir, metadata, review, min(migration_deadline(metadata), remaining), stage='OPERATING')
                 require(commercial_snapshot(server, previous_root, **commercial_view) == configuration,
                         'COPY_RUNTIME_COMMERCIAL_CONFIGURATION_CHANGED')
+            # 0072 raises every personal token's version once (68→117). A later
+            # publication of the same V7 schema (V7.1, 117→117: ALREADY_APPLIED)
+            # changes no token, so its owner comparison is the historical one.
+            v7_owner_transition = v7_profile and v7_tokens_migrated(report.get('bounded_migrations'))
             mutation_started = True
             report.update(stage='install-consumers', workers_start_invoked=True, consumers_started=None)
             server._write_report(report_dir/'report.json', report)
@@ -2288,7 +2298,7 @@ def publish(server, archive, archive_hash, source_sha, run_id, portal_private_en
             report.update(server.smoke(root, metadata, preserved_before,
                                         before_policy_raw, True, 'copy-runtime'))
             commit_stage(server, root, report_dir, before, services, report, 'OPERATING', review, locks, deadline,
-                         v7_profile=v7_profile)
+                         v7_profile=v7_owner_transition)
         committed = True
     except BaseException as error:
         report.update(status='FAILED', error=server.error_code(error))

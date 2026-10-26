@@ -121,5 +121,28 @@ class PredeployBoundTests(unittest.TestCase):
         self.assertNotIn("36 < info.st_size <= 1024 ** 3", source)
 
 
+class SameSchemaRepublicationTests(unittest.TestCase):
+    """V7.1 republishes the V7 schema (117→117): ALREADY_APPLIED changes no token,
+    so the owner comparison must not demand the one-time +1 of migration 0072
+    (the rehearsal stopped on COPY_RUNTIME_V7_TOKEN_VERSION_UNEXPLAINED)."""
+
+    def test_only_an_applied_v7_migration_set_raises_token_versions(self):
+        self.assertTrue(runtime.v7_tokens_migrated({'status': 'APPLIED_BOUNDED', 'migration_count': 117}))
+        self.assertFalse(runtime.v7_tokens_migrated({'status': 'ALREADY_APPLIED', 'migration_count': 117}))
+        self.assertFalse(runtime.v7_tokens_migrated(None))
+
+    def test_publish_passes_the_transition_not_the_schema_to_the_owner_comparison(self):
+        source = (ROOT / 'scripts/copy_runtime_deployment.py').read_text()
+        self.assertIn("v7_owner_transition = v7_profile and v7_tokens_migrated(report.get('bounded_migrations'))", source)
+        self.assertIn("review, locks, deadline,\n                         v7_profile=v7_owner_transition)", source)
+
+    def test_historical_comparison_accepts_unchanged_tokens_and_v7_one_refuses_them(self):
+        before = {'tokens': [{'id': 't1', 'version': 3, 'workspace_id': 'w'}]}
+        compare = lambda b, a: {'identity_preserved': b == a}
+        self.assertTrue(compare(before, copy.deepcopy(before))['identity_preserved'])
+        with self.assertRaisesRegex(ReleaseError, 'COPY_RUNTIME_V7_TOKEN_VERSION_UNEXPLAINED'):
+            runtime.v7_profile_owner_auth(compare)(before, copy.deepcopy(before))
+
+
 if __name__ == '__main__':
     unittest.main()
