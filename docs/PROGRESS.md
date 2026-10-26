@@ -1,5 +1,27 @@
 # Estado de publicación
 
+## 26-oct-2026 — `backup.env` sigue al PostgreSQL de PITR y respaldo previo de 2 GiB (Agente: Claude)
+
+El ensayo de la ventana V7.1 en laboratorio (paquete `cv-5aa41553-…-1` de
+`c3f6df5c`) pasó la readopción y `observe`/`seal`, y la instalación se detuvo
+en el respaldo previo del instalador:
+
+- `POSTGRES_NETWORK_INSPECTION_FAILED`: `backup.env` fija `PG_CONTAINER` al
+  contenedor de PostgreSQL anterior a PITR (`v7_pitr.py enable` lo reemplazó
+  el 21-oct sin actualizarlo) y la readopción rechazaba cualquier cambio en ese
+  archivo. Nuevo `v7_infra_adoption.py rebind-backup-env` (Root, una vez, con
+  copia 0600) y la readopción acepta exactamente ese cambio: con el valor
+  anterior restaurado, el archivo debe dar el hash registrado.
+- `COPY_BACKUP_CIPHERTEXT_BOUND`: con 8 días de telemetría de salud el volcado
+  cifrado mide 1,089,064,996 bytes, sobre el límite de 1 GiB. El respaldo
+  previo del instalador sube a 2 GiB (`PREDEPLOY_BACKUP_MAX_BYTES`). El límite
+  de B02 (1 GiB, atado a su sobre financiero) queda para la sesión B.
+- Con ambos cambios, en el laboratorio la instalación pasó el respaldo, las
+  117 migraciones y la recreación de servicios; sólo falló el smoke HTTPS por
+  falta de red en la copia.
+- Pruebas: `tests/ci/test_v7_backup_env_pitr.py` (7, fallan con el código
+  anterior); suite Python 1,918 OK (2 omitidas). Fusionar no instala.
+
 ## 26-oct-2026 — la readopción extiende el recibo de la instalación (Agente: Claude)
 
 El ensayo de la ventana V7.1 en un laboratorio copiado de producción (paquete
