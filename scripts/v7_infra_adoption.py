@@ -456,7 +456,8 @@ def apply(host, expected):
         require(digest(encode(proposal)) == expected, 'V7_ADOPTION_PROPOSAL_CHANGED')
         journal_path = base_dir()/'journal.json'
         require(not journal_path.exists(), 'V7_ADOPTION_PREVIOUS_JOURNAL_PRESENT')
-        journal = {'schema_version': 1, 'status': 'PREWRITE', 'proposal_sha256': expected, **proposal['after']}
+        journal = {'schema_version': 1, 'status': 'PREWRITE', 'proposal_sha256': expected, **proposal['after'],
+                   'base_receipt_ref': runtime._parse(old['state'])['last_release_receipt_ref']}
         write_private(journal_path, encode(journal))
         history = PRIVATE/'daily-b02/plan-history'
         history.mkdir(mode=0o700, exist_ok=True)

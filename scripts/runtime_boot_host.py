@@ -242,8 +242,7 @@ class HostAdapter:
         applied = runtime._parse(protected(directory / 'copy-runtime-transition.json'))
         complete = runtime._parse(protected(directory / 'report.json'))
         require(receipt.get('status') == 'VALIDATED_FOR_PAIR_CAS' and receipt.get('runtime_stage') == 'OPERATING'
-                and receipt.get('service_inventory') == state['service_inventory']
-                and receipt.get('preserved_runtime') == state['preserved_runtime']
+                and runtime.pair_confirmed(receipt, state, facts['adoption_raw'], facts['plan_raw'], protected)
                 and applied.get('status') == 'APPLIED' and complete.get('status') == 'SUCCEEDED'
                 and complete.get('run_id') == receipt.get('run_id')
                 and complete.get('source_sha') == receipt.get('source_sha'), 'BOOT_PAIR_NOT_CONFIRMED')

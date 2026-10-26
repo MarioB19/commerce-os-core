@@ -1249,6 +1249,19 @@ def terminal_journals(private, state, own_report_dir):
                     'COPY_RUNTIME_BACKUP_AUTHORIZATION_UNCONFIRMED')
 
 
+def pair_confirmed(receipt, state, state_raw, plan_raw, protected_read, journal_path=None):
+    """The receipt validated this exact pair, or the latest Root re-adoption extends it
+    (scripts/v7_infra_adoption.py apply; b02_backup_contract.readoption_confirms)."""
+    if (receipt.get('service_inventory') == state['service_inventory']
+            and receipt.get('preserved_runtime') == state['preserved_runtime']):
+        return True
+    from b02_backup_contract import READOPTION_JOURNAL, readoption_confirms
+    path = Path(journal_path or READOPTION_JOURNAL)
+    if not (path.exists() or path.is_symlink()):
+        return False
+    return readoption_confirms(receipt, state, sha256(state_raw), sha256(plan_raw), _parse(protected_read(path)))
+
+
 def snapshot(server, private, root, own_report_dir):
     private = Path(private); raw = native.protected_bytes(private/'api-web-adoption.json'); state = _parse(raw)
     if state.get('schema_version') == 2: native.validate_state(state, private)
@@ -1260,8 +1273,8 @@ def snapshot(server, private, root, own_report_dir):
         completed = _parse(native.protected_bytes(directory/'report.json'))
         require(receipt.get('status') == 'VALIDATED_FOR_PAIR_CAS'
                 and receipt.get('runtime_stage') == state['runtime_stage']
-                and receipt.get('service_inventory') == state['service_inventory']
-                and receipt.get('preserved_runtime') == state['preserved_runtime']
+                and pair_confirmed(receipt, state, raw, native.protected_bytes(private/'daily-b02/plan.json'),
+                                   lambda path: native.protected_bytes(path))
                 and applied.get('status') == 'APPLIED'
                 and completed.get('status') == ('PREPARED_ACTION_REQUIRED' if state['runtime_stage'] == 'CORE_PREPARED' else 'SUCCEEDED')
                 and completed.get('run_id') == receipt.get('run_id')

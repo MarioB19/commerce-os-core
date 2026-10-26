@@ -25,7 +25,8 @@ import uuid
 from b02_backup_contract import (BACKUP_TIMEOUT, DAILY, MAX_BYTES, ORIGINAL_MINIMUM, ORIGINAL_MINIMUM_UID, PRIVATE, SOURCE_FILES,
     TERMINAL, VM_ID, check_run_budget, hash_identity, need, projection_digest, projection_matches, reference,
     run_identity, backup_run_identity, gcp_run_identity, canonical, utc_time, gcp_binding, gcp_job_guard, gcp_scheduler_guard, gcp_execution_guard, gcp_task_name, GCP_JOB, GCP_SCHEDULER, GCP_EXECUTOR, GCP_BINDING_FIELDS, GCP_FINANCIAL_END, GCP_FINANCIAL_ORIGINAL_END, GCP_FINANCIAL_PERIOD, GCP_RENEWAL_LEAD, financial_period_boundary, next_financial_end, TARGET, sha256, unique_json, validate_custody, plan_version, PORTAL_HELPER,
-    PORTAL_BASE, PORTAL_FIELDS, PORTAL_MAX_BYTES, PDF_NAMES, export_names, ciphertext_header, validate_portal_backup)
+    PORTAL_BASE, PORTAL_FIELDS, PORTAL_MAX_BYTES, PDF_NAMES, export_names, ciphertext_header, validate_portal_backup,
+    READOPTION_JOURNAL, readoption_confirms)
 
 
 def utc():
@@ -980,6 +981,12 @@ def google_get(resource, token):
         raise RuntimeError('B02_GOOGLE_READ_FAILED') from None
 
 
+def readoption_journal():
+    if not (READOPTION_JOURNAL.exists() or READOPTION_JOURNAL.is_symlink()):
+        return None
+    return unique_json(read_file(READOPTION_JOURNAL))
+
+
 def gcp_pair(runner, binding):
     raw = read_file(PRIVATE / 'api-web-adoption.json'); state = unique_json(raw)
     need(state.get('schema_version') == 3 and state.get('runtime_stage') == 'OPERATING'
@@ -998,7 +1005,9 @@ def gcp_pair(runner, binding):
     need(receipt.get('status') == 'VALIDATED_FOR_PAIR_CAS' and transition.get('status') == 'APPLIED'
          and report.get('status') == 'SUCCEEDED' and report.get('source_sha') == binding['source_sha']
          and receipt.get('source_sha') == report.get('source_sha')
-         and receipt.get('preserved_runtime') == state['preserved_runtime'], 'B02_GCP_RUNTIME_NOT_ADOPTED')
+         and (receipt.get('preserved_runtime') == state['preserved_runtime']
+              or readoption_confirms(receipt, state, sha256(raw), runner.plan_sha256, readoption_journal())),
+         'B02_GCP_RUNTIME_NOT_ADOPTED')
     runner.runtime_guard()
     return raw
 
