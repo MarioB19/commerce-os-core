@@ -16,6 +16,14 @@ install_spec=importlib.util.spec_from_file_location('mcl_portal_install_test',RO
 portal_install=importlib.util.module_from_spec(install_spec);install_spec.loader.exec_module(portal_install)
 
 class PortalContracts(unittest.TestCase):
+    def test_container_memory_leaves_room_for_the_healthcheck(self):
+        """V7.1 (25-oct-2026): the portal's exit 137 restarts were memory-cgroup OOM kills: next-server
+        reached ~287 MiB RSS and the node healthcheck pushed the 320 MiB container over its limit."""
+        source=(ROOT/'scripts'/'install-mcl-portal.py').read_text()
+        self.assertIn("'--memory','512m','--env','NODE_OPTIONS=--max-old-space-size=256'",source)
+        self.assertNotIn("'--memory','320m'",source)
+        self.assertEqual(source.count("'--memory',"),1)
+
     def test_legacy_network_default_keeps_existing_noninternal_proxy_wiring(self):
         rows=[{'Name':LEGACY_PROXY_NETWORK,'Driver':'bridge','Internal':False,'EnableIPv6':False}]
         self.assertEqual(verify_portal_network(LEGACY_PROXY_NETWORK,rows,

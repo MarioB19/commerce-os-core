@@ -191,7 +191,8 @@ class HostAdapter:
         require(len(ids) == len(set(ids)) and set(ids) == self.known_ids, 'BOOT_CLOSED_INVENTORY_CHANGED')
         rows = runtime._parse(self.command(['docker', 'inspect', *sorted(ids)], self.release).encode())
         require(type(rows) is list and len(rows) == len(ids) and
-                {row['Id']: runtime.definition_digest(row) for row in rows} == state['preserved_runtime'],
+                {row['Id'] for row in rows} == set(state['preserved_runtime'])
+                and all(runtime.definition_digest_matches(row, state['preserved_runtime'][row['Id']]) for row in rows),
                 'BOOT_STATIC_INVENTORY_CHANGED')
         core_ids = {state['service_inventory'][name] for name in runtime.CORE}
         require(all(row['HostConfig'].get('RestartPolicy', {}).get('Name') == 'unless-stopped'

@@ -2,7 +2,8 @@
 """Render the one finite B02 setup and verify its inactive native readback.
 
 No create, IAM write, resume or delete action exists here. A valid_until after the
-original 2026-11-04 end is the owner's single renewal (renewal=true in the plan).
+original 2026-11-04 end is a renewal (renewal=true in the plan): the owner's
+2026-12-04 end, then bounded 30-day periods (docs/adr-v7-b02-renewal.md).
 Operators review the plan, provision separately, then supply authentic readback.
 """
 import argparse
@@ -16,17 +17,22 @@ import re
 import sys
 from b02_backup_contract import (TARGET, PROJECT_NUMBER, GCP_JOB, GCP_SCHEDULER, GCP_EXECUTOR, GCP_INVOKER,
     canonical, sha256, need, utc_time, gcp_binding, gcp_job_guard, gcp_job_reconciled, gcp_scheduler_guard, daily_cron,
-    GCP_FINANCIAL_START, GCP_FINANCIAL_END, GCP_FINANCIAL_ORIGINAL_END)
+    GCP_FINANCIAL_START, GCP_FINANCIAL_END, GCP_FINANCIAL_ORIGINAL_END, GCP_FINANCIAL_PERIOD, GCP_RENEWAL_LEAD,
+    financial_period_boundary)
 
 FIELDS={'source_sha','image','sdk_image','schedule_utc','valid_until','bucket','plan_sha256','manual_creator','activation_id'}
 
 
-def setup_plan(config):
+def setup_plan(config, now=None):
     need(type(config) is dict and set(config)==FIELDS,'B02_SETUP_CONFIG_INVALID')
+    now=now or dt.datetime.now(dt.timezone.utc)
     need(re.fullmatch(r'[a-f0-9]{40}',config.get('source_sha',''))
          and re.fullmatch(r'us-east1-docker\.pkg\.dev/'+re.escape(TARGET[0])+r'/commerce-b02/transport@sha256:[a-f0-9]{64}',config.get('image',''))
          and re.fullmatch(r'gcr\.io/google\.com/cloudsdktool/google-cloud-cli@sha256:[a-f0-9]{64}',config.get('sdk_image','')),'B02_SETUP_IMAGE_PIN_REQUIRED')
-    need(GCP_FINANCIAL_START < utc_time(config['valid_until']) <= GCP_FINANCIAL_END,'B02_SETUP_FINANCIAL_EXPIRY_INVALID')
+    until=utc_time(config['valid_until'])
+    # Up to the owner's 2026-12-04 end, or a bounded 30-day period end at most one period plus the lead ahead.
+    need(GCP_FINANCIAL_START < until and (until <= GCP_FINANCIAL_END
+         or (financial_period_boundary(until) and until-now <= GCP_FINANCIAL_PERIOD+GCP_RENEWAL_LEAD)),'B02_SETUP_FINANCIAL_EXPIRY_INVALID')
     need(re.fullmatch(r'[a-f0-9]{64}',config.get('plan_sha256',''))
          and re.fullmatch(r'[a-z0-9][a-z0-9-]{4,61}[a-z0-9]',config.get('bucket',''))
          and re.fullmatch(r'[A-Za-z0-9._+%-]+@[A-Za-z0-9.-]+',config.get('manual_creator',''))

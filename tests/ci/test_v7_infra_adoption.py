@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT/'scripts'), str(ROOT/'tests/ci')]
@@ -288,3 +289,103 @@ class EngineEncodingTests(unittest.TestCase):
         bad = copy.deepcopy(new_pg); bad['HostConfig']['Dns'] = ['8.8.8.8']
         with self.assertRaises(ReleaseError):
             run(b, rows=replace(b['rows'], pg, bad), networks=networks, receipt=receipt)
+
+
+class ProxyAdoptionTests(unittest.TestCase):
+    """V7.1: the entry proxy rewritten by update-identity-proxy.py (/v2/* on 21-oct, /healthz/platform)."""
+    REF_PATH = '/opt/commerce-os/private/caddy-core-maintenance-synthetic/Caddyfile'
+
+    def setUp(self):
+        self.proxy = m.identity_proxy()
+        coverage = importlib.util.spec_from_file_location('route_coverage_fixture', ROOT/'tests/ci/test_proxy_route_coverage.py')
+        module = importlib.util.module_from_spec(coverage); coverage.loader.exec_module(module)
+        self.original = b'other.example.invalid {\n  respond "kept"\n}\n' + module.V5_SITE
+        self.ref = native.reference(self.REF_PATH, self.original)
+        self.running = {'apps': {'http': {'servers': {'srv0': {'listen': [':443']}}}}}
+        self.active = m.hashlib.sha256(json.dumps(self.running, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+    def decide(self, current, originals=None, adapted=None, active=None):
+        return m.proxy_decision(self.ref, current, active or self.active, 'f' * 64,
+                                [('identity-proxy-synthetic', self.original)] if originals is None else originals,
+                                self.running if adapted is None else adapted, self.running, self.proxy.rewrite_policy)
+
+    def test_unchanged_proxy_is_not_a_transition(self):
+        self.assertIsNone(m.proxy_decision(self.ref, self.original, 'f' * 64, 'f' * 64, [], None, None, self.proxy.rewrite_policy))
+
+    def test_reviewed_rewrite_and_its_21_oct_intermediate_are_adopted(self):
+        target = self.proxy.rewrite_policy(self.original)
+        decision = self.decide(target)
+        self.assertEqual(decision['caddy_config_ref'], native.reference(self.REF_PATH, target))
+        self.assertEqual((decision['active_proxy_sha256'], decision['rewritten_to_target']), (self.active, True))
+        # 21-oct: /v2/* added by the V7 rewriter, /healthz/platform not yet.
+        intermediate = target.replace(b' /healthz/platform', b'')
+        self.assertNotEqual(intermediate, target)
+        self.assertIs(self.decide(intermediate)['rewritten_to_target'], False)
+
+    def test_any_other_change_backup_or_running_mismatch_is_refused(self):
+        target = self.proxy.rewrite_policy(self.original)
+        for current, code in [(target.replace(b'respond "kept"', b'respond "changed"'), 'V7_ADOPTION_PROXY_CHANGED'),
+                              (target.replace(b'reverse_proxy commerce-ingress:3002', b'reverse_proxy commerce-web:8080'), 'V7_ADOPTION_PROXY_CHANGED')]:
+            with self.subTest(code=code), self.assertRaisesRegex(ReleaseError, code):
+                self.decide(current)
+        with self.assertRaisesRegex(ReleaseError, 'V7_ADOPTION_PROXY_ORIGINAL_REQUIRED'):
+            self.decide(target, originals=[('identity-proxy-other', target)])
+        with self.assertRaisesRegex(ReleaseError, 'V7_ADOPTION_PROXY_NOT_RUNNING_FILE'):
+            self.decide(target, adapted={'apps': {}})
+        with self.assertRaisesRegex(ReleaseError, 'V7_ADOPTION_PROXY_NOT_RUNNING_FILE'):
+            self.decide(target, active='e' * 64)
+
+    def test_proposal_records_the_adopted_proxy(self):
+        b = baseline()
+        decision = {'caddy_config_ref': native.reference(self.REF_PATH, b'x'), 'active_proxy_sha256': 'c' * 64,
+                    'transition': 'IDENTITY_PROXY_REWRITE', 'rewritten_to_target': True}
+        with mock.patch.object(runtime, 'validate_state', lambda _state: None):
+            proposal, docs = m.propose(b['capture'], b['state_raw'], b['plan_raw'], b['policy'], b['rows'], b['networks'],
+                                       b['files'], None, {}, proxy=decision)
+        state = json.loads(docs['state'])
+        self.assertEqual((state['caddy_config_ref'], state['active_proxy_sha256']), (decision['caddy_config_ref'], 'c' * 64))
+        self.assertEqual(proposal['summary']['proxy'], {'transition': 'IDENTITY_PROXY_REWRITE', 'rewritten_to_target': True})
+        self.assertIsNone(run(b)[0]['summary']['proxy'])
+
+
+class FoundationPostgresTests(unittest.TestCase):
+    """V7.1: production's PostgreSQL came from the 6-oct initial foundation; PITR recreated it in the release chain."""
+    RELEASE = '/opt/commerce-os/releases/ci-cv-synthetic-1-f0d7188012f0'
+    FOUNDATION = '/opt/commerce-os/initial-foundation/initial_foundation_' + 'a' * 32
+
+    def labels(self):
+        chain = ','.join([self.RELEASE+'/infra/compose/production.yaml', self.RELEASE+'/infra/compose/pilot.yaml',
+                          '/opt/commerce-os/private/additional-gateways.json', self.RELEASE+'/infra/compose/copy-api-web.yaml',
+                          self.RELEASE+'/infra/compose/copy-runtime.yaml'])
+        api = {m.COMPOSE_FILES: chain, m.COMPOSE_WORKDIR: self.RELEASE+'/infra/compose',
+               m.COMPOSE_ENV_FILE: '/opt/commerce-os/private/release.env,/opt/commerce-os/private/pilot/pilot-release.env'}
+        old = {m.COMPOSE_FILES: self.FOUNDATION+'/postgres-foundation.json', m.COMPOSE_WORKDIR: self.FOUNDATION, 'com.docker.compose.service': 'postgres'}
+        current = lambda v: v.replace(self.RELEASE + '/', m.CURRENT_LINK + '/')
+        new = {m.COMPOSE_FILES: current(chain) + ',' + m.CURRENT_LINK + '/infra/compose/postgres-pitr.yaml',
+               m.COMPOSE_WORKDIR: m.CURRENT_LINK + '/infra/compose', m.COMPOSE_ENV_FILE: api[m.COMPOSE_ENV_FILE],
+               'com.docker.compose.service': 'postgres'}
+        return old, new, {'labels': api, 'current_release': self.RELEASE}
+
+    def test_release_chain_through_current_or_release_path_is_accepted(self):
+        old, new, chain = self.labels()
+        o, n = dict(old), dict(new)
+        m.foundation_pitr_labels(o, n, chain)
+        self.assertEqual((o, n), ({'com.docker.compose.service': 'postgres'}, {'com.docker.compose.service': 'postgres'}))
+        direct = dict(new, **{m.COMPOSE_FILES: chain['labels'][m.COMPOSE_FILES] + ',' + self.RELEASE + '/infra/compose/postgres-pitr.yaml',
+                              m.COMPOSE_WORKDIR: self.RELEASE + '/infra/compose'})
+        m.foundation_pitr_labels(dict(old), direct, chain)
+
+    def test_any_other_compose_project_is_refused(self):
+        old, new, chain = self.labels()
+        cases = [
+            (old, dict(new, **{m.COMPOSE_FILES: new[m.COMPOSE_FILES].replace('postgres-pitr.yaml', 'other.yaml')}), chain),
+            (old, dict(new, **{m.COMPOSE_FILES: new[m.COMPOSE_FILES] + ',/tmp/extra.yaml'}), chain),
+            (old, dict(new, **{m.COMPOSE_WORKDIR: '/tmp'}), chain),
+            (old, dict(new, **{m.COMPOSE_ENV_FILE: '/tmp/other.env'}), chain),
+            (dict(old, **{m.COMPOSE_WORKDIR: '/elsewhere'}), new, chain),
+            (dict(old, **{m.COMPOSE_FILES: '/opt/commerce-os/initial-foundation/x/postgres-foundation.json'}), new, chain),
+            (old, new, dict(chain, current_release='/tmp/release')),
+        ]
+        for before, after, ref in cases:
+            with self.subTest(after=after.get(m.COMPOSE_FILES)[-40:]), self.assertRaisesRegex(ReleaseError, 'V7_ADOPTION_COMPOSE_FILES_CHANGED:postgres'):
+                m.foundation_pitr_labels(dict(before), dict(after), ref)

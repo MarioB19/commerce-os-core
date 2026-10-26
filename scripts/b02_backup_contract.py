@@ -1,6 +1,7 @@
 """Closed daily B02 contracts; importing this module performs no I/O."""
 import datetime as dt
 import hashlib
+import itertools
 import json
 import re
 import uuid
@@ -161,6 +162,28 @@ GCP_FINANCIAL_START = dt.datetime(2026,10,5,tzinfo=dt.timezone.utc)
 # valid_until only as that exact renewal (b02-backup-root.py cutover_facts).
 GCP_FINANCIAL_ORIGINAL_END = dt.datetime(2026,11,4,tzinfo=dt.timezone.utc)
 GCP_FINANCIAL_END = dt.datetime(2026,12,4,tzinfo=dt.timezone.utc)
+# V7.1 (25-oct-2026, docs/adr-v7-b02-renewal.md): after 2026-12-04 the binding
+# renews by bounded 30-day periods counted from GCP_FINANCIAL_START (11-04,
+# 12-04, 01-03, ...). Root accepts each renewal only into MANUAL, at most
+# GCP_RENEWAL_LEAD before the current period ends, to the next period end; the
+# return to SCHEDULED keeps the same guards (a genuine MANUAL custody of that
+# binding), the same 37-run quota and the same single Scheduler. No binding is
+# ever authorized more than one period plus the lead ahead of its execution.
+GCP_FINANCIAL_PERIOD = dt.timedelta(days=30)
+GCP_RENEWAL_LEAD = dt.timedelta(days=7)
+
+
+def financial_period_boundary(value):
+    """A period end: GCP_FINANCIAL_START plus a whole, positive number of periods."""
+    offset = value - GCP_FINANCIAL_START
+    return offset > dt.timedelta(0) and offset % GCP_FINANCIAL_PERIOD == dt.timedelta(0)
+
+
+def next_financial_end(previous_end, now):
+    """The first period end after both the previous end and now."""
+    later = max(previous_end, now)
+    periods = (later - GCP_FINANCIAL_START) // GCP_FINANCIAL_PERIOD + 1
+    return GCP_FINANCIAL_START + periods * GCP_FINANCIAL_PERIOD
 GCP_REGION = 'us-east1'
 GCP_JOB = 'projects/' + TARGET[0] + '/locations/' + GCP_REGION + '/jobs/commerce-b02-daily'
 GCP_SCHEDULER = GCP_JOB
@@ -192,7 +215,8 @@ def gcp_binding(value):
          and value['manual_creator'] not in (GCP_INVOKER, GCP_EXECUTOR), 'B02_GCP_MANUAL_CREATOR_INVALID')
     need(isinstance(value['schedule_utc'],str) and re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]', value['schedule_utc']), 'B02_GCP_SCHEDULE_TIME_INVALID')
     start, end = utc_time(value['valid_from']), utc_time(value['valid_until'])
-    need(start == GCP_FINANCIAL_START and start < end <= GCP_FINANCIAL_END, 'B02_GCP_AUTHORIZATION_WINDOW_INVALID')
+    need(start == GCP_FINANCIAL_START and start < end and (end <= GCP_FINANCIAL_END or financial_period_boundary(end)),
+         'B02_GCP_AUTHORIZATION_WINDOW_INVALID')
     need(isinstance(value['activation_id'], str) and re.fullmatch(r'[a-z0-9][a-z0-9-]{7,63}', value['activation_id']), 'B02_GCP_ACTIVATION_ID_INVALID')
     if value['mode'] == 'MANUAL': need(value['first_custody_ref'] is None, 'B02_GCP_FIRST_CUSTODY_INVALID')
     else: reference(value['first_custody_ref'])
@@ -280,6 +304,7 @@ def gcp_task_name(execution):
 def gcp_execution_guard(binding, job, execution, task, now):
     task_template = gcp_job_guard(binding, job)
     need(utc_time(binding['valid_from']) <= now and now + dt.timedelta(seconds=1800) <= utc_time(binding['valid_until']), 'B02_GCP_AUTHORIZATION_EXPIRED')
+    need(utc_time(binding['valid_until']) - now <= GCP_FINANCIAL_PERIOD + GCP_RENEWAL_LEAD, 'B02_GCP_AUTHORIZATION_WINDOW_INVALID')
     name = execution.get('name', '')
     need(isinstance(name,str) and re.fullmatch(re.escape(GCP_JOB)+r'/executions/commerce-b02-daily-[a-z0-9]{1,30}',name)
          and execution.get('job') == GCP_JOB.rsplit('/',1)[1] and not execution.get('deleteTime')
@@ -395,6 +420,31 @@ def runtime_projection(value, version=1):
 
 def projection_digest(value, version=1):
     return sha256(json.dumps(runtime_projection(value, version), sort_keys=True, separators=(',', ':')).encode())
+
+
+# Same rule as copy_runtime_deployment.definition_digest_matches (docs/adr-v7-engine-neutral-dns.md):
+# an unset Dns/DnsOptions/DnsSearch list reads null, [] or absent depending on whether the Docker
+# daemon restarted since the container was created; a real value is never varied.
+UNSET_HOST_LISTS = ('Dns', 'DnsOptions', 'DnsSearch')
+
+
+def projection_matches(value, expected, version=1):
+    """The stored projection digest still describes this container (version 2: under any engine encoding)."""
+    if version != 2:
+        return projection_digest(value, version) == expected
+    host = value['HostConfig']
+    need(isinstance(host, dict), 'BACKUP_RUNTIME_PROJECTION_INVALID')
+    unset = [key for key in UNSET_HOST_LISTS if host.get(key) in (None, [])]
+    for choice in itertools.product(('null', 'list', 'absent'), repeat=len(unset)):
+        view = dict(host)
+        for key, encoding in zip(unset, choice):
+            if encoding == 'absent':
+                view.pop(key, None)
+            else:
+                view[key] = None if encoding == 'null' else []
+        if projection_digest(dict(value, HostConfig=view), 2) == expected:
+            return True
+    return False
 
 
 def validate_custody(value, report, bucket):

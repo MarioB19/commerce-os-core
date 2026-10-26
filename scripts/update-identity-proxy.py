@@ -35,6 +35,16 @@ V2_ROUTE_BLOCK = (b'  handle ' + V2_PATH + b' {\n'
                   b'    reverse_proxy commerce-api:3001\n'
                   b'  }\n')
 
+# V7.1 (25-oct-2026): the uptime check reads /healthz/platform; it must reach the
+# API through the site's one @health matcher, never fall into the SPA (HTML 200).
+HEALTH_MATCHER = b'@health'
+HEALTH_PATHS = [b'/livez', b'/readyz']
+PLATFORM_HEALTH_PATH = b'/healthz/platform'
+HEALTH_ROUTE_BLOCK = (b'  ' + HEALTH_MATCHER + b' path ' + b' '.join(HEALTH_PATHS + [PLATFORM_HEALTH_PATH]) + b'\n'
+                      b'  handle ' + HEALTH_MATCHER + b' {\n'
+                      b'    reverse_proxy commerce-api:3001\n'
+                      b'  }\n')
+
 class ProxyError(RuntimeError):
     pass
 
@@ -252,6 +262,34 @@ def rewrite_policy(source):
         require(pairs[route_open] < fallback_index, 'V2_ROUTE_AFTER_FALLBACK')
     else:
         route_insertions.append(V2_ROUTE_BLOCK)
+    # The API health matcher: exactly `@health path /livez /readyz [/healthz/platform]`
+    # and one `handle @health { reverse_proxy commerce-api:3001 }` before the fallback.
+    health = [i for i in range(opening + 1, closing) if items[i].value == HEALTH_MATCHER]
+    require(len(health) in (0, 2), 'HEALTH_MATCHER_NOT_UNIQUE')
+    platform = sum(PLATFORM_HEALTH_PATH in items[i].value for i in range(opening + 1, closing))
+    if not health:
+        require(platform == 0, 'PLATFORM_HEALTH_ROUTE_NOT_UNIQUE')
+        route_insertions.append(HEALTH_ROUTE_BLOCK)
+    else:
+        definition, usage = health
+        line = [i for i in range(opening + 1, closing) if items[i].line == items[definition].line]
+        paths = [items[i].raw for i in line[2:]]
+        require(line[:2] == [definition, definition + 1] and parents[definition] == opening
+                and all(items[i].kind == 'bare' for i in line) and items[definition + 1].raw == b'path'
+                and paths in (HEALTH_PATHS, HEALTH_PATHS + [PLATFORM_HEALTH_PATH]), 'AMBIGUOUS_HEALTH_MATCHER')
+        route_open = usage + 1
+        require(items[usage - 1].kind == 'bare' and items[usage - 1].raw == b'handle' and items[usage].kind == 'bare'
+                and route_open in pairs and parents[route_open] == opening
+                and [i for i in range(opening + 1, route_open) if items[i].line == items[route_open].line] == [usage - 1, usage],
+                'AMBIGUOUS_HEALTH_ROUTE')
+        body = items[route_open + 1:pairs[route_open]]
+        require(len(body) == 2 and all(t.kind == 'bare' for t in body)
+                and [t.raw for t in body] == [b'reverse_proxy', b'commerce-api:3001'], 'UNEXPECTED_HEALTH_UPSTREAM')
+        require(pairs[route_open] < fallback_index, 'HEALTH_ROUTE_AFTER_FALLBACK')
+        require(platform == (paths != HEALTH_PATHS), 'PLATFORM_HEALTH_ROUTE_NOT_UNIQUE')
+        if paths == HEALTH_PATHS:
+            last = items[line[-1]]
+            replacements.append((last.end, last.end, b' ' + PLATFORM_HEALTH_PATH))
     if route_insertions:
         replacements.append((fallback_start, fallback_start, b''.join(route_insertions)))
     for start, end, replacement in sorted(replacements, reverse=True):

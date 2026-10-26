@@ -175,10 +175,26 @@ async function outbound(effect:Body,contact:DomainRecord,client:QueryExecutor):P
  else{const root=process.env.PRIVATE_STORAGE_DIR??process.env.ASSET_STORAGE_DIR;if(!root||!/^[a-f0-9-]{36}(?:-[a-f0-9]{64})?$/.test(asset.body.storage_key))throw new Error('PRIVATE_STORAGE_NOT_CONFIGURED');const encrypted=await readFile(join(root,'assets',`${asset.body.storage_key}.enc`),'utf8');message.media={bytes:Buffer.from(decrypt(encrypted),'base64'),mimeType:asset.body.mime_type,filename:asset.body.name};}
  }return message;
 }
-async function scheduleGateRecheck(client:QueryExecutor,effectId:string,reason:string){await client.query(`INSERT INTO outbox_gate_schedule(effect_id,next_check_at,last_reason,updated_at)
- SELECT o.id,now()+CASE WHEN o.environment='SIMULATION' THEN interval '0 seconds' ELSE interval '1 second' END,$2,now()
- FROM outbox o WHERE o.id=$1
- ON CONFLICT(effect_id) DO UPDATE SET next_check_at=EXCLUDED.next_check_at,last_reason=EXCLUDED.last_reason,updated_at=now()`,[effectId,reason]);}
+/** Gate retries are wall-clock scheduler metadata (0061). A denial whose reason
+ * repeats on an effect that has been blocked by it for at least ten minutes
+ * (outbox.updated_at only moves when the status or result changes) backs off
+ * exponentially: twice the time since the previous check, between 1 and 30 s.
+ * A new reason, a recent block or one of the transient contention reasons keeps
+ * the base interval (SIMULATION 0 s, REAL 1 s), so live flows and virtual-clock
+ * simulations progress as before. Without the backoff, effects that can never
+ * pass (old SIMULATION effects with an invalid asset scope) were re-evaluated
+ * and rewritten on every 500 ms pass: 30 upserts/s and their WAL in production
+ * (docs/adr-v7-1-worker-loop-budget.md). */
+export const TRANSIENT_GATE_REASONS=['CHAT_LOCK_BUSY','DISPATCH_CAPACITY_BUSY','GROUP_OBSERVATION_FAILED','LOCAL_OWNERSHIP_DEADLINE'] as const;
+export const GATE_RECHECK_MAX_SECONDS=30;
+export const GATE_PERSISTENT_BLOCK_MINUTES=10;
+export const GATE_RECHECK_SQL=`INSERT INTO outbox_gate_schedule(effect_id,next_check_at,last_reason,updated_at)
+ SELECT o.id,now()+CASE WHEN g.last_reason=$2 AND NOT($2=ANY($3::text[])) AND now()-o.updated_at>=interval '${GATE_PERSISTENT_BLOCK_MINUTES} minutes'
+  THEN LEAST(interval '${GATE_RECHECK_MAX_SECONDS} seconds',GREATEST(interval '1 second',2*(now()-g.updated_at)))
+  WHEN o.environment='SIMULATION' THEN interval '0 seconds' ELSE interval '1 second' END,$2,now()
+ FROM outbox o LEFT JOIN outbox_gate_schedule g ON g.effect_id=o.id WHERE o.id=$1
+ ON CONFLICT(effect_id) DO UPDATE SET next_check_at=EXCLUDED.next_check_at,last_reason=EXCLUDED.last_reason,updated_at=now()`;
+async function scheduleGateRecheck(client:QueryExecutor,effectId:string,reason:string){await client.query(GATE_RECHECK_SQL,[effectId,reason,[...TRANSIENT_GATE_REASONS]]);}
 /** Release only this still-owned claim when execution has not reached the provider.
  * UNKNOWN and changed claims retain their fencing and admission reservations. */
 async function releaseUnsentClaim(client:QueryExecutor,effectId:string,claimId:string,owner:string,reason:string){

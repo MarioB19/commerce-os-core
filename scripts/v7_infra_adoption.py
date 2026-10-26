@@ -15,6 +15,15 @@ After the V7 publication the window still changes three things on purpose:
 This tool re-adopts exactly those changes and refuses any other difference, so
 the next publication, B02 and the boot keep working from an honest baseline.
 
+V7.1 (25-oct-2026) also adopts:
+
+  * the entry proxy rewritten by `scripts/update-identity-proxy.py` (the /v2/*
+    route of 21-oct and /healthz/platform). Accepted only when the private
+    backup of the recorded Caddyfile and the current file converge under the
+    reviewed rewrite, and Caddy runs exactly that file;
+  * a container whose only change is the engine encoding of its unset DNS lists
+    (docs/adr-v7-engine-neutral-dns.md).
+
     v7_infra_adoption.py capture             # before any change (Root, read-only on the platform)
     v7_infra_adoption.py observe             # after the changes; prints the proposal digest
     v7_infra_adoption.py apply <sha256>      # the four locks, one journaled CAS of plan, state and boot policy
@@ -26,6 +35,7 @@ secret. Output: service names, setting names and digests only.
 import copy
 import datetime as dt
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -44,6 +54,7 @@ ADOPTION = PRIVATE/'api-web-adoption.json'
 PLAN = PRIVATE/'daily-b02/plan.json'
 BOOT_POLICY = PRIVATE/'runtime-boot/policy.json'
 PITR_RECEIPT = PRIVATE/'pitr/enable-receipt.json'
+CADDY_BACKUPS = PRIVATE/'caddy-backups'
 BASE = PRIVATE/'v7-infra-adoption'
 APP = ('api', 'ingress', 'automation-worker', 'channel-worker')
 UNCHANGED = ('web', 'caddy', 'portal')
@@ -63,6 +74,14 @@ PITR_MOUNTS = frozenset({'/etc/pgbackrest/pgbackrest.conf', '/var/spool/pgbackre
 PITR_CMD = ['postgres', '-c', 'max_connections=80', '-c', 'shared_buffers=512MB', '-c', 'wal_level=replica',
             '-c', 'archive_mode=on', '-c', 'archive_timeout=60s', '-c', 'archive_command=pgbackrest --stanza=commerce archive-push %p']
 PITR_IMAGE_LABELS = frozenset({'org.opencontainers.image.title', 'com.inovaris.commerce.pgbackrest'})
+# V7.1: production's PostgreSQL was created on 6-oct by the initial foundation
+# (one compose file of its own). `v7_pitr.py enable` recreates it inside the
+# release's compose chain (as the application services) plus the PITR overlay.
+FOUNDATION_FILES = re.compile(r'/opt/commerce-os/initial-foundation/initial_foundation_[0-9a-f]{32}/postgres-foundation\.json')
+CURRENT_LINK = '/opt/commerce-os/current'
+COMPOSE_FILES = 'com.docker.compose.project.config_files'
+COMPOSE_WORKDIR = 'com.docker.compose.project.working_dir'
+COMPOSE_ENV_FILE = 'com.docker.compose.project.environment_file'
 # Compose bookkeeping that changes whenever a container is recreated.
 COMPOSE_VOLATILE = frozenset({'com.docker.compose.config-hash', 'com.docker.compose.replace',
                               'com.docker.compose.container-number'})
@@ -103,7 +122,30 @@ def short_alias(endpoint, cid):
     return sorted(alias for alias in endpoint.get('Aliases') or [] if alias != cid[:12])
 
 
-def compare_recreated(name, old, new, *, allowed_env, allowed_prefixes=(), pitr=None):
+def foundation_pitr_labels(old_lab, new_lab, chain):
+    """The PITR PostgreSQL left the initial foundation's compose project for the release's chain.
+
+    Its files, working directory and environment files must equal those of an
+    application service the installer created (chain['labels']), written through
+    /opt/commerce-os/current or the release directory, plus the PITR overlay last."""
+    ref, release = chain['labels'], chain['current_release']
+    require(type(release) is str and release.startswith('/opt/commerce-os/releases/') and type(ref.get(COMPOSE_FILES)) is str
+            and type(ref.get(COMPOSE_WORKDIR)) is str and type(ref.get(COMPOSE_ENV_FILE)) is str, 'V7_ADOPTION_COMPOSE_FILES_CHANGED:postgres')
+    old_files = old_lab.get(COMPOSE_FILES)
+    require(type(old_files) is str and FOUNDATION_FILES.fullmatch(old_files) and old_lab.get(COMPOSE_WORKDIR) == old_files.rsplit('/', 1)[0]
+            and COMPOSE_ENV_FILE not in old_lab, 'V7_ADOPTION_COMPOSE_FILES_CHANGED:postgres')
+    variants = [(lambda value: value, release), (lambda value: value.replace(release + '/', CURRENT_LINK + '/'), CURRENT_LINK)]
+    accepted = False
+    for view, base in variants:
+        if (new_lab.get(COMPOSE_FILES) == view(ref[COMPOSE_FILES]) + ',' + base + '/infra/compose/postgres-pitr.yaml'
+                and new_lab.get(COMPOSE_WORKDIR) == view(ref[COMPOSE_WORKDIR]) and new_lab.get(COMPOSE_ENV_FILE) == ref[COMPOSE_ENV_FILE]):
+            accepted = True
+    require(accepted, 'V7_ADOPTION_COMPOSE_FILES_CHANGED:postgres')
+    for key in (COMPOSE_FILES, COMPOSE_WORKDIR, COMPOSE_ENV_FILE):
+        old_lab.pop(key, None); new_lab.pop(key, None)
+
+
+def compare_recreated(name, old, new, *, allowed_env, allowed_prefixes=(), pitr=None, chain=None):
     """Old is the sanitized captured row, new the live row. Only the listed fields may differ."""
     new_s = sanitized(new)
     changed = []
@@ -118,7 +160,9 @@ def compare_recreated(name, old, new, *, allowed_env, allowed_prefixes=(), pitr=
     require(new_s['Config'].get('Hostname') in (new['Id'][:12], old['Config'].get('Hostname')), 'V7_ADOPTION_HOSTNAME_CHANGED:'+name)
     o_lab, n_lab = dict(old['Config'].get('Labels') or {}), dict(new_s['Config'].get('Labels') or {})
     files_label = 'com.docker.compose.project.config_files'
-    if o_lab.get(files_label) != n_lab.get(files_label):
+    if pitr and chain is not None and FOUNDATION_FILES.fullmatch(str(o_lab.get(files_label))):
+        foundation_pitr_labels(o_lab, n_lab, chain)
+    elif o_lab.get(files_label) != n_lab.get(files_label):
         # compose-release.sh appends the PITR overlay last once PITR is enabled.
         require(type(o_lab.get(files_label)) is str and type(n_lab.get(files_label)) is str
                 and n_lab[files_label].startswith(o_lab[files_label]+',')
@@ -177,7 +221,52 @@ def profile_changes(captured, files_now):
     return result
 
 
-def propose(capture, state_raw, plan_raw, policy_raw, rows, networks, files_now, pitr_receipt, release, *, private=PRIVATE):
+def identity_proxy():
+    spec = importlib.util.spec_from_file_location('identity_proxy_for_adoption', Path(__file__).resolve().parent/'update-identity-proxy.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def proxy_decision(ref, current, active_digest, recorded_active, originals, adapted, running, rewrite):
+    """Pure. None when the proxy is as recorded; otherwise the adopted reference and digest.
+
+    Accepted only when a private backup of the recorded Caddyfile and the current
+    file converge under the reviewed identity-proxy rewrite (they differ only in
+    the owned headers and API routes), and Caddy runs exactly the current file."""
+    if native.reference(ref['path'], current) == ref and active_digest == recorded_active:
+        return None
+    matching = [name for name, raw in originals if native.reference(ref['path'], raw) == ref]
+    require(matching, 'V7_ADOPTION_PROXY_ORIGINAL_REQUIRED')
+    target = rewrite(current)
+    require(any(rewrite(raw) == target for name, raw in originals if name in matching), 'V7_ADOPTION_PROXY_CHANGED')
+    require(isinstance(adapted, dict) and adapted == running
+            and hashlib.sha256(json.dumps(running, sort_keys=True, separators=(',', ':')).encode()).hexdigest() == active_digest,
+            'V7_ADOPTION_PROXY_NOT_RUNNING_FILE')
+    return {'caddy_config_ref': native.reference(ref['path'], current), 'active_proxy_sha256': active_digest,
+            'transition': 'IDENTITY_PROXY_REWRITE', 'rewritten_to_target': current == target}
+
+
+def proxy_transition(host, state, services):
+    ref = state['caddy_config_ref']
+    current = native.protected_bytes(ref['path'])
+    active = native.active_proxy_digest(host.command, host.root, services)
+    if native.reference(ref['path'], current) == ref and active == state['active_proxy_sha256']:
+        return None
+    originals = []
+    if CADDY_BACKUPS.exists():
+        require(CADDY_BACKUPS.is_dir() and not CADDY_BACKUPS.is_symlink(), 'V7_ADOPTION_PROXY_BACKUP_UNSAFE')
+        for entry in sorted(CADDY_BACKUPS.iterdir()):
+            original = entry/'original.Caddyfile'
+            if entry.is_dir() and not entry.is_symlink() and original.exists():
+                originals.append((entry.name, native.protected_bytes(original)))
+    caddy = services['caddy']['Id']
+    adapted = runtime._parse(host.command(['docker', 'exec', caddy, 'caddy', 'adapt', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile']).encode())
+    running = runtime._parse(host.command(['docker', 'exec', caddy, 'wget', '-qO-', 'http://127.0.0.1:2019/config/']).encode())
+    return proxy_decision(ref, current, active, state['active_proxy_sha256'], originals, adapted, running, identity_proxy().rewrite_policy)
+
+
+def propose(capture, state_raw, plan_raw, policy_raw, rows, networks, files_now, pitr_receipt, release, *, private=PRIVATE, proxy=None):
     """Pure decision. Every input was read by Root; nothing here touches the host."""
     state = runtime._parse(state_raw); plan = runtime._parse(plan_raw)
     runtime.validate_state(state); runtime.validate_plan(state, plan_raw)
@@ -189,13 +278,14 @@ def propose(capture, state_raw, plan_raw, policy_raw, rows, networks, files_now,
     services = runtime.inspect_inventory(rows, portal=state['portal'], caddy_id=state['service_inventory']['caddy'])
     require(set(services) == set(state['service_inventory']), 'V7_ADOPTION_SERVICE_SET_CHANGED')
     before = {row['Id']: row for row in capture['rows']}
-    require({cid: runtime.definition_digest(before[cid]) for cid in before} == capture['sanitized_digests']
+    require(set(before) == set(capture['sanitized_digests'])
+            and all(runtime.definition_digest_matches(before[cid], capture['sanitized_digests'][cid]) for cid in before)
             and set(before) == set(state['service_inventory'].values()), 'V7_ADOPTION_CAPTURE_INVALID')
     summary = {'recreated': {}, 'unchanged': [], 'postgres': None}
     for name, old_id in sorted(state['service_inventory'].items()):
         row = services[name]
         if row['Id'] == old_id:
-            require(runtime.definition_digest(row) == state['preserved_runtime'][old_id], 'V7_ADOPTION_DEFINITION_CHANGED:'+name)
+            require(runtime.definition_digest_matches(row, state['preserved_runtime'][old_id]), 'V7_ADOPTION_DEFINITION_CHANGED:'+name)
             summary['unchanged'].append(name)
             continue
         require(name in APP or name == 'postgres', 'V7_ADOPTION_CONTAINER_REPLACED:'+name)
@@ -209,7 +299,8 @@ def propose(capture, state_raw, plan_raw, policy_raw, rows, networks, files_now,
             require(len(data) == 1 and data[0].get('Type') == 'volume' and data[0].get('Name') == pitr_receipt['before']['volume'],
                     'V7_ADOPTION_PITR_VOLUME_CHANGED')
             compare_recreated(name, before[old_id], row, allowed_env=frozenset(), allowed_prefixes=(PITR_ENV_PREFIX,),
-                              pitr={'image': pitr_receipt['after']['image']})
+                              pitr={'image': pitr_receipt['after']['image']},
+                              chain={'labels': services['api']['Config'].get('Labels') or {}, 'current_release': state['current_release']})
             summary['postgres'] = {'transition': 'PITR_ENABLED', 'system_identifier': pitr_receipt['before']['system_identifier']}
         else:
             summary['recreated'][name] = compare_recreated(name, before[old_id], row, allowed_env=V7_SETTINGS[name],
@@ -238,7 +329,7 @@ def propose(capture, state_raw, plan_raw, policy_raw, rows, networks, files_now,
         require(pitr_net['Internal'] is False and pitr_net['Driver'] == 'bridge' and pitr_net['EnableIPv6'] is False,
                 'V7_ADOPTION_PITR_NETWORK_INVALID')
     inventory = {name: row['Id'] for name, row in services.items()}
-    preserved = {row['Id']: runtime.definition_digest(row) for row in services.values()}
+    preserved = runtime.preserved_definitions(services, state['preserved_runtime'])
     new_plan = copy.deepcopy(plan)
     new_plan['preserved_runtime'] = preserved
     if summary['postgres']:
@@ -252,6 +343,8 @@ def propose(capture, state_raw, plan_raw, policy_raw, rows, networks, files_now,
     new_state.update(service_inventory=inventory, preserved_runtime=preserved, canonical_files=canonical,
                      network_baseline=networks, b02_plan_sha256=digest(plan_bytes),
                      b02_plan_ref=native.reference(PLAN, plan_bytes))
+    if proxy is not None:
+        new_state.update(caddy_config_ref=proxy['caddy_config_ref'], active_proxy_sha256=proxy['active_proxy_sha256'])
     runtime.validate_state(new_state); runtime.validate_inventory(new_state, rows); runtime.validate_plan(new_state, plan_bytes)
     state_bytes = encode(new_state)
     policy_bytes = None
@@ -267,7 +360,9 @@ def propose(capture, state_raw, plan_raw, policy_raw, rows, networks, files_now,
                 'after': {'state_sha256': digest(state_bytes), 'plan_sha256': digest(plan_bytes),
                           'policy_sha256': digest(policy_bytes) if policy_bytes is not None else None},
                 'summary': {'recreated': summary['recreated'], 'unchanged': sorted(summary['unchanged']),
-                            'postgres': summary['postgres'], 'profiles': profile, 'networks_added': sorted(added)}}
+                            'postgres': summary['postgres'], 'profiles': profile, 'networks_added': sorted(added),
+                            'proxy': None if proxy is None else {'transition': proxy['transition'],
+                                                                 'rewritten_to_target': proxy['rewritten_to_target']}}}
     return proposal, {'state': state_bytes, 'plan': plan_bytes, 'policy': policy_bytes}
 
 
@@ -346,10 +441,10 @@ def observe(host):
     release = native.env_values(host.private(PRIVATE/'release.env'))
     runtime.topology(host.command, host.root, services, networks, release)
     runtime.verify_edge(host, host.root, state, services, release)
-    require(native.active_proxy_digest(host.command, host.root, services) == state['active_proxy_sha256'], 'V7_ADOPTION_PROXY_CHANGED')
+    proxy = proxy_transition(host, state, services)
     files = {name: host.private(PRIVATE/name) for name in runtime.FILES}
     proposal, documents = propose(capture_doc, state_raw, plan_raw, policy_raw, rows, networks, files,
-                                  runtime._parse(receipt_raw) if receipt_raw else None, release)
+                                  runtime._parse(receipt_raw) if receipt_raw else None, release, proxy=proxy)
     return proposal, documents, {'state': state_raw, 'plan': plan_raw, 'policy': policy_raw}
 
 

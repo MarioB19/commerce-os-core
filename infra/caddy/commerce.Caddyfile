@@ -17,7 +17,7 @@ commerce-os.inovaris.online {
   handle /api/auth/* {
     reverse_proxy commerce-api:3001
   }
-  @health path /livez /readyz
+  @health path /livez /readyz /healthz/platform
   handle @health {
     reverse_proxy commerce-api:3001
   }
