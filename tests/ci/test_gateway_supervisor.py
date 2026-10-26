@@ -151,6 +151,25 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(self.state.data['spares'][A]['code'], 'HOST_RAM_MARGIN_INSUFFICIENT')
         self.assertFalse([c for c in blocked.calls if c[0] == 'api' and c[2] and c[2].get('action') == 'expand'])
 
+    def test_suspended_profile_is_skipped_without_token_and_reported_once(self):
+        active, suspended = {'id': A, 'state': 'ACTIVE', 'limits': {'numbers': 3}}, {'id': 'profile-q', 'state': 'SUSPENDED', 'limits': {'numbers': 0}}
+        admin = FakeAdmin([slot(1, 'CONNECTED', 'acc-1'), slot(2, 'PREPARED')], containers={1: container(False)})
+        supervisor = self.supervisor(admin, [suspended, active])
+        first = supervisor.cycle()
+        self.assertEqual((first['profiles'], first['skipped'], first['errors']), (2, 1, []))
+        self.assertEqual(self.platform.issued, [A])  # never a token for the suspended profile
+        self.assertEqual(first['restarted'], 1)  # the active profile's crashed gateway is still restarted
+        self.now += dt.timedelta(seconds=15)
+        second = supervisor.cycle()
+        self.assertEqual((second['skipped'], second['errors']), (1, []))
+        skipped = [e for e in self.state.data['events'] if e['kind'] == 'PROFILE_SKIPPED_NOT_ACTIVE']
+        self.assertEqual(skipped, [{'at': skipped[0]['at'], 'kind': 'PROFILE_SKIPPED_NOT_ACTIVE', 'profile': 'profile-q', 'state': 'SUSPENDED'}])
+        suspended['state'] = 'ACTIVE'
+        self.now += dt.timedelta(seconds=15)
+        supervisor.cycle()
+        self.assertNotIn('profile-q', self.state.data['skipped'])
+        self.assertIn('profile-q', self.platform.issued)
+
     def test_retries_an_unprepared_slot_instead_of_adding_another(self):
         admin = FakeAdmin([slot(1, 'CONNECTED', 'acc-1'), slot(2, 'AVAILABLE')])
         self.supervisor(admin).cycle()

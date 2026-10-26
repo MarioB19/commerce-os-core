@@ -11,7 +11,9 @@ host mutation without readback. Each cycle, for every profile:
 3. applies pending reviewed capacity operations (PROVISION/EXPAND/DRAIN)
    through the existing bounded Administrator, and reconciles UNKNOWN ones by
    readback only, with a per-operation backoff;
-4. keeps one prepared spare slot for an ACTIVE profile with free number quota,
+4. keeps one prepared spare slot for an ACTIVE profile with free number quota
+   (a profile that is not ACTIVE is skipped before asking for its token: its
+   capacity token is rejected with PROFILE_SUSPENDED),
    so adding a number never waits for manual provisioning;
 5. before measuring, restarts an exited gateway container of a provisioned,
    non-draining slot with the same container, volume, image and network
@@ -78,7 +80,7 @@ class State:
         self.path = Path(path)
         if not self.path.is_absolute() or self.path.is_symlink():
             raise SupervisorError('PRIVATE_STATE_REQUIRED')
-        self.data = {'operations': {}, 'gateways': {}, 'spares': {}, 'events': []}
+        self.data = {'operations': {}, 'gateways': {}, 'spares': {}, 'skipped': {}, 'events': []}
         if self.path.exists():
             raw = json.loads(capacity.private_file(self.path).read_text())
             if type(raw) is dict:
@@ -196,13 +198,21 @@ class Supervisor:
 
     def cycle(self):
         now = self.clock()
-        report = {'profiles': 0, 'applied': 0, 'reconciled': 0, 'spares_requested': 0, 'restarted': 0, 'errors': []}
+        report = {'profiles': 0, 'skipped': 0, 'applied': 0, 'reconciled': 0, 'spares_requested': 0, 'restarted': 0, 'errors': []}
         try:
             self.channel_watch(report)
         except Exception as error:
             report['errors'].append({'code': safe_code(error, 'CHANNEL_WATCH_FAILED')})
         for profile in self.platform.profiles():
             report['profiles'] += 1
+            if profile.get('state') != 'ACTIVE':
+                # A suspended profile rejects its capacity token on every call
+                # (PROFILE_SUSPENDED), so it is skipped without a token and the
+                # change is recorded once, not as an error every 15 s. It cannot
+                # operate numbers; its slots are reconciled when it is reactivated.
+                self.skipped(profile, report)
+                continue
+            self.state.data['skipped'].pop(profile['id'], None)
             try:
                 self.profile(profile, now, report)
             except Exception as error:  # one profile never stops the others
@@ -211,6 +221,13 @@ class Supervisor:
                 self.state.event('PROFILE_CYCLE_FAILED', profile=profile['id'], code=code)
         self.state.save()
         return report
+
+    def skipped(self, profile, report):
+        report['skipped'] += 1
+        state = profile.get('state') if type(profile.get('state')) is str and re.fullmatch(r'[A-Z_]{1,32}', profile['state']) else 'UNKNOWN'
+        if self.state.data['skipped'].get(profile['id']) != state:
+            self.state.data['skipped'][profile['id']] = state
+            self.state.event('PROFILE_SKIPPED_NOT_ACTIVE', profile=profile['id'], state=state)
 
     def profile(self, profile, now, report):
         workspace = profile['id']

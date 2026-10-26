@@ -1,5 +1,51 @@
 # Estado de publicación
 
+## 25-oct-2026 (noche) — release correctiva V7.1 (Agente: Claude)
+
+Rama `claude/v7-1-release`, sobre `4001db8d` con el arreglo del administrador
+de capacidad (entrada siguiente). Se midió en un laboratorio aislado copiado de
+producción (snapshot en caliente, sin IP externa, sin NAT ni cuenta de
+servicio).
+
+- **CPU de PostgreSQL** ([ADR](adr-v7-1-worker-loop-budget.md)). Bajo RLS
+  forzado, `materializeEffectResults` recorría todos los mensajes y entregas
+  por cada efecto terminal en cada vuelta de 250 ms: 1.6–2.3 s y 150k buffers,
+  un núcleo completo. Ahora usa CTE materializadas con cruces por uuid: 11 ms,
+  mismas filas y mismo orden. Además, los efectos con el mismo bloqueo desde
+  hace más de 10 minutos esperan más entre chequeos (hasta 30 s). Con los
+  workers parcheados, la CPU ocupada del laboratorio bajó de 89 % a 37 %.
+- **Crecimiento de la base** (mismo ADR). 4.0 → 7.39 GB es, sobre todo, el
+  relleno de la ventana de 8 días de telemetría de salud. Quedan ~70 MB/día sin
+  purga en versiones de `channel_account` y heartbeats; pendiente para V8.
+- **Digests neutrales a la codificación del motor**
+  ([ADR](adr-v7-engine-neutral-dns.md)). Los digests guardados están mezclados
+  (`null` en los recreados, `[]` en los preservados). Ahora se acepta cualquier
+  codificación vacía y se conserva el digest guardado mientras coincida. Lo usan
+  el instalador, la readopción, el arranque durable y B02. Hay pruebas de
+  continuidad con el estado de la versión anterior y el inspect real.
+- **Proxy como código.** `@health` incluye `/healthz/platform` en las
+  plantillas, y `update-identity-proxy.py` lo añade o lo exige exacto. Una
+  prueba nueva cruza cada ruta que usa la web y cada ruta de salud de la API
+  con el Caddy, en la plantilla y en el sitio de producción reescrito. Nuevo
+  `scripts/v7_public_smoke.py`: revisa estado y `content-type` de cada ruta
+  pública. Hoy detecta `/healthz/platform` como HTML.
+- **B02 después del 4-dic** ([ADR](adr-v7-b02-renewal.md)). Renovación
+  recurrente acotada por periodos de 30 días: sólo hacia `MANUAL`, como mucho 7
+  días antes del fin y al siguiente periodo. Misma cuota de 37 y un solo
+  Scheduler. El transporte rechaza vinculaciones con más de 37 días de
+  anticipación.
+- **Supervisor de gateways.** Omite los perfiles no `ACTIVE` antes de pedir su
+  token, porque el token de un perfil suspendido se rechaza en cada llamada con
+  `PROFILE_SUSPENDED`. Lo registra una sola vez.
+- **Portal Mi Ciclo Listo.** Los exit 137 eran OOM del cgroup: next-server
+  llegaba a ~287 MiB y el healthcheck de node completaba los 320 MiB. La próxima
+  publicación del portal usa 512 MiB y `--max-old-space-size=256`. El
+  contenedor actual se conserva (Docker lo reinicia solo).
+
+Pruebas locales: Python CI 1,879 (2 omitidas), typecheck, lint de lo tocado e
+integración de los flujos de canal y automatización. FULL, paquete e
+instalación pendientes.
+
 ## 25-oct-2026 — el administrador de capacidad leía una ruta retirada (Agente: Claude)
 
 `scripts/number-capacity-administrator.py` (que también usa
