@@ -107,7 +107,7 @@ class MeterTests(unittest.TestCase):
         self.assertEqual(self.store.document['active_request'], reservation['request_id'])
 
     def test_ceiling_not_credits_controls_admission(self):
-        for _ in range(111):
+        for _ in range(155):
             reservation = self.reserve(450)
             self.meter.finish(reservation, {'ok': True})
         before = copy.deepcopy(self.store.document)
@@ -142,6 +142,24 @@ class MeterTests(unittest.TestCase):
         for key, row in old_rows.items():
             self.assertEqual(self.store.document['requests'][key], row)
         self.assertEqual(usage(self.store.document)['2026-10']['cpu_ms'], 40_450_000)
+
+    def test_october_at_the_26_oct_reservations_admits_more_operations(self):
+        # 26-oct-2026: October held 49,150 s (103 x 450 s, 23 x 120 s, 8 x 5 s); the FULL
+        # sequence (about 3 x 450 s per FULL and per attestation) did not fit under 50,000 s.
+        for seconds, count in ((450, 103), (120, 23), (5, 8)):
+            for _ in range(count):
+                reservation = self.reserve(seconds)
+                self.meter.finish(reservation, {'ok': True})
+        self.assertEqual(usage(self.store.document)['2026-10']['cpu_ms'], 49_150_000)
+        old_rows = copy.deepcopy(self.store.document['requests'])
+        for _ in range(46):
+            reservation = self.meter.extend(self.reserve(), 450)
+            self.meter.finish(reservation, {'ok': True})
+        for key, row in old_rows.items():
+            self.assertEqual(self.store.document['requests'][key], row)
+        self.assertEqual(usage(self.store.document)['2026-10']['cpu_ms'], 69_850_000)
+        with self.assertRaisesRegex(AdmissionError, 'MONTHLY_CEILING'):
+            self.meter.extend(self.reserve(), 450)
 
     def test_conflict_never_retries_cas(self):
         self.store.failure = 'conflict'
