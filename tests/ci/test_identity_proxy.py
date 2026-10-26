@@ -49,7 +49,8 @@ V2 = b'''  handle /v2/* {
     reverse_proxy commerce-api:3001
   }
 '''
-CANDIDATE = OTHER + COMMERCE.replace(b'Referrer-Policy same-origin', b'Referrer-Policy no-referrer').replace(proxy.CSP_BEFORE, proxy.CSP_CREATIVE).replace(FALLBACK, DEVICE + VERSION + V2 + FALLBACK)
+HEALTH = proxy.HEALTH_ROUTE_BLOCK
+CANDIDATE = OTHER + COMMERCE.replace(b'Referrer-Policy same-origin', b'Referrer-Policy no-referrer').replace(proxy.CSP_BEFORE, proxy.CSP_CREATIVE).replace(FALLBACK, DEVICE + VERSION + V2 + HEALTH + FALLBACK)
 
 CANDIDATE = CANDIDATE[:CANDIDATE.rfind(b'}')] + proxy.ASSET_PREVIEW_BLOCK + CANDIDATE[CANDIDATE.rfind(b'}'):]
 
@@ -153,7 +154,35 @@ class RewriteTests(unittest.TestCase):
         self.assertLess(candidate.index(V2), candidate.index(FALLBACK))
         self.assertEqual(proxy.rewrite_policy(CANDIDATE), CANDIDATE)
         without = CANDIDATE.replace(V2, b'')
-        self.assertEqual(proxy.rewrite_policy(without), CANDIDATE)
+        self.assertEqual(proxy.rewrite_policy(without), CANDIDATE.replace(V2 + HEALTH, HEALTH + V2))
+
+    def test_platform_health_path_joins_the_existing_api_health_matcher(self):
+        legacy = HEALTH.replace(b' /healthz/platform', b'')
+        source = CANDIDATE.replace(HEALTH, legacy)
+        candidate = proxy.rewrite_policy(source)
+        self.assertEqual(candidate, CANDIDATE)
+        self.assertEqual(candidate.count(b'/healthz/platform'), 1)
+        self.assertEqual(proxy.rewrite_policy(candidate), candidate)
+
+    def test_platform_health_is_inserted_with_its_matcher_when_absent(self):
+        candidate = proxy.rewrite_policy(CANDIDATE.replace(HEALTH, b''))
+        self.assertEqual(candidate, CANDIDATE)
+        self.assertLess(candidate.index(HEALTH), candidate.index(FALLBACK))
+
+    def test_health_matcher_other_upstream_paths_order_or_duplicates_fail_closed(self):
+        late = CANDIDATE.replace(HEALTH, b'').replace(FALLBACK, FALLBACK + HEALTH)
+        for candidate, code in [
+            (CANDIDATE.replace(HEALTH, HEALTH.replace(b'commerce-api:3001', b'commerce-web:8080')), 'UNEXPECTED_HEALTH_UPSTREAM'),
+            (CANDIDATE.replace(HEALTH, HEALTH.replace(b'/healthz/platform', b'/healthz/platform /metrics')), 'AMBIGUOUS_HEALTH_MATCHER'),
+            (CANDIDATE.replace(HEALTH, HEALTH.replace(b' /readyz', b'')), 'AMBIGUOUS_HEALTH_MATCHER'),
+            (CANDIDATE.replace(HEALTH, HEALTH.replace(b'path /livez', b'path_regexp /livez')), 'AMBIGUOUS_HEALTH_MATCHER'),
+            (late, 'HEALTH_ROUTE_AFTER_FALLBACK'),
+            (CANDIDATE.replace(HEALTH, HEALTH + HEALTH), 'HEALTH_MATCHER_NOT_UNIQUE'),
+            (CANDIDATE.replace(HEALTH, HEALTH + b'  handle /healthz/platform {\n    reverse_proxy commerce-api:3001\n  }\n'), 'PLATFORM_HEALTH_ROUTE_NOT_UNIQUE'),
+            (CANDIDATE.replace(HEALTH, b'  handle /healthz/platform {\n    reverse_proxy commerce-web:8080\n  }\n'), 'PLATFORM_HEALTH_ROUTE_NOT_UNIQUE'),
+        ]:
+            with self.subTest(code=code, candidate=candidate[-220:]), self.assertRaisesRegex(proxy.ProxyError, code):
+                proxy.rewrite_policy(candidate)
 
     def test_v2_route_with_other_upstream_duplicate_late_order_or_ambiguous_syntax_fails_closed(self):
         for candidate, code in [
@@ -443,6 +472,8 @@ class TemplateTests(unittest.TestCase):
                 self.assertLess(source.index(proxy.VERSION_ROUTE_BLOCK), source.index(FALLBACK))
                 self.assertEqual(source.count(proxy.V2_ROUTE_BLOCK), 1)
                 self.assertLess(source.index(proxy.V2_ROUTE_BLOCK), source.index(FALLBACK))
+                self.assertEqual(source.count(proxy.HEALTH_ROUTE_BLOCK), 1)
+                self.assertLess(source.index(proxy.HEALTH_ROUTE_BLOCK), source.index(FALLBACK))
                 if name == 'commerce.Caddyfile':
                     self.assertEqual(proxy.rewrite_policy(source), source)
 
