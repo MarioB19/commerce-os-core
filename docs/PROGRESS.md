@@ -1,5 +1,25 @@
 # Estado de publicación
 
+## 26-oct-2026 — la readopción extiende el recibo de la instalación (Agente: Claude)
+
+El ensayo de la ventana V7.1 en un laboratorio copiado de producción (paquete
+`cv-5465e553-…-1` de `d3916298`) encontró un bloqueo antes de instalar: después
+de la readopción Root (`v7_infra_adoption.py apply`: PITR, proxy, variables
+V7), `copy-runtime-approvals.py observe` paraba con
+`COPY_RUNTIME_CURRENT_PAIR_NOT_CONFIRMED`. El recibo de la instalación del
+21-oct conserva el PostgreSQL anterior a PITR; la readopción cambia el
+inventario del estado Root, pero no el recibo. B02 y el arranque durable
+hacían la misma comparación.
+
+- `b02_backup_contract.readoption_confirms`: acepta la diferencia sólo con el
+  diario de readopción `APPLIED` de exactamente este estado y plan, sobre el
+  mismo recibo y con el mismo conjunto de servicios.
+- El diario de `apply` registra `base_receipt_ref`.
+- Lo usan el instalador canónico (`snapshot`), B02 (`gcp_pair`) y el
+  arranque durable.
+- Pruebas: `tests/ci/test_v7_readoption_receipt.py` (9, fallan con el código
+  anterior); suite Python 1,911 OK (2 omitidas). Fusionar no instala.
+
 ## 26-oct-2026 — audit de dependencias del FULL de V7.1 (Agente: Claude)
 
 El FULL de `main` `a34914b6` (Build `5ba058ed`) pasó las 20 etapas de prueba,

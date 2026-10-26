@@ -110,6 +110,25 @@ def sha256(value):
     return hashlib.sha256(value).hexdigest()
 
 
+READOPTION_JOURNAL = PRIVATE / 'v7-infra-adoption' / 'journal.json'
+
+
+def readoption_confirms(receipt, state, state_sha256, plan_sha256, journal):
+    """V7.1 (26-oct-2026): `scripts/v7_infra_adoption.py apply` re-adopts the Root pair
+    after an installation (PITR PostgreSQL, entry proxy, V7 settings) with one journaled
+    CAS. The installation receipt keeps the inventory it validated, so its
+    service_inventory/preserved_runtime may differ from the current state. That
+    difference is accepted only when the latest re-adoption journal is APPLIED for exactly
+    this state and plan, extends this same receipt, and the service set is unchanged.
+    Every other receipt field is still compared by the caller."""
+    return (type(receipt) is dict and type(state) is dict and type(journal) is dict
+            and journal.get('schema_version') == 1 and journal.get('status') == 'APPLIED'
+            and journal.get('state_sha256') == state_sha256 and journal.get('plan_sha256') == plan_sha256
+            and journal.get('base_receipt_ref') == state.get('last_release_receipt_ref')
+            and type(receipt.get('service_inventory')) is dict and type(state.get('service_inventory')) is dict
+            and set(receipt['service_inventory']) == set(state['service_inventory']))
+
+
 def unique_json(value):
     def pairs(items):
         result = {}

@@ -240,6 +240,20 @@ del 2026-11-04 y su renovación queda como pendiente operativo.
   4. `apply <sha256>`: con los cuatro candados, CAS del plan B02 (con
      historial), la adopción y la política de arranque, con diario.
   Imprime sólo servicios, nombres de variables y digests.
+- **La readopción extiende el recibo de la instalación (V7.1, 26-oct-2026).**
+  El ensayo de la ventana V7.1 en laboratorio mostró que, después de `apply`,
+  el instalador canónico rechazaba la siguiente publicación con
+  `COPY_RUNTIME_CURRENT_PAIR_NOT_CONFIRMED`: el recibo de la instalación
+  conserva el inventario y las definiciones que validó (PostgreSQL anterior a
+  PITR, contenedores antes de recrearlos). B02 (`B02_GCP_RUNTIME_NOT_ADOPTED`) y
+  el arranque durable comparaban lo mismo. Ahora `apply` deja en su diario la
+  referencia del recibo que extiende (`base_receipt_ref`) y los tres guardias
+  aceptan esa diferencia sólo con `b02_backup_contract.readoption_confirms`:
+  diario `APPLIED` de exactamente este estado y este plan, sobre el mismo
+  recibo, y el mismo conjunto de servicios. Todo lo demás del recibo
+  (estado, etapa, `run_id`, SHA, transición y reporte) se sigue comparando.
+  Un diario anterior a V7.1 (sin `base_receipt_ref`) no basta: hay que
+  readoptar con el código nuevo.
 
 ## 5. Pendiente de esta ADR (se completa en las siguientes entregas de F1)
 
