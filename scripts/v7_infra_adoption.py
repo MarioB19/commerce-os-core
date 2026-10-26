@@ -189,13 +189,14 @@ def propose(capture, state_raw, plan_raw, policy_raw, rows, networks, files_now,
     services = runtime.inspect_inventory(rows, portal=state['portal'], caddy_id=state['service_inventory']['caddy'])
     require(set(services) == set(state['service_inventory']), 'V7_ADOPTION_SERVICE_SET_CHANGED')
     before = {row['Id']: row for row in capture['rows']}
-    require({cid: runtime.definition_digest(before[cid]) for cid in before} == capture['sanitized_digests']
+    require(set(before) == set(capture['sanitized_digests'])
+            and all(runtime.definition_digest_matches(before[cid], capture['sanitized_digests'][cid]) for cid in before)
             and set(before) == set(state['service_inventory'].values()), 'V7_ADOPTION_CAPTURE_INVALID')
     summary = {'recreated': {}, 'unchanged': [], 'postgres': None}
     for name, old_id in sorted(state['service_inventory'].items()):
         row = services[name]
         if row['Id'] == old_id:
-            require(runtime.definition_digest(row) == state['preserved_runtime'][old_id], 'V7_ADOPTION_DEFINITION_CHANGED:'+name)
+            require(runtime.definition_digest_matches(row, state['preserved_runtime'][old_id]), 'V7_ADOPTION_DEFINITION_CHANGED:'+name)
             summary['unchanged'].append(name)
             continue
         require(name in APP or name == 'postgres', 'V7_ADOPTION_CONTAINER_REPLACED:'+name)
@@ -238,7 +239,7 @@ def propose(capture, state_raw, plan_raw, policy_raw, rows, networks, files_now,
         require(pitr_net['Internal'] is False and pitr_net['Driver'] == 'bridge' and pitr_net['EnableIPv6'] is False,
                 'V7_ADOPTION_PITR_NETWORK_INVALID')
     inventory = {name: row['Id'] for name, row in services.items()}
-    preserved = {row['Id']: runtime.definition_digest(row) for row in services.values()}
+    preserved = runtime.preserved_definitions(services, state['preserved_runtime'])
     new_plan = copy.deepcopy(plan)
     new_plan['preserved_runtime'] = preserved
     if summary['postgres']:

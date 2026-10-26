@@ -44,3 +44,56 @@ campo se normaliza.
   de búsqueda real sigue siendo distinto, también junto con el montaje del
   laboratorio; `CapAdd` `[]` contra `null` sigue siendo distinto; PITR sobre un
   PostgreSQL con `[]` se readopta y con un DNS real se rechaza.
+
+## V7.1 (25-oct-2026): digests neutrales a la codificación y continuidad de actualización
+
+**Problema.** La readopción del 21-oct (`v7_infra_adoption.py observe`) se
+detuvo en `V7_ADOPTION_DEFINITION_CHANGED:api`. Al reiniciar el daemon de
+Docker, los contenedores que no se recrean pasan de `null` a `[]` en esas tres
+listas. Así cambia su `definition_digest`, aunque nada cambió. La regla de
+arriba sólo cubría las comparaciones de `HostConfig`, no los digests guardados.
+
+**Medido en la copia de producción.** Los digests guardados por la V7
+(`preserved_runtime`) están **mezclados**:
+
+- api, web, ingress y los dos workers, recreados por el instalador, se guardaron con `null`;
+- caddy, portal, waha-01 y waha-03, preservados de antes, se guardaron con `[]`.
+
+Normalizar todo a `null` habría roto esos cuatro servicios. Con el inspect real,
+la única diferencia de `HostConfig` antes y después del reinicio son las tres
+listas (`tests/fixtures/docker-hostconfig-dns-encoding.json`).
+
+**Decisión.**
+
+- `definition_digest(row)` escribe el digest **canónico**: listas vacías como
+  `null`. Coincide con los digests ya guardados de los contenedores
+  recreados.
+- `definition_digest_matches(row, stored)` acepta un digest guardado si
+  describe al contenedor bajo cualquier codificación de sus listas vacías
+  (`null`, `[]` o ausente). Un valor no vacío nunca varía.
+- `preserved_digest` y `preserved_definitions` **conservan** el digest guardado
+  de un contenedor sin cambios mientras siga coincidiendo. Así, las demás
+  referencias guardadas (recibos de gateways y plan de B02) siguen iguales byte
+  por byte. Sólo un contenedor nuevo recibe el canónico.
+- Lo usan:
+  - el inventario del instalador (`validate_inventory`);
+  - el recibo de gateways;
+  - el estado y el recibo de adopción del instalador;
+  - el arranque durable (`runtime_boot_host.py`);
+  - la readopción (captura, servicios sin cambio y digests nuevos);
+  - B02 (`projection_matches` en `runtime_guard` y en la instalación de
+    herramientas, proyección v2).
+
+  La proyección v1 de B02 y las comparaciones entre dos lecturas vivas de la
+  misma operación no cambian.
+
+**Pruebas de continuidad** (`tests/ci/test_v7_engine_neutral_digest.py`):
+
+- El estado que escribió la versión anterior (digests mezclados, calculados con
+  la función de f0d71880), leído por esta versión después de un reinicio (todo
+  `[]`, todo `null` o ausente):
+  - la readopción es una identidad y conserva los digests;
+  - el inventario del instalador lo acepta;
+  - la guarda de B02 lo acepta.
+- Un DNS real en api o caddy se rechaza.
+- La función anterior falla igual que el 21-oct.

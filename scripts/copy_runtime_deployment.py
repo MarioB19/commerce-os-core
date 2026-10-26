@@ -8,6 +8,7 @@ remain the authority for those facts. Never print these input objects.
 import copy
 import datetime as dt
 import hashlib
+import itertools
 import json
 from pathlib import PurePosixPath
 import re
@@ -217,8 +218,58 @@ def static_projection(row):
     return definition
 
 
+# Engine encodings of an unset DNS list (docs/adr-v7-engine-neutral-dns.md).
+# Docker 29 reports Dns/DnsOptions/DnsSearch as null for a container this daemon
+# created and as [] once the daemon has restarted; both mean "no custom DNS".
+# Stored digests were written under either encoding, container by container.
+ENGINE_UNSET_ENCODINGS = ('null', 'list', 'absent')
+
+
+def engine_canonical_row(row):
+    """A copy of one inspect row whose unset DNS lists ([], null or absent) read as null."""
+    require(type(row) is dict and type(row.get('HostConfig')) is dict, 'COPY_RUNTIME_INSPECT_INVALID')
+    host = dict(row['HostConfig'])
+    for key in ENGINE_UNSET_HOST_LISTS:
+        if host.get(key) in (None, []):
+            host[key] = None
+    return dict(row, HostConfig=host)
+
+
+def engine_encodings(row):
+    """Every engine encoding of the unset DNS lists of one inspect row; a real value is never varied."""
+    require(type(row) is dict and type(row.get('HostConfig')) is dict, 'COPY_RUNTIME_INSPECT_INVALID')
+    unset = [key for key in ENGINE_UNSET_HOST_LISTS if row['HostConfig'].get(key) in (None, [])]
+    for choice in itertools.product(ENGINE_UNSET_ENCODINGS, repeat=len(unset)):
+        host = dict(row['HostConfig'])
+        for key, encoding in zip(unset, choice):
+            if encoding == 'absent':
+                host.pop(key, None)
+            else:
+                host[key] = None if encoding == 'null' else []
+        yield dict(row, HostConfig=host)
+
+
 def definition_digest(row):
-    return sha256(sealed_bytes(static_projection(row)))
+    """Canonical digest written from V7.1 on: unset DNS lists as null."""
+    return sha256(sealed_bytes(static_projection(engine_canonical_row(row))))
+
+
+def definition_digest_matches(row, stored):
+    """A stored digest still describes this container under any engine encoding of its unset DNS lists."""
+    return type(stored) is str and any(sha256(sealed_bytes(static_projection(view))) == stored
+                                       for view in engine_encodings(row))
+
+
+def preserved_digest(row, previous=None):
+    """The digest to keep for a container: its stored one while it still matches, else the canonical one.
+
+    Keeping the stored value of an unchanged container keeps every other stored
+    reference to it (gateway receipts, the B02 plan) byte-equal."""
+    return previous if previous is not None and definition_digest_matches(row, previous) else definition_digest(row)
+
+
+def preserved_definitions(services, previous):
+    return {row['Id']: preserved_digest(row, previous.get(row['Id'])) for row in services.values()}
 
 
 def live_projection(row):
@@ -361,7 +412,8 @@ def validate_inventory(state, rows):
                                  initial=state['runtime_stage'] == 'CORE_PREPARED')
     require({name: row['Id'] for name, row in services.items()} == state['service_inventory'],
             'COPY_RUNTIME_CONTAINER_SET_CHANGED')
-    require({row['Id']: definition_digest(row) for row in services.values()} == state['preserved_runtime'],
+    require({row['Id'] for row in services.values()} == set(state['preserved_runtime'])
+            and all(definition_digest_matches(row, state['preserved_runtime'][row['Id']]) for row in services.values()),
             'COPY_RUNTIME_STATIC_DEFINITION_CHANGED')
     return services
 
@@ -1552,7 +1604,7 @@ def verify_gateway_provisioning(server, root, state, services, workspace):
     """
     for name, receipt in state.get('gateway_provisioning', {}).items():
         overlay_raw = native.read_reference(receipt['overlay_ref'])
-        require(receipt['definition_sha256'] == definition_digest(services[name]),
+        require(definition_digest_matches(services[name], receipt['definition_sha256']),
                 'COPY_RUNTIME_GATEWAY_DEFINITION_CHANGED')
         operation = sql_literal(receipt['operation_id']); slot = str(receipt['slot'])
         query = ("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SELECT json_build_object('operation',"
@@ -1597,7 +1649,7 @@ def state_for_stage(before, services, root, report_ref, stage, observed_policy, 
         runtime_projection_version=2, current_release=str(root),
         canonical_files={name: native.reference(Path(private)/name, native.protected_bytes(Path(private)/name)) for name in FILES},
         service_inventory={name: row['Id'] for name, row in services.items()},
-        preserved_runtime={row['Id']: definition_digest(row) for row in services.values()},
+        preserved_runtime=preserved_definitions(services, before['state'].get('preserved_runtime') or {}),
         owner_workspace_id=before['workspace'], policy_version=observed_policy['policy_version'],
         policy_body_sha256=observed_policy['policy_body_sha256'], last_release_receipt_ref=report_ref,
         gateway_provisioning=copy.deepcopy(before.get('gateway_provisioning', before['state'].get('gateway_provisioning', {}))),
@@ -1667,7 +1719,7 @@ def commit_stage(server, root, report_dir, before, services, report, stage, revi
     receipt = {'schema_version': 1, 'source_sha': report['source_sha'], 'run_id': report['run_id'],
         'status': 'VALIDATED_FOR_PAIR_CAS', 'runtime_stage': stage, 'physical_sales_proven': False,
         'service_inventory': {name: row['Id'] for name, row in services.items()},
-        'preserved_runtime': {row['Id']: definition_digest(row) for row in services.values()}}
+        'preserved_runtime': preserved_definitions(services, before['state'].get('preserved_runtime') or {})}
     receipt_raw = (json.dumps(receipt, sort_keys=True)+'\n').encode()
     receipt_path = report_dir/'adoption-receipt.json'
     fd = os.open(receipt_path, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)

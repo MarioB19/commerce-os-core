@@ -23,8 +23,8 @@ import time
 import urllib.parse
 import uuid
 from b02_backup_contract import (BACKUP_TIMEOUT, DAILY, MAX_BYTES, ORIGINAL_MINIMUM, ORIGINAL_MINIMUM_UID, PRIVATE, SOURCE_FILES,
-    TERMINAL, VM_ID, check_run_budget, hash_identity, need, projection_digest, reference,
-    run_identity, backup_run_identity, gcp_run_identity, canonical, utc_time, gcp_binding, gcp_job_guard, gcp_scheduler_guard, gcp_execution_guard, gcp_task_name, GCP_JOB, GCP_SCHEDULER, GCP_EXECUTOR, GCP_BINDING_FIELDS, GCP_FINANCIAL_END, GCP_FINANCIAL_ORIGINAL_END, TARGET, sha256, unique_json, validate_custody, plan_version, PORTAL_HELPER,
+    TERMINAL, VM_ID, check_run_budget, hash_identity, need, projection_digest, projection_matches, reference,
+    run_identity, backup_run_identity, gcp_run_identity, canonical, utc_time, gcp_binding, gcp_job_guard, gcp_scheduler_guard, gcp_execution_guard, gcp_task_name, GCP_JOB, GCP_SCHEDULER, GCP_EXECUTOR, GCP_BINDING_FIELDS, GCP_FINANCIAL_END, GCP_FINANCIAL_ORIGINAL_END, GCP_FINANCIAL_PERIOD, GCP_RENEWAL_LEAD, financial_period_boundary, next_financial_end, TARGET, sha256, unique_json, validate_custody, plan_version, PORTAL_HELPER,
     PORTAL_BASE, PORTAL_FIELDS, PORTAL_MAX_BYTES, PDF_NAMES, export_names, ciphertext_header, validate_portal_backup)
 
 
@@ -254,9 +254,16 @@ def prepare_reviewed_controllers(manifest_ref, candidate_root, expected_sha, bef
         need(candidate_adoption.get('schema_version') == version
              and (stage is None or candidate_adoption.get('runtime_stage') == stage)
              and isinstance(runtime_rows, dict), 'BACKUP_TOOL_RUNTIME_STAGE_INVALID')
-        expected = {cid: projection_digest(row, 2 if version == 3 else 1) for cid, row in runtime_rows.items()}
+        stored = candidate_adoption.get('preserved_runtime')
+        if version == 3:  # the adopted digests stay authoritative while they still describe each container
+            need(isinstance(stored, dict) and set(stored) == set(runtime_rows)
+                 and all(projection_matches(row, stored.get(cid), 2) for cid, row in runtime_rows.items()),
+                 'BACKUP_TOOL_RUNTIME_PROJECTION_INVALID')
+            expected = dict(stored)
+        else:
+            expected = {cid: projection_digest(row, 1) for cid, row in runtime_rows.items()}
         need(all(cid == row.get('Id') and re.fullmatch(r'[a-f0-9]{64}', cid) for cid, row in runtime_rows.items())
-             and candidate_adoption.get('preserved_runtime') == expected and old['postgres']['container_id'] in expected
+             and stored == expected and old['postgres']['container_id'] in expected
              and portal['container_id'] in expected,
              'BACKUP_TOOL_RUNTIME_PROJECTION_INVALID')
         result_plan = dict(old, schema_version=version, controller_sources={name: approved['tools'][name]['sha256'] for name in CONTROLLER_NAMES},
@@ -565,7 +572,7 @@ class BackupRunner:
     def runtime_guard(self):
         need(set(self.command(['ps', '-aq', '--no-trunc']).split()) == set(self.plan['preserved_runtime']), 'BACKUP_RUNTIME_INVENTORY_DRIFT')
         for cid, expected in self.plan['preserved_runtime'].items():
-            need(projection_digest(self.inspect(cid), self.plan.get('runtime_projection_version', 1)) == expected, 'BACKUP_RUNTIME_PROJECTION_DRIFT')
+            need(projection_matches(self.inspect(cid), expected, self.plan.get('runtime_projection_version', 1)), 'BACKUP_RUNTIME_PROJECTION_DRIFT')
         pg = self.inspect(self.plan['postgres']['container_id'])
         need(pg['Image'] == self.plan['postgres']['image'] and pg['State']['Running'] is True
              and self.plan['postgres']['network'] in pg['NetworkSettings']['Networks'], 'BACKUP_POSTGRES_DRIFT')
@@ -1196,23 +1203,31 @@ def schedule_terminal_guard():
             need(unique_json(read_file(intent)).get('status') == 'APPLIED', 'B02_GCP_CUTOVER_RECONCILIATION_REQUIRED')
 
 
-def financial_renewal(previous, binding):
-    """The single owner-authorized renewal: original end → renewed end, only into MANUAL
-    (SCHEDULED keeps every financial field of its MANUAL binding)."""
-    return (utc_time(previous['valid_until']) == GCP_FINANCIAL_ORIGINAL_END
-            and utc_time(binding['valid_until']) == GCP_FINANCIAL_END and binding['mode'] == 'MANUAL')
+def financial_renewal(previous, binding, now):
+    """A renewal is accepted only into MANUAL (SCHEDULED keeps every financial field of its MANUAL binding):
+    the owner's 16-oct renewal (2026-11-04 → 2026-12-04), or, from a period end, the next bounded
+    30-day period, sealed at most GCP_RENEWAL_LEAD before the current end (docs/adr-v7-b02-renewal.md)."""
+    if binding['mode'] != 'MANUAL':
+        return False
+    old_end, new_end = utc_time(previous['valid_until']), utc_time(binding['valid_until'])
+    if old_end == GCP_FINANCIAL_ORIGINAL_END and new_end == GCP_FINANCIAL_END:
+        return True
+    return (financial_period_boundary(old_end) and now >= old_end - GCP_RENEWAL_LEAD
+            and new_end == next_financial_end(old_end, now))
 
 
 def cutover_facts(runner, binding, token):
     gcp_binding(binding); schedule_terminal_guard()
     state_raw = gcp_pair(runner, binding)
     old_binding = read_file(GCP_BINDING_PATH) if GCP_BINDING_PATH.exists() or GCP_BINDING_PATH.is_symlink() else None
+    now = dt.datetime.now(dt.timezone.utc)
     if old_binding:
         previous = gcp_binding(unique_json(old_binding))
         need(binding['valid_from'] == previous['valid_from']
-             and (binding['valid_until'] == previous['valid_until'] or financial_renewal(previous, binding)),
+             and (binding['valid_until'] == previous['valid_until'] or financial_renewal(previous, binding, now)),
              'B02_GCP_FINANCIAL_RENEWAL_FORBIDDEN')
-    now = dt.datetime.now(dt.timezone.utc)
+    need(utc_time(binding['valid_until']) - now <= GCP_FINANCIAL_PERIOD + GCP_RENEWAL_LEAD
+         or utc_time(binding['valid_until']) <= GCP_FINANCIAL_END, 'B02_GCP_AUTHORIZATION_WINDOW_INVALID')
     need(utc_time(binding['valid_from']) <= now < utc_time(binding['valid_until']), 'B02_GCP_AUTHORIZATION_EXPIRED')
     plan = dict(runner.plan, schedule_enabled=binding['mode']=='SCHEDULED')
     plan_raw = (json.dumps(plan, sort_keys=True)+'\n').encode()

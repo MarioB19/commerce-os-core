@@ -1,0 +1,509 @@
+{
+ "_note": "Real HostConfig of two production containers (V7 install, 21-oct-2026), captured by v7_infra_adoption capture before the Docker daemon restart and inspected after it in the 25-oct laboratory copy. Private paths anonymized; no Config or Env.",
+ "api": {
+  "captured_2026_10_21_before_daemon_restart": {
+   "AutoRemove": false,
+   "Binds": [
+    "/opt/commerce-os/private/restored-private:/data/private:rw"
+   ],
+   "BlkioDeviceReadBps": null,
+   "BlkioDeviceReadIOps": null,
+   "BlkioDeviceWriteBps": null,
+   "BlkioDeviceWriteIOps": null,
+   "BlkioWeight": 0,
+   "BlkioWeightDevice": null,
+   "CapAdd": null,
+   "CapDrop": [
+    "ALL"
+   ],
+   "Cgroup": "",
+   "CgroupParent": "",
+   "CgroupnsMode": "private",
+   "ConsoleSize": [
+    0,
+    0
+   ],
+   "ContainerIDFile": "",
+   "CpuCount": 0,
+   "CpuPercent": 0,
+   "CpuPeriod": 0,
+   "CpuQuota": 0,
+   "CpuRealtimePeriod": 0,
+   "CpuRealtimeRuntime": 0,
+   "CpuShares": 0,
+   "CpusetCpus": "",
+   "CpusetMems": "",
+   "DeviceCgroupRules": null,
+   "DeviceRequests": null,
+   "Devices": null,
+   "Dns": null,
+   "DnsOptions": null,
+   "DnsSearch": null,
+   "ExtraHosts": [],
+   "GroupAdd": null,
+   "IOMaximumBandwidth": 0,
+   "IOMaximumIOps": 0,
+   "Init": true,
+   "IpcMode": "private",
+   "Isolation": "",
+   "Links": null,
+   "LogConfig": {
+    "Config": {
+     "max-file": "3",
+     "max-size": "10m"
+    },
+    "Type": "json-file"
+   },
+   "MaskedPaths": [
+    "/proc/acpi",
+    "/proc/asound",
+    "/proc/interrupts",
+    "/proc/kcore",
+    "/proc/keys",
+    "/proc/latency_stats",
+    "/proc/sched_debug",
+    "/proc/scsi",
+    "/proc/timer_list",
+    "/proc/timer_stats",
+    "/sys/devices/virtual/powercap",
+    "/sys/firmware"
+   ],
+   "Memory": 536870912,
+   "MemoryReservation": 0,
+   "MemorySwap": 1073741824,
+   "MemorySwappiness": null,
+   "NanoCpus": 600000000,
+   "NetworkMode": "commerce-os_core",
+   "OomKillDisable": null,
+   "OomScoreAdj": 0,
+   "PidMode": "",
+   "PidsLimit": 100,
+   "PortBindings": {},
+   "Privileged": false,
+   "PublishAllPorts": false,
+   "ReadonlyPaths": [
+    "/proc/bus",
+    "/proc/fs",
+    "/proc/irq",
+    "/proc/sys",
+    "/proc/sysrq-trigger"
+   ],
+   "ReadonlyRootfs": true,
+   "RestartPolicy": {
+    "MaximumRetryCount": 0,
+    "Name": "unless-stopped"
+   },
+   "Runtime": "runc",
+   "SecurityOpt": [
+    "no-new-privileges:true"
+   ],
+   "ShmSize": 67108864,
+   "Sysctls": {
+    "net.ipv4.ip_forward": "0",
+    "net.ipv6.conf.all.forwarding": "0"
+   },
+   "Tmpfs": {
+    "/tmp": "size=64m,noexec,nosuid"
+   },
+   "UTSMode": "",
+   "Ulimits": null,
+   "UsernsMode": "",
+   "VolumeDriver": "",
+   "VolumesFrom": null
+  },
+  "inspected_after_daemon_restart": {
+   "AutoRemove": false,
+   "Binds": [
+    "/opt/commerce-os/private/restored-private:/data/private:rw"
+   ],
+   "BlkioDeviceReadBps": null,
+   "BlkioDeviceReadIOps": null,
+   "BlkioDeviceWriteBps": null,
+   "BlkioDeviceWriteIOps": null,
+   "BlkioWeight": 0,
+   "BlkioWeightDevice": null,
+   "CapAdd": null,
+   "CapDrop": [
+    "ALL"
+   ],
+   "Cgroup": "",
+   "CgroupParent": "",
+   "CgroupnsMode": "private",
+   "ConsoleSize": [
+    0,
+    0
+   ],
+   "ContainerIDFile": "",
+   "CpuCount": 0,
+   "CpuPercent": 0,
+   "CpuPeriod": 0,
+   "CpuQuota": 0,
+   "CpuRealtimePeriod": 0,
+   "CpuRealtimeRuntime": 0,
+   "CpuShares": 0,
+   "CpusetCpus": "",
+   "CpusetMems": "",
+   "DeviceCgroupRules": null,
+   "DeviceRequests": null,
+   "Devices": null,
+   "Dns": [],
+   "DnsOptions": [],
+   "DnsSearch": [],
+   "ExtraHosts": [],
+   "GroupAdd": null,
+   "IOMaximumBandwidth": 0,
+   "IOMaximumIOps": 0,
+   "Init": true,
+   "IpcMode": "private",
+   "Isolation": "",
+   "Links": null,
+   "LogConfig": {
+    "Config": {
+     "max-file": "3",
+     "max-size": "10m"
+    },
+    "Type": "json-file"
+   },
+   "MaskedPaths": [
+    "/proc/acpi",
+    "/proc/asound",
+    "/proc/interrupts",
+    "/proc/kcore",
+    "/proc/keys",
+    "/proc/latency_stats",
+    "/proc/sched_debug",
+    "/proc/scsi",
+    "/proc/timer_list",
+    "/proc/timer_stats",
+    "/sys/devices/virtual/powercap",
+    "/sys/firmware"
+   ],
+   "Memory": 536870912,
+   "MemoryReservation": 0,
+   "MemorySwap": 1073741824,
+   "MemorySwappiness": null,
+   "NanoCpus": 600000000,
+   "NetworkMode": "commerce-os_core",
+   "OomKillDisable": null,
+   "OomScoreAdj": 0,
+   "PidMode": "",
+   "PidsLimit": 100,
+   "PortBindings": {},
+   "Privileged": false,
+   "PublishAllPorts": false,
+   "ReadonlyPaths": [
+    "/proc/bus",
+    "/proc/fs",
+    "/proc/irq",
+    "/proc/sys",
+    "/proc/sysrq-trigger"
+   ],
+   "ReadonlyRootfs": true,
+   "RestartPolicy": {
+    "MaximumRetryCount": 0,
+    "Name": "unless-stopped"
+   },
+   "Runtime": "runc",
+   "SecurityOpt": [
+    "no-new-privileges:true"
+   ],
+   "ShmSize": 67108864,
+   "Sysctls": {
+    "net.ipv4.ip_forward": "0",
+    "net.ipv6.conf.all.forwarding": "0"
+   },
+   "Tmpfs": {
+    "/tmp": "size=64m,noexec,nosuid"
+   },
+   "UTSMode": "",
+   "Ulimits": null,
+   "UsernsMode": "",
+   "VolumeDriver": "",
+   "VolumesFrom": null
+  }
+ },
+ "caddy": {
+  "captured_2026_10_21_before_daemon_restart": {
+   "AutoRemove": false,
+   "Binds": null,
+   "BlkioDeviceReadBps": [],
+   "BlkioDeviceReadIOps": [],
+   "BlkioDeviceWriteBps": [],
+   "BlkioDeviceWriteIOps": [],
+   "BlkioWeight": 0,
+   "BlkioWeightDevice": [],
+   "CapAdd": [
+    "CAP_NET_BIND_SERVICE"
+   ],
+   "CapDrop": [
+    "ALL"
+   ],
+   "Cgroup": "",
+   "CgroupParent": "",
+   "CgroupnsMode": "private",
+   "ConsoleSize": [
+    0,
+    0
+   ],
+   "ContainerIDFile": "/opt/commerce-os/private/caddy-core-maintenance-1eb7a1512c3c4389ab1f4a37baf5d902/caddy-created.cid",
+   "CpuCount": 0,
+   "CpuPercent": 0,
+   "CpuPeriod": 0,
+   "CpuQuota": 0,
+   "CpuRealtimePeriod": 0,
+   "CpuRealtimeRuntime": 0,
+   "CpuShares": 0,
+   "CpusetCpus": "",
+   "CpusetMems": "",
+   "DeviceCgroupRules": null,
+   "DeviceRequests": null,
+   "Devices": [],
+   "Dns": [],
+   "DnsOptions": [],
+   "DnsSearch": [],
+   "ExtraHosts": null,
+   "GroupAdd": null,
+   "IOMaximumBandwidth": 0,
+   "IOMaximumIOps": 0,
+   "Init": true,
+   "IpcMode": "private",
+   "Isolation": "",
+   "Links": null,
+   "LogConfig": {
+    "Config": {
+     "max-file": "2",
+     "max-size": "5m"
+    },
+    "Type": "json-file"
+   },
+   "MaskedPaths": [
+    "/proc/acpi",
+    "/proc/asound",
+    "/proc/interrupts",
+    "/proc/kcore",
+    "/proc/keys",
+    "/proc/latency_stats",
+    "/proc/sched_debug",
+    "/proc/scsi",
+    "/proc/timer_list",
+    "/proc/timer_stats",
+    "/sys/devices/virtual/powercap",
+    "/sys/firmware"
+   ],
+   "Memory": 268435456,
+   "MemoryReservation": 0,
+   "MemorySwap": 536870912,
+   "MemorySwappiness": null,
+   "Mounts": [
+    {
+     "ReadOnly": true,
+     "Source": "/opt/commerce-os/private/caddy-core-maintenance-1eb7a1512c3c4389ab1f4a37baf5d902/Caddyfile",
+     "Target": "/etc/caddy/Caddyfile",
+     "Type": "bind"
+    },
+    {
+     "Source": "/opt/commerce-os/private/caddy-core-maintenance-1eb7a1512c3c4389ab1f4a37baf5d902/data",
+     "Target": "/data",
+     "Type": "bind"
+    },
+    {
+     "Source": "/opt/commerce-os/private/caddy-core-maintenance-1eb7a1512c3c4389ab1f4a37baf5d902/config",
+     "Target": "/config",
+     "Type": "bind"
+    }
+   ],
+   "NanoCpus": 250000000,
+   "NetworkMode": "commerce-os_caddy-edge",
+   "OomKillDisable": null,
+   "OomScoreAdj": 0,
+   "PidMode": "",
+   "PidsLimit": 80,
+   "PortBindings": {
+    "443/tcp": [
+     {
+      "HostIp": "0.0.0.0",
+      "HostPort": "443"
+     }
+    ],
+    "80/tcp": [
+     {
+      "HostIp": "0.0.0.0",
+      "HostPort": "80"
+     }
+    ]
+   },
+   "Privileged": false,
+   "PublishAllPorts": false,
+   "ReadonlyPaths": [
+    "/proc/bus",
+    "/proc/fs",
+    "/proc/irq",
+    "/proc/sys",
+    "/proc/sysrq-trigger"
+   ],
+   "ReadonlyRootfs": true,
+   "RestartPolicy": {
+    "MaximumRetryCount": 0,
+    "Name": "unless-stopped"
+   },
+   "Runtime": "runc",
+   "SecurityOpt": [
+    "no-new-privileges:true"
+   ],
+   "ShmSize": 67108864,
+   "Sysctls": {
+    "net.ipv4.ip_forward": "0",
+    "net.ipv6.conf.all.forwarding": "0"
+   },
+   "Tmpfs": {
+    "/tmp": "rw,noexec,nosuid,size=32m,uid=0,gid=0"
+   },
+   "UTSMode": "",
+   "Ulimits": null,
+   "UsernsMode": "",
+   "VolumeDriver": "",
+   "VolumesFrom": null
+  },
+  "inspected_after_daemon_restart": {
+   "AutoRemove": false,
+   "Binds": null,
+   "BlkioDeviceReadBps": [],
+   "BlkioDeviceReadIOps": [],
+   "BlkioDeviceWriteBps": [],
+   "BlkioDeviceWriteIOps": [],
+   "BlkioWeight": 0,
+   "BlkioWeightDevice": [],
+   "CapAdd": [
+    "CAP_NET_BIND_SERVICE"
+   ],
+   "CapDrop": [
+    "ALL"
+   ],
+   "Cgroup": "",
+   "CgroupParent": "",
+   "CgroupnsMode": "private",
+   "ConsoleSize": [
+    0,
+    0
+   ],
+   "ContainerIDFile": "/opt/commerce-os/private/caddy-core-maintenance-1eb7a1512c3c4389ab1f4a37baf5d902/caddy-created.cid",
+   "CpuCount": 0,
+   "CpuPercent": 0,
+   "CpuPeriod": 0,
+   "CpuQuota": 0,
+   "CpuRealtimePeriod": 0,
+   "CpuRealtimeRuntime": 0,
+   "CpuShares": 0,
+   "CpusetCpus": "",
+   "CpusetMems": "",
+   "DeviceCgroupRules": null,
+   "DeviceRequests": null,
+   "Devices": [],
+   "Dns": [],
+   "DnsOptions": [],
+   "DnsSearch": [],
+   "ExtraHosts": null,
+   "GroupAdd": null,
+   "IOMaximumBandwidth": 0,
+   "IOMaximumIOps": 0,
+   "Init": true,
+   "IpcMode": "private",
+   "Isolation": "",
+   "Links": null,
+   "LogConfig": {
+    "Config": {
+     "max-file": "2",
+     "max-size": "5m"
+    },
+    "Type": "json-file"
+   },
+   "MaskedPaths": [
+    "/proc/acpi",
+    "/proc/asound",
+    "/proc/interrupts",
+    "/proc/kcore",
+    "/proc/keys",
+    "/proc/latency_stats",
+    "/proc/sched_debug",
+    "/proc/scsi",
+    "/proc/timer_list",
+    "/proc/timer_stats",
+    "/sys/devices/virtual/powercap",
+    "/sys/firmware"
+   ],
+   "Memory": 268435456,
+   "MemoryReservation": 0,
+   "MemorySwap": 536870912,
+   "MemorySwappiness": null,
+   "Mounts": [
+    {
+     "ReadOnly": true,
+     "Source": "/opt/commerce-os/private/caddy-core-maintenance-1eb7a1512c3c4389ab1f4a37baf5d902/Caddyfile",
+     "Target": "/etc/caddy/Caddyfile",
+     "Type": "bind"
+    },
+    {
+     "Source": "/opt/commerce-os/private/caddy-core-maintenance-1eb7a1512c3c4389ab1f4a37baf5d902/data",
+     "Target": "/data",
+     "Type": "bind"
+    },
+    {
+     "Source": "/opt/commerce-os/private/caddy-core-maintenance-1eb7a1512c3c4389ab1f4a37baf5d902/config",
+     "Target": "/config",
+     "Type": "bind"
+    }
+   ],
+   "NanoCpus": 250000000,
+   "NetworkMode": "commerce-os_caddy-edge",
+   "OomKillDisable": null,
+   "OomScoreAdj": 0,
+   "PidMode": "",
+   "PidsLimit": 80,
+   "PortBindings": {
+    "443/tcp": [
+     {
+      "HostIp": "0.0.0.0",
+      "HostPort": "443"
+     }
+    ],
+    "80/tcp": [
+     {
+      "HostIp": "0.0.0.0",
+      "HostPort": "80"
+     }
+    ]
+   },
+   "Privileged": false,
+   "PublishAllPorts": false,
+   "ReadonlyPaths": [
+    "/proc/bus",
+    "/proc/fs",
+    "/proc/irq",
+    "/proc/sys",
+    "/proc/sysrq-trigger"
+   ],
+   "ReadonlyRootfs": true,
+   "RestartPolicy": {
+    "MaximumRetryCount": 0,
+    "Name": "unless-stopped"
+   },
+   "Runtime": "runc",
+   "SecurityOpt": [
+    "no-new-privileges:true"
+   ],
+   "ShmSize": 67108864,
+   "Sysctls": {
+    "net.ipv4.ip_forward": "0",
+    "net.ipv6.conf.all.forwarding": "0"
+   },
+   "Tmpfs": {
+    "/tmp": "rw,noexec,nosuid,size=32m,uid=0,gid=0"
+   },
+   "UTSMode": "",
+   "Ulimits": null,
+   "UsernsMode": "",
+   "VolumeDriver": "",
+   "VolumesFrom": null
+  }
+ }
+}
