@@ -1,5 +1,19 @@
 # Estado de publicación
 
+## 26-oct-2026 — audit de dependencias del FULL de V7.1 (Agente: Claude)
+
+El FULL de `main` `a34914b6` (Build `5ba058ed`) pasó las 20 etapas de prueba,
+incluidas integración, recuperación y e2e. Falló sólo en `pnpm audit
+--audit-level high`: después del 21-oct se publicaron avisos altos para `zod`
+< 4.6.6 (GHSA-mrhx-c7xc-m3w5) y `body-parser` 2.0.0–2.3.x
+(GHSA-27r3-jxmh-p828, vía `@modelcontextprotocol/sdk` → `express`).
+
+- `zod` 4.5.4 → 4.6.7 (raíz y `@commerce/mcp`).
+- Override `body-parser@>=2.0.0 <2.4.0` → 2.4.0 (dentro del rango `^2.3.0` de
+  `express` 5.3.0).
+- `pnpm audit --audit-level high`: sin avisos altos. Sin migraciones ni cambios
+  de código de aplicación. Fusionar no instala.
+
 ## 26-oct-2026 — bolsa de CI a 1,800 min y medidor a 70,000 s (Agente: Claude)
 
 Rama `claude/v7-1-ci-pool` ([ADR](adr-v7-ci-pool-third-extension.md)). Brandon

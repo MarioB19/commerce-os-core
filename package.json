@@ -54,7 +54,8 @@
       "proxy-addr@^2.0.0": "2.0.8",
       "brace-expansion@^5.0.0": "5.0.11",
       "source-map-js@^1.0.0": "1.2.2",
-      "nodemailer@>=10.0.0 <10.0.6": "$nodemailer"
+      "nodemailer@>=10.0.0 <10.0.6": "$nodemailer",
+      "body-parser@>=2.0.0 <2.4.0": "2.4.0"
     },
     "onlyBuiltDependencies": [
       "esbuild",
@@ -72,7 +73,7 @@
     "nodemailer": "10.0.6",
     "pg": "8.23.0",
     "pg-boss": "12.30.0",
-    "zod": "4.5.4",
+    "zod": "4.6.7",
     "tsx": "4.23.13"
   }
 }
