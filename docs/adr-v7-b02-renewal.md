@@ -84,3 +84,53 @@ arquitectura de B02: mismo Job, mismo Scheduler, misma cuota y mismas guardas.
   rechaza 20-nov, 4-dic + 1 s y 3-nov; el plan de alta marca la renovación.
 - Suite Python de CI completa: 1,807 pruebas.
 - Portal: `npm run validate` desde una exportación limpia del árbol.
+
+## V7.1 (25-oct-2026): renovación recurrente acotada después del 4-dic
+
+**Problema.** Con el código anterior, B02 deja de funcionar el 2026-12-04: no
+hay ninguna renovación posible después de ese fin (`GCP_FINANCIAL_END`).
+
+**Decisión.**
+
+- **Periodos.** Después del 4-dic, la vinculación se renueva por periodos de 30
+  días contados desde `GCP_FINANCIAL_START`: 04-nov, 04-dic, 03-ene, 02-feb…
+  (`financial_period_boundary` y `next_financial_end` en
+  `b02_backup_contract.py`).
+- **Root acepta una renovación** (`financial_renewal(previous, binding, now)`)
+  sólo si:
+  - el modo es `MANUAL`;
+  - parte del fin de un periodo;
+  - se sella como mucho `GCP_RENEWAL_LEAD` (7 días) antes de ese fin;
+  - el fin nuevo es exactamente el siguiente periodo (si B02 caducó, el
+    periodo en curso).
+
+  La renovación del dueño del 16-oct (04-nov → 04-dic) se acepta como antes.
+- **Vuelta a `SCHEDULED`**, con las mismas guardas: una custodia genuina en
+  `MANUAL` de esa misma vinculación y todos los campos financieros de su
+  `MANUAL`. Misma cuota de 37 corridas en 30 días y un solo Scheduler.
+- **Límite.** El transporte (`gcp_execution_guard`) y Root rechazan cualquier
+  vinculación autorizada más de un periodo más la anticipación (37 días) por
+  delante. El plan de alta (`setup_plan`) sólo acepta fines de periodo dentro de
+  ese límite. La condición IAM del invocador sigue siendo `valid_until − 30 min`
+  y se actualiza en cada renovación.
+
+**Operación por periodo** (unos 30 min, la última semana del periodo):
+
+1. pausar el Scheduler;
+2. `bind` con el fin nuevo → `gcp-observe` → `gcp-seal` → `gcp-apply` en `MANUAL`;
+3. condición IAM hasta el fin nuevo menos 30 min;
+4. corrida manual genuina y su custodia;
+5. `gcp-propose-scheduled` → `observe`/`seal`/`apply` en `SCHEDULED`;
+6. reanudar el Scheduler.
+
+**Costo.** No cambia: el mismo Job diario. Con lo observado (≈ MXN 0.65 por
+día en Cloud Run más el almacenamiento) son ≈ USD 1–2 al mes, dentro de los
+USD 5 adicionales que autorizó Brandon (25-oct).
+
+**Pruebas** (`tests/ci/test_b02_gcp.py`):
+
+- fines de periodo y siguiente fin;
+- se rechaza renovar antes de los 7 días, directo a `SCHEDULED`, saltando un
+  periodo o con un periodo ya vencido;
+- `cutover_facts` renueva enero sólo desde diciembre;
+- el plan de alta y el transporte rechazan vinculaciones demasiado adelantadas.

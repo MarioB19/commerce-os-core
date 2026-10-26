@@ -169,14 +169,47 @@ class IdentityAndNativeContracts(unittest.TestCase):
         self.assertEqual(c.GCP_FINANCIAL_END,dt.datetime(2026,12,4,tzinfo=dt.timezone.utc))
         self.assertEqual(c.gcp_binding(b|{'valid_until':'2026-12-04T00:00:00Z'})['valid_until'],'2026-12-04T00:00:00Z')
         renewed=b|{'valid_until':'2026-12-04T00:00:00Z'}
-        self.assertTrue(r.financial_renewal(b,renewed))
+        self.assertTrue(r.financial_renewal(b,renewed,NOW))
         for previous,candidate in ((b,renewed|{'mode':'SCHEDULED'}),(b,b|{'valid_until':'2026-11-20T00:00:00Z'}),
                                    (b|{'valid_until':'2026-11-03T00:00:00Z'},renewed),(renewed,b)):
-            with self.subTest(candidate=candidate['valid_until'],mode=candidate['mode']):self.assertFalse(r.financial_renewal(previous,candidate))
+            with self.subTest(candidate=candidate['valid_until'],mode=candidate['mode']):self.assertFalse(r.financial_renewal(previous,candidate,NOW))
         config,*_=fixtures()
         self.assertIs(s.setup_plan(config)['financial']['renewal'],False)
         self.assertIs(s.setup_plan(config|{'valid_until':'2026-12-04T00:00:00Z'})['financial']['renewal'],True)
         with self.assertRaisesRegex(RuntimeError,'FINANCIAL_EXPIRY'):s.setup_plan(config|{'valid_until':'2026-12-04T00:00:01Z'})
+
+    def test_recurring_renewal_is_bounded_to_the_next_30_day_period(self):
+        """V7.1: after 2026-12-04, one 30-day period at a time, only into MANUAL, at most 7 days early."""
+        at=lambda text:c.utc_time(text)
+        for end in ('2026-11-04T00:00:00Z','2026-12-04T00:00:00Z','2027-01-03T00:00:00Z','2027-02-02T00:00:00Z'):
+            with self.subTest(end=end):self.assertTrue(c.financial_period_boundary(at(end)))
+        for end in ('2026-10-05T00:00:00Z','2026-12-05T00:00:00Z','2027-01-03T00:00:01Z'):
+            with self.subTest(end=end):self.assertFalse(c.financial_period_boundary(at(end)))
+        dec,jan,feb=at('2026-12-04T00:00:00Z'),at('2027-01-03T00:00:00Z'),at('2027-02-02T00:00:00Z')
+        self.assertEqual(c.next_financial_end(dec,at('2026-11-28T00:00:00Z')),jan)
+        self.assertEqual(c.next_financial_end(dec,at('2026-12-20T00:00:00Z')),jan)  # lapsed: the current period
+        self.assertEqual(c.next_financial_end(dec,at('2027-01-05T00:00:00Z')),feb)
+        _,b,j,_,_,e,t=fixtures()
+        december=b|{'valid_until':'2026-12-04T00:00:00Z'};january=b|{'valid_until':'2027-01-03T00:00:00Z','activation_id':'synthetic-renewal-2'}
+        self.assertEqual(c.gcp_binding(january)['valid_until'],'2027-01-03T00:00:00Z')
+        with self.assertRaisesRegex(RuntimeError,'WINDOW'):c.gcp_binding(b|{'valid_until':'2027-01-04T00:00:00Z'})
+        self.assertTrue(r.financial_renewal(december,january,at('2026-11-27T00:00:00Z')))
+        self.assertTrue(r.financial_renewal(december|{'mode':'SCHEDULED'},january,at('2026-12-03T23:00:00Z')))
+        for previous,candidate,now in ((december,january,at('2026-11-26T23:59:59Z')),            # more than 7 days early
+                                       (december,january|{'mode':'SCHEDULED'},at('2026-11-28T00:00:00Z')),  # never straight to SCHEDULED
+                                       (december,b|{'valid_until':'2027-02-02T00:00:00Z'},at('2026-11-28T00:00:00Z')),  # skips a period
+                                       (december,january,at('2027-01-05T00:00:00Z')),            # lapsed: January already ended
+                                       (b,january,at('2026-11-28T00:00:00Z'))):                  # not from the previous end
+            with self.subTest(previous=previous['valid_until'],candidate=candidate['valid_until'],now=now.isoformat()):
+                self.assertFalse(r.financial_renewal(previous,candidate,now))
+        self.assertTrue(r.financial_renewal(december,b|{'valid_until':'2027-02-02T00:00:00Z'},at('2027-01-05T00:00:00Z')))
+        config,*_=fixtures()
+        self.assertIs(s.setup_plan(config|{'valid_until':'2027-01-03T00:00:00Z'},now=at('2026-11-28T00:00:00Z'))['financial']['renewal'],True)
+        for until,now in (('2027-01-03T00:00:00Z',at('2026-10-25T00:00:00Z')),('2027-01-04T00:00:00Z',at('2026-11-28T00:00:00Z'))):
+            with self.subTest(until=until),self.assertRaisesRegex(RuntimeError,'FINANCIAL_EXPIRY'):s.setup_plan(config|{'valid_until':until},now=now)
+        # The transport never runs a binding authorized more than one period plus the lead ahead.
+        early=january|{'valid_until':'2027-01-03T00:00:00Z'}
+        with self.assertRaisesRegex(RuntimeError,'WINDOW'):c.gcp_execution_guard(early,j,e,t,at('2026-11-20T00:00:00Z'))
 
     def test_schedule_exact_window_invoker_retry_and_inactive_readback(self):
         _,b,j,sc,_,e,t=fixtures('SCHEDULED')
@@ -525,12 +558,13 @@ class NeverStartedAuthorizationReconciliation(unittest.TestCase):
 
 
 class CutoverNativeFacts(unittest.TestCase):
-    def exercise(self, *, drift=None, renewal_until=None):
+    def exercise(self, *, drift=None, renewal_until=None, previous_until=None, now=NOW):
         _,binding,*_=fixtures();plan={'schedule_enabled':False,'preserved':'unchanged'}
+        if previous_until:binding['valid_until']=previous_until
         raw=(json.dumps(plan,sort_keys=True)+'\n').encode();binding['plan_sha256']=c.sha256(raw)
         class Clock(dt.datetime):
             @classmethod
-            def now(cls,tz=None):return NOW
+            def now(cls,tz=None):return now
         with tempfile.TemporaryDirectory() as temporary,contextlib.ExitStack() as stack:
             private=Path(temporary);daily=private/'daily-b02';daily.mkdir();runs=daily/'runs';runs.mkdir();directory=runs/c.gcp_run_identity(UID);directory.mkdir()
             pointer=daily/'gcp-binding.json';pointer.write_bytes(c.canonical(binding));(daily/'plan.json').write_bytes(raw)
@@ -573,6 +607,13 @@ class CutoverNativeFacts(unittest.TestCase):
         self.exercise(renewal_until='2026-12-04T00:00:00Z')
         for until in ('2026-11-20T00:00:00Z','2026-12-04T00:00:01Z','2026-11-03T00:00:00Z'):
             with self.subTest(until=until):self.exercise(drift='renewal-other',renewal_until=until)
+
+    def test_recurring_renewal_rebinds_manual_for_the_next_period_only(self):
+        self.exercise(renewal_until='2027-01-03T00:00:00Z',previous_until='2026-12-04T00:00:00Z',now=dt.datetime(2026,11,28,tzinfo=dt.timezone.utc))
+        for until,now in (('2027-01-03T00:00:00Z',dt.datetime(2026,11,20,tzinfo=dt.timezone.utc)),
+                          ('2027-02-02T00:00:00Z',dt.datetime(2026,11,28,tzinfo=dt.timezone.utc))):
+            with self.subTest(until=until,now=now):
+                self.exercise(drift='renewal-other',renewal_until=until,previous_until='2026-12-04T00:00:00Z',now=now)
 
     def test_publication_blocks_unreconciled_permission_and_partial_cutover(self):
         import copy_runtime_deployment as runtime
