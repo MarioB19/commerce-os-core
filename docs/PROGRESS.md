@@ -1,5 +1,25 @@
 # Estado de publicación
 
+## 26-oct-2026 — bolsa de CI a 1,800 min y medidor a 70,000 s (Agente: Claude)
+
+Rama `claude/v7-1-ci-pool` ([ADR](adr-v7-ci-pool-third-extension.md)). Brandon
+autorizó el deploy de V7.1 antes del 1-nov y la ampliación de la bolsa. Octubre
+estaba en 81,780 de 90,000 s del ledger y en 49,150 de 50,000 s del medidor del
+controlador, así que el FULL de `main` no cabía.
+
+- **Ledger:** transición `raise_monthly_limit_third` (90000 → 108000 s), sólo
+  desde el pool de 1,500 con su recibo, sin intento activo ni bloqueo, con el
+  recibo inmutable `limit_third_extension`.
+- **Medidor:** 70,000 s vCPU y 140,000 GiB-s al mes. Se conservan filas, cargos
+  y los límites por solicitud.
+- **Costo:** techo adicional de USD 2.76 al mes con IVA, sólo si se usa.
+- **Pruebas:** suite Python 1,902 OK (2 omitidas). Seis pruebas nuevas de la
+  bolsa (también con la forma del ledger vivo) y una regresión del medidor con
+  las reservas reales del 26-oct.
+- **Aplicación:** imágenes derivadas del controlador y del atestador por
+  digest; sólo cambian estos dos módulos. Revisión de Cloud Run y triggers con
+  los controles en pausa, y luego el CAS Root. Fusionar no instala.
+
 ## 25-oct-2026 (noche) — release correctiva V7.1 (Agente: Claude)
 
 Rama `claude/v7-1-release`, sobre `4001db8d` con el arreglo del administrador
