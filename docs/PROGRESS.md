@@ -1,5 +1,22 @@
 # Estado de publicación
 
+## 27-oct-2026 — V7.1.1: el orden de los binds de Compose es neutral (Agente: Claude)
+
+Al preparar la readopción de producción con el código de #22, `observe` paró con
+`V7_ADOPTION_HOST_CONFIG_CHANGED:automation-worker`. El único cambio era el orden
+de `HostConfig.Binds`: el instalador de V7.1 creó el contenedor con
+`[/data/private:ro, /data/laboratory:rw]` y un `up --force-recreate` de la
+misma versión lo creó con `[/data/laboratory:rw, /data/private:ro]` (Compose no
+fija el orden; el laboratorio salió en el orden original). La comparación de
+fronteras del instalador (`application_boundary_equal`) habría rechazado la
+siguiente publicación al azar por lo mismo.
+
+- `engine_neutral_host` compara los binds como conjunto: cada cadena se
+  conserva completa y una de más, de menos o con otro modo sigue siendo un
+  cambio. El digest de definición no cambia.
+- Pruebas: `tests/ci/test_v7_binds_order.py` (2, fallan con el código
+  anterior); suite Python 1,936 OK (2 omitidas). Fusionar no instala.
+
 ## 27-oct-2026 — V7.1.1: Resultados, laboratorio de números, invitaciones y gateways del supervisor (Agente: Claude)
 
 La verificación de V7.1 en producción (instalada el 27-oct, `098395726e`)

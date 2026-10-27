@@ -364,12 +364,21 @@ ENGINE_UNSET_HOST_LISTS = ('Dns', 'DnsOptions', 'DnsSearch')
 
 
 def engine_neutral_host(host):
-    """A copy of HostConfig where an unset DNS list (null or absent) reads as []."""
+    """A copy of HostConfig where an unset DNS list (null or absent) reads as [] and the
+    bind list compares as a set.
+
+    V7.1.1 (27-oct-2026): Docker Compose emits a service's binds in no fixed order. The
+    same automation-worker definition (/data/private:ro and /data/laboratory:rw) was
+    created as [private, laboratory] by the V7.1 installer and as [laboratory, private]
+    by the next `up --force-recreate` of the same release, and every comparison of the
+    two refused it. Each bind string is kept whole; only their order is neutral."""
     require(type(host) is dict, 'COPY_RUNTIME_INSPECT_INVALID')
     view = dict(host)
     for key in ENGINE_UNSET_HOST_LISTS:
         if view.get(key) is None:
             view[key] = []
+    if type(view.get('Binds')) is list and all(type(item) is str for item in view['Binds']):
+        view['Binds'] = sorted(view['Binds'])
     return view
 
 
