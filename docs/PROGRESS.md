@@ -1,5 +1,22 @@
 # Estado de publicación
 
+## 27-oct-2026 — V7.1.1: el worker registra el código con que el servicio de correo rechaza un envío (Agente: Claude)
+
+Con `BETTER_AUTH_SECRET` en el automation worker (ver abajo) la invitación de
+prueba ya pasa del worker al servicio de correo de App Engine, que responde
+`409`. El worker descartaba la respuesta y la invitación quedaba `UNCERTAIN`
+sin causa visible. El diario de entregas no existía (primer `409`); se creó
+vacío con `ifGenerationMatch=0` (aprovisionamiento F1 pendiente) y el segundo
+intento siguió en `409` antes de registrar intención alguna: no se envió
+correo.
+
+- `appEngineTransport` escribe `mail_service_rejected <estado> <código>` en el
+  log del worker. Sólo se acepta un código cerrado `MAIL_*` (el servicio nunca
+  pone destinatarios, enlaces ni tokens en él); cualquier otro cuerpo queda
+  como `MAIL_CODE_UNREADABLE`.
+- Pruebas: `apps/automation-worker/src/mail-service-code.test.ts`; integración
+  `profile-invitation-mail.test.ts` 19/19. Fusionar no instala.
+
 ## 27-oct-2026 — V7.1.1: el orden de los binds de Compose es neutral (Agente: Claude)
 
 Al preparar la readopción de producción con el código de #22, `observe` paró con

@@ -4,6 +4,7 @@ import type {InvitationMailTransport} from '../../../packages/contracts/src/prof
 import type {ProfilePool} from '../../../packages/db/src/profile-context.js';
 import {dispatchOwnerAlertMail} from '../../../packages/db/src/owner-alert-mail.js';
 import {pool as automationPool} from '@commerce/db';
+import {mailServiceCode} from './mail-service-code.js';
 
 /** V7 F1 (ADR-V7-13): send queued profile invitations through the App Engine
  * mail service. The dedicated commerce_mail_dispatch login only discovers job
@@ -23,7 +24,12 @@ export function appEngineTransport(origin:string,fetchImpl:typeof fetch=fetch):I
   if(!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token))throw new Error('MAIL_DISPATCHER_IDENTITY_UNAVAILABLE');
   beforeSend();
   const response=await fetchImpl(`${url.origin}/v1/dispatch`,{method:'POST',redirect:'error',headers:{authorization:`Bearer ${token}`,'content-type':'application/json'},body:new Uint8Array(body),signal:AbortSignal.timeout(30_000)});
-  if(!response.ok)throw new Error('MAIL_SERVICE_REJECTED');
+  if(!response.ok){
+   // V7.1.1 (27-oct-2026): the mail service answers a closed MAIL_* code, never a recipient,
+   // link or token. Keep it in the worker log so a refused dispatch can be diagnosed.
+   process.stderr.write(`mail_service_rejected ${response.status} ${await mailServiceCode(response)}\n`);
+   throw new Error('MAIL_SERVICE_REJECTED');
+  }
   return response.json();
  }};
 }
