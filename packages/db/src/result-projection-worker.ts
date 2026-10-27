@@ -8,6 +8,18 @@ const digest=(v:unknown)=>createHash('sha256').update(JSON.stringify(v)).digest(
 /** Reuses the common transaction/discard/pending-query boundary, changing only
  * its BEGIN. The collector independently rejects a reused READ COMMITTED scope. */
 function snapshotPool(pool:ProfilePool):ProfilePool{return{async connect(){const c=await pool.connect();const query:ProfileQuery=(sql,values)=>c.query(sql==='BEGIN'?'BEGIN ISOLATION LEVEL REPEATABLE READ':sql,values);return{query,release:c.release.bind(c)};}};}
+/** V7.1.1 (27-oct-2026): a conversation that never had a priced release, offer or
+ * order has no currency, and the closed reader emits its contribution with
+ * `currency: null`. Results add money and counts per currency, so such a
+ * contribution cannot be placed in any of them: it is left out (nothing is
+ * estimated) instead of failing the whole profile's projection, which kept
+ * Resultados in RESULT_PROJECTION_NOT_READY in production. Any other invalid
+ * contribution still fails the snapshot. */
+export function pricedResultFacts(raw:unknown):unknown[]{
+ if(!Array.isArray(raw))throw Error('RESULT_SOURCE_FACTS_INVALID');
+ return raw.filter(fact=>!(fact!==null&&typeof fact==='object'&&(fact as {grain?:unknown}).grain!==null&&typeof (fact as {grain?:unknown}).grain==='object'
+  &&'currency' in ((fact as {grain:object}).grain)&&((fact as {grain:{currency:unknown}}).grain.currency===null)));
+}
 export async function projectProfileResults(pool:ProfilePool,workspace:string){
  return withProfileTransaction(snapshotPool(pool),workspace,async db=>{
   await db.query("SELECT set_config('app.environment','REAL',true)");return collectResultProjection(db);
@@ -34,7 +46,8 @@ export async function reconcileResultProjectionSnapshot(db:ProfileExecutor){
    const rows=(await db.query('SELECT source_id,facts FROM read_result_source_page($1,$2,$3)',[kind,after,250])).rows;
    if(rows.length>250)throw Error('RESULT_SOURCE_PAGE_OVERFLOW');
    for(const row of rows){
-    const source=canonicalResultProjection({kind,source_id:row.source_id,revision:'1',facts:singleSourceLatencies(row.facts)});
+    const priced=pricedResultFacts(row.facts);if(priced.length===0)continue;
+    const source=canonicalResultProjection({kind,source_id:row.source_id,revision:'1',facts:singleSourceLatencies(priced)});
     if(after&&source.source_id<=after)throw Error('RESULT_SOURCE_PAGE_ORDER');after=source.source_id;
     const sourceDigest=resultSourceDigest(db.workspaceId,kind,source.source_id);seen.push({kind,digest:sourceDigest});
     if(seen.length>1000000)throw Error('RESULT_SNAPSHOT_WORK_BOUND');

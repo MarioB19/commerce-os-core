@@ -1,5 +1,45 @@
 # Estado de publicación
 
+## 27-oct-2026 — V7.1.1: Resultados, laboratorio de números, invitaciones y gateways del supervisor (Agente: Claude)
+
+La verificación de V7.1 en producción (instalada el 27-oct, `098395726e`)
+encontró cuatro defectos; este cambio corrige los tres que requieren código y
+habilita los dos de configuración.
+
+- Resultados (503 `RESULT_SNAPSHOT_FAILED`): una conversación sin publicación,
+  oferta ni pedido con precio no tiene moneda y el lector cerrado emite su
+  contribución con `currency: null`, que el esquema canónico rechaza y tumbaba
+  la proyección de todo el perfil. `pricedResultFacts` la deja fuera (no se
+  estima nada); cualquier otra contribución inválida sigue fallando.
+- Gateways del supervisor: su primer ciclo (EXPAND canónico `SUCCEEDED`,
+  `VERIFIED`, 0 sesiones) agregó `waha-02` y `waha-04` y reescribió el overlay
+  compartido al que apunta el recibo de `waha-03`. Desde entonces el host tenía
+  12 contenedores y 9 redes, y el instalador, B02, el arranque durable y la
+  readopción lo rechazaban (cotas de 11 contenedores, 8 redes, 3 gateways).
+  - `GATEWAYS` = `waha-01`…`waha-06`; las cotas siguen (14 contenedores, 11
+    redes) en el instalador, el arranque durable y el contrato de B02.
+  - `v7_infra_adoption.py` adopta los gateways que agregaron operaciones
+    canónicas: recibo del único slot REAL que los nombra, verificado como lo
+    hace el instalador (`verify_gateway_provisioning`,
+    `gateway_rendered_bindings`); ingress y channel-worker sólo pueden ganar
+    los puentes de esos gateways y la línea base de redes sólo esos puentes.
+  - Cada recibo que apuntaba al overlay compartido (mutable) se fija a una
+    copia root-only de los bytes que atestiguó
+    (`v7-infra-adoption/gateway-overlays/<sha256>.overlay`).
+  - El diario registra `gateways_added` y `readoption_confirms` acepta
+    exactamente el recibo más esos gateways.
+  - `capture` tolera esas adiciones; los comandos corren en la versión actual,
+    también cuando la copia del candidato revisado corre antes de instalarse.
+- Configuración que la readopción ahora acepta: `LAB_ENGINE_SHA256` en la API
+  («Probar número» respondía `LAB_NOT_INSTALLED`) y `BETTER_AUTH_SECRET`/
+  `BETTER_AUTH_URL` en el automation worker (la invitación quedaba en cola con
+  `IDENTITY_SECRET_REQUIRED`: el destinatario y el enlace usan ese secreto).
+- Pruebas: `tests/ci/test_v7_gateway_readoption.py` (13),
+  `packages/db/src/result-projection-worker.test.ts` y un caso nuevo de
+  integración en `profile-result-source-collector.test.ts` (falla con el código
+  anterior con el mismo ZodError de producción); suite Python 1,934 OK (2
+  omitidas). Fusionar no instala.
+
 ## 26-oct-2026 — `backup.env` sigue al PostgreSQL de PITR, respaldo previo de 2 GiB y republicación 117→117 (Agente: Claude)
 
 El ensayo de la ventana V7.1 en laboratorio (paquete `cv-5aa41553-…-1` de

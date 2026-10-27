@@ -20,7 +20,14 @@ SOURCE_SHA = 'd36c090161eb7b0af0250cd91d466b38dc810813'
 CORE = frozenset({'api', 'web', 'postgres', 'caddy', 'portal', 'ingress',
                   'automation-worker', 'channel-worker'})
 INITIAL = frozenset({'api', 'web', 'postgres', 'caddy', 'portal'})
-GATEWAYS = frozenset({'waha-01', 'waha-02', 'waha-03'})
+# V7.1.1 (27-oct-2026): the gateway supervisor (scripts/gateway_supervisor.py) keeps one
+# prepared spare slot per active profile, so the host carries up to six canonical
+# gateways (slots 1-6). Each one is still adopted only with its canonical
+# provisioning receipt (verify_gateway_provisioning); the bounds below follow.
+GATEWAYS = frozenset('waha-%02d' % slot for slot in range(1, 7))
+MAX_CONTAINERS = len(CORE | GATEWAYS)
+# core, proxy, API edge, consumer edge, PITR egress + one bridge per gateway.
+MAX_NETWORKS = 5 + len(GATEWAYS)
 FILES = frozenset({'release.env', 'api.env', 'ingress.env', 'automation.env',
                    'channel.env', 'postgres.env', 'admin.env', 'backup.env'})
 BASE_FIELDS = frozenset({'schema_version', 'status', 'scope', 'backup_source_sha',
@@ -957,7 +964,7 @@ def canonical_revision_observation(server, root, state, workspace, current, priv
 
 def closed_inventory(command, root, state):
     ids = command(['docker', 'ps', '-aq', '--no-trunc'], root).split()
-    require(len(ids) in range(5, 12) and all(_hash(cid) for cid in ids) and len(ids) == len(set(ids)),
+    require(len(ids) in range(5, MAX_CONTAINERS+1) and all(_hash(cid) for cid in ids) and len(ids) == len(set(ids)),
             'COPY_RUNTIME_INVENTORY_BOUND')
     rows = _parse(command(['docker', 'inspect', *ids], root).encode())
     if state['schema_version'] == 2:
@@ -970,7 +977,7 @@ def closed_inventory(command, root, state):
 
 def network_snapshot(command, root, services):
     names = set().union(*(set(row['NetworkSettings']['Networks']) for row in services.values()))
-    require(3 <= len(names) <= 8, 'COPY_RUNTIME_NETWORK_BOUND')
+    require(3 <= len(names) <= MAX_NETWORKS, 'COPY_RUNTIME_NETWORK_BOUND')
     rows = _parse(command(['docker', 'network', 'inspect', *sorted(names)], root).encode())
     require(type(rows) is list and len(rows) == len(names), 'COPY_RUNTIME_NETWORK_READBACK_INVALID')
     result = {}
@@ -1066,7 +1073,7 @@ def edge_preflight(command, root):
             'COPY_RUNTIME_EDGE_ROUTE_READBACK_INVALID')
     routes.sort(key=lambda row: sealed_bytes(row))
     containers = command(['docker', 'ps', '-aq', '--no-trunc'], root).split()
-    require(5 <= len(containers) <= 11 and len(set(containers)) == len(containers) and all(_hash(cid) for cid in containers),
+    require(5 <= len(containers) <= MAX_CONTAINERS and len(set(containers)) == len(containers) and all(_hash(cid) for cid in containers),
             'COPY_RUNTIME_EDGE_CONTAINER_INVENTORY_INVALID')
     inspected = _parse(command(['docker', 'inspect', *sorted(containers)], root).encode())
     require(type(inspected) is list and len(inspected) == len(containers) and {row.get('Id') for row in inspected} == set(containers),
@@ -1849,7 +1856,7 @@ def gateway_continuity(before, services, candidate, after_owner, server, private
     """Only the canonical added gateway edges may change worker definitions."""
     compare_owner(before['owner'], after_owner, before['workspace'], server.compare_owner_auth)
     previous = before['state']; added = (set(services) & GATEWAYS)-(set(before['services']) & GATEWAYS)
-    require(0 < len(added) <= 3 and set(services) == set(before['services']) | added,
+    require(0 < len(added) <= len(GATEWAYS) and set(services) == set(before['services']) | added,
             'COPY_RUNTIME_GATEWAY_EXTENSION_SET_INVALID')
     new_networks = {'commerce-os_gateway-'+name[-2:] for name in added}
     for name, old in before['services'].items():
@@ -2048,7 +2055,7 @@ def reconcile_gateways(server, manifest_ref_file):
                     'COPY_RUNTIME_GATEWAY_OWNERSHIP_OBSERVATION_CHANGED')
             in_flight_guard(server, current)
             ids = server.command(['docker', 'ps', '-aq', '--no-trunc'], current).split()
-            require(8 <= len(ids) <= 11 and len(set(ids)) == len(ids) and all(_hash(cid) for cid in ids),
+            require(8 <= len(ids) <= MAX_CONTAINERS and len(set(ids)) == len(ids) and all(_hash(cid) for cid in ids),
                     'COPY_RUNTIME_GATEWAY_RUNTIME_INVENTORY_INVALID')
             services = inspect_inventory(_parse(server.command(['docker', 'inspect', *ids], current).encode()),
                 portal=state['portal'], caddy_id=state['service_inventory']['caddy'])

@@ -81,7 +81,7 @@ def network_snapshot(command, root, services):
     but have no live endpoint. Never add them to a network's observed endpoints.
     """
     names = set().union(*(set(row['NetworkSettings']['Networks']) for row in services.values()))
-    require(3 <= len(names) <= 7, 'BOOT_NETWORK_BOUND')
+    require(3 <= len(names) <= runtime.MAX_NETWORKS, 'BOOT_NETWORK_BOUND')  # V7.1.1: one bridge per gateway
     rows = runtime._parse(command(['docker', 'network', 'inspect', *sorted(names)], root).encode())
     require(type(rows) is list and len(rows) == len(names), 'BOOT_NETWORK_READBACK_INVALID')
     result = {}
