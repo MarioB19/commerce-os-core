@@ -23,6 +23,10 @@ TERMINAL = {'SUCCEEDED', 'FAILED', 'FAILED_RECONCILED'}
 # V7 F1 PITR: PostgreSQL may join this egress-only bridge (scripts/v7_pitr.py).
 PITR_NETWORK = 'commerce-os_pitr-edge'
 MAX_PRIVATE = 1024 * 1024
+# Fresh pre-deploy backup (local, COMOSB02). Health telemetry (8 days, adr-v7-health-retention)
+# took the encrypted dump past 1 GiB on 26-oct-2026 (1,089,064,996 bytes in the V7.1 rehearsal);
+# 2 GiB keeps the read bound while the 8-day window stays (V8 trims the remaining growth).
+PREDEPLOY_BACKUP_MAX_BYTES = 2 * 1024 ** 3
 SOURCE_SHA = 'd36c090161eb7b0af0250cd91d466b38dc810813'
 PORTAL_BASE = Path('/opt/mcl-portal')
 PORTAL_FIELDS = {'report_ref', 'runtime_env_ref', 'manifest_ref', 'container_id',
@@ -417,7 +421,7 @@ def verify_predeploy_backup(private, report_dir):
     with os.fdopen(fd, 'rb') as source:
         info = os.fstat(source.fileno())
         require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and stat.S_IMODE(info.st_mode) == 0o600
-                and info.st_nlink == 1 and 36 < info.st_size <= 1024 ** 3,
+                and info.st_nlink == 1 and 36 < info.st_size <= PREDEPLOY_BACKUP_MAX_BYTES,
                 'COPY_BACKUP_CIPHERTEXT_BOUND')
         hasher = hashlib.sha256(); count = 0
         header = source.read(8)
@@ -426,7 +430,7 @@ def verify_predeploy_backup(private, report_dir):
         while True:
             block = source.read(1024 * 1024)
             if not block: break
-            count += len(block); require(count <= 1024 ** 3, 'COPY_BACKUP_CIPHERTEXT_BOUND'); hasher.update(block)
+            count += len(block); require(count <= PREDEPLOY_BACKUP_MAX_BYTES, 'COPY_BACKUP_CIPHERTEXT_BOUND'); hasher.update(block)
         after = os.fstat(source.fileno())
         require(count == info.st_size and (info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
                 == (after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns),

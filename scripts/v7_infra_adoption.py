@@ -27,6 +27,7 @@ V7.1 (25-oct-2026) also adopts:
     v7_infra_adoption.py capture             # before any change (Root, read-only on the platform)
     v7_infra_adoption.py observe             # after the changes; prints the proposal digest
     v7_infra_adoption.py apply <sha256>      # the four locks, one journaled CAS of plan, state and boot policy
+    v7_infra_adoption.py rebind-backup-env   # once after PITR: backup.env PG_CONTAINER -> the PITR container
 
 `capture` stores, root-only, the container definitions with every environment
 value replaced by its SHA-256 and each profile file as key → SHA-256: never a
@@ -266,6 +267,50 @@ def proxy_transition(host, state, services):
     return proxy_decision(ref, current, active, state['active_proxy_sha256'], originals, adapted, running, identity_proxy().rewrite_policy)
 
 
+def pg_container_lines(raw):
+    return [i for i, line in enumerate(raw.split(b'\n')) if line.startswith(b'PG_CONTAINER=')]
+
+
+def backup_env_rebound(old_ref, new_raw, pitr_receipt, postgres_id, path):
+    """V7.1 (26-oct-2026): `v7_pitr.py enable` replaced PostgreSQL but left
+    backup.env's PG_CONTAINER on the old container, so the installer's pre-deploy
+    backup failed (POSTGRES_NETWORK_INSPECTION_FAILED). Accept exactly that one
+    line moved from the PITR receipt's previous container to the current PITR
+    container: the file with the old value restored must hash to the recorded
+    reference, so nothing else in it can change."""
+    if not (type(pitr_receipt) is dict and pitr_receipt.get('state') == 'PITR_ENABLED'
+            and pitr_receipt.get('after', {}).get('container') == postgres_id):
+        return False
+    old_id = pitr_receipt.get('before', {}).get('container')
+    lines = new_raw.split(b'\n'); index = pg_container_lines(new_raw)
+    if not (type(old_id) is str and re.fullmatch(r'[a-f0-9]{64}', old_id) and re.fullmatch(r'[a-f0-9]{64}', postgres_id)
+            and len(index) == 1 and lines[index[0]] == b'PG_CONTAINER=' + postgres_id.encode()):
+        return False
+    lines[index[0]] = b'PG_CONTAINER=' + old_id.encode()
+    return native.reference(path, b'\n'.join(lines)) == old_ref
+
+
+def rebind_backup_env(host):
+    """Root, once after PITR: point backup.env's PG_CONTAINER at the PITR container
+    named by its receipt. Keeps a 0600 copy; the next `observe` adopts only this."""
+    receipt = runtime._parse(host.private(PITR_RECEIPT))
+    require(receipt.get('schema_version') == 1 and receipt.get('state') == 'PITR_ENABLED', 'V7_ADOPTION_PITR_EVIDENCE_REQUIRED')
+    old_id, new_id = receipt['before']['container'], receipt['after']['container']
+    require(any(row['Id'] == new_id and row['State'].get('Running') for row in host.rows()), 'V7_ADOPTION_PITR_CONTAINER_ABSENT')
+    path = PRIVATE/'backup.env'; raw = host.private(path); lines = raw.split(b'\n'); index = pg_container_lines(raw)
+    require(len(index) == 1, 'V7_ADOPTION_BACKUP_ENV_CONTAINER_LINE')
+    if lines[index[0]] == b'PG_CONTAINER=' + new_id.encode():
+        return {'state': 'BACKUP_ENV_KEPT', 'sha256': digest(raw)}
+    require(lines[index[0]] == b'PG_CONTAINER=' + old_id.encode(), 'V7_ADOPTION_BACKUP_ENV_UNEXPECTED_CONTAINER')
+    stamp = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    copy_path = path.with_name('backup.env.before-v7-pitr-' + stamp)
+    require(not copy_path.exists(), 'V7_ADOPTION_BACKUP_ENV_COPY_EXISTS')
+    write_private(copy_path, raw)
+    lines[index[0]] = b'PG_CONTAINER=' + new_id.encode(); new = b'\n'.join(lines)
+    write_private(path, new)
+    return {'state': 'BACKUP_ENV_REBOUND', 'sha256': digest(new), 'previous_sha256': digest(raw), 'copy': copy_path.name}
+
+
 def propose(capture, state_raw, plan_raw, policy_raw, rows, networks, files_now, pitr_receipt, release, *, private=PRIVATE, proxy=None):
     """Pure decision. Every input was read by Root; nothing here touches the host."""
     state = runtime._parse(state_raw); plan = runtime._parse(plan_raw)
@@ -310,10 +355,14 @@ def propose(capture, state_raw, plan_raw, policy_raw, rows, networks, files_now,
     # Profiles: the settings in each file are what the recreated container reads.
     canonical = {}
     profile = profile_changes(capture['profiles'], files_now)
+    backup_env = None
     for name in runtime.FILES:
         raw = files_now[name]; old = state['canonical_files'][name]
         if name in profile:
             canonical[name] = native.reference(private/name, raw)
+        elif (name == 'backup.env' and native.reference(private/name, raw) != old
+              and backup_env_rebound(old, raw, pitr_receipt, services['postgres']['Id'], private/name)):
+            canonical[name] = native.reference(private/name, raw); backup_env = 'PG_CONTAINER_REBOUND'
         else:
             require(native.reference(private/name, raw) == old, 'V7_ADOPTION_PROFILE_FILE_CHANGED:'+name)
             canonical[name] = old
@@ -361,6 +410,7 @@ def propose(capture, state_raw, plan_raw, policy_raw, rows, networks, files_now,
                           'policy_sha256': digest(policy_bytes) if policy_bytes is not None else None},
                 'summary': {'recreated': summary['recreated'], 'unchanged': sorted(summary['unchanged']),
                             'postgres': summary['postgres'], 'profiles': profile, 'networks_added': sorted(added),
+                            'backup_env': backup_env,
                             'proxy': None if proxy is None else {'transition': proxy['transition'],
                                                                  'rewritten_to_target': proxy['rewritten_to_target']}}}
     return proposal, {'state': state_bytes, 'plan': plan_bytes, 'policy': policy_bytes}
@@ -491,8 +541,10 @@ def main(argv=None):
             result = {'state': 'PROPOSED', 'proposal_sha256': digest(encode(proposal)), **proposal['summary']}
         elif len(argv) == 2 and argv[0] == 'apply':
             result = apply(host, argv[1])
+        elif argv == ['rebind-backup-env']:
+            result = rebind_backup_env(host)
         else:
-            raise ReleaseError('usage: v7_infra_adoption.py capture | observe | apply <sha256>')
+            raise ReleaseError('usage: v7_infra_adoption.py capture | observe | apply <sha256> | rebind-backup-env')
         print(json.dumps(result, sort_keys=True))
         return 0
     except (ReleaseError, OSError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
