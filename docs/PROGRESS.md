@@ -1,5 +1,22 @@
 # Estado de publicación
 
+## 27-oct-2026 — V7.1.1: el servicio de correo ya no rechaza todo envío por una alarma anidada (Agente: Claude)
+
+La invitación de prueba de producción llegó a App Engine y recibió `409` en
+8 ms, antes de cualquier llamada de red. `main.py` envolvía cada envío en
+`native.deadline(25)` y la primera llamada nativa (`NativeHTTP`, los
+certificados de Google) arma su propia alarma, que por diseño se niega si ya
+hay otra activa: `MAIL_NATIVE_DEADLINE_REQUIRED`. Así ningún envío llegaba al
+diario y nunca se habría mandado un correo. Las pruebas cubrían la ruta con un
+servicio simulado y `NativeHTTP` por separado, nunca juntas.
+
+- `main.py` ya no arma una alarma externa: cada llamada nativa lleva la suya
+  dentro del presupuesto de 25 s (`finish_at`) y la llamada al Mail API su
+  plazo RPC de 10 s.
+- Pruebas: `test_native_calls_can_arm_their_alarm_inside_a_request` (falla
+  con el código anterior); suite Python 1,937 OK. Se publica con un
+  `gcloud app deploy` del servicio de correo; fusionar no instala.
+
 ## 27-oct-2026 — V7.1.1: el worker registra el código con que el servicio de correo rechaza un envío (Agente: Claude)
 
 Con `BETTER_AUTH_SECRET` en el automation worker (ver abajo) la invitación de

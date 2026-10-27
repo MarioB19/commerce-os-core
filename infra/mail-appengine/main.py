@@ -89,8 +89,12 @@ def application(environ, start_response, service_factory=service_for):
         return respond(start_response, '413 Payload Too Large', {'error': {'code': 'MAIL_BODY_BOUND'}})
     raw = environ['wsgi.input'].read(length)
     try:
-        with native.deadline(25):
-            result = service_factory().dispatch(raw, auth[7:])
+        # Each native call arms its own alarm inside the request's 25 s budget
+        # (NativeHTTP finish_at) and never nests one: an outer alarm here made
+        # the first call refuse with MAIL_NATIVE_DEADLINE_REQUIRED, so no
+        # dispatch ever reached the journal (V7.1.1, 27-oct-2026). The Mail API
+        # call keeps its own 10 s RPC deadline.
+        result = service_factory().dispatch(raw, auth[7:])
     except core.MailError as error:
         code = str(error)
         status = '401 Unauthorized' if code.startswith(('MAIL_ID', 'MAIL_IDENTITY')) else '409 Conflict'
