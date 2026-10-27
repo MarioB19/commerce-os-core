@@ -90,6 +90,13 @@ describe('actual commercial ledger to anonymous result generations',()=>{
   expect(s.funnel.map(v=>v.count)).toEqual(['1','1','1','1','1','1']);expect(s.totals.revenue_minor).toBe('10000');expect(s.first_response_ms.value).toBe('30000.000000');expect(s.latency_percentiles.response.p50.value).toBe('30000');expect(s.latency_percentiles.response.p95.value).toBe('30000');expect(s.latency_percentiles.sale.p95.value).not.toBeNull();
   const daily=(await admin.query('SELECT * FROM result_metric_daily WHERE workspace_id=$1',[j.w])).rows;expect(JSON.stringify(daily)).not.toContain(j.conversation);expect(JSON.stringify(daily)).not.toContain('Synthetic non-customer text');
  });
+ it('leaves out a conversation without a priced offer instead of failing the profile (V7.1.1)',async()=>{
+  const j=await journey(await profile());await payment(j);
+  const account=await rec(j.w,'channel_account',{provider:'simulator'});await rec(j.w,'conversation',{started_at:started,account_id:account});
+  const completed=await projectProfileResults(workerScope,j.w),s=await summary(j);
+  expect(completed.applied).toBe(2);expect(s.funnel[0].count).toBe('1');expect(s.totals.revenue_minor).toBe('10000');
+  expect((await projectProfileResults(workerScope,j.w)).applied).toBe(0);
+ });
  it('replays the full snapshot without reapplying source contributions',async()=>{
   const j=await journey(await profile());await payment(j,'9007199254740991');await payment(j,'9007199254740991','2026-10-11T17:00:00Z');await projectProfileResults(workerScope,j.w);const before=await summary(j),r=await projectProfileResults(workerScope,j.w);
   expect(r.applied).toBe(0);expect(r.removed).toBe(0);expect(await summary(j)).toEqual(before);expect(before.totals.revenue_minor).toBe('18014398509481982');expect(before.totals.sales).toBe('1');

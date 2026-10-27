@@ -67,7 +67,7 @@ def plan_version(plan):
         need(plan.get('runtime_projection_version') == 2 and plan.get('runtime_stage') in ('CORE_PREPARED', 'OPERATING'),
              'BACKUP_RUNTIME_STAGE_INVALID')
         count = len(plan.get('preserved_runtime', {}))
-        need(count == 5 if plan['runtime_stage'] == 'CORE_PREPARED' else 8 <= count <= 11, 'BACKUP_RUNTIME_STAGE_COUNT_INVALID')
+        need(count == 5 if plan['runtime_stage'] == 'CORE_PREPARED' else 8 <= count <= 8 + len(GATEWAY_NAMES), 'BACKUP_RUNTIME_STAGE_COUNT_INVALID')
     return version
 
 
@@ -111,6 +111,8 @@ def sha256(value):
 
 
 READOPTION_JOURNAL = PRIVATE / 'v7-infra-adoption' / 'journal.json'
+# Canonical gateway services (scripts/copy_runtime_deployment.py GATEWAYS; tests keep both equal).
+GATEWAY_NAMES = frozenset('waha-%02d' % slot for slot in range(1, 7))
 
 
 def readoption_confirms(receipt, state, state_sha256, plan_sha256, journal):
@@ -120,13 +122,22 @@ def readoption_confirms(receipt, state, state_sha256, plan_sha256, journal):
     service_inventory/preserved_runtime may differ from the current state. That
     difference is accepted only when the latest re-adoption journal is APPLIED for exactly
     this state and plan, extends this same receipt, and the service set is unchanged.
-    Every other receipt field is still compared by the caller."""
+    Every other receipt field is still compared by the caller.
+
+    V7.1.1 (27-oct-2026): the re-adoption may also adopt gateways that canonical
+    capacity operations added after this receipt (the gateway supervisor keeps one
+    prepared spare slot). The journal then lists them in `gateways_added`; the
+    service set must be exactly the receipt's plus those gateways, never fewer."""
+    added = journal.get('gateways_added', []) if type(journal) is dict else None
     return (type(receipt) is dict and type(state) is dict and type(journal) is dict
             and journal.get('schema_version') == 1 and journal.get('status') == 'APPLIED'
             and journal.get('state_sha256') == state_sha256 and journal.get('plan_sha256') == plan_sha256
             and journal.get('base_receipt_ref') == state.get('last_release_receipt_ref')
             and type(receipt.get('service_inventory')) is dict and type(state.get('service_inventory')) is dict
-            and set(receipt['service_inventory']) == set(state['service_inventory']))
+            and type(added) is list and all(type(name) is str for name in added)
+            and len(set(added)) == len(added) and set(added) <= GATEWAY_NAMES
+            and not set(added) & set(receipt['service_inventory'])
+            and set(state['service_inventory']) == set(receipt['service_inventory']) | set(added))
 
 
 def unique_json(value):

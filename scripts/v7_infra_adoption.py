@@ -24,6 +24,22 @@ V7.1 (25-oct-2026) also adopts:
   * a container whose only change is the engine encoding of its unset DNS lists
     (docs/adr-v7-engine-neutral-dns.md).
 
+V7.1.1 (27-oct-2026) also adopts:
+
+  * the gateways that canonical capacity operations added after the recorded
+    baseline (the gateway supervisor keeps one prepared spare slot). Each one is
+    adopted only with its canonical provisioning receipt, verified like the
+    installer does (`verify_gateway_provisioning`, `gateway_rendered_bindings`):
+    succeeded/verified operation, slot readback, pinned image, storage volumes.
+    ingress and channel-worker may gain exactly the bridges of those gateways
+    and the network baseline exactly those bridges;
+  * the shared overlay file those receipts point at moves on with every
+    operation, so each receipt is pinned to a root-only copy of the exact bytes
+    it attested (`gateway-overlays/<sha256>.overlay`);
+  * the API reads LAB_ENGINE_SHA256 (the number laboratory install of V7.1) and
+    the automation worker reads BETTER_AUTH_SECRET/BETTER_AUTH_URL, which the
+    invitation mail needs for the recipient digest and the accept link.
+
     v7_infra_adoption.py capture             # before any change (Root, read-only on the platform)
     v7_infra_adoption.py observe             # after the changes; prints the proposal digest
     v7_infra_adoption.py apply <sha256>      # the four locks, one journaled CAS of plan, state and boot policy
@@ -57,16 +73,22 @@ BOOT_POLICY = PRIVATE/'runtime-boot/policy.json'
 PITR_RECEIPT = PRIVATE/'pitr/enable-receipt.json'
 CADDY_BACKUPS = PRIVATE/'caddy-backups'
 BASE = PRIVATE/'v7-infra-adoption'
+GATEWAY_OVERLAYS = BASE/'gateway-overlays'
+SHARED_OVERLAY = PRIVATE/'additional-gateways.json'
+# The two services that reach every gateway on its own bridge (copy_runtime_deployment.topology).
+GATEWAY_CONSUMERS = ('ingress', 'channel-worker')
+UUID = re.compile(r'[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}')
 APP = ('api', 'ingress', 'automation-worker', 'channel-worker')
 UNCHANGED = ('web', 'caddy', 'portal')
 PROFILE_FILES = {'api.env': 'api', 'ingress.env': 'ingress', 'automation.env': 'automation-worker', 'channel.env': 'channel-worker'}
 # Exactly the settings V7 adds (docs/adr-v7-f1-infrastructure.md §4f, §3, §4).
 V7_SETTINGS = {
-    'api': frozenset({'AI_DATABASE_URL'}),
+    'api': frozenset({'AI_DATABASE_URL', 'LAB_ENGINE_SHA256'}),
     'ingress': frozenset(),
     'automation-worker': frozenset({'AI_DATABASE_URL', 'RESULTS_DATABASE_URL', 'MAIL_DISPATCH_DATABASE_URL',
                                     'MAIL_SERVICE_ORIGIN', 'MAIL_ENVELOPE_KEY', 'INGRESS_PUBSUB_SUBSCRIPTION',
-                                    'INTERNAL_INGRESS_URL', 'LAB_PRIVATE_STORAGE_DIR'}),
+                                    'INTERNAL_INGRESS_URL', 'LAB_PRIVATE_STORAGE_DIR',
+                                    'BETTER_AUTH_SECRET', 'BETTER_AUTH_URL'}),
     'channel-worker': frozenset({'INGRESS_RELAY_URL'}),
 }
 V7_PREFIXES = {'automation-worker': ('LAB_',)}
@@ -311,8 +333,116 @@ def rebind_backup_env(host):
     return {'state': 'BACKUP_ENV_REBOUND', 'sha256': digest(new), 'previous_sha256': digest(raw), 'copy': copy_path.name}
 
 
-def propose(capture, state_raw, plan_raw, policy_raw, rows, networks, files_now, pitr_receipt, release, *, private=PRIVATE, proxy=None):
-    """Pure decision. Every input was read by Root; nothing here touches the host."""
+def gateway_bridges(names):
+    return {'commerce-os_gateway-'+name[-2:] for name in names}
+
+
+def added_gateways(state, services):
+    """Live services beyond the recorded ones: only canonical gateways, and none recorded is missing."""
+    known = set(state['service_inventory'])
+    added = set(services) - known
+    require(known <= set(services) and added <= runtime.GATEWAYS, 'V7_ADOPTION_SERVICE_SET_CHANGED')
+    return added
+
+
+def unchanged_matches(name, row, stored, bridges):
+    """The same container still has its stored definition; ingress and channel-worker may
+    also be connected to exactly the bridges of the gateways being adopted."""
+    if runtime.definition_digest_matches(row, stored):
+        return True
+    networks = row['NetworkSettings']['Networks']
+    if name not in GATEWAY_CONSUMERS or not bridges or not bridges <= set(networks):
+        return False
+    view = copy.deepcopy(row)
+    for network in bridges:
+        view['NetworkSettings']['Networks'].pop(network)
+    return runtime.definition_digest_matches(view, stored)
+
+
+def gateway_bridge_valid(name, row):
+    """A gateway bridge exactly like the canonical ones (copy_runtime_deployment.topology)."""
+    labels = row.get('Labels') or {}
+    return (row.get('Name') == name and row.get('Driver') == 'bridge' and row.get('Internal') is False
+            and row.get('EnableIPv6') is False and row.get('Options') in ({}, None)
+            and labels.get('com.docker.compose.project') == 'commerce-os'
+            and labels.get('com.docker.compose.network') == name[len('commerce-os_'):])
+
+
+def pinned_overlay(source):
+    """The root-only copy a receipt points at: the exact attested bytes, named by their digest."""
+    return {'path': str(GATEWAY_OVERLAYS/(source['sha256']+'.overlay')), 'bytes': source['bytes'], 'sha256': source['sha256']}
+
+
+def overlay_source(host, sha):
+    """The bytes an operation attested: the shared overlay while unchanged, else its
+    `.<sha>.backup` kept by scripts/additional-gateways.py, else an earlier pinned copy."""
+    for path in (SHARED_OVERLAY, SHARED_OVERLAY.with_suffix('.'+sha+'.backup'), GATEWAY_OVERLAYS/(sha+'.overlay')):
+        raw = host.private(path, optional=True)
+        if raw is not None and digest(raw) == sha:
+            return native.reference(path, raw)
+    return None
+
+
+def readable(ref):
+    try:
+        native.read_reference(ref)
+        return True
+    except (ReleaseError, OSError):
+        return False
+
+
+def gateway_adoption(host, state, services, release):
+    """Receipts for every gateway after the re-adoption, verified like the installer does.
+
+    Recorded receipts keep operation, slot and definition; only a receipt that points at
+    the shared (mutable) overlay is re-pointed to a pinned copy of the same bytes. An
+    added gateway gets the receipt of the one REAL slot that names it."""
+    added = added_gateways(state, services)
+    workspace = state['owner_workspace_id']
+    receipts, sources, pins = copy.deepcopy(state['gateway_provisioning']), {}, {}
+    for name, receipt in sorted(receipts.items()):
+        ref = receipt['overlay_ref']
+        if ref['path'] != str(SHARED_OVERLAY) and readable(ref):
+            sources[name] = ref
+            continue
+        source = overlay_source(host, ref['sha256'])
+        require(source is not None and source['bytes'] == ref['bytes'], 'V7_ADOPTION_GATEWAY_OVERLAY_LOST:'+name)
+        receipt['overlay_ref'] = pinned_overlay(source); sources[name] = source; pins[receipt['overlay_ref']['path']] = source
+    for name in sorted(added):
+        slot = int(name[-2:])
+        found = runtime._parse(host.database(host.root, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SELECT json_build_object('slots',"
+            "(SELECT COALESCE(json_agg(s.operation_id),'[]'::json) FROM number_capacity_slots s WHERE s.environment='REAL' AND s.host_ref='primary'"
+            " AND s.workspace_id="+runtime.sql_literal(workspace)+" AND s.gateway_ref="+runtime.sql_literal(name)+" AND s.slot="+str(slot)+")); ROLLBACK;").encode())
+        operations = found.get('slots') if type(found) is dict else None
+        require(type(operations) is list and len(operations) == 1 and type(operations[0]) is str and UUID.fullmatch(operations[0]),
+                'V7_ADOPTION_GATEWAY_SLOT_REQUIRED:'+name)
+        result = runtime._parse(host.database(host.root, "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY; SELECT json_build_object('overlay_sha',"
+            "(SELECT o.result->>'overlay_sha' FROM number_operations o WHERE o.id="+runtime.sql_literal(operations[0])+"::uuid)); ROLLBACK;").encode())
+        sha = result.get('overlay_sha') if type(result) is dict else None
+        require(type(sha) is str and re.fullmatch(r'[a-f0-9]{64}', sha), 'V7_ADOPTION_GATEWAY_OPERATION_REQUIRED:'+name)
+        source = overlay_source(host, sha)
+        require(source is not None, 'V7_ADOPTION_GATEWAY_OVERLAY_LOST:'+name)
+        receipts[name] = {'operation_id': operations[0], 'slot': slot, 'overlay_ref': pinned_overlay(source),
+                          'definition_sha256': runtime.definition_digest(services[name])}
+        sources[name] = source; pins[receipts[name]['overlay_ref']['path']] = source
+    check = dict(state, gateway_provisioning={name: dict(receipt, overlay_ref=sources[name]) for name, receipt in receipts.items()})
+    runtime.verify_gateway_provisioning(host, host.root, check, services, workspace)
+    if added:
+        runtime.gateway_rendered_bindings(host, host.root, services, release)
+    base = runtime._parse(native.read_reference(state['last_release_receipt_ref']))
+    inventory = base.get('service_inventory') if type(base) is dict else None
+    require(type(inventory) is dict and set(inventory) <= set(services), 'V7_ADOPTION_RELEASE_RECEIPT_INVALID')
+    since = sorted(set(services) - set(inventory))
+    require(set(since) <= runtime.GATEWAYS and added <= set(since), 'V7_ADOPTION_RELEASE_RECEIPT_INVALID')
+    return {'receipts': receipts, 'pins': pins, 'since_release': since}
+
+
+def propose(capture, state_raw, plan_raw, policy_raw, rows, networks, files_now, pitr_receipt, release, *, private=PRIVATE, proxy=None,
+            gateways=None):
+    """Pure decision. Every input was read by Root; nothing here touches the host.
+
+    `gateways` is what `gateway_adoption` verified on the host (receipts, pinned copies and
+    the gateways added since the release receipt); without it no gateway may change."""
     state = runtime._parse(state_raw); plan = runtime._parse(plan_raw)
     runtime.validate_state(state); runtime.validate_plan(state, plan_raw)
     require(state['runtime_stage'] == 'OPERATING', 'V7_ADOPTION_OPERATING_REQUIRED')
@@ -321,7 +451,22 @@ def propose(capture, state_raw, plan_raw, policy_raw, rows, networks, files_now,
     require(state['b02_plan_sha256'] == digest(plan_raw) and plan['postgres']['container_id'] == state['service_inventory']['postgres'],
             'V7_ADOPTION_PAIR_INCONSISTENT')
     services = runtime.inspect_inventory(rows, portal=state['portal'], caddy_id=state['service_inventory']['caddy'])
-    require(set(services) == set(state['service_inventory']), 'V7_ADOPTION_SERVICE_SET_CHANGED')
+    added = added_gateways(state, services)
+    gateways = gateways if gateways is not None else {'receipts': state['gateway_provisioning'], 'pins': {}, 'since_release': []}
+    receipts = gateways['receipts']
+    require(type(receipts) is dict and set(receipts) == set(state['gateway_provisioning']) | added
+            and type(gateways['pins']) is dict and type(gateways['since_release']) is list
+            and added <= set(gateways['since_release']) <= runtime.GATEWAYS, 'V7_ADOPTION_GATEWAY_RECEIPT_SET_INVALID')
+    for name, receipt in state['gateway_provisioning'].items():
+        kept, ref = receipts[name], receipts[name]['overlay_ref']
+        require({k: v for k, v in kept.items() if k != 'overlay_ref'} == {k: v for k, v in receipt.items() if k != 'overlay_ref'}
+                and ref['sha256'] == receipt['overlay_ref']['sha256'] and ref['bytes'] == receipt['overlay_ref']['bytes']
+                and (ref == receipt['overlay_ref'] or ref['path'] in gateways['pins']), 'V7_ADOPTION_GATEWAY_RECEIPT_CHANGED:'+name)
+    for name in added:
+        require(receipts[name]['overlay_ref']['path'] in gateways['pins'], 'V7_ADOPTION_GATEWAY_OVERLAY_NOT_PINNED:'+name)
+    require(all(path == pinned_overlay(source)['path'] and pinned_overlay(source) in [r['overlay_ref'] for r in receipts.values()]
+                for path, source in gateways['pins'].items()), 'V7_ADOPTION_GATEWAY_PIN_INVALID')
+    bridges = gateway_bridges(added)
     before = {row['Id']: row for row in capture['rows']}
     require(set(before) == set(capture['sanitized_digests'])
             and all(runtime.definition_digest_matches(before[cid], capture['sanitized_digests'][cid]) for cid in before)
@@ -330,7 +475,7 @@ def propose(capture, state_raw, plan_raw, policy_raw, rows, networks, files_now,
     for name, old_id in sorted(state['service_inventory'].items()):
         row = services[name]
         if row['Id'] == old_id:
-            require(runtime.definition_digest_matches(row, state['preserved_runtime'][old_id]), 'V7_ADOPTION_DEFINITION_CHANGED:'+name)
+            require(unchanged_matches(name, row, state['preserved_runtime'][old_id], bridges), 'V7_ADOPTION_DEFINITION_CHANGED:'+name)
             summary['unchanged'].append(name)
             continue
         require(name in APP or name == 'postgres', 'V7_ADOPTION_CONTAINER_REPLACED:'+name)
@@ -368,12 +513,15 @@ def propose(capture, state_raw, plan_raw, policy_raw, rows, networks, files_now,
             canonical[name] = old
     for name, keys in profile.items():
         require(set(keys) <= set(summary['recreated'].get(PROFILE_FILES[name], [])), 'V7_ADOPTION_PROFILE_NOT_LOADED:'+name)
-    # Networks: the previous baseline, plus the egress-only PITR bridge if PITR was enabled.
-    added = set(networks) - set(state['network_baseline'])
+    # Networks: the previous baseline, plus the egress-only PITR bridge if PITR was enabled
+    # and the bridge of each adopted gateway.
+    networks_added = set(networks) - set(state['network_baseline'])
     require({k: v for k, v in networks.items() if k in state['network_baseline']} == state['network_baseline']
             and set(state['network_baseline']) <= set(networks)
-            and added == ({native.PITR_NETWORK} if summary['postgres'] else set()), 'V7_ADOPTION_NETWORK_BASELINE_CHANGED')
-    if added:
+            and networks_added == ({native.PITR_NETWORK} if summary['postgres'] else set()) | bridges, 'V7_ADOPTION_NETWORK_BASELINE_CHANGED')
+    for bridge in sorted(bridges):
+        require(gateway_bridge_valid(bridge, networks[bridge]), 'V7_ADOPTION_GATEWAY_NETWORK_INVALID:'+bridge)
+    if summary['postgres']:
         pitr_net = networks[native.PITR_NETWORK]
         require(pitr_net['Internal'] is False and pitr_net['Driver'] == 'bridge' and pitr_net['EnableIPv6'] is False,
                 'V7_ADOPTION_PITR_NETWORK_INVALID')
@@ -391,7 +539,7 @@ def propose(capture, state_raw, plan_raw, policy_raw, rows, networks, files_now,
     new_state = copy.deepcopy(state)
     new_state.update(service_inventory=inventory, preserved_runtime=preserved, canonical_files=canonical,
                      network_baseline=networks, b02_plan_sha256=digest(plan_bytes),
-                     b02_plan_ref=native.reference(PLAN, plan_bytes))
+                     b02_plan_ref=native.reference(PLAN, plan_bytes), gateway_provisioning=copy.deepcopy(receipts))
     if proxy is not None:
         new_state.update(caddy_config_ref=proxy['caddy_config_ref'], active_proxy_sha256=proxy['active_proxy_sha256'])
     runtime.validate_state(new_state); runtime.validate_inventory(new_state, rows); runtime.validate_plan(new_state, plan_bytes)
@@ -409,15 +557,18 @@ def propose(capture, state_raw, plan_raw, policy_raw, rows, networks, files_now,
                 'after': {'state_sha256': digest(state_bytes), 'plan_sha256': digest(plan_bytes),
                           'policy_sha256': digest(policy_bytes) if policy_bytes is not None else None},
                 'summary': {'recreated': summary['recreated'], 'unchanged': sorted(summary['unchanged']),
-                            'postgres': summary['postgres'], 'profiles': profile, 'networks_added': sorted(added),
+                            'postgres': summary['postgres'], 'profiles': profile, 'networks_added': sorted(networks_added),
+                            'gateways_added': sorted(added), 'gateways_since_release': sorted(gateways['since_release']),
+                            'gateway_overlays_pinned': sorted(gateways['pins']),
                             'backup_env': backup_env,
                             'proxy': None if proxy is None else {'transition': proxy['transition'],
                                                                  'rewritten_to_target': proxy['rewritten_to_target']}}}
-    return proposal, {'state': state_bytes, 'plan': plan_bytes, 'policy': policy_bytes}
+    return proposal, {'state': state_bytes, 'plan': plan_bytes, 'policy': policy_bytes, 'pins': copy.deepcopy(gateways['pins'])}
 
 
 class Host:
     """Root reads on the VM. Tests replace it."""
+    PRIVATE = PRIVATE
 
     def __init__(self, root):
         self.root = Path(root)
@@ -429,8 +580,16 @@ class Host:
 
     def rows(self):
         ids = self.command(['docker', 'ps', '-aq', '--no-trunc']).split()
-        require(5 <= len(ids) <= 11 and len(set(ids)) == len(ids), 'V7_ADOPTION_INVENTORY_BOUND')
+        require(5 <= len(ids) <= runtime.MAX_CONTAINERS and len(set(ids)) == len(ids), 'V7_ADOPTION_INVENTORY_BOUND')
         return runtime._parse(self.command(['docker', 'inspect', *ids]).encode())
+
+    def database(self, _root, sql):
+        """Read-only SQL (every query is a READ ONLY transaction) through the current release."""
+        result = subprocess.run(['sh', 'scripts/compose-release.sh', str(PRIVATE/'release.env'), 'exec', '-T', 'postgres', 'psql',
+                                 '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-U', 'commerce_owner', '-d', 'commerce'],
+                                cwd=self.root, input=sql, capture_output=True, text=True, timeout=60)
+        require(result.returncode == 0, 'V7_ADOPTION_DATABASE_READ_FAILED')
+        return result.stdout.strip()
 
     def private(self, path, optional=False):
         if optional and not Path(path).exists():
@@ -453,6 +612,19 @@ def write_private(path, raw):
     require(native.protected_bytes(path) == raw, 'V7_ADOPTION_WRITE_READBACK_FAILED')
 
 
+def pin_overlay(path, raw):
+    require(path.parent == GATEWAY_OVERLAYS and path.name == digest(raw)+'.overlay', 'V7_ADOPTION_GATEWAY_PIN_INVALID')
+    base_dir()
+    if not GATEWAY_OVERLAYS.exists():
+        GATEWAY_OVERLAYS.mkdir(mode=0o700)
+    info = GATEWAY_OVERLAYS.lstat()
+    require(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700 and info.st_uid == 0, 'V7_ADOPTION_DIRECTORY_UNSAFE')
+    if path.exists() or path.is_symlink():
+        require(native.protected_bytes(path) == raw, 'V7_ADOPTION_GATEWAY_PIN_CHANGED')
+    else:
+        write_private(path, raw)
+
+
 def base_dir():
     if not BASE.exists():
         BASE.mkdir(mode=0o700)
@@ -465,7 +637,15 @@ def capture(host):
     state_raw, plan_raw = host.private(ADOPTION), host.private(PLAN)
     state = runtime._parse(state_raw); runtime.validate_state(state); runtime.validate_plan(state, plan_raw)
     rows = host.rows()
-    services = runtime.validate_inventory(state, rows)
+    live = runtime.inspect_inventory(rows, portal=state['portal'], caddy_id=state['service_inventory']['caddy'])
+    # The recorded containers, unchanged; gateways that canonical capacity operations added
+    # since (and their bridges on ingress/channel-worker) are adopted by observe/apply.
+    bridges = gateway_bridges(added_gateways(state, live))
+    require({name: live[name]['Id'] for name in state['service_inventory']} == state['service_inventory']
+            and set(state['preserved_runtime']) == set(state['service_inventory'].values())
+            and all(unchanged_matches(name, live[name], state['preserved_runtime'][cid], bridges)
+                    for name, cid in state['service_inventory'].items()), 'COPY_RUNTIME_STATIC_DEFINITION_CHANGED')
+    services = {name: live[name] for name in state['service_inventory']}
     for ref in state['canonical_files'].values():
         native.read_reference(ref)
     saved = [sanitized(row) for row in services.values()]
@@ -492,9 +672,10 @@ def observe(host):
     runtime.topology(host.command, host.root, services, networks, release)
     runtime.verify_edge(host, host.root, state, services, release)
     proxy = proxy_transition(host, state, services)
+    gateways = gateway_adoption(host, state, services, release)
     files = {name: host.private(PRIVATE/name) for name in runtime.FILES}
     proposal, documents = propose(capture_doc, state_raw, plan_raw, policy_raw, rows, networks, files,
-                                  runtime._parse(receipt_raw) if receipt_raw else None, release, proxy=proxy)
+                                  runtime._parse(receipt_raw) if receipt_raw else None, release, proxy=proxy, gateways=gateways)
     return proposal, documents, {'state': state_raw, 'plan': plan_raw, 'policy': policy_raw}
 
 
@@ -507,8 +688,12 @@ def apply(host, expected):
         journal_path = base_dir()/'journal.json'
         require(not journal_path.exists(), 'V7_ADOPTION_PREVIOUS_JOURNAL_PRESENT')
         journal = {'schema_version': 1, 'status': 'PREWRITE', 'proposal_sha256': expected, **proposal['after'],
-                   'base_receipt_ref': runtime._parse(old['state'])['last_release_receipt_ref']}
+                   'base_receipt_ref': runtime._parse(old['state'])['last_release_receipt_ref'],
+                   'gateways_added': list(proposal['summary'].get('gateways_since_release', []))}
         write_private(journal_path, encode(journal))
+        # The exact overlay bytes each gateway receipt attested, before the state points at them.
+        for path, source in sorted(documents.get('pins', {}).items()):
+            pin_overlay(Path(path), native.read_reference(source))
         history = PRIVATE/'daily-b02/plan-history'
         history.mkdir(mode=0o700, exist_ok=True)
         kept = history/(digest(old['plan'])+'.json')
@@ -533,7 +718,8 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
         require(os.geteuid() == 0, 'V7_ADOPTION_ROOT_REQUIRED')
-        host = Host(Path(__file__).resolve().parents[1])
+        # Commands run in the current release (also when a reviewed candidate's copy of this tool runs before its install).
+        host = Host(Path(CURRENT_LINK).resolve(strict=True))
         if argv == ['capture']:
             result = capture(host)
         elif argv == ['observe']:
