@@ -1,6 +1,7 @@
 import importlib
 import io
 import json
+import signal
 import sys
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 sys.path.insert(0, str(ROOT / 'infra/mail-appengine'))
 import gcp_mail_dispatch as core  # noqa: E402
 import v7_mail_appengine as stager  # noqa: E402
+import gcp_mail_native as native  # noqa: E402
 main = importlib.import_module('main')
 
 PROJECT = 'project-c6f43813-9ac9-47ab-9fe'
@@ -104,6 +106,19 @@ class MailAppEngineTests(unittest.TestCase):
                             {'HTTP_AUTHORIZATION': 'Bearer forged'})
         self.assertEqual((status, body['error']['code']), ('401 Unauthorized', 'MAIL_ID_SIGNATURE_INVALID'))
         provider.assert_called_once()
+
+    def test_native_calls_can_arm_their_alarm_inside_a_request(self):
+        # V7.1.1: production refused every dispatch in 8 ms with MAIL_NATIVE_DEADLINE_REQUIRED,
+        # because the request held an outer alarm when the first native call armed its own.
+        class Service:
+            def dispatch(self, raw, token):
+                with native.deadline(5):
+                    pass
+                return {'attempt_id': ATTEMPT, 'state': 'UNKNOWN', 'delivery_proven': False}
+        app = lambda e, s: main.application(e, s, service_factory=Service)
+        status, body = wsgi(app, 'POST', '/v1/dispatch', b'{}', {'HTTP_AUTHORIZATION': 'Bearer id-token'})
+        self.assertEqual((status, body['state']), ('200 OK', 'UNKNOWN'))
+        self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0.0, 0.0))
 
     def test_control_fence_requires_explicit_enable(self):
         http = Mock(return_value=b'{"schema_version":1,"enabled":false}')
