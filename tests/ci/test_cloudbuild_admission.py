@@ -193,6 +193,43 @@ class BudgetAndStateTests(unittest.TestCase):
                 self.assertEqual(doc['attempts'][ATTEMPT]['state'], 'RESERVED')
                 self.assertEqual(doc['attempts'][ATTEMPT]['admission'], value)
 
+    def owner_funded_admission(self):
+        return {**admission(), 'credit_verified': False,
+                'projected_gross_microusd': 150_000_000,
+                'owner_budget': {'decision_sha256': '7'*64, 'month': '2026-10',
+                                 'monthly_cap_microusd': 150_000_000}}
+
+    def test_owner_budget_reserves_without_claiming_credit_and_preserves_history(self):
+        value = self.owner_funded_admission()
+        original = approved(); before = deepcopy(original)
+        doc = step(original, 'reserve', admission=value).document
+        self.assertEqual(original, before)
+        self.assertEqual(doc['attempts'][ATTEMPT]['state'], 'RESERVED')
+        self.assertEqual(doc['attempts'][ATTEMPT]['admission'], value)
+        self.assertFalse(doc['attempts'][ATTEMPT]['admission']['credit_verified'])
+        # Reload validates historical funding against its reservation timestamp.
+        replay = step(doc, 'discover', now=NOW+timedelta(days=32), plan=plan()).document
+        self.assertEqual(replay['attempts'][ATTEMPT]['admission'], value)
+
+    def test_owner_budget_rejects_wrong_month_cap_unknown_fields_and_missing_receipt(self):
+        changes = [{'month': '2026-09'}, {'month': '2026-11'},
+                   {'monthly_cap_microusd': 150_000_001},
+                   {'monthly_cap_microusd': 149_999_999},
+                   {'monthly_cap_microusd': True}, {'decision_sha256': ''},
+                   {'allow_overage': True}]
+        for change in changes:
+            value = self.owner_funded_admission(); value['owner_budget'].update(change)
+            with self.subTest(change=change), self.assertRaises(m.AdmissionError):
+                step(approved(), 'reserve', admission=value)
+
+    def test_owner_budget_does_not_relax_inventory_expiry_review_or_gross_cap(self):
+        for change in ({'inventory_complete': False}, {'credit_verified': True},
+                       {'credit_verified': 0}, {'expires_at': m.stamp(NOW)},
+                       {'approval_sha256': '0'*64}, {'projected_gross_microusd': 150_000_001}):
+            value = self.owner_funded_admission(); value.update(change)
+            with self.subTest(change=change), self.assertRaises(m.AdmissionError):
+                step(approved(), 'reserve', admission=value)
+
     def test_1200_minute_limit_includes_imported_bootstrap_and_failures(self):
         end = NOW
         observed = observation('FAILURE', start=NOW-timedelta(minutes=1166), seconds=1166*60)

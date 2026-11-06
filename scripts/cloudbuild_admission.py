@@ -20,6 +20,8 @@ Commands (unknown fields are rejected):
 * approve_source: attempt_id, approval(plan_sha256, review_sha256, expires_at).
 * reserve: attempt_id, admission(approval_sha256, inventory_sha256, expires_at,
   projected_gross_microusd, credit_verified=True, inventory_complete=True).
+  Owner-funded admission instead has credit_verified=False and owner_budget
+  (decision_sha256, month, monthly_cap_microusd), authenticated in protected custody.
 * submit_intent: attempt_id, source(bucket, object, generation, archive_sha256),
   nonce (UUID), request_sha256. Persist source generation before the only POST.
 * approve_intent: attempt_id, gate(build_id, trigger_id, repository_id,
@@ -118,7 +120,7 @@ EXTENDED_LIMITS = frozenset({MONTHLY_LIMIT_SECONDS, SECOND_EXTENSION_LIMIT_SECON
                              THIRD_EXTENSION_LIMIT_SECONDS})
 KNOWN_LIMITS = OPERATING_LIMITS | {HISTORICAL_MONTHLY_LIMIT_SECONDS}
 # Owner decision of 2026-11-06: USD 150 gross/month, preserving all backups.
-# This ceiling does not replace current inventory, credit or expiry validation.
+# This ceiling does not replace current inventory, funding or expiry validation.
 GROSS_CAP_MICROUSD = 150 * 1_000_000
 STAGE_LIMITS = {'full': 5700, 'attestation': 120, 'package': 1800,
                 'publisher': 900, 'toolchain': 5700, 'diagnostic': 5700}
@@ -506,13 +508,28 @@ def validate_approval(approval, plan, now):
 
 
 def validate_admission(admission, now, approval):
-    exact(admission, 'approval_sha256 inventory_sha256 expires_at projected_gross_microusd credit_verified inventory_complete',
-          'ECONOMIC_ADMISSION_FIELDS_INVALID')
+    fields = 'approval_sha256 inventory_sha256 expires_at projected_gross_microusd credit_verified inventory_complete'
+    owner_budget = type(admission) is dict and 'owner_budget' in admission
+    exact(admission, fields + (' owner_budget' if owner_budget else ''), 'ECONOMIC_ADMISSION_FIELDS_INVALID')
     digest(admission['approval_sha256']); digest(admission['inventory_sha256'])
     need(admission['approval_sha256'] == canonical_hash(approval), 'ECONOMIC_APPROVAL_MISMATCH')
     amount = admission['projected_gross_microusd']
     need(type(amount) is int and 0 <= amount <= GROSS_CAP_MICROUSD, 'GROSS_CAP_EXCEEDED')
-    need(admission['credit_verified'] is True and admission['inventory_complete'] is True, 'CREDIT_AND_INVENTORY_REQUIRED')
+    if owner_budget:
+        # Protected operator custody authenticates this decision, just as it does
+        # source approval. A digest alone is not proof of owner authorization.
+        # The owner explicitly allowed account charges on 2026-11-06; never
+        # represent that funding authorization as verified promotional credits.
+        budget = admission['owner_budget']
+        exact(budget, 'decision_sha256 month monthly_cap_microusd', 'OWNER_BUDGET_FIELDS_INVALID')
+        digest(budget['decision_sha256'])
+        cap = budget['monthly_cap_microusd']
+        need(type(cap) is int and 0 <= amount <= cap <= GROSS_CAP_MICROUSD, 'OWNER_BUDGET_CAP_EXCEEDED')
+        need(budget['month'] == now.strftime('%Y-%m'), 'OWNER_BUDGET_MONTH_MISMATCH')
+        need(admission['credit_verified'] is False, 'OWNER_BUDGET_MUST_NOT_ASSERT_CREDITS')
+        need(admission['inventory_complete'] is True, 'CREDIT_AND_INVENTORY_REQUIRED')
+    else:
+        need(admission['credit_verified'] is True and admission['inventory_complete'] is True, 'CREDIT_AND_INVENTORY_REQUIRED')
     need(timestamp(admission['expires_at']) > now, 'ECONOMIC_ADMISSION_EXPIRED')
 
 

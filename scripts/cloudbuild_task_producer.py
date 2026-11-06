@@ -54,7 +54,9 @@ def full_plan(event, *, event_id, build_config, verifier_image, runner_sha256, w
 
 def authorization(plan, *, review_sha256, economic, expires_at, moment):
     ledger.validate_plan(plan); expiry = window(expires_at, moment)
-    ledger.exact(economic, 'inventory_sha256 expires_at projected_gross_microusd credit_verified inventory_complete',
+    fields = 'inventory_sha256 expires_at projected_gross_microusd credit_verified inventory_complete'
+    if type(economic) is dict and 'owner_budget' in economic: fields += ' owner_budget'
+    ledger.exact(economic, fields,
                  'TASK_PRODUCER_ECONOMIC_FIELDS_INVALID')
     need(expiry <= window(economic['expires_at'], moment), 'TASK_PRODUCER_ECONOMIC_WINDOW')
     approval = {'plan_sha256': ledger.canonical_hash(plan), 'review_sha256': ledger.digest(review_sha256),
