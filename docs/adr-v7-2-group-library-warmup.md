@@ -33,6 +33,10 @@ inventarla ni saltar pausas, revocaciones, pertenencia al perfil o salud.
 - Outbox, observación de integrantes, recibos individuales, aislamiento del
   proveedor y compuerta final son compartidos. Cada efecto fija revisión del
   programa, biblioteca, grupo, emisor y miembros; se relee antes de emitir.
+  Observación, planificación y comandos toman primero el lock del perfil.
+  El dispatcher ya posee una fila outbox: intenta ese lock sin esperar y difiere
+  con `GROUP_WARMUP_BUSY` si está ocupado. Así una pausa o cambio de integrantes
+  puede cancelar pendientes sin invertir locks. El recheck no consume envío.
 - Pausa cancela lo no iniciado. Reanudar planifica sólo capacidad futura de hoy;
   nunca recupera días perdidos. Archivar conserva historial. Mantenimiento debe
   elegirse al configurar y cede prioridad a conversaciones comerciales.
@@ -43,7 +47,7 @@ inventarla ni saltar pausas, revocaciones, pertenencia al perfil o salud.
 
 Pruebas con PostgreSQL restringido y proveedor simulado, cobertura 2/3/10 líneas,
 cuotas/concurrencia/pausas/RLS/recibos/reinicio, regresión de ventas y legado.
-Migración aditiva desde 0117 y ensayo de instalación aislado antes de FULL y
-paquete canónico del SHA publicado. Verificar instalación y recorrido productivo.
+Migración aditiva desde 0117, FULL nativo y paquete canónico del SHA publicado;
+ensayo de instalación aislado antes de producción. Verificar instalación y recorrido productivo.
 Un intercambio físico sólo se acredita con QR y grupo propios disponibles y sus
 recibos observados; nunca con resultados del simulador.

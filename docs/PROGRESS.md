@@ -15,12 +15,16 @@ El estado de instalación se registra por separado al terminar la ventana.
 - Migración 0118 aditiva: historial, pausas, episodios y créditos previos
   conservados. Nuevas conexiones esperan selección del grupo; el modo anterior
   mantiene su semántica hasta una transición explícita.
-- Validación específica: 20 pruebas PostgreSQL con roles restringidos, grupos
+- Validación específica: 23 pruebas PostgreSQL con roles restringidos, grupos
   2/3/10, idempotencia/concurrencia/cuotas, importación, identidad, reconexión,
   incertidumbre, aislamiento, crédito saliente al cambiar el día sin duplicación
   y actualización 0117→0118 idempotente. Las 13 pruebas E2E de navegación y
   accesibilidad pasan localmente; los snapshots Linux se validan en FULL. Regresión completa y
   publicación del SHA exacto se documentan en la evidencia de release.
+- Tres pruebas concurrentes reprodujeron el orden inverso de locks entre
+  observación de integrantes y compuerta final. Pasan con observación serial por
+  perfil y emisión que difiere sin esperar cuando el perfil está ocupado.
+  Tipos/lint/build y 2,205 unitarias vuelven a pasar después de la corrección.
 - Dependencia necesaria para el gate de publicación: Better Auth 1.7.2→1.7.7
   corrige GHSA-965c-763c-88jm y GHSA-r4xp-prcw-77qf. Commerce OS no habilita los
   plugins Magic Link/OAuth Proxy ni proveedores OAuth afectados; se actualiza el
@@ -32,7 +36,11 @@ El estado de instalación se registra por separado al terminar la ventana.
   navegador espacia solicitudes reales para respetar el límite de 300/minuto.
 - Fixtures de regresión: el emisor Root sintético usa el reloj PostgreSQL para
   evidencia y validación pura; no depende del desfase host/Docker. El test de
-  actualización histórica espera ahora las 118 migraciones. No se relajan
+  actualización histórica espera ahora las 118 migraciones y 199 relaciones;
+  el inventario 0068 excluye sólo las dos tablas introducidas en 0118. La
+  conexión QR sintética se observa un segundo después de su comando y un
+  segundo antes del reloj de la base, evitando evidencia accidentalmente futura.
+  No se relajan
   las comprobaciones productivas de tiempo, roles ni fuente limpia.
 - Ningún test simulado acredita intercambio físico, reputación ni preparación
   de teléfonos. El primer grupo real requiere líneas vinculadas y sus recibos.

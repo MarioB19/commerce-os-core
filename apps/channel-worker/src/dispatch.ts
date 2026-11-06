@@ -185,7 +185,7 @@ async function outbound(effect:Body,contact:DomainRecord,client:QueryExecutor):P
  * pass (old SIMULATION effects with an invalid asset scope) were re-evaluated
  * and rewritten on every 500 ms pass: 30 upserts/s and their WAL in production
  * (docs/adr-v7-1-worker-loop-budget.md). */
-export const TRANSIENT_GATE_REASONS=['CHAT_LOCK_BUSY','DISPATCH_CAPACITY_BUSY','GROUP_OBSERVATION_FAILED','LOCAL_OWNERSHIP_DEADLINE'] as const;
+export const TRANSIENT_GATE_REASONS=['CHAT_LOCK_BUSY','DISPATCH_CAPACITY_BUSY','GROUP_OBSERVATION_FAILED','GROUP_WARMUP_BUSY','LOCAL_OWNERSHIP_DEADLINE'] as const;
 export const GATE_RECHECK_MAX_SECONDS=30;
 export const GATE_PERSISTENT_BLOCK_MINUTES=10;
 export const GATE_RECHECK_SQL=`INSERT INTO outbox_gate_schedule(effect_id,next_check_at,last_reason,updated_at)

@@ -5,6 +5,9 @@ import {hash,encrypt,decrypt,stableJson,appendEvent,type QueryExecutor} from './
 
 export async function observeGroup(c:QueryExecutor,account:DomainRecord,snapshot:ProviderGroup,now=new Date()){
  if(!snapshot.complete||snapshot.runtime.engine!==String(account.body.engine??'SIMULATOR')||Date.parse(snapshot.observedAt)>now.getTime()+1000)throw new Error('GROUP_CAPABILITY_UNVERIFIED');
+ // Same first lock as QR group planning, commands and final emission. Taking
+ // a group row first would invert program/group locks during membership changes.
+ await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`group-warmup:${account.workspace_id}:${account.environment}`]);
  const identities=(await c.query('SELECT account_id,address_fingerprint,address_ciphertext FROM warmup_identities WHERE workspace_id=$1 AND environment=$2',[account.workspace_id,account.environment])).rows;
  const members=snapshot.members.map(m=>({account_id:identities.find(i=>m.verifiedIdentity&&i.address_fingerprint===hash(canonicalIdentity(m.verifiedIdentity)))?.account_id??null,identity_hash:hash(m.identity),verified_hash:m.verifiedIdentity?hash(canonicalIdentity(m.verifiedIdentity)):null,admin:m.admin,mapping_source:m.mappingSource})).sort((a,b)=>a.identity_hash.localeCompare(b.identity_hash));
  const fingerprint=hash(snapshot.id);
@@ -34,6 +37,7 @@ export function groupEligibility(group:Body,accountIds:string[],now=new Date(),s
 export async function classifyGroupEvent(c:QueryExecutor,account:DomainRecord,e:CanonicalEvent,envelopeId:string){
  const groupId=e.groupId??(/@g\.us$/.test(e.identity??'')?String(e.identity).replace(/^opaque:/,''):null);
  if(!groupId)return false;
+ if(e.type==='group_membership')await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`group-warmup:${account.workspace_id}:${account.environment}`]);
  const group=(await c.query('SELECT * FROM warmup_groups WHERE workspace_id=$1 AND environment=$2 AND provider=$3 AND group_fingerprint=$4',[account.workspace_id,account.environment,account.body.provider,hash(groupId)])).rows[0];
  const classification=!group?'UNKNOWN_GROUP':group.retired_at?'RETIRED_GROUP':e.fromMe?'SELF_ECHO':e.type==='group_membership'?'MEMBERSHIP_CHANGED':e.type==='ack'&&!e.participantIdentity?'GLOBAL_ACK':'GROUP_EVENT';
  await c.query('INSERT INTO warmup_group_events(workspace_id,environment,account_id,group_fingerprint,canonical_key,envelope_id,classification,observed_at,event_ciphertext) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING',[account.workspace_id,account.environment,account.id,hash(groupId),e.key,envelopeId,classification,e.providerAt,encrypt(e)]);

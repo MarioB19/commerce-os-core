@@ -1,5 +1,5 @@
 import {gateQrGroupAuthority} from './group-qr-dispatch.js';
-import {lockWarmupProfile,programConfig} from '../../../packages/db/src/group-warmup.js';
+import {programConfig} from '../../../packages/db/src/group-warmup.js';
 import {recordProfileExecutor} from '../../../packages/db/src/profile-record-context.js';
 import {bindRecordEnvironment} from '../../../packages/db/src/profile-environment.js';
 import {validateLegacyWarmupEffectOrigins} from '../../../packages/db/src/legacy-qr-warmup.js';
@@ -25,8 +25,13 @@ export async function refreshEffectGroup(effectId:string,factory:ProviderFactory
 }
 export async function gateGroupDispatch(c:QueryExecutor,effect:Body,owner:string):Promise<{allowed:boolean;reason?:string;account?:DomainRecord;contact?:DomainRecord;leaseMs?:number}>{
  await bindRecordEnvironment(c,effect.workspace_id,effect.environment);
- if(effect.payload.program_revision!==undefined)await lockWarmupProfile(await recordProfileExecutor(c,effect.workspace_id,effect.environment),effect.environment);
  const deny=(reason:string)=>({allowed:false,reason});
+ if(effect.payload.program_revision!==undefined){
+  // Dispatch already owns its outbox row. A membership update or command may
+  // own the profile lock and need that row, so never wait in the reverse order.
+  const lock=(await c.query('SELECT pg_try_advisory_xact_lock(hashtextextended($1,0)) AS acquired',[`group-warmup:${effect.workspace_id}:${effect.environment}`])).rows[0];
+  if(!lock?.acquired)return deny('GROUP_WARMUP_BUSY');
+ }
  const turn=(await c.query(`SELECT t.*,v.content_id,v.local_date::text AS local_date,v.pool_id,v.group_id,v.membership_version,v.member_ids,p.enabled,p.paused pool_paused,p.breaker_open,p.archived_at,p.authorization_id pool_authorization_id,p.profile_id,p.purpose,p.continuity_mode,p.program_id FROM warmup_turns t JOIN warmup_conversations v ON v.id=t.conversation_id JOIN warmup_pools p ON p.id=v.pool_id WHERE t.id::text=$1 AND t.workspace_id=$2 AND t.environment=$3`,[effect.payload.warmup_turn_id,effect.workspace_id,effect.environment])).rows[0];
  if(!turn||turn.effect_id!==effect.id||turn.sender_id!==effect.account_id||turn.recipient_id!==effect.contact_id||turn.conversation_id!==effect.conversation_id)return deny('WARMUP_EFFECT_SCOPE_INVALID');
  if(!turn.enabled||turn.pool_paused||turn.breaker_open||turn.archived_at)return deny('WARMUP_POOL_PAUSED');
