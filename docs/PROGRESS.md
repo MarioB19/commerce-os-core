@@ -5,6 +5,17 @@
 Implementado en `codex/v7-2-group-warmup`, con publicación autorizada por el dueño.
 El estado de instalación se registra por separado al terminar la ventana.
 
+El FULL `3c97e477-11a5-477a-b70f-bd840c15a9be` de `8c36c2b` se detuvo en
+integración: `v7-life` devolvió 500 en una alta concurrente. Los 23 casos de
+grupos pasaron. La reproducción local bajo CPU limitada mostró el vencimiento
+de adquisición del pool: cinco conexiones ocupadas y catorce solicitudes en
+espera. El fixture de corrección admite sus veinte actores HTTP y el worker
+en 21 conexiones, sin cambiar pools productivos, límites ni assertions. Sus
+50 eventos pasan con la misma restricción de CPU; tipos y lint pasan. El worker
+del fixture se detiene también si falla una assertion. Se conserva el FULL
+fallido y se requiere FULL nuevo. Reasignar sólo reservas aún no consumidas
+mantiene la estimación en US$149.98, con respaldos conservados y límite US$150.
+
 Actualización de cuota: el FULL `91c69bac-c937-4640-b456-39f1b4a21839` pasó las
 21 etapas sobre `01aab61`. Monitoring identificó el segundo rechazo HTTP429 en
 la cuota de solicitudes, conservada por Google Cloud en 60/minuto. La

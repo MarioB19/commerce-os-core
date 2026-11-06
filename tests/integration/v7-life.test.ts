@@ -1,4 +1,4 @@
-import {afterAll,beforeAll,expect,it} from 'vitest';
+import {afterAll,beforeAll,expect,it,vi} from 'vitest';
 import {randomUUID,randomBytes} from 'node:crypto';
 import {createApp} from '../../apps/api/src/app.js';
 import {provisionUser} from '../../apps/api/src/auth.js';
@@ -6,6 +6,12 @@ import {processNumberOperations} from '../../apps/channel-worker/src/number-oper
 import {pool} from '../../packages/db/src/index.js';
 import {fixtureProfiles} from '../support/profile-fixture.js';
 import {roleExecutor} from '../support/database-role.js';
+
+// This correctness fixture co-locates 20 HTTP actors and the channel worker.
+// Admit all 21 to the database so a slow CI host exercises the SQL locks and
+// isolation assertions instead of pg's five-second pool checkout deadline.
+// Production service pools and the separate load tests are unchanged.
+const poolEnvironment=vi.hoisted(()=>{const previous=process.env.DB_POOL_MAX;process.env.DB_POOL_MAX='21';return{previous};});
 
 // V7 LIFE (Fases F3, «Suites transversales»): 50 synthetic lifecycle events in
 // two profiles, concurrently, while the same channel-worker loop keeps running.
@@ -23,7 +29,7 @@ async function login(profile:string){
  cookies[profile]=[r.headers['set-cookie']].flat().filter(Boolean).map(v=>String(v).split(';')[0]).join('; ');
 }
 beforeAll(async()=>{await fixtureProfiles({id:A,numbers:10},{id:B,numbers:10});app=await createApp();await login(A);await login(B);});
-afterAll(async()=>{await app.close();await pool.end();});
+afterAll(async()=>{try{await app.close();await pool.end();}finally{if(poolEnvironment.previous===undefined)delete process.env.DB_POOL_MAX;else process.env.DB_POOL_MAX=poolEnvironment.previous;}});
 async function inProfile<T>(scope:string,work:(c:import('pg').PoolClient)=>Promise<T>){
  const c=await pool.connect();
  try{await c.query('BEGIN');await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','REAL',true)",[scope]);const r=await work(c);await c.query('COMMIT');return r;}
@@ -37,6 +43,7 @@ it('runs 50 concurrent lifecycle events in two profiles without cross effects or
  let loopRuns=0,loopFailures=0,running=true;
  const loop=(async()=>{while(running){try{await withRole('commerce_channel',()=>processNumberOperations('life-worker'));loopRuns++;}catch{loopFailures++;}await new Promise(r=>setTimeout(r,20));}})();
  const events:string[]=[];
+ try{
  // 1. 20 registrations (10 per profile), all at once.
  const [a,b]=await Promise.all([A,B].map(p=>Promise.all(Array.from({length:10},(_,i)=>create(p,i)))));events.push(...a!.map(()=>'create'),...b!.map(()=>'create'));
  const bUntouched=b!.slice(5);
@@ -69,4 +76,5 @@ it('runs 50 concurrent lifecycle events in two profiles without cross effects or
   expect((await inProfile(p,c=>c.query('SELECT count(*)::int n FROM outbox WHERE workspace_id=$1',[p]))).rows[0].n).toBe(0);
   expect((await inProfile(p,c=>c.query("SELECT count(*)::int n FROM commands WHERE workspace_id=$1 AND kind='channel_command'",[p]))).rows[0].n).toBe(0);
  }
+ }finally{running=false;await loop;}
 },120000);
