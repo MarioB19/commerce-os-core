@@ -11,8 +11,12 @@ Se conserva la exigencia de inventario completo, financiación autorizada,
 aprobación ligada al candidato y evidencia vigente. No se amplían minutos de
 CI, medidor, permisos, número de ejecuciones ni presupuesto de Actions.
 
-Todos los respaldos y discos actuales se conservan. Esta decisión no autoriza
-su eliminación para reducir la proyección. Los ADR anteriores conservan su
+Todos los respaldos se conservan. El dueño autorizó después archivar y retirar
+únicamente tres discos antiguos desconectados (`commerce-os-test-boot-r20261021a`,
+`commerce-os-test-boot-r20261021b`, `commerce-os-test-boot-r20261021c`), después de
+crear y verificar snapshots actuales dentro del margen económico. Se conservan
+los snapshots anteriores, PITR, producción y los demás discos. Esta excepción
+operativa específica no autoriza otras eliminaciones. Los ADR anteriores conservan su
 límite histórico; esta decisión sustituye únicamente el techo bruto global.
 
 Las pruebas de admisión y composición aceptan exactamente US$150 y rechazan
