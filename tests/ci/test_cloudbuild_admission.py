@@ -178,12 +178,20 @@ class BudgetAndStateTests(unittest.TestCase):
 
     def test_missing_credit_over_cap_incomplete_inventory_and_expiry_fail(self):
         cases = [{'credit_verified': False}, {'inventory_complete': False},
-                 {'projected_gross_microusd': 100_000_001},
+                 {'projected_gross_microusd': 150_000_001},
                  {'projected_gross_microusd': True}, {'expires_at': m.stamp(NOW)}]
         for changes in cases:
             value = admission(); value.update(changes)
             with self.subTest(changes=changes), self.assertRaises(m.AdmissionError):
                 step(approved(), 'reserve', admission=value)
+
+    def test_owner_approved_150_gross_cap_accepts_boundary_and_preserves_evidence(self):
+        for amount in (100_000_001, 150_000_000):
+            with self.subTest(amount=amount):
+                value = admission(); value['projected_gross_microusd'] = amount
+                doc = step(approved(), 'reserve', admission=value).document
+                self.assertEqual(doc['attempts'][ATTEMPT]['state'], 'RESERVED')
+                self.assertEqual(doc['attempts'][ATTEMPT]['admission'], value)
 
     def test_1200_minute_limit_includes_imported_bootstrap_and_failures(self):
         end = NOW

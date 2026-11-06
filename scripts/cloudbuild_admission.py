@@ -117,7 +117,9 @@ OPERATING_LIMITS = frozenset({MONTHLY_LIMIT_SECONDS, REDUCED_MONTHLY_LIMIT_SECON
 EXTENDED_LIMITS = frozenset({MONTHLY_LIMIT_SECONDS, SECOND_EXTENSION_LIMIT_SECONDS,
                              THIRD_EXTENSION_LIMIT_SECONDS})
 KNOWN_LIMITS = OPERATING_LIMITS | {HISTORICAL_MONTHLY_LIMIT_SECONDS}
-GROSS_CAP_MICROUSD = 100 * 1_000_000
+# Owner decision of 2026-11-06: USD 150 gross/month, preserving all backups.
+# This ceiling does not replace current inventory, credit or expiry validation.
+GROSS_CAP_MICROUSD = 150 * 1_000_000
 STAGE_LIMITS = {'full': 5700, 'attestation': 120, 'package': 1800,
                 'publisher': 900, 'toolchain': 5700, 'diagnostic': 5700}
 LIVE_STATES = {'RESERVED', 'SUBMIT_INTENT', 'UNKNOWN', 'UUID_BOUND',
