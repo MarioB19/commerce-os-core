@@ -5,6 +5,17 @@
 Implementado en `codex/v7-2-group-warmup`, con publicación autorizada por el dueño.
 El estado de instalación se registra por separado al terminar la ventana.
 
+Preparación del release: el dueño autorizó US$150 brutos mensuales, incluso sin
+créditos. El controlador conserva créditos sin verificar en `false` y acepta una
+decisión de presupuesto explícita ligada al mes y a la revisión. Los 1,943 casos
+Python del candidato pasan (1,941 aprobados, 2 omitidos); las pruebas de aplicación
+siguen en 2,205 unitarias y 1,516 PostgreSQL. La imagen confiable del controlador y
+los dos triggers de atestación ya incorporan ese control, conservando la aprobación
+requerida. Tres discos históricos desconectados fueron archivados y retirados con
+autorización específica; se conservan los 21 snapshots anteriores, las tres copias
+nuevas, PITR y producción. La proyección de noviembre es US$146.29; se prepara la
+admisión con US$147. FULL nativo e instalación de V7.2 siguen pendientes.
+
 - Nuevo recorrido Números → Calentamientos: grupo existente de 2–10 números
   propios, emisores seleccionados, horario, topes, mantenimiento y pausa.
 - 500 guiones originales / 5,000 mensajes estáticos; importación versionada,
