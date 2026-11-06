@@ -5,6 +5,18 @@
 Implementado en `codex/v7-2-group-warmup`, con publicación autorizada por el dueño.
 El estado de instalación se registra por separado al terminar la ventana.
 
+Actualización de publicación: FULL `6d590da9-5937-42d0-b7bd-eec827f524cb` pasó
+las 21 etapas sobre `dddcf75`, incluidas recuperación y comparación visual Linux.
+La aprobación de la atestación recibió un 429, fue conciliada sin reembolso y
+su UUID quedó consumido. La reserva posterior se detuvo antes de aprobar.
+La [recuperación de atestaciones sin intención](adr-v7-unsubmitted-attestation-recovery.md)
+añade su cierre explícito con evidencia, sin reutilizar compuertas ni afirmar
+éxito. Pasan 1,949 casos Python (1,947 aprobados, 2 omitidos). El conductor observa
+GCS durante la aprobación para no competir con la cuota de Cloud Build.
+Este nuevo commit requiere su propio FULL; la aplicación de calentamiento no
+cambia. La proyección con un FULL adicional y reservas es US$147.05 redondeados
+hacia arriba, admitida conservadoramente en US$148 dentro de los US$150.
+
 Preparación del release: el dueño autorizó US$150 brutos mensuales, incluso sin
 créditos. El controlador conserva créditos sin verificar en `false` y acepta una
 decisión de presupuesto explícita ligada al mes y a la revisión. Los 1,943 casos

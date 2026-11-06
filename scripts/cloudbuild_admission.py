@@ -41,6 +41,10 @@ Commands (unknown fields are rejected):
   fenced against continuation, source acquire never uploaded, source absent,
   and complete native inventory without dispatch. Retains the historical plan
   and reservation; releases only unexecuted capacity. Never creates a Build ID.
+* abort_before_approval: attempt_id, evidence_sha256, native_verified=True.
+  Attestation-stage RESERVED only, without any intent or native UUID. Protected
+  operator proves request ended, controls paused and no native approval. Keeps
+  the whole reservation charged; never reopens an event or a consumed gate.
 * raise_monthly_limit_second: from_seconds=72000, to_seconds=90000,
   evidence_sha256, native_verified=True. Protected operator only, after the
   owner's economic decision of 2026-10-20 (1,500 minutes per month): no live or
@@ -340,15 +344,15 @@ def _validate_ledger(doc):
         state = attempt.get('state')
         need(type(state) is str and state in LIVE_STATES | {
             'DISCOVERED', 'SOURCE_APPROVED', 'RECONCILED', 'ABORTED_BEFORE_DISPATCH',
-            'ABANDONED_WITHOUT_NATIVE'}, 'STATE_INVALID')
+            'ABANDONED_WITHOUT_NATIVE', 'ABORTED_BEFORE_APPROVAL'}, 'STATE_INVALID')
         fields = {'plan', 'state', 'discovered_at'}
         if state != 'DISCOVERED':
             fields |= {'approval'}
         if state not in {'DISCOVERED', 'SOURCE_APPROVED'}:
             fields |= {'reserved_at', 'admission'}
-        if state not in {'DISCOVERED', 'SOURCE_APPROVED', 'RESERVED', 'ABORTED_BEFORE_DISPATCH'}:
+        if state not in {'DISCOVERED', 'SOURCE_APPROVED', 'RESERVED', 'ABORTED_BEFORE_DISPATCH', 'ABORTED_BEFORE_APPROVAL'}:
             fields |= {'intent', 'submitted_at'}
-        if state == 'ABORTED_BEFORE_DISPATCH':
+        if state in {'ABORTED_BEFORE_DISPATCH', 'ABORTED_BEFORE_APPROVAL'}:
             fields |= {'abortion'}
         if state == 'UNKNOWN':
             fields |= {'uncertainty'}
@@ -405,9 +409,10 @@ def _validate_ledger(doc):
             digest(attempt['reconciliation_sha256'])
             need(timestamp(attempt['terminal']['finished_at']) <= timestamp(attempt['reconciled_at']) <= updated,
                  'DURABLE_CHRONOLOGY_INVALID')
-        if state == 'ABORTED_BEFORE_DISPATCH':
+        if state in {'ABORTED_BEFORE_DISPATCH', 'ABORTED_BEFORE_APPROVAL'}:
             abortion = attempt['abortion']
-            need(attempt['plan']['stage'] == 'full', 'UNDISPATCHED_FULL_REQUIRED')
+            expected_stage = 'full' if state == 'ABORTED_BEFORE_DISPATCH' else 'attestation'
+            need(attempt['plan']['stage'] == expected_stage, 'UNDISPATCHED_FULL_REQUIRED' if expected_stage == 'full' else 'UNAPPROVED_ATTESTATION_REQUIRED')
             exact(abortion, 'evidence_sha256 aborted_at reserved_seconds', 'ABORTION_FIELDS_INVALID')
             digest(abortion['evidence_sha256'])
             need(type(abortion['reserved_seconds']) is int and
@@ -488,6 +493,11 @@ def _budget_usage(document, *, now):
             end = utc(attempt['submitted_at']) + timedelta(seconds=plan['timeout_seconds'] + plan['queue_seconds'])
             for month, _, _ in months(attempt['reserved_at'], end):
                 add(month, 'confirmed_seconds', attempt['abandonment']['charged_seconds'])
+        elif attempt['state'] == 'ABORTED_BEFORE_APPROVAL':
+            plan = attempt['plan']
+            end = utc(attempt['abortion']['aborted_at']) + timedelta(seconds=plan['timeout_seconds'] + plan['queue_seconds'])
+            for month, _, _ in months(attempt['reserved_at'], end):
+                add(month, 'confirmed_seconds', attempt['abortion']['reserved_seconds'])
         elif attempt['state'] in LIVE_STATES:
             plan = attempt['plan']
             end = moment + timedelta(seconds=plan['timeout_seconds'] + plan['queue_seconds'])
@@ -632,6 +642,7 @@ def _transition(document, command, *, now, validator):
         'terminal': 'op attempt_id observation',
         'reconcile': 'op attempt_id evidence_sha256 native_verified',
         'abort_before_dispatch': 'op attempt_id evidence_sha256 native_verified',
+        'abort_before_approval': 'op attempt_id evidence_sha256 native_verified',
         'abandon_without_native': 'op attempt_id evidence_sha256 native_verified',
         'reduce_monthly_limit': 'op from_seconds to_seconds evidence_sha256 native_verified',
         'raise_monthly_limit': 'op from_seconds to_seconds evidence_sha256 native_verified',
@@ -825,19 +836,21 @@ def _transition(document, command, *, now, validator):
             if value['started_at'] is not None:
                 need(utc(value['started_at']) >= utc(attempt['submitted_at']), 'NATIVE_INTERVAL_BEFORE_INTENT')
             attempt.update(state='TERMINAL_UNRECONCILED', terminal=deepcopy(value))
-        elif op == 'abort_before_dispatch':
+        elif op in {'abort_before_dispatch', 'abort_before_approval'}:
             # Native absence and the dead-request fence are authenticated by
             # the protected recovery adapter, never inferred from this state.
             need(command['native_verified'] is True, 'NATIVE_VERIFICATION_REQUIRED')
             digest(command['evidence_sha256'])
-            if state == 'ABORTED_BEFORE_DISPATCH':
+            abort_state = 'ABORTED_BEFORE_DISPATCH' if op == 'abort_before_dispatch' else 'ABORTED_BEFORE_APPROVAL'
+            if state == abort_state:
                 need(attempt['abortion']['evidence_sha256'] == command['evidence_sha256'],
                      'ABORTION_EVIDENCE_CHANGED')
                 return replay()
             need(state == 'RESERVED' and doc['active_attempt'] == attempt_id,
                  'UNDISPATCHED_RESERVATION_REQUIRED')
-            need(attempt['plan']['stage'] == 'full', 'UNDISPATCHED_FULL_REQUIRED')
-            attempt.update(state='ABORTED_BEFORE_DISPATCH', abortion={
+            expected_stage = 'full' if op == 'abort_before_dispatch' else 'attestation'
+            need(attempt['plan']['stage'] == expected_stage, 'UNDISPATCHED_FULL_REQUIRED' if expected_stage == 'full' else 'UNAPPROVED_ATTESTATION_REQUIRED')
+            attempt.update(state=abort_state, abortion={
                 'evidence_sha256': command['evidence_sha256'], 'aborted_at': stamp(moment),
                 'reserved_seconds': attempt['plan']['timeout_seconds']})
             doc['active_attempt'] = None
