@@ -23,6 +23,7 @@ MAX_BUILDS = 1000
 MAX_TOTAL_BYTES = 32 * 1024 * 1024
 MAX_SECONDS = 90
 REQUEST_INTERVAL_SECONDS = 1.25  # <=48 inventory requests/minute, leaving quota headroom.
+APPROVAL_QUIET_SECONDS = 65
 STATUSES = ledger.TERMINAL_STATUSES | {'PENDING', 'QUEUED', 'WORKING'}
 
 
@@ -36,6 +37,21 @@ class InventoryRequestPacer:
     def __init__(self, *, clock=time.monotonic, sleep=time.sleep):
         self.clock = clock; self.sleep = sleep; self.lock = threading.Lock()
         self.last_issued = None
+
+    def before_approval_fence(self):
+        """Separate complete inventory passes before the final fresh fence.
+
+        Native approval shares the project's Other API requests quota. Two
+        consecutive regional scans can exhaust it even with paced reads. Wait
+        before revalidating, never between that final fence and its mutation.
+        """
+        with self.lock:
+            if self.last_issued is None:
+                return
+            remaining = self.last_issued + APPROVAL_QUIET_SECONDS - self.clock()
+            while remaining > 0:
+                self.sleep(remaining)
+                remaining = self.last_issued + APPROVAL_QUIET_SECONDS - self.clock()
 
     def open(self, opener, request, *, deadline):
         with self.lock:

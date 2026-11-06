@@ -5,6 +5,15 @@
 Implementado en `codex/v7-2-group-warmup`, con publicación autorizada por el dueño.
 El estado de instalación se registra por separado al terminar la ventana.
 
+Actualización de cuota: el FULL `91c69bac-c937-4640-b456-39f1b4a21839` pasó las
+21 etapas sobre `01aab61`. Monitoring identificó el segundo rechazo HTTP429 en
+la cuota de solicitudes, conservada por Google Cloud en 60/minuto. La
+[ventana previa a la aprobación](adr-v7-native-approval-quota.md) separa los
+inventarios y conserva la revalidación inmediata antes del POST. Se requiere
+FULL del nuevo SHA. El ensayo de restauración aislado comprobó 188 tablas,
+11,425,703 filas y 117 migraciones idénticas al respaldo previo. Producción aún
+conserva V7.1.1. Proyección conservadora actual: US$149.76, admitida en US$150.
+
 Actualización de publicación: FULL `6d590da9-5937-42d0-b7bd-eec827f524cb` pasó
 las 21 etapas sobre `dddcf75`, incluidas recuperación y comparación visual Linux.
 La aprobación de la atestación recibió un 429, fue conciliada sin reembolso y
