@@ -42,6 +42,13 @@ El estado de instalación se registra por separado al terminar la ventana.
   segundo antes del reloj de la base, evitando evidencia accidentalmente futura.
   No se relajan
   las comprobaciones productivas de tiempo, roles ni fuente limpia.
+- El fixture del laboratorio toma captura y estimación del mismo reloj de
+  PostgreSQL. En Colima local se observaron pasos de reloj hacia atrás de
+  100–130 ms del agente Lima, coincidentes con
+  [Lima #5543](https://github.com/lima-vm/lima/issues/5543). La verificación se
+  repite en un clúster PostgreSQL sintético limpio, con NTP activo y protección
+  temporal del reloj frente al agente. La configuración local se restaura al
+  terminar; las restricciones SQL de frescura y leases se conservan.
 - Ningún test simulado acredita intercambio físico, reputación ni preparación
   de teléfonos. El primer grupo real requiere líneas vinculadas y sus recibos.
 
