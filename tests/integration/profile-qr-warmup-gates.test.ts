@@ -50,7 +50,7 @@ async function live(w:string,account:string){
 async function readyPair(){
  const w=await profile(),clock=(await admin.query('SELECT clock_timestamp() AS now')).rows[0].now as Date,offset=12-clock.getUTCHours(),timezone=offset===0?'UTC':`Etc/GMT${offset>0?'-':'+'}${Math.abs(offset)}`;
  await asProfileOwner(admin,w,c=>c.query('UPDATE profiles SET timezone=$2,version=version+1 WHERE id=$1',[w,timezone]));
- const a=await connection(w),b=await connection(w);for(const n of [a,b]){await enrollment(w,n.account);await live(w,n.account);}
+ const a=await connection(w),b=await connection(w);for(const n of [a,b]){await enrollment(w,n.account);await admin.query('UPDATE warmup_states SET group_required=false WHERE account_id=$1',[n.account]);await live(w,n.account);}
  const p=await pool(w),now=(await admin.query('SELECT clock_timestamp() AS now')).rows[0].now as Date;
  const settings=await readOperationalSettings(admin as any,w,'REAL');await writeOperationalSettings(admin as any,w,'REAL',settings.version,{...settings.body,dispatch_frozen:false,allow_real_operations:true,real_sends_enabled:true},'synthetic-fixture');
  await tx(w,'commerce_automation',async db=>{await reconcileWarmupPool(db,p,now);expect((await planWarmupPool(db,p,now)).planned).toBeGreaterThan(0);});

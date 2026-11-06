@@ -50,7 +50,7 @@ async function fixture(ttl=3600){
 }
 // execFile has no input option. Use the existing closed child-process protocol.
 async function generated(f,c=f.c,human,message,billingBytes=billing){
- const input=raw({control:c,billing_hex:billingBytes.toString('hex'),...(human?{human_hex:human.toString('hex'),message_hex:message.toString('hex')}: {})});
+ const input=raw({control:c,observed_at:(await data.query('SELECT clock_timestamp() AS at')).rows[0].at.toISOString(),billing_hex:billingBytes.toString('hex'),...(human?{human_hex:human.toString('hex'),message_hex:message.toString('hex')}: {})});
  const {spawn}=await import('node:child_process');
  return await new Promise((resolve,reject)=>{
   const p=spawn('python3',[bridge],{stdio:['pipe','pipe','pipe']});let out='',err='';
@@ -64,13 +64,16 @@ async function generated(f,c=f.c,human,message,billingBytes=billing){
 async function run(sql){const c=await admin.connect();try{const list=await c.query(sql);return JSON.parse(list.find(v=>v.rows?.length)?.rows[0].current_setting);}catch(error){await c.query('ROLLBACK');throw error;}finally{c.release();}}
 const prepare=async f=>run(await generated(f));
 async function confirmation(f){
- await data.query('SELECT pg_sleep(0.003)');const performed=iso(Date.now());await data.query('SELECT pg_sleep(0.003)');const key=randomUUID();
+ // The evidence gate compares PostgreSQL timestamps. A local Docker VM can
+ // differ from the host clock; use that same clock for synthetic evidence.
+ const dbTime=async()=>(await data.query('SELECT clock_timestamp() AS at')).rows[0].at.toISOString();
+ await data.query('SELECT pg_sleep(0.003)');const performed=await dbTime();await data.query('SELECT pg_sleep(0.003)');const key=randomUUID();
  const payload={challenge_id:f.c.challenge_id,expected_account_version:f.a.version,expected_session_version:f.s.revision,previous_commerce_devices_revoked:true,confirmation:'REVOKED_PREVIOUS_COMMERCE_DEVICES_AFTER_CHALLENGE',reason:'Synthetic explicit primary-device confirmation'};
  const response=await app.inject({method:'POST',url:'/v1/channel-accounts/'+f.a.id+'/source-isolation/confirm?environment=REAL',payload,headers:{authorization:'Bearer '+f.token,'idempotency-key':key}});
  assert.equal(response.statusCode,200,response.body);await data.query('SELECT pg_sleep(0.003)');
  const e=(await data.query("SELECT * FROM domain_events WHERE aggregate_id=$1 AND event_type='channel.source_isolation.primary_reported' ORDER BY recorded_at DESC LIMIT 1",[f.a.id])).rows[0];
- const source={schema_version:1,kind:'DIRECT_HUMAN_PRIMARY_DEVICE_CONFIRMATION',challenge_id:f.c.challenge_id,account_id:f.a.id,workspace_id:f.workspace,actor_user_id:f.user,responsible_user_id:f.user,primary_device_id:f.s.primary_device_id,performed_at:performed,received_at:iso(Date.now()),confirmation:'REVOKED_PREVIOUS_COMMERCE_DEVICES_AFTER_CHALLENGE',source_message_id:'synthetic-human-message-'+randomUUID(),statement:'Synthetic human fixture explicitly reports primary-device revocation after this challenge; this is not a real message.'};
- const message=raw(source),doc={schema_version:1,status:'HUMAN_PRIMARY_DEVICE_REVOCATION_ATTESTED',challenge_id:f.c.challenge_id,account_id:f.a.id,workspace_id:f.workspace,actor_user_id:f.user,responsible_user_id:f.user,primary_device_id:f.s.primary_device_id,performed_at:performed,recorded_at:iso(Date.now()),confirmation:'REVOKED_PREVIOUS_COMMERCE_DEVICES_AFTER_CHALLENGE',canonical_event_id:e.id,idempotency_key:key,authentication_method:'personal_access_token',credential_id:f.credential,source_message_ref:ref('/opt/commerce-os/private/source-isolation/evidence/synthetic-human-message.json',message)};
+ const source={schema_version:1,kind:'DIRECT_HUMAN_PRIMARY_DEVICE_CONFIRMATION',challenge_id:f.c.challenge_id,account_id:f.a.id,workspace_id:f.workspace,actor_user_id:f.user,responsible_user_id:f.user,primary_device_id:f.s.primary_device_id,performed_at:performed,received_at:await dbTime(),confirmation:'REVOKED_PREVIOUS_COMMERCE_DEVICES_AFTER_CHALLENGE',source_message_id:'synthetic-human-message-'+randomUUID(),statement:'Synthetic human fixture explicitly reports primary-device revocation after this challenge; this is not a real message.'};
+ const message=raw(source),doc={schema_version:1,status:'HUMAN_PRIMARY_DEVICE_REVOCATION_ATTESTED',challenge_id:f.c.challenge_id,account_id:f.a.id,workspace_id:f.workspace,actor_user_id:f.user,responsible_user_id:f.user,primary_device_id:f.s.primary_device_id,performed_at:performed,recorded_at:await dbTime(),confirmation:'REVOKED_PREVIOUS_COMMERCE_DEVICES_AFTER_CHALLENGE',canonical_event_id:e.id,idempotency_key:key,authentication_method:'personal_access_token',credential_id:f.credential,source_message_ref:ref('/opt/commerce-os/private/source-isolation/evidence/synthetic-human-message.json',message)};
  const human=raw(doc),c={...f.c,action:'finalize',human_ref:ref('/opt/commerce-os/private/source-isolation/evidence/synthetic-human-attestation.json',human)};
  return{c,human,message,doc,source};
 }

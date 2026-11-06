@@ -15,16 +15,16 @@ export async function observeGroup(c:QueryExecutor,account:DomainRecord,snapshot
  const capabilities={protocol:'v1',observations,all_members_resolved:members.every(m=>m.account_id&&m.verified_hash),member_read:true,authenticated_receive:true};
  const row=(await c.query(`INSERT INTO warmup_groups(workspace_id,environment,provider,group_fingerprint,group_ciphertext,name,members,permissions,capabilities,observed_at,expires_at,source)
  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'provider_read') ON CONFLICT(workspace_id,environment,provider,group_fingerprint) DO UPDATE SET members=EXCLUDED.members,permissions=EXCLUDED.permissions,capabilities=EXCLUDED.capabilities,name=EXCLUDED.name,observed_at=EXCLUDED.observed_at,expires_at=EXCLUDED.expires_at,version=warmup_groups.version+$12 RETURNING *`,[account.workspace_id,account.environment,account.body.provider,fingerprint,encrypt(snapshot.id),snapshot.name,JSON.stringify(members),permissions,capabilities,now,new Date(now.getTime()+60000),changed?1:0])).rows[0];
- if(changed){await c.query("UPDATE warmup_programs SET status=CASE WHEN status='ARCHIVED' THEN status ELSE 'PAUSED' END,review_hash=NULL,version=version+1 WHERE group_id=$1",[row.id]);await c.query("UPDATE warmup_pools SET paused=true,version=version+1,breaker_reason='GROUP_MEMBERSHIP_CHANGED' WHERE group_id=$1",[row.id]);}
+ if(changed){await c.query("UPDATE warmup_programs SET status=CASE WHEN status='ARCHIVED' THEN status ELSE 'PAUSED' END,review_hash=NULL,version=version+1 WHERE group_id=$1",[row.id]);await c.query("UPDATE warmup_pools SET paused=true,version=version+1,breaker_reason='GROUP_MEMBERSHIP_CHANGED' WHERE group_id=$1",[row.id]);await c.query("UPDATE outbox SET status='CANCELLED',result=result||'{\"reason\":\"GROUP_MEMBERSHIP_CHANGED\"}'::jsonb,updated_at=now() WHERE workspace_id=$1 AND environment=$2 AND kind='warmup' AND payload->>'group_id'=$3 AND status IN('READY','BLOCKED')",[account.workspace_id,account.environment,row.id]);}
  await appendEvent(c,{workspace_id:account.workspace_id,environment:account.environment,event_type:'warmup.group_observed',aggregate_id:row.id,payload:{account_id:account.id,membership_version:row.version,changed:!!changed,members:members.length,resolved:capabilities.all_members_resolved,runtime:snapshot.runtime},occurred_at:now.toISOString()});
  return row;
 }
-export function groupEligibility(group:Body,accountIds:string[],now=new Date()){
+export function groupEligibility(group:Body,accountIds:string[],now=new Date(),senderIds=accountIds){
  const members:Body[]=group.members??[],unique=new Set(members.map(m=>m.account_id));
  if(group.retired_at)return 'GROUP_RETIRED';
  if(!group.capabilities?.all_members_resolved||members.some(m=>!m.account_id))return 'GROUP_MEMBER_UNRESOLVED';
  if(unique.size!==members.length||unique.size!==accountIds.length||accountIds.some(id=>!unique.has(id)))return 'GROUP_ALL_MEMBERS_REQUIRED';
- if(group.permissions?.admin_only&&members.some(m=>!m.admin))return 'GROUP_SEND_PERMISSION_REQUIRED';
+ if(group.permissions?.admin_only&&members.some(m=>senderIds.includes(m.account_id)&&!m.admin))return 'GROUP_SEND_PERMISSION_REQUIRED';
  if(new Date(group.expires_at).getTime()<=now.getTime()||new Date(group.observed_at)>now)return 'GROUP_MEMBERSHIP_STALE';
  if(accountIds.some(id=>!group.capabilities.observations?.[id]))return 'GROUP_SHARED_IDENTITY_UNVERIFIED';
  if(accountIds.some(id=>{const t=Date.parse(group.capabilities.observations[id].observed_at);return !Number.isFinite(t)||now.getTime()-t<0||now.getTime()-t>=60000;}))return 'GROUP_MEMBERSHIP_STALE';
@@ -41,6 +41,7 @@ export async function classifyGroupEvent(c:QueryExecutor,account:DomainRecord,e:
   await c.query("UPDATE warmup_groups SET expires_at=LEAST(expires_at,now()),version=version+1 WHERE id=$1",[group.id]);
   await c.query("UPDATE warmup_programs SET review_hash=NULL,version=version+1,status=CASE WHEN status='ARCHIVED' THEN status ELSE 'PAUSED' END WHERE group_id=$1",[group.id]);
   await c.query("UPDATE warmup_pools SET paused=true,version=version+1,breaker_reason='GROUP_MEMBERSHIP_CHANGED' WHERE group_id=$1",[group.id]);
+  await c.query("UPDATE outbox SET status='CANCELLED',result=result||'{\"reason\":\"GROUP_MEMBERSHIP_CHANGED\"}'::jsonb,updated_at=now() WHERE workspace_id=$1 AND environment=$2 AND kind='warmup' AND payload->>'group_id'=$3 AND status IN('READY','BLOCKED')",[account.workspace_id,account.environment,group.id]);
  }
  if(group&&classification==='GROUP_EVENT')await correlateGroupEvents(c,group.id);
  return true;

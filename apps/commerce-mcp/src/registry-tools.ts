@@ -1,3 +1,4 @@
+import {groupWarmupConfigSchema,libraryImportSchema} from '../../../packages/contracts/src/group-warmup.js';
 import {remarketingPolicySchema} from '../../../packages/contracts/src/sales-flow.js';
 import type {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {z} from 'zod';
@@ -310,9 +311,24 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
   if(!grant)throw Object.assign(new Error('WARMUP_NOT_AUTHORIZED'),{code:'WARMUP_NOT_AUTHORIZED'});
   return c.continuity({operation:'command',purpose:'warmup',id:grant.id,environment:'REAL',operationId:i.operationId,expectedVersion:grant.version,action});
  }});
- tool('warmup_manage','Calentamiento del número','Progreso del calentamiento automático con su evidencia, y pausa o reanudación explícitas. Sólo entre números propios del mismo perfil; nunca contacta clientes.',{
+ tool('warmup_manage','Calentamiento del número','Crear, previsualizar e iniciar calentamientos en grupos propios; biblioteca amplia sin IA, progreso y controles. Usa previsualizar antes de iniciar, reanudar o configurar; requiere QR vigente de todos los miembros del mismo perfil.',{
   progreso:{schema:numberId,read:true,run:i=>c.v1('GET','/v1/numbers/'+id(i.numberId)+'/preparation')},
   evidencia:{schema:numberId,read:true,run:i=>c.v1('GET','/v1/numbers/'+id(i.numberId)+'/episodes')},
   pausar:warmupCommand('pause'),reanudar:warmupCommand('resume'),
+  listar_programas:v('GET',z.object({days:z.enum(['7','30']).optional()}).strict(),i=>'/v2/warmup'+query({environment:'REAL',...i}))(c.v2),
+  leer_programa:v('GET',z.object({programId:z.uuid(),days:z.enum(['7','30']).optional()}).strict(),i=>'/v2/warmup/programs/'+id(i.programId)+query({environment:'REAL',days:i.days}))(c.v2),
+  grupos:v('GET',z.object({}).strict(),()=>'/v2/warmup/groups?environment=REAL')(c.v2),
+  actualizar_grupos:v('POST',z.object({operationId:z.uuid(),accountIds:z.array(z.uuid()).min(1).max(20)}).strict(),()=>'/v2/warmup/groups/refresh',i=>({...i,environment:'REAL'}))(c.v2),
+  bibliotecas:v('GET',z.object({}).strict(),()=>'/v2/warmup/libraries?environment=REAL')(c.v2),
+  ver_biblioteca:v('GET',z.object({version:z.string().min(3).max(100),search:z.string().max(100).optional(),offset:z.number().int().min(0).max(2000).optional(),limit:z.number().int().min(1).max(20).optional()}).strict(),i=>'/v2/warmup/library'+query({...i,environment:'REAL'}))(c.v2),
+  importar_biblioteca:v('POST',libraryImportSchema.omit({environment:true}),()=>'/v2/warmup/libraries/import',i=>({...i,environment:'REAL'}))(c.v2),
+  previsualizar:v('POST',z.object({programId:z.uuid().optional(),config:groupWarmupConfigSchema}).strict(),()=>'/v2/warmup/preview',i=>({...i,environment:'REAL'}),{read:true})(c.v2),
+  crear:v('POST',z.object({operationId:z.uuid(),config:groupWarmupConfigSchema}).strict(),()=>'/v2/warmup/programs',i=>({...i,environment:'REAL'}))(c.v2),
+  ...Object.fromEntries(([
+   ['iniciar','start'],['pausar_programa','pause'],['reanudar_programa','resume'],['archivar','archive'],['configurar','configure'],
+  ] as const).map(([action,command])=>[action,v('POST',z.object({programId:z.uuid(),operationId:z.uuid(),expectedVersion:z.number().int().positive(),
+   ...(['start','resume','configure'].includes(command)?{previewHash:z.string().regex(/^[a-f0-9]{64}$/)}:{}),...(command==='configure'?{config:groupWarmupConfigSchema}:{}),
+  }).strict(),i=>'/v2/warmup/programs/'+id(i.programId)+'/commands',i=>{const {programId:_program,...body}=i;return{...body,environment:'REAL',action:command};},{destructive:['pause','archive'].includes(command)})(c.v2)])),
+  consultar_operacion:v('GET',z.object({operationId:z.uuid()}).strict(),i=>'/v2/warmup/operations/'+id(i.operationId)+'?environment=REAL')(c.v2),
  });
 }

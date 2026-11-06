@@ -23,6 +23,7 @@ import {receiptQueueRoutes} from './receipt-queue.js';
 import {numberTestRoutes} from './number-tests.js';
 import {campaignsV2Routes} from './campaigns-v2.js';
 import {helpRoutes} from './help.js';
+import {groupWarmupRoutes} from './group-warmup.js';
 
 export interface ProfileRuntimeDependencies {
  request?:ProfileRequestDependencies;
@@ -47,7 +48,7 @@ export async function profileRuntimeRoutes(app:FastifyInstance,deps:ProfileRunti
  await app.register(async integrations=>{await profileIntegrationRoutes(integrations,{...deps.integrations,request:deps.integrations?.request??deps.request});});
  for(const routes of [profileOverviewRoutes,profileSettingsRoutes,profileEmployeeRoutes,
   profileInvitationRoutes,profileTokenRoutes,marketVariantRoutes,
-  continuousAuthorizationRoutes,paymentsRegisterRoutes,receiptPolicyRoutes,resultsRoutes,resultGoalRoutes,profileReadRoutes,variantWorkspaceRoutes,profileMaterialRoutes,receiptQueueRoutes,numberTestRoutes,campaignsV2Routes,helpRoutes]){
+  continuousAuthorizationRoutes,groupWarmupRoutes,paymentsRegisterRoutes,receiptPolicyRoutes,resultsRoutes,resultGoalRoutes,profileReadRoutes,variantWorkspaceRoutes,profileMaterialRoutes,receiptQueueRoutes,numberTestRoutes,campaignsV2Routes,helpRoutes]){
   await app.register(async family=>{await routes(family,deps.request);});
  }
 }

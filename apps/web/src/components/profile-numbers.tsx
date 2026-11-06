@@ -1,3 +1,4 @@
+import {ProfileWarmups} from './profile-warmups.js';
 import {useCallback,useEffect,useRef,useState,type FormEvent} from 'react';
 import {Bell,FlaskConical,Pause,Play,QrCode,Smartphone,Trash2} from 'lucide-react';
 import {z} from 'zod';
@@ -22,6 +23,7 @@ const message=(e:unknown,fallback:string)=>e instanceof ApiError||e instanceof E
 
 export function ProfileNumbers({selection,role,state}:{selection:ProfileFence;role:ProfileRole;state:ProfileState}){
  const manage=role!=='viewer'&&state==='ACTIVE';
+ const [warmups,setWarmups]=useState(false);
  const [data,setData]=useState<z.infer<typeof overviewSchema>>(),[error,setError]=useState(''),[adding,setAdding]=useState(false),[linking,setLinking]=useState<string|null>(null),[removing,setRemoving]=useState<Row|null>(null),[tick,setTick]=useState(0);
  const toast=useToast();
  const load=useCallback(async(signal?:AbortSignal)=>{try{setData(overviewSchema.parse(await api('/numbers/overview',{signal})));setError('');}catch(e){if(!signal?.aborted)setError(message(e,'No se pudo consultar tus números.'));}},[]);
@@ -29,7 +31,9 @@ export function ProfileNumbers({selection,role,state}:{selection:ProfileFence;ro
  const full=data?.limit!=null&&data.numbers.length>=data.limit;
  async function pause(n:Row,paused:boolean){try{await api(`/numbers/${n.id}/pause`,{method:'POST',body:JSON.stringify({paused})});await load();toast({tone:'success',title:paused?`${n.alias} en pausa.`:`${n.alias} reanudado.`});}catch(e){toast({tone:'error',title:'No se pudo cambiar la pausa.',description:message(e,'')});}}
  const empty=data&&!data.numbers.length;
+ if(warmups)return <ProfileWarmups selection={selection} manage={manage} onBack={()=>setWarmups(false)}/>;
  return <>
+  <div className="cluster"><Button variant="secondary" onClick={()=>setWarmups(true)}>Calentamientos</Button></div>
   <PageHeader title="Números" description={data?.limit!=null?`${data.numbers.length} de ${data.limit} números de tu plan. Cada número vende las variantes que le asignes.`:'Cada número vende las variantes que le asignes.'} actions={manage&&!empty?<Button onClick={()=>setAdding(true)} disabled={full}>Agregar número</Button>:undefined}/>
   <NumberAlerts selection={selection} canAcknowledge={manage}/>
   {full&&<Alert tone="info">Ya usas todos los números de tu plan ({data?.limit}).</Alert>}

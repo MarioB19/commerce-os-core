@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {pool,withTransaction,getRecord,putRecord,encrypt,hash,appendEvent,readOperationalSettings} from '@commerce/db';
+import {pool,withTransaction,getRecord,putRecord,encrypt,decrypt,hash,appendEvent,readOperationalSettings} from '@commerce/db';
 import {providerFor,type ProviderFactory} from './providers.js';
 import {observeGroup} from '../../../packages/db/src/warmup-groups.js';
 import {numberNow} from '../../../packages/db/src/number-clock.js';
@@ -24,7 +24,9 @@ export async function processNumberOperations(owner='number-operations',factory:
     while(checkpoint.account<op.input.account_ids.length&&reads<16&&Date.now()<deadline){
      const accountId=op.input.account_ids[checkpoint.account],account=await getRecord(pool,op.workspace_id,'channel_account',accountId);
      if(!account||account.environment!==op.environment)throw new Error('ACCOUNT_SCOPE_INVALID');
-     const page=await providerRead(account,factory,async provider=>{if(!provider.listGroups||!provider.group)throw new Error('GROUP_PROVIDER_UNSUPPORTED');return provider.listGroups({offset:checkpoint.offset,limit:20});});reads++;
+     const target=op.input.group_id?(await pool.query('SELECT group_ciphertext FROM warmup_groups WHERE id=$1 AND workspace_id=$2 AND environment=$3',[op.input.group_id,op.workspace_id,op.environment])).rows[0]:null;
+     if(op.input.group_id&&!target)throw new Error('GROUP_SCOPE_INVALID');
+     const page=target?{groups:[{id:decrypt(target.group_ciphertext)}],hasMore:false}:await providerRead(account,factory,async provider=>{if(!provider.listGroups||!provider.group)throw new Error('GROUP_PROVIDER_UNSUPPORTED');return provider.listGroups({offset:checkpoint.offset,limit:20});});reads++;
      while(checkpoint.index<page.groups.length&&reads<16&&Date.now()<deadline){
       const snapshot=await providerRead(account,factory,async provider=>{if(!provider.group)throw new Error('GROUP_PROVIDER_UNSUPPORTED');return provider.group(page.groups[checkpoint.index]!.id);});reads++;
       await withTransaction(async c=>{await assertClaim(c,op.id,owner);const group=await observeGroup(c,account,snapshot,await numberNow(c,account.workspace_id,account.environment));observed.push({group_id:group.id,account_id:account.id,version:group.version});checkpoint.index++;await c.query('UPDATE number_operations SET result=$2,updated_at=now() WHERE id=$1',[id,{checkpoint,observed,source:'provider_read'}]);});

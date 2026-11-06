@@ -24,7 +24,7 @@ export const mcpRegistry:readonly McpRegistryEntry[]=Object.freeze([
  tool('numbers_manage','profile','/v1/numbers',['numbers:read','numbers:write'],['listar','leer','crear','impacto_eliminar','eliminar'],['editar']),
  tool('number_connection_manage','profile','/v1/numbers/{id}/link',['numbers:read','numbers:connect'],['estado','conectar','vincular','desconectar','pausar','reanudar']),
  tool('number_assignments_manage','profile','/v2/continuity',['assignments:read','assignments:write'],['autorizaciones','autorizacion','autorizar','pausar','reanudar','revocar','consultar_operacion','asignar','retirar','impacto','historial','vista_inversa']),
- tool('warmup_manage','profile','/v2/continuity/warmup',['warmup:read','warmup:write'],['progreso','pausar','reanudar','evidencia']),
+ tool('warmup_manage','profile','/v2/warmup',['warmup:read','warmup:write'],['progreso','pausar','reanudar','evidencia','listar_programas','leer_programa','grupos','actualizar_grupos','bibliotecas','ver_biblioteca','importar_biblioteca','previsualizar','crear','iniciar','pausar_programa','reanudar_programa','archivar','configurar','consultar_operacion']),
  tool('conversations_manage','profile','/v1/conversations',['conversations:read','conversations:write'],['listar','leer','responder','registrar_acuerdo','cerrar','registrar_baja','tomar_control','liberar_control','pausar','reanudar'],['asignar_persona','elegir_variante']),
  tool('orders_manage','profile','/v1/orders',['orders:read','orders:write'],['listar','leer'],['corregir_clasificacion','historial']),
  tool('receipts_manage','profile','/v2/receipts',['receipts:read','receipts:review'],['listar','leer','archivo','revisar']),

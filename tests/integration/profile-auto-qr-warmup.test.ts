@@ -38,6 +38,8 @@ async function state(account:string){return(await admin.query('SELECT * FROM war
 async function pool(workspace:string){return(await admin.query("SELECT * FROM warmup_pools WHERE workspace_id=$1 AND continuity_mode='QR_CONTINUOUS'",[workspace])).rows[0];}
 async function plan(workspace:string){
  const now=new Date();now.setUTCHours(10,0,0,0);if(now.getTime()<Date.now())now.setUTCDate(now.getUTCDate()+1);
+ // Explicit fixture of an enrollment that predates V7.2; new enrollments wait for a group.
+ await admin.query('UPDATE warmup_states SET group_required=false WHERE workspace_id=$1',[workspace]);
  await admin.query('UPDATE warmup_states SET profile_ready_at=$2 WHERE workspace_id=$1',[workspace,new Date(now.getTime()-1000)]);
  const settings=await readOperationalSettings(admin as any,workspace,'REAL');await writeOperationalSettings(admin as any,workspace,'REAL',settings.version,{...settings.body,dispatch_frozen:false,allow_real_operations:true,real_sends_enabled:true},'synthetic-fixture');
  return tx(workspace,'commerce_automation',async db=>{const p=await pool(workspace);await reconcileWarmupPool(db,p,now);return planWarmupPool(db,p,now);});

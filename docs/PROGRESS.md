@@ -1,5 +1,45 @@
 # Estado de publicación
 
+## 6-nov-2026 — V7.2: calentamiento de grupos propios con biblioteca, API y MCP
+
+Implementado en `codex/v7-2-group-warmup`, con publicación autorizada por el dueño.
+El estado de instalación se registra por separado al terminar la ventana.
+
+- Nuevo recorrido Números → Calentamientos: grupo existente de 2–10 números
+  propios, emisores seleccionados, horario, topes, mantenimiento y pausa.
+- 500 guiones originales / 5,000 mensajes estáticos; importación versionada,
+  validación de duplicados y cobertura, siete días sin reutilizar texto por grupo
+  o número. No hay generación ni llamadas a IA en este modo.
+- `/v2/warmup` y `warmup_manage` permiten crear, revisar e iniciar por sesión
+  humana o token de perfil, conservando autoridad QR, scopes y controles comunes.
+- Migración 0118 aditiva: historial, pausas, episodios y créditos previos
+  conservados. Nuevas conexiones esperan selección del grupo; el modo anterior
+  mantiene su semántica hasta una transición explícita.
+- Validación específica: 20 pruebas PostgreSQL con roles restringidos, grupos
+  2/3/10, idempotencia/concurrencia/cuotas, importación, identidad, reconexión,
+  incertidumbre, aislamiento, crédito saliente al cambiar el día sin duplicación
+  y actualización 0117→0118 idempotente. Las 13 pruebas E2E de navegación y
+  accesibilidad pasan localmente; los snapshots Linux se validan en FULL. Regresión completa y
+  publicación del SHA exacto se documentan en la evidencia de release.
+- Dependencia necesaria para el gate de publicación: Better Auth 1.7.2→1.7.7
+  corrige GHSA-965c-763c-88jm y GHSA-r4xp-prcw-77qf. Commerce OS no habilita los
+  plugins Magic Link/OAuth Proxy ni proveedores OAuth afectados; se actualiza el
+  parche sin introducir métodos de acceso nuevos. El issuer histórico se declara
+  como campo adicional interno, conservando su restricción y sin desactivar la
+  validación del esquema. Se repite la regresión de
+  autenticación. El test de teclado espera contenido visible en vez de inactividad
+  de red en pantallas que se actualizan periódicamente. El recorrido masivo del
+  navegador espacia solicitudes reales para respetar el límite de 300/minuto.
+- Fixtures de regresión: el emisor Root sintético usa el reloj PostgreSQL para
+  evidencia y validación pura; no depende del desfase host/Docker. El test de
+  actualización histórica espera ahora las 118 migraciones. No se relajan
+  las comprobaciones productivas de tiempo, roles ni fuente limpia.
+- Ningún test simulado acredita intercambio físico, reputación ni preparación
+  de teléfonos. El primer grupo real requiere líneas vinculadas y sus recibos.
+
+Contrato y uso: [ADR](adr-v7-2-group-library-warmup.md),
+[operación](warmup-v7-2.md), [API/MCP](reference/api-mcp-v7.md).
+
 ## 27-oct-2026 — V7.1.1: el servicio de correo ya no rechaza todo envío por una alarma anidada (Agente: Claude)
 
 La invitación de prueba de producción llegó a App Engine y recibió `409` en

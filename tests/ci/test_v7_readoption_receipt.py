@@ -98,7 +98,7 @@ class B02PairTests(unittest.TestCase):
     def run_pair(self, journal_value):
         b02 = load_b02()
         with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp); private = base / 'private'; release = base / 'releases/r1'
+            base = Path(tmp).resolve(); private = base / 'private'; release = base / 'releases/r1'
             private.mkdir(); release.mkdir(parents=True); (base / 'current').symlink_to(release)
             state = dict(STATE, scope='copy-runtime', b02_plan_sha256=contract.sha256(PLAN_RAW), current_release=str(release))
             state_raw = json.dumps(state, sort_keys=True).encode()

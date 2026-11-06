@@ -1,3 +1,5 @@
+import {planQrGroupPool} from './group-qr-planner.js';
+import {lockWarmupProfile,programConfig} from '../../../packages/db/src/group-warmup.js';
 import {recordProfileExecutor} from '../../../packages/db/src/profile-record-context.js';
 import {bindRecordEnvironment} from '../../../packages/db/src/profile-environment.js';
 import {bindLegacyWarmupEffectOrigins,legacyPoolAuthorities,type LegacyQrAuthority} from '../../../packages/db/src/legacy-qr-warmup.js';
@@ -40,6 +42,7 @@ export async function reconcileWarmupPool(c:QueryExecutor,pool:Body,now=new Date
  if(pool.continuity_mode==='QR_CONTINUOUS')qrContext(c,pool);
  const members=(await c.query('SELECT * FROM warmup_states WHERE pool_id=$1 ORDER BY account_id FOR UPDATE',[pool.id])).rows;
  for(const state of members){
+  if(state.group_required&&pool.continuity_mode==='QR_CONTINUOUS'){await stateUpdate(c,state,'AWAITING_PEER','GROUP_SELECTION_REQUIRED',now);continue;}
   if(state.paused||['PAUSED','QUARANTINED','GRADUATED'].includes(state.status))continue;
   const account=await getRecord(c,pool.workspace_id,'channel_account',state.account_id);
   if(!account||account.body.deleted_at){await stateUpdate(c,state,'QUARANTINED','ACCOUNT_UNAVAILABLE',now);continue;}
@@ -90,7 +93,10 @@ export async function reconcileWarmupPool(c:QueryExecutor,pool:Body,now=new Date
 export async function evaluateWarmupPool(c:QueryExecutor,pool:Body,now=new Date()){
  await bindRecordEnvironment(c,pool.workspace_id,pool.environment);
  await correlateGroupEvents(c,pool.group_id??undefined);
- const states=(await c.query('SELECT * FROM warmup_states WHERE pool_id=$1 ORDER BY account_id FOR UPDATE',[pool.id])).rows;
+ const allStates=(await c.query('SELECT * FROM warmup_states WHERE pool_id=$1 ORDER BY account_id FOR UPDATE',[pool.id])).rows;
+ const groupProgram=pool.continuity_mode==='QR_GROUP'?(await c.query('SELECT * FROM warmup_programs WHERE id=$1',[pool.program_id])).rows[0]:null;
+ const groupConfig=groupProgram?programConfig(groupProgram):null;
+ const states=groupConfig?allStates.filter(s=>groupConfig.senderIds.includes(s.account_id)):allStates;
  for(const state of states){
   if(!state.enrolled_at)continue;
   const account=await getRecord(c,pool.workspace_id,'channel_account',state.account_id);if(!account)continue;
@@ -109,7 +115,7 @@ export async function evaluateWarmupPool(c:QueryExecutor,pool:Body,now=new Date(
   const evidenceStart=episode?.started_at??state.enrolled_at;
   const prior=(await c.query("SELECT *,local_date::text AS local_day FROM warmup_plans WHERE account_id=$1 AND local_date<$2 AND status IN('PLANNED','PARTIAL') AND profile_id=$3 AND local_date>=$4::date AND ($5::boolean=false OR episode_id=$6) ORDER BY local_date FOR UPDATE",[state.account_id,today,state.profile_id,localWindow(profile,new Date(evidenceStart)).date,profile.policy_version===STANDARD_V2_POLICY,state.episode_id])).rows;
   for(const plan of prior){
-   const actual=(await c.query(`SELECT COALESCE(sum(messages),0)::int messages,count(*)::int conversations FROM (SELECT t.conversation_id,count(*)::int messages FROM warmup_turns t JOIN warmup_conversations v ON v.id=t.conversation_id LEFT JOIN outbox o ON o.id=t.effect_id WHERE (t.sender_id=$1 OR t.recipient_id=$1 OR $1=ANY(t.recipient_ids)) AND v.local_date=$2 AND v.pool_id=$4 GROUP BY t.conversation_id HAVING bool_and(COALESCE(o.status=ANY($3::text[]),false)) AND bool_or(t.sender_id=$1)) confirmed`,[state.account_id,plan.local_day,accepted,pool.id])).rows[0];
+   const actual=(await c.query(`SELECT COALESCE(sum(messages),0)::int messages,count(*)::int conversations FROM (SELECT t.conversation_id,count(*) FILTER(WHERE NOT $5::boolean OR t.sender_id=$1)::int messages FROM warmup_turns t JOIN warmup_conversations v ON v.id=t.conversation_id LEFT JOIN outbox o ON o.id=t.effect_id WHERE (t.sender_id=$1 OR t.recipient_id=$1 OR $1=ANY(t.recipient_ids)) AND v.local_date=$2 AND v.pool_id=$4 GROUP BY t.conversation_id HAVING bool_and(COALESCE(o.status=ANY($3::text[]),false)) AND bool_or(t.sender_id=$1)) confirmed`,[state.account_id,plan.local_day,accepted,pool.id,plan.budget.policy_version==='group-outgoing/v1'])).rows[0];
    const complete=healthy&&plan.budget.min_messages>0&&actual.messages>=plan.budget.min_messages&&actual.conversations>=plan.budget.min_conversations;
    await c.query('UPDATE warmup_plans SET status=$2 WHERE id=$1',[plan.id,complete?'COMPLETED':'MISSED']);
    if(complete){
@@ -123,7 +129,7 @@ export async function evaluateWarmupPool(c:QueryExecutor,pool:Body,now=new Date(
   if(decision.status==='EXTEND'){await c.query('UPDATE warmup_states SET extensions=extensions+1 WHERE account_id=$1',[state.account_id]);await stateUpdate(c,state,'WARMING',decision.reason,now);}
   else if(['GRADUATED','QUARANTINED'].includes(decision.status)){await stateUpdate(c,state,decision.status,decision.reason,now);if(decision.status==='GRADUATED'){await c.query('UPDATE warmup_states SET graduated_at=$2 WHERE account_id=$1',[state.account_id,now]);await c.query('UPDATE warmup_episodes SET completed_at=COALESCE(completed_at,$2) WHERE id=$1',[state.episode_id,now]);}}
  }
- if(pool.program_id&&pool.purpose==='preparation'&&states.length>=2&&states.every(s=>s.status==='GRADUATED')){await c.query("UPDATE warmup_programs SET status='COMPLETED',version=version+1,updated_at=now() WHERE id=$1 AND status='ACTIVE'",[pool.program_id]);await c.query('UPDATE warmup_pools SET enabled=false,version=version+1 WHERE id=$1',[pool.id]);await c.query('DELETE FROM warmup_account_reservations WHERE program_id=$1',[pool.program_id]);pool.enabled=false;}
+ if(!groupConfig?.maintenance&&pool.program_id&&pool.purpose==='preparation'&&states.length>=2&&states.every(s=>s.status==='GRADUATED')){await c.query("UPDATE warmup_programs SET status='COMPLETED',version=version+1,updated_at=now() WHERE id=$1 AND status='ACTIVE'",[pool.program_id]);await c.query('UPDATE warmup_pools SET enabled=false,version=version+1 WHERE id=$1',[pool.id]);await c.query('DELETE FROM warmup_account_reservations WHERE program_id=$1',[pool.program_id]);pool.enabled=false;}
  const failures=(await c.query("SELECT account_id,observed_at FROM warmup_observations WHERE workspace_id=$1 AND environment=$2 AND kind IN('FAILED','CONFIRMED_BLOCK') AND observed_at>$3",[pool.workspace_id,pool.environment,new Date(now.getTime()-86400000)])).rows.map(r=>({...r,observed_at:new Date(r.observed_at).toISOString()}));
  const breaker=breakerDecision(states.map(s=>s.account_id),failures,now);
  if(breaker.open&&!pool.breaker_open){await c.query("UPDATE warmup_pools SET breaker_open=true,breaker_reason='DISTINCT_ACCOUNT_FAILURE_THRESHOLD',version=version+1,updated_at=$2 WHERE id=$1",[pool.id,now]);await appendEvent(c,{workspace_id:pool.workspace_id,environment:pool.environment,event_type:'warmup.breaker_opened',aggregate_id:pool.id,payload:breaker,occurred_at:now.toISOString()});}
@@ -133,6 +139,7 @@ export async function evaluateWarmupPool(c:QueryExecutor,pool:Body,now=new Date(
 function windowEnd(profile:WarmupProfile,now:Date){let time=now.getTime();for(let i=0;i<1440&&localWindow(profile,new Date(time)).open;i++)time+=60000;return new Date(time);}
 export async function planWarmupPool(c:QueryExecutor,pool:Body,now=new Date()){
  await bindRecordEnvironment(c,pool.workspace_id,pool.environment);
+ if(pool.continuity_mode==='QR_GROUP')return planQrGroupPool(await recordProfileExecutor(c,pool.workspace_id,pool.environment),pool,now);
  if(pool.topology==='group')return planGroupPool(c,pool,now);
  if(!pool.enabled||pool.paused||pool.breaker_open)return{planned:0,reason:'POOL_DISABLED_OR_PAUSED'};
  const profile=await profileFor(c,pool.profile_id),window=localWindow(profile,now);
@@ -149,6 +156,7 @@ export async function planWarmupPool(c:QueryExecutor,pool:Body,now=new Date()){
  if(!qr&&!legacyValid&&![...adopted.values()].some(x=>x.kind==='ADOPTED'))return{planned:0,reason:'AUTHORIZATION_REQUIRED'};
  const requirements=warmupPolicy(profile),eligible=[];
  for(const state of states){
+  if(qr&&state.group_required)continue;
   if(qr){
    const grant=await readCurrentQrContinuity(qrContext(c,pool),pool.environment,state.account_id);
    if(!grant||grant.revokedAt||grant.humanPaused||grant.protections.length||!qrIdentityMatches(state,grant))continue;
@@ -246,15 +254,17 @@ export async function processWarmup(at=new Date()){
 /** Called only inside the selected worker profile transaction. Discovery,
  * enrollment, plans and effects commit together; no provider call is made. */
 export async function processQrWarmupProfile(db:ProfileExecutor,environment:'REAL'|'SIMULATION',limit=20){
+ await lockWarmupProfile(db,environment);
  const enrolled=await enrollQrWarmupProfile(db,environment,limit);
- const pools=(await db.query("SELECT * FROM warmup_pools WHERE workspace_id=$1 AND environment=$2 AND continuity_mode='QR_CONTINUOUS' ORDER BY id FOR UPDATE",[db.workspaceId,environment])).rows;
+ const pools=(await db.query("SELECT * FROM warmup_pools WHERE workspace_id=$1 AND environment=$2 AND continuity_mode IN('QR_CONTINUOUS','QR_GROUP') ORDER BY id FOR UPDATE",[db.workspaceId,environment])).rows;
  const results=[];
  for(const pool of pools){
   await poolLock(db,pool.id);
   const now=environment==='SIMULATION'?await numberNow(db,db.workspaceId,environment):(await db.query('SELECT clock_timestamp() AS now')).rows[0].now;
   if(!(now instanceof Date)||!Number.isFinite(now.getTime()))throw Error('QR_DATABASE_CLOCK_REQUIRED');
   await evaluateWarmupPool(db,pool,now);
-  results.push({...await reconcileWarmupPool(db,pool,now),plan:await planWarmupPool(db,pool,now)});
+  if(pool.continuity_mode==='QR_GROUP'){const plan=await planWarmupPool(db,pool,now);if(plan.reason)await db.query('UPDATE warmup_states SET reason=$2 WHERE pool_id=$1 AND NOT paused',[pool.id,plan.reason]);results.push({plan});}
+  else results.push({...await reconcileWarmupPool(db,pool,now),plan:await planWarmupPool(db,pool,now)});
  }
  return{enrolled,results,externalEffects:0 as const};
 }
