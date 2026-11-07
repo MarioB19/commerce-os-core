@@ -1,5 +1,9 @@
 # Estado de publicación
 
+## 7-nov-2026 — V7.2: instalador incremental 117→118 y techo US$155 (Claude)
+
+El ensayo aislado del paquete de main `0c288fa5` mostró que `copy-runtime` no admitía añadir 0118 sobre la base V7 de 117 migraciones. Se admite sólo esa cola exacta, sin trabajo del corte (ver `docs/adr-v7-2-incremental-migration-2026-11-07.md`). El techo bruto pasa a US$155 por decisión de Brandon (`docs/adr-v7-gross-cap-2026-11-06.md`, enmienda). 1,959 pruebas Python de `tests/ci` pasan. La aplicación de calentamiento no cambia.
+
 ## 6-nov-2026 — V7.2: calentamiento de grupos propios con biblioteca, API y MCP
 
 Implementado en `codex/v7-2-group-warmup`, con publicación autorizada por el dueño.
