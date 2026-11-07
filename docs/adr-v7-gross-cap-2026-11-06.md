@@ -44,3 +44,15 @@ repositorio por sí solo no acredita que el nuevo techo esté activo en la nube.
 Este ajuste operativo permite preparar la publicación autorizada. El alcance
 funcional de V7.2 sigue siendo calentamiento por grupos con biblioteca, sin IA,
 iniciable desde web, API y MCP.
+
+## Enmienda — 7-nov-2026: techo US$155
+
+El ensayo aislado del paquete de main V7.2 detectó que el instalador no admitía
+el paso de migraciones 117→118, y la proyección conservadora llegó a US$150.41
+porque la VM de laboratorio quedó encendida ocho horas sin plan. Brandon decidió
+«Corregir y seguir, tope US$155». `GROSS_CAP_MICROUSD` pasa a 155,000,000. Las
+pruebas aceptan exactamente US$155 y rechazan US$155.000001; el presupuesto del
+dueño y la proyección siguen exigiendo inventario completo, mes vigente,
+`credit_verified: false` sin saldo comprobado y evidencia vigente. Se conservan
+todos los respaldos, snapshots y PITR. La aplicación operativa sigue la misma
+regla: imágenes derivadas de los digests instalados con sólo este módulo cambiado.

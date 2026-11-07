@@ -125,7 +125,7 @@ EXTENDED_LIMITS = frozenset({MONTHLY_LIMIT_SECONDS, SECOND_EXTENSION_LIMIT_SECON
 KNOWN_LIMITS = OPERATING_LIMITS | {HISTORICAL_MONTHLY_LIMIT_SECONDS}
 # Owner decision of 2026-11-06: USD 150 gross/month, preserving all backups.
 # This ceiling does not replace current inventory, funding or expiry validation.
-GROSS_CAP_MICROUSD = 150 * 1_000_000
+GROSS_CAP_MICROUSD = 155 * 1_000_000  # owner decision 2026-11-07 (docs/adr-v7-gross-cap-2026-11-06.md)
 STAGE_LIMITS = {'full': 5700, 'attestation': 120, 'package': 1800,
                 'publisher': 900, 'toolchain': 5700, 'diagnostic': 5700}
 LIVE_STATES = {'RESERVED', 'SUBMIT_INTENT', 'UNKNOWN', 'UUID_BOUND',

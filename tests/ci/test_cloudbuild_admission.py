@@ -178,15 +178,15 @@ class BudgetAndStateTests(unittest.TestCase):
 
     def test_missing_credit_over_cap_incomplete_inventory_and_expiry_fail(self):
         cases = [{'credit_verified': False}, {'inventory_complete': False},
-                 {'projected_gross_microusd': 150_000_001},
+                 {'projected_gross_microusd': 155_000_001},
                  {'projected_gross_microusd': True}, {'expires_at': m.stamp(NOW)}]
         for changes in cases:
             value = admission(); value.update(changes)
             with self.subTest(changes=changes), self.assertRaises(m.AdmissionError):
                 step(approved(), 'reserve', admission=value)
 
-    def test_owner_approved_150_gross_cap_accepts_boundary_and_preserves_evidence(self):
-        for amount in (100_000_001, 150_000_000):
+    def test_owner_approved_155_gross_cap_accepts_boundary_and_preserves_evidence(self):
+        for amount in (100_000_001, 150_000_000, 150_000_001, 155_000_000):
             with self.subTest(amount=amount):
                 value = admission(); value['projected_gross_microusd'] = amount
                 doc = step(approved(), 'reserve', admission=value).document
@@ -213,7 +213,7 @@ class BudgetAndStateTests(unittest.TestCase):
 
     def test_owner_budget_rejects_wrong_month_cap_unknown_fields_and_missing_receipt(self):
         changes = [{'month': '2026-09'}, {'month': '2026-11'},
-                   {'monthly_cap_microusd': 150_000_001},
+                   {'monthly_cap_microusd': 155_000_001},
                    {'monthly_cap_microusd': 149_999_999},
                    {'monthly_cap_microusd': True}, {'decision_sha256': ''},
                    {'allow_overage': True}]
