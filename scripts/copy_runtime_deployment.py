@@ -695,6 +695,18 @@ V7_PROFILE_MIGRATION_NAMES = frozenset({
     '0108_v7_number_lab_queue.sql', '0109_v7_retire_modules.sql', '0110_v7_meta_profile_sync.sql',
     '0111_v7_platform_recovery.sql', '0112_v7_invitation_mail_queue.sql', '0113_v7_number_lab_attachments.sql', '0114_v7_number_lab_retention.sql', '0115_v7_number_lab_suites.sql', '0116_v7_owner_alert_mail.sql', '0117_v7_profile_deletion_request.sql', '0118_v72_group_library_warmup.sql'})
 V7_PROFILE_MIGRATION_TOTAL = 68 + len(V7_PROFILE_MIGRATION_NAMES)
+# Additive migrations published after the 68→117 V7 cutover. A database already at
+# the V7 base receives only this exact tail (V7.2: 117→118); the cutover-only work
+# (0109 retirement export, 0072 token versions) never runs again.
+V7_INCREMENTAL_MIGRATION_NAMES = frozenset({'0118_v72_group_library_warmup.sql'})
+V7_INCREMENTAL_BASELINE = V7_PROFILE_MIGRATION_TOTAL - len(V7_INCREMENTAL_MIGRATION_NAMES)
+
+
+def v7_incremental_baseline(applied, expected):
+    """True only for the exact reviewed post-cutover tail on top of the V7 base."""
+    return (type(applied) is dict and type(expected) is dict and len(applied) == V7_INCREMENTAL_BASELINE
+            and set(applied) <= set(expected) and set(expected)-set(applied) == V7_INCREMENTAL_MIGRATION_NAMES
+            and all(expected[name] == digest for name, digest in applied.items()))
 
 
 # Bound of the single migration transaction. The 68→117 V7 cutover touches every
@@ -742,6 +754,7 @@ def migration_stage_guard(applied, metadata, *, initial=False, stage=None):
     elif names == V7_PROFILE_MIGRATION_NAMES:
         require(stage == 'OPERATING'
                 and ((len(applied) == 68 and set(expected)-set(applied) == V7_PROFILE_MIGRATION_NAMES)
+                     or v7_incremental_baseline(applied, expected)
                      or applied == expected), 'COPY_RUNTIME_68_MIGRATION_BASELINE_REQUIRED')
     else:
         require(stage == 'OPERATING' and names == OPERATING_MIGRATION_NAMES
@@ -1356,7 +1369,7 @@ def reviewed_migrations(private, root, source_sha, metadata):
 BOUNDED_MIGRATION_JS = """import{readFile}from'node:fs/promises';
 import{pool,withTransaction,hash}from'/app/packages/db/src/index.ts';
 const plan=JSON.parse(await readFile('/copy-plan/migrations.json','utf8'));
-const profiles=[{stage:'INITIAL',baseline:65,total:67,names:['0066_pending_channel_cancellation.sql','0067_copy_source_isolation.sql']},{stage:'OPERATING',baseline:67,total:68,names:['0068_operational_metric_writer.sql']},{stage:'OPERATING',baseline:68,total:V7_TOTAL,names:V7_NAMES}];
+const profiles=[{stage:'INITIAL',baseline:65,total:67,names:['0066_pending_channel_cancellation.sql','0067_copy_source_isolation.sql']},{stage:'OPERATING',baseline:67,total:68,names:['0068_operational_metric_writer.sql']},{stage:'OPERATING',baseline:68,total:V7_TOTAL,names:V7_NAMES},{stage:'OPERATING',baseline:V7_BASE,total:V7_TOTAL,names:V7_INC}];
 const profile=profiles.find(p=>p.stage===plan.stage&&Object.keys(plan.additions??{}).sort().join()===p.names.join());
 if(!profile||Object.keys(plan).sort().join()!=='additions,baseline,stage'||Object.keys(plan.additions).sort().join()!==profile.names.join()||Object.keys(plan.baseline).length!==profile.baseline)throw Error('COPY_MIGRATION_PLAN');
 const names=profile.names;
@@ -1366,7 +1379,8 @@ if(Object.keys(applied).length!==profile.baseline||Object.entries(plan.baseline)
 for(const name of names){const sql=await readFile('/copy-sql/'+name,'utf8');if(hash(sql)!==plan.additions[name])throw Error('COPY_SQL_CHANGED');await c.query(sql);await c.query('INSERT INTO schema_migrations(name,sha256) VALUES($1,$2)',[name,hash(sql)]);}
 const after=Object.fromEntries((await c.query('SELECT name,sha256 FROM schema_migrations')).rows.map(r=>[r.name,r.sha256]));
 if(Object.keys(after).length!==profile.total||Object.entries({...plan.baseline,...plan.additions}).some(([k,v])=>after[k]!==v))throw Error('COPY_MIGRATION_READBACK');});}finally{await pool.end();}""".replace(
-    'V7_NAMES', json.dumps(sorted(V7_PROFILE_MIGRATION_NAMES), separators=(',', ':'))).replace('V7_TOTAL', str(V7_PROFILE_MIGRATION_TOTAL))
+    'V7_NAMES', json.dumps(sorted(V7_PROFILE_MIGRATION_NAMES), separators=(',', ':'))).replace('V7_TOTAL', str(V7_PROFILE_MIGRATION_TOTAL)).replace(
+    'V7_BASE', str(V7_INCREMENTAL_BASELINE)).replace('V7_INC', json.dumps(sorted(V7_INCREMENTAL_MIGRATION_NAMES), separators=(',', ':')))
 
 
 V7_RETIREMENT_EXPORT_DIR = 'v7-retirement-export'
@@ -1449,23 +1463,31 @@ def apply_reviewed_migrations(server, root, report_dir, metadata, review, timeou
     lab_storage = ensure_lab_storage(server) if names == V7_PROFILE_MIGRATION_NAMES else None
     if applied == expected:
         return {'status': 'ALREADY_APPLIED', 'migration_count': len(expected), **({'lab_storage': 'READY'} if lab_storage else {})}
+    incremental = names == V7_PROFILE_MIGRATION_NAMES and v7_incremental_baseline(applied, expected)
+    require(not incremental or stage == 'OPERATING', 'COPY_RUNTIME_68_MIGRATION_BASELINE_REQUIRED')
     retirement = None
-    if names == V7_PROFILE_MIGRATION_NAMES:
+    if names == V7_PROFILE_MIGRATION_NAMES and not incremental:
         # Own bound, before the ≤300 s migration bound; 0109 still verifies it.
         retirement = export_retired_modules(server, root, report_dir, metadata, 300)
+    additions = ({name: review['migration_hashes'][name] for name in sorted(V7_INCREMENTAL_MIGRATION_NAMES)}
+                 if incremental else review['migration_hashes'])
+    mounted = sorted(V7_INCREMENTAL_MIGRATION_NAMES) if incremental else sorted(names)
     plan = Path(report_dir)/'migrations.json'
-    server._write_report(plan, {'stage': stage, 'baseline': applied, 'additions': review['migration_hashes']})
+    server._write_report(plan, {'stage': stage, 'baseline': applied, 'additions': additions})
     env = native.env_values(native.protected_bytes(server.PRIVATE/'release.env'))
     args = ['docker', 'run', '--rm', '--user', '0:0', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
             '--tmpfs', '/tmp:size=64m,noexec,nosuid', '--network', 'commerce-os_core',
             '--env-file', str(server.PRIVATE/'admin.env'), '-v', str(plan)+':/copy-plan/migrations.json:ro',
-            *[part for name in sorted(names) for part in ('-v', str(Path(root)/'packages/db/migrations'/name)+':/copy-sql/'+name+':ro')],
+            *[part for name in mounted for part in ('-v', str(Path(root)/'packages/db/migrations'/name)+':/copy-sql/'+name+':ro')],
             env['COMMERCE_IMAGE'],
             'node', '--import', 'tsx', '--input-type=module', '-e', BOUNDED_MIGRATION_JS]
     require(type(timeout) is int and 0 < timeout <= bound, 'COPY_RUNTIME_MIGRATION_DEADLINE_INVALID')
     server.run_deployment_task(root, report_dir, args, 'copy-migrations', timeout)
     verify_migrations(server.migrations(root), expected, complete=True)
-    result = {'status': 'APPLIED_BOUNDED', 'migration_count': len(expected), 'bootstrap_or_import': False}
+    result = {'status': 'APPLIED_BOUNDED_INCREMENTAL' if incremental else 'APPLIED_BOUNDED',
+              'migration_count': len(expected), 'bootstrap_or_import': False}
+    if incremental:
+        result['applied_migrations'] = sorted(V7_INCREMENTAL_MIGRATION_NAMES)
     if retirement:
         result['retirement_export'] = retirement
     if lab_storage:
