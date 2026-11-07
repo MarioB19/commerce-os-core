@@ -14,6 +14,12 @@ describe('V7.2 static group library and outgoing budgets',()=>{
   for(const text of ['Escribe a ejemplo@example.invalid para entrar','El teléfono de contacto es +52 55 1234 5678','La ruta es https://example.invalid/','Contenido sin resolver: {{nombre}}']){const changed=structuredClone(bundledGroupLibrary[0]!);changed.turns[0]!.text=text;expect(()=>validateLibrary([changed])).toThrow('LIBRARY_PERSONAL_DATA_OR_PLACEHOLDER');}
  });
  it('caps 3 senders at 300 outgoing messages even with a group cap of 500',()=>{const b=groupDailyBudget(config(3),11,new Date('2026-11-06T16:00:00Z'));expect(b.total).toBe(300);expect(b.per_sender).toBe(100);});
+ it.each([
+  {date:'2026-11-06T16:00:00Z',minimum:5,maximum:15,total:45},
+  {date:'2026-11-07T16:00:00Z',minimum:2,maximum:7,total:21},
+ ])('keeps the first-day outgoing minimum explicit on $date',({date,minimum,maximum,total})=>{
+  expect(groupDailyBudget(config(3),1,new Date(date))).toMatchObject({min_outgoing:minimum,per_sender:maximum,total});
+ });
  it.each([2,3,10])('covers seven days plus reserve with %i senders',n=>{expect(libraryCoverage(config(n),[...bundledGroupLibrary]).sufficient).toBe(true);});
  it('does not credit recipients as outgoing; retains the conservative curve and lower maintenance',()=>{const date=new Date('2026-11-06T16:00:00Z'),c=config(10);expect(groupDailyBudget(c,1,date)).toMatchObject({per_sender:15,total:150});expect(groupDailyBudget(c,8,date).per_sender).toBe(40);expect(groupDailyBudget(c,14,date).total).toBe(359);expect(groupDailyBudget(c,14,date).min_outgoing).toBe(35);expect(groupDailyBudget(c,15,date,true).per_sender).toBe(10);});
  it('rejects caps that cannot fit whole library exchanges without silently lowering evidence',()=>{expect(libraryLimitsFeasible({...config(3),senderDailyLimit:5},[...bundledGroupLibrary])).toBe(false);for(const n of [2,3,10])expect(libraryLimitsFeasible(config(n),[...bundledGroupLibrary])).toBe(true);});

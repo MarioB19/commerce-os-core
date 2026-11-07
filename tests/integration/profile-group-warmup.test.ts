@@ -104,10 +104,16 @@ describe('V7.2 own group programs under restricted PostgreSQL',()=>{
  });
  it.each([false,true])('credits only delivered outgoing evidence once across the next local day (complete=%s)',async complete=>{
   const f=await groupFixture(3),config=complete?{...f.config,senderIds:f.config.senderIds.slice(0,2)}:f.config,p=await f.start(config);await f.schedule(p.id);
-  const first=(await admin.query('SELECT conversation_id FROM outbox WHERE workspace_id=$1 ORDER BY not_before LIMIT 1',[f.w])).rows[0].conversation_id;
+  const first=(await admin.query('SELECT id FROM outbox WHERE workspace_id=$1 ORDER BY not_before LIMIT 1',[f.w])).rows[0].id;
   await asProfileOwner(admin,f.w,async db=>{
-   await db.query("UPDATE outbox SET status=CASE WHEN $2 OR conversation_id=$3 THEN 'DELIVERED' ELSE 'CANCELLED' END,attempts=CASE WHEN $2 OR conversation_id=$3 THEN 1 ELSE 0 END,claimed_at=clock_timestamp() WHERE workspace_id=$1",[f.w,complete,first]);
+   // One entire conversation can meet the lower weekend minimum. Deliver just
+   // one outgoing turn so this negative fixture stays insufficient every day.
+   await db.query("UPDATE outbox SET status=CASE WHEN $2 OR id=$3 THEN 'DELIVERED' ELSE 'CANCELLED' END,attempts=CASE WHEN $2 OR id=$3 THEN 1 ELSE 0 END,claimed_at=clock_timestamp() WHERE workspace_id=$1",[f.w,complete,first]);
   });
+  if(!complete){
+   expect((await admin.query("SELECT count(*)::int n FROM outbox WHERE workspace_id=$1 AND status='DELIVERED'",[f.w])).rows[0].n).toBe(1);
+   expect((await admin.query("SELECT min((budget->>'min_messages')::int) n FROM warmup_plans WHERE workspace_id=$1",[f.w])).rows[0].n).toBeGreaterThan(1);
+  }
   const tomorrow=new Date(Date.now()+86400000);
   await admin.query("UPDATE records SET body=body||jsonb_build_object('health_checked_at',$2::text),version=version+1 WHERE workspace_id=$1 AND kind='channel_account'",[f.w,new Date(tomorrow.getTime()-1000).toISOString()]);
   const evaluate=()=>tx(f.w,'commerce_automation',async db=>{

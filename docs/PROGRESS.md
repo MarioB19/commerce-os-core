@@ -5,6 +5,18 @@
 Implementado en `codex/v7-2-group-warmup`, con publicación autorizada por el dueño.
 El estado de instalación se registra por separado al terminar la ventana.
 
+El FULL del candidato `9115fa0` pasó las 21 etapas y su atestación permitió
+integrar PR #26 por la protección normal. El FULL de main `1a5ae0a4`
+(`b1785334-2ae2-4c4f-92ae-b15c1e10f728`) detectó un fixture dependiente del
+calendario: una conversación completa alcanza correctamente el mínimo reducido
+del sábado, aunque el caso negativo esperaba cero créditos. Se conservó el
+fallo y se canceló el resto de la ejecución. El fixture entrega ahora un solo
+mensaje y comprueba que sea insuficiente; dos casos con fechas fijas verifican
+los mínimos de viernes y sábado. Los 23 casos PostgreSQL de grupos pasan.
+La aplicación, la curva de calentamiento y las cuotas no cambian. La corrección
+requiere nuevos FULL y atestaciones del candidato y del main integrado antes
+de instalar; producción sigue en V7.1.1.
+
 El FULL `3c97e477-11a5-477a-b70f-bd840c15a9be` de `8c36c2b` se detuvo en
 integración: `v7-life` devolvió 500 en una alta concurrente. Los 23 casos de
 grupos pasaron. La reproducción local bajo CPU limitada mostró el vencimiento
