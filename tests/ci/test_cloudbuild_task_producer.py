@@ -34,9 +34,27 @@ class Tests(unittest.TestCase):
   self.auth['approval']['expires_at']=m.ledger.stamp(NOW+timedelta(hours=3));self.auth['admission']['approval_sha256']=m.ledger.canonical_hash(self.auth['approval'])
   with self.assertRaisesRegex(RuntimeError,'AUTHORIZATION_WINDOW'):m.full_task('ADMIT',ATTEMPT,self.event,self.auth,expires_at=self.expires,moment=NOW)
  def test_no_credit_or_incomplete_inventory_or_over_budget_rejected(self):
-  for key,value in [('credit_verified',False),('inventory_complete',False),('projected_gross_microusd',100_000_001)]:
+  for key,value in [('credit_verified',False),('inventory_complete',False),('projected_gross_microusd',150_000_001)]:
    e={**self.economic,key:value}
    with self.subTest(key=key),self.assertRaises(RuntimeError):m.authorization(self.plan,review_sha256='9'*64,economic=e,expires_at=self.expires,moment=NOW)
+ def test_owner_approved_gross_boundary_survives_task_composition(self):
+  e={**self.economic,'projected_gross_microusd':150_000_000}
+  auth=m.authorization(self.plan,review_sha256='9'*64,economic=e,expires_at=self.expires,moment=NOW)
+  task=m.full_task('ADMIT',ATTEMPT,self.event,auth,expires_at=self.expires,moment=NOW)
+  self.assertEqual(task['admission']['projected_gross_microusd'],150_000_000)
+  self.assertTrue(task['admission']['credit_verified'])
+  self.assertTrue(task['admission']['inventory_complete'])
+ def test_explicit_owner_funding_is_bound_to_task_without_fabricating_credits(self):
+  e={**self.economic,'credit_verified':False,'projected_gross_microusd':150_000_000,
+     'owner_budget':{'decision_sha256':'7'*64,'month':NOW.strftime('%Y-%m'),'monthly_cap_microusd':150_000_000}}
+  auth=m.authorization(self.plan,review_sha256='9'*64,economic=e,expires_at=self.expires,moment=NOW)
+  task=m.full_task('ADMIT',ATTEMPT,self.event,auth,expires_at=self.expires,moment=NOW)
+  self.assertEqual(task['admission']['owner_budget'],e['owner_budget'])
+  self.assertFalse(task['admission']['credit_verified'])
+  e['owner_budget']['monthly_cap_microusd']=1
+  self.assertEqual(task['admission']['owner_budget']['monthly_cap_microusd'],150_000_000)
+  with self.assertRaisesRegex(RuntimeError,'OWNER_BUDGET_CAP_EXCEEDED'):
+   m.authorization(self.plan,review_sha256='9'*64,economic=e,expires_at=self.expires,moment=NOW)
  def test_reconcile_retains_the_same_native_source_without_retry_flag(self):
   value=m.full_task('RECONCILE',ATTEMPT,self.event,self.auth,proposal=self.f.proposal,expires_at=self.expires,moment=NOW)
   self.assertEqual(value['operation'],'RECONCILE_FULL');self.assertEqual(value['payload']['proposal'],self.f.proposal)

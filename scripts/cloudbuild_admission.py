@@ -20,6 +20,8 @@ Commands (unknown fields are rejected):
 * approve_source: attempt_id, approval(plan_sha256, review_sha256, expires_at).
 * reserve: attempt_id, admission(approval_sha256, inventory_sha256, expires_at,
   projected_gross_microusd, credit_verified=True, inventory_complete=True).
+  Owner-funded admission instead has credit_verified=False and owner_budget
+  (decision_sha256, month, monthly_cap_microusd), authenticated in protected custody.
 * submit_intent: attempt_id, source(bucket, object, generation, archive_sha256),
   nonce (UUID), request_sha256. Persist source generation before the only POST.
 * approve_intent: attempt_id, gate(build_id, trigger_id, repository_id,
@@ -39,6 +41,10 @@ Commands (unknown fields are rejected):
   fenced against continuation, source acquire never uploaded, source absent,
   and complete native inventory without dispatch. Retains the historical plan
   and reservation; releases only unexecuted capacity. Never creates a Build ID.
+* abort_before_approval: attempt_id, evidence_sha256, native_verified=True.
+  Attestation-stage RESERVED only, without any intent or native UUID. Protected
+  operator proves request ended, controls paused and no native approval. Keeps
+  the whole reservation charged; never reopens an event or a consumed gate.
 * raise_monthly_limit_second: from_seconds=72000, to_seconds=90000,
   evidence_sha256, native_verified=True. Protected operator only, after the
   owner's economic decision of 2026-10-20 (1,500 minutes per month): no live or
@@ -117,7 +123,9 @@ OPERATING_LIMITS = frozenset({MONTHLY_LIMIT_SECONDS, REDUCED_MONTHLY_LIMIT_SECON
 EXTENDED_LIMITS = frozenset({MONTHLY_LIMIT_SECONDS, SECOND_EXTENSION_LIMIT_SECONDS,
                              THIRD_EXTENSION_LIMIT_SECONDS})
 KNOWN_LIMITS = OPERATING_LIMITS | {HISTORICAL_MONTHLY_LIMIT_SECONDS}
-GROSS_CAP_MICROUSD = 100 * 1_000_000
+# Owner decision of 2026-11-06: USD 150 gross/month, preserving all backups.
+# This ceiling does not replace current inventory, funding or expiry validation.
+GROSS_CAP_MICROUSD = 150 * 1_000_000
 STAGE_LIMITS = {'full': 5700, 'attestation': 120, 'package': 1800,
                 'publisher': 900, 'toolchain': 5700, 'diagnostic': 5700}
 LIVE_STATES = {'RESERVED', 'SUBMIT_INTENT', 'UNKNOWN', 'UUID_BOUND',
@@ -336,15 +344,15 @@ def _validate_ledger(doc):
         state = attempt.get('state')
         need(type(state) is str and state in LIVE_STATES | {
             'DISCOVERED', 'SOURCE_APPROVED', 'RECONCILED', 'ABORTED_BEFORE_DISPATCH',
-            'ABANDONED_WITHOUT_NATIVE'}, 'STATE_INVALID')
+            'ABANDONED_WITHOUT_NATIVE', 'ABORTED_BEFORE_APPROVAL'}, 'STATE_INVALID')
         fields = {'plan', 'state', 'discovered_at'}
         if state != 'DISCOVERED':
             fields |= {'approval'}
         if state not in {'DISCOVERED', 'SOURCE_APPROVED'}:
             fields |= {'reserved_at', 'admission'}
-        if state not in {'DISCOVERED', 'SOURCE_APPROVED', 'RESERVED', 'ABORTED_BEFORE_DISPATCH'}:
+        if state not in {'DISCOVERED', 'SOURCE_APPROVED', 'RESERVED', 'ABORTED_BEFORE_DISPATCH', 'ABORTED_BEFORE_APPROVAL'}:
             fields |= {'intent', 'submitted_at'}
-        if state == 'ABORTED_BEFORE_DISPATCH':
+        if state in {'ABORTED_BEFORE_DISPATCH', 'ABORTED_BEFORE_APPROVAL'}:
             fields |= {'abortion'}
         if state == 'UNKNOWN':
             fields |= {'uncertainty'}
@@ -401,9 +409,10 @@ def _validate_ledger(doc):
             digest(attempt['reconciliation_sha256'])
             need(timestamp(attempt['terminal']['finished_at']) <= timestamp(attempt['reconciled_at']) <= updated,
                  'DURABLE_CHRONOLOGY_INVALID')
-        if state == 'ABORTED_BEFORE_DISPATCH':
+        if state in {'ABORTED_BEFORE_DISPATCH', 'ABORTED_BEFORE_APPROVAL'}:
             abortion = attempt['abortion']
-            need(attempt['plan']['stage'] == 'full', 'UNDISPATCHED_FULL_REQUIRED')
+            expected_stage = 'full' if state == 'ABORTED_BEFORE_DISPATCH' else 'attestation'
+            need(attempt['plan']['stage'] == expected_stage, 'UNDISPATCHED_FULL_REQUIRED' if expected_stage == 'full' else 'UNAPPROVED_ATTESTATION_REQUIRED')
             exact(abortion, 'evidence_sha256 aborted_at reserved_seconds', 'ABORTION_FIELDS_INVALID')
             digest(abortion['evidence_sha256'])
             need(type(abortion['reserved_seconds']) is int and
@@ -484,6 +493,11 @@ def _budget_usage(document, *, now):
             end = utc(attempt['submitted_at']) + timedelta(seconds=plan['timeout_seconds'] + plan['queue_seconds'])
             for month, _, _ in months(attempt['reserved_at'], end):
                 add(month, 'confirmed_seconds', attempt['abandonment']['charged_seconds'])
+        elif attempt['state'] == 'ABORTED_BEFORE_APPROVAL':
+            plan = attempt['plan']
+            end = utc(attempt['abortion']['aborted_at']) + timedelta(seconds=plan['timeout_seconds'] + plan['queue_seconds'])
+            for month, _, _ in months(attempt['reserved_at'], end):
+                add(month, 'confirmed_seconds', attempt['abortion']['reserved_seconds'])
         elif attempt['state'] in LIVE_STATES:
             plan = attempt['plan']
             end = moment + timedelta(seconds=plan['timeout_seconds'] + plan['queue_seconds'])
@@ -504,13 +518,28 @@ def validate_approval(approval, plan, now):
 
 
 def validate_admission(admission, now, approval):
-    exact(admission, 'approval_sha256 inventory_sha256 expires_at projected_gross_microusd credit_verified inventory_complete',
-          'ECONOMIC_ADMISSION_FIELDS_INVALID')
+    fields = 'approval_sha256 inventory_sha256 expires_at projected_gross_microusd credit_verified inventory_complete'
+    owner_budget = type(admission) is dict and 'owner_budget' in admission
+    exact(admission, fields + (' owner_budget' if owner_budget else ''), 'ECONOMIC_ADMISSION_FIELDS_INVALID')
     digest(admission['approval_sha256']); digest(admission['inventory_sha256'])
     need(admission['approval_sha256'] == canonical_hash(approval), 'ECONOMIC_APPROVAL_MISMATCH')
     amount = admission['projected_gross_microusd']
     need(type(amount) is int and 0 <= amount <= GROSS_CAP_MICROUSD, 'GROSS_CAP_EXCEEDED')
-    need(admission['credit_verified'] is True and admission['inventory_complete'] is True, 'CREDIT_AND_INVENTORY_REQUIRED')
+    if owner_budget:
+        # Protected operator custody authenticates this decision, just as it does
+        # source approval. A digest alone is not proof of owner authorization.
+        # The owner explicitly allowed account charges on 2026-11-06; never
+        # represent that funding authorization as verified promotional credits.
+        budget = admission['owner_budget']
+        exact(budget, 'decision_sha256 month monthly_cap_microusd', 'OWNER_BUDGET_FIELDS_INVALID')
+        digest(budget['decision_sha256'])
+        cap = budget['monthly_cap_microusd']
+        need(type(cap) is int and 0 <= amount <= cap <= GROSS_CAP_MICROUSD, 'OWNER_BUDGET_CAP_EXCEEDED')
+        need(budget['month'] == now.strftime('%Y-%m'), 'OWNER_BUDGET_MONTH_MISMATCH')
+        need(admission['credit_verified'] is False, 'OWNER_BUDGET_MUST_NOT_ASSERT_CREDITS')
+        need(admission['inventory_complete'] is True, 'CREDIT_AND_INVENTORY_REQUIRED')
+    else:
+        need(admission['credit_verified'] is True and admission['inventory_complete'] is True, 'CREDIT_AND_INVENTORY_REQUIRED')
     need(timestamp(admission['expires_at']) > now, 'ECONOMIC_ADMISSION_EXPIRED')
 
 
@@ -613,6 +642,7 @@ def _transition(document, command, *, now, validator):
         'terminal': 'op attempt_id observation',
         'reconcile': 'op attempt_id evidence_sha256 native_verified',
         'abort_before_dispatch': 'op attempt_id evidence_sha256 native_verified',
+        'abort_before_approval': 'op attempt_id evidence_sha256 native_verified',
         'abandon_without_native': 'op attempt_id evidence_sha256 native_verified',
         'reduce_monthly_limit': 'op from_seconds to_seconds evidence_sha256 native_verified',
         'raise_monthly_limit': 'op from_seconds to_seconds evidence_sha256 native_verified',
@@ -806,19 +836,21 @@ def _transition(document, command, *, now, validator):
             if value['started_at'] is not None:
                 need(utc(value['started_at']) >= utc(attempt['submitted_at']), 'NATIVE_INTERVAL_BEFORE_INTENT')
             attempt.update(state='TERMINAL_UNRECONCILED', terminal=deepcopy(value))
-        elif op == 'abort_before_dispatch':
+        elif op in {'abort_before_dispatch', 'abort_before_approval'}:
             # Native absence and the dead-request fence are authenticated by
             # the protected recovery adapter, never inferred from this state.
             need(command['native_verified'] is True, 'NATIVE_VERIFICATION_REQUIRED')
             digest(command['evidence_sha256'])
-            if state == 'ABORTED_BEFORE_DISPATCH':
+            abort_state = 'ABORTED_BEFORE_DISPATCH' if op == 'abort_before_dispatch' else 'ABORTED_BEFORE_APPROVAL'
+            if state == abort_state:
                 need(attempt['abortion']['evidence_sha256'] == command['evidence_sha256'],
                      'ABORTION_EVIDENCE_CHANGED')
                 return replay()
             need(state == 'RESERVED' and doc['active_attempt'] == attempt_id,
                  'UNDISPATCHED_RESERVATION_REQUIRED')
-            need(attempt['plan']['stage'] == 'full', 'UNDISPATCHED_FULL_REQUIRED')
-            attempt.update(state='ABORTED_BEFORE_DISPATCH', abortion={
+            expected_stage = 'full' if op == 'abort_before_dispatch' else 'attestation'
+            need(attempt['plan']['stage'] == expected_stage, 'UNDISPATCHED_FULL_REQUIRED' if expected_stage == 'full' else 'UNAPPROVED_ATTESTATION_REQUIRED')
+            attempt.update(state=abort_state, abortion={
                 'evidence_sha256': command['evidence_sha256'], 'aborted_at': stamp(moment),
                 'reserved_seconds': attempt['plan']['timeout_seconds']})
             doc['active_attempt'] = None

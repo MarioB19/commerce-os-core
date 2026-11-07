@@ -1,3 +1,5 @@
+import {gateQrGroupAuthority} from './group-qr-dispatch.js';
+import {programConfig} from '../../../packages/db/src/group-warmup.js';
 import {recordProfileExecutor} from '../../../packages/db/src/profile-record-context.js';
 import {bindRecordEnvironment} from '../../../packages/db/src/profile-environment.js';
 import {validateLegacyWarmupEffectOrigins} from '../../../packages/db/src/legacy-qr-warmup.js';
@@ -24,21 +26,29 @@ export async function refreshEffectGroup(effectId:string,factory:ProviderFactory
 export async function gateGroupDispatch(c:QueryExecutor,effect:Body,owner:string):Promise<{allowed:boolean;reason?:string;account?:DomainRecord;contact?:DomainRecord;leaseMs?:number}>{
  await bindRecordEnvironment(c,effect.workspace_id,effect.environment);
  const deny=(reason:string)=>({allowed:false,reason});
- const turn=(await c.query(`SELECT t.*,v.content_id,v.local_date::text AS local_date,v.pool_id,v.group_id,v.membership_version,v.member_ids,p.enabled,p.paused pool_paused,p.breaker_open,p.archived_at,p.authorization_id pool_authorization_id,p.profile_id,p.purpose FROM warmup_turns t JOIN warmup_conversations v ON v.id=t.conversation_id JOIN warmup_pools p ON p.id=v.pool_id WHERE t.id::text=$1 AND t.workspace_id=$2 AND t.environment=$3`,[effect.payload.warmup_turn_id,effect.workspace_id,effect.environment])).rows[0];
+ if(effect.payload.program_revision!==undefined){
+  // Dispatch already owns its outbox row. A membership update or command may
+  // own the profile lock and need that row, so never wait in the reverse order.
+  const lock=(await c.query('SELECT pg_try_advisory_xact_lock(hashtextextended($1,0)) AS acquired',[`group-warmup:${effect.workspace_id}:${effect.environment}`])).rows[0];
+  if(!lock?.acquired)return deny('GROUP_WARMUP_BUSY');
+ }
+ const turn=(await c.query(`SELECT t.*,v.content_id,v.local_date::text AS local_date,v.pool_id,v.group_id,v.membership_version,v.member_ids,p.enabled,p.paused pool_paused,p.breaker_open,p.archived_at,p.authorization_id pool_authorization_id,p.profile_id,p.purpose,p.continuity_mode,p.program_id FROM warmup_turns t JOIN warmup_conversations v ON v.id=t.conversation_id JOIN warmup_pools p ON p.id=v.pool_id WHERE t.id::text=$1 AND t.workspace_id=$2 AND t.environment=$3`,[effect.payload.warmup_turn_id,effect.workspace_id,effect.environment])).rows[0];
  if(!turn||turn.effect_id!==effect.id||turn.sender_id!==effect.account_id||turn.recipient_id!==effect.contact_id||turn.conversation_id!==effect.conversation_id)return deny('WARMUP_EFFECT_SCOPE_INVALID');
  if(!turn.enabled||turn.pool_paused||turn.breaker_open||turn.archived_at)return deny('WARMUP_POOL_PAUSED');
+ const qrProgram=turn.continuity_mode==='QR_GROUP'?(await c.query('SELECT * FROM warmup_programs WHERE id=$1 FOR SHARE',[turn.program_id])).rows[0]:null;
+ if((turn.continuity_mode==='QR_GROUP')!==(effect.payload.program_revision!==undefined)||turn.continuity_mode==='QR_GROUP'&&!qrProgram)return deny('WARMUP_AUTHORITY_MODE_MISMATCH');
  const now=await numberNow(c,effect.workspace_id,effect.environment);
  if(new Date(effect.not_before)>now||new Date(effect.expires_at)<=now||+new Date(effect.not_before)!==+new Date(turn.not_before)||+new Date(effect.expires_at)!==+new Date(turn.expires_at))return deny('WARMUP_TURN_TIMING_CHANGED');
  const group=(await c.query('SELECT * FROM warmup_groups WHERE id=$1 AND workspace_id=$2 AND environment=$3 FOR SHARE',[turn.group_id,effect.workspace_id,effect.environment])).rows[0],ids:string[]=turn.member_ids;
  if(!group||group.version!==turn.membership_version)return deny('GROUP_MEMBERSHIP_CHANGED');
  const currentPool=(await c.query('SELECT enabled,paused,breaker_open,archived_at FROM warmup_pools WHERE id=$1 FOR SHARE',[turn.pool_id])).rows[0];
  if(!currentPool?.enabled||currentPool.paused||currentPool.breaker_open||currentPool.archived_at)return deny('WARMUP_POOL_PAUSED');
- const eligibility=groupEligibility(group,ids,now);if(eligibility)return deny(eligibility);
+ const eligibility=groupEligibility(group,ids,now,qrProgram?programConfig(qrProgram).senderIds:ids);if(eligibility)return deny(eligibility);
  if(now.getTime()-new Date(group.observed_at).getTime()>5000)return deny('GROUP_FRESH_READ_REQUIRED');
  const profile=await profileFor(c,turn.profile_id);if(!localWindow(profile,now).open)return deny('WARMUP_QUIET_HOURS');
  const content=(await c.query('SELECT * FROM warmup_content WHERE id=$1 AND workspace_id=$2 AND environment=$3',[turn.content_id,effect.workspace_id,effect.environment])).rows[0];
  if(!content||stableJson(turn.content)!==stableJson(content.body.turns[turn.position]))return deny('WARMUP_CONTENT_CHANGED');
- const expected={...turn.content,warmup_turn_id:turn.id,warmup_pool_id:turn.pool_id,content_hash:content.content_hash,group_protocol:'v1',group_id:group.id,membership_version:group.version,purpose:turn.purpose};
+ const expected={...turn.content,warmup_turn_id:turn.id,warmup_pool_id:turn.pool_id,content_hash:content.content_hash,group_protocol:'v1',group_id:group.id,membership_version:group.version,purpose:turn.purpose,...(qrProgram?{program_revision:qrProgram.version,library_version:qrProgram.scope.libraryVersion,qr_origins:effect.payload.qr_origins}:{})};
  if(stableJson(effect.payload)!==stableJson(expected)||hash(stableJson({account_id:effect.account_id,contact_id:effect.contact_id,payload:effect.payload}))!==effect.config_hash||effect.approval_hash!==effect.config_hash)return deny('EFFECT_CONFIG_CHANGED');
  const states=(await c.query('SELECT s.*,i.address_ciphertext,i.address_fingerprint,i.profile_verified_at FROM warmup_states s LEFT JOIN warmup_identities i ON i.id=s.identity_id WHERE s.pool_id=$1 AND s.account_id=ANY($2::uuid[]) FOR SHARE OF s',[turn.pool_id,ids])).rows;
  if(states.length!==ids.length||states.some(s=>s.paused||s.confirmed_block||!['WARMING','AWAITING_CONTENT','GRADUATED'].includes(s.status)))return deny('WARMUP_MEMBER_NOT_READY');
@@ -64,12 +74,14 @@ export async function gateGroupDispatch(c:QueryExecutor,effect:Body,owner:string
  if(turn.purpose==='maintenance'&&(states.some(s=>s.status!=='GRADUATED')||(await c.query("SELECT 1 FROM outbox WHERE account_id=ANY($1::text[]) AND kind<>'warmup' AND status IN('READY','BLOCKED','SENDING','UNKNOWN') LIMIT 1",[ids])).rowCount))return deny('COMMERCIAL_PRIORITY');
  const policy=await readOperationalSettings(c,effect.workspace_id,effect.environment,{lock:'share'});if(effect.environment==='REAL'&&(policy.body.dispatch_frozen||!policy.body.allow_real_operations||!policy.body.real_sends_enabled))return deny('REAL_OPERATION_NOT_ENABLED');
  let bound=false,temporalExpiresAt:Date|null=null;
- if((await c.query("SELECT to_regclass('public.warmup_effect_origins') AS present")).rows[0]?.present){
+ if(!qrProgram&&(await c.query("SELECT to_regclass('public.warmup_effect_origins') AS present")).rows[0]?.present){
   const db=await recordProfileExecutor(c,effect.workspace_id,effect.environment);
   const result=await validateLegacyWarmupEffectOrigins(db,{environment:effect.environment,effectId:effect.id,senderId:effect.account_id,accountIds:ids,poolId:turn.pool_id,profileId:turn.profile_id,contentId:turn.content_id,policyVersion:profile.policy_version,purpose:turn.purpose,groupId:group.id,groupVersion:group.version,configurationVersion:policy.version});
   if(result.kind==='BLOCKED')return deny(result.reason);bound=result.kind==='BOUND';if(result.kind==='BOUND')temporalExpiresAt=result.temporalExpiresAt;
  }
- if(bound){
+ if(qrProgram){
+  const reason=await gateQrGroupAuthority(await recordProfileExecutor(c,effect.workspace_id,effect.environment),effect,turn,qrProgram,states,now);if(reason)return deny(reason);
+ }else if(bound){
   if(localWindow(profile,now).date!==turn.local_date)return deny('WARMUP_PLAN_DAY_CHANGED');
   for(const accountId of [...ids].sort())await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`warmup-daily:${effect.workspace_id}:${effect.environment}:${accountId}`]);
   for(const state of states){

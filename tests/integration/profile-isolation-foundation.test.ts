@@ -46,7 +46,10 @@ describe('profile foundation with PostgreSQL and an actual restricted login',()=
   const files=(await readdir(sources)).filter(x=>x.endsWith('.sql')&&x<'0069').sort();
   const expected=await Promise.all(files.map(async name=>({name,sha256:createHash('sha256').update(await readFile(new URL(name,sources))).digest('hex')})));
   expect(baseline.migrations).toEqual(expected);
-  const report=assessProfileCatalog(baseline,policy);
+  // These two private relations were introduced by 0118, after this explicit
+  // 0068 snapshot. Keep the current-schema policy intact for all live checks.
+  const historicalPolicy={...policy,private_tables:policy.private_tables.filter(name=>!['warmup_library_releases','warmup_program_operations'].includes(name))};
+  const report=assessProfileCatalog(baseline,historicalPolicy);
   expect(report.issues.filter(x=>['TABLE_MISSING','TABLE_NOT_CLASSIFIED'].includes(x.code))).toEqual([]);
   expect(report.issues.map(x=>x.code)).toContain('RLS_DISABLED');
   expect(report.behavioral_isolation_verified).toBe(false);expect(report.production_installation_proven).toBe(false);

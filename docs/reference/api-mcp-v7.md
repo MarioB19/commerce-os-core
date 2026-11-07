@@ -2,7 +2,7 @@
 
 > Generada por `scripts/api-reference.ts` desde el código (OpenAPI de la app y registro MCP tipado). No se edita a mano: CI falla si difiere del código.
 
-Contenido: `2dc46d5c3078e53c` · 197 operaciones HTTP en 173 rutas · 40 herramientas MCP (presupuesto 40).
+Contenido: `266f2b3a4cfd48fb` · 208 operaciones HTTP en 184 rutas · 40 herramientas MCP (presupuesto 40).
 
 ## Herramientas MCP
 
@@ -24,7 +24,7 @@ Contenido: `2dc46d5c3078e53c` · 197 operaciones HTTP en 173 rutas · 40 herrami
 | `numbers_manage` | perfil | `/v1/numbers` | `numbers:read`, `numbers:write` | listar, leer, crear, impacto_eliminar, eliminar | editar |
 | `number_connection_manage` | perfil | `/v1/numbers/{id}/link` | `numbers:read`, `numbers:connect` | estado, conectar, vincular, desconectar, pausar, reanudar | — |
 | `number_assignments_manage` | perfil | `/v2/continuity` | `assignments:read`, `assignments:write` | autorizaciones, autorizacion, autorizar, pausar, reanudar, revocar, consultar_operacion, asignar, retirar, impacto, historial, vista_inversa | — |
-| `warmup_manage` | perfil | `/v2/continuity/warmup` | `warmup:read`, `warmup:write` | progreso, pausar, reanudar, evidencia | — |
+| `warmup_manage` | perfil | `/v2/warmup` | `warmup:read`, `warmup:write` | progreso, pausar, reanudar, evidencia, listar_programas, leer_programa, grupos, actualizar_grupos, bibliotecas, ver_biblioteca, importar_biblioteca, previsualizar, crear, iniciar, pausar_programa, reanudar_programa, archivar, configurar, consultar_operacion | — |
 | `conversations_manage` | perfil | `/v1/conversations` | `conversations:read`, `conversations:write` | listar, leer, responder, registrar_acuerdo, cerrar, registrar_baja, tomar_control, liberar_control, pausar, reanudar | asignar_persona, elegir_variante |
 | `orders_manage` | perfil | `/v1/orders` | `orders:read`, `orders:write` | listar, leer | corregir_clasificacion, historial |
 | `receipts_manage` | perfil | `/v2/receipts` | `receipts:read`, `receipts:review` | listar, leer, archivo, revisar | — |
@@ -507,4 +507,20 @@ Contenido: `2dc46d5c3078e53c` · 197 operaciones HTTP en 173 rutas · 40 herrami
 | GET | `/v2/variants/{id}/remarketing/results` | autenticado |
 | POST | `/v2/variants/{id}/restore` | autenticado |
 | POST | `/v2/variants/{id}/review` | autenticado |
+
+### `/v2/warmup`
+
+| Método | Ruta | Acceso |
+|---|---|---|
+| GET | `/v2/warmup` | autenticado |
+| GET | `/v2/warmup/groups` | autenticado |
+| POST | `/v2/warmup/groups/refresh` | autenticado |
+| GET | `/v2/warmup/libraries` | autenticado |
+| POST | `/v2/warmup/libraries/import` | autenticado |
+| GET | `/v2/warmup/library` | autenticado |
+| GET | `/v2/warmup/operations/{id}` | autenticado |
+| POST | `/v2/warmup/preview` | autenticado |
+| POST | `/v2/warmup/programs` | autenticado |
+| GET | `/v2/warmup/programs/{id}` | autenticado |
+| POST | `/v2/warmup/programs/{id}/commands` | autenticado |
 

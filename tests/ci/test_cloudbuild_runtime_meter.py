@@ -291,7 +291,7 @@ class HTTPTests(unittest.TestCase):
                 self.assertEqual(result['status'], 'TICK_RECORDED' if seconds == 450 else 'STOP_PRESERVE')
                 self.assertEqual(factory.calls, 1 if seconds == 450 else 0)
                 if seconds == 450:
-                    self.assertEqual(usage(factory.meter_store.document)['2026-10']['cpu_ms'], 450000)
+                    self.assertEqual(next(iter(usage(factory.meter_store.document).values()))['cpu_ms'], 450000)
 
     def test_dispatch_is_metered_and_response_does_not_expose_result(self):
         factory = Factory()

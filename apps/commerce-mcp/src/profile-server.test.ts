@@ -229,3 +229,20 @@ describe('V7 F3 number tools',()=>{
   }finally{await client.close();await server.close();}
  });
 });
+
+describe('V7.2 MCP group start parity',()=>{
+ it('creates, previews and starts a group through the personal-token API without a human-only guard',async()=>{
+  const seen:{method:string;url:string;body:any}[]=[];
+  const {client,server}=await connect(async(input,init)=>{seen.push({method:String(init?.method??'GET'),url:String(input),body:init?.body?JSON.parse(String(init.body)):undefined});return json(200,{data:{id:'00000000-0000-4000-8000-000000000004',version:1,status:'ACTIVE',ready:true,previewHash:'a'.repeat(64)}});});
+  try{
+   const id=(n:number)=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
+   const config={name:'Grupo interno',groupId:id(1),senderIds:[id(2),id(3)],libraryVersion:'operacion-interna-es/v1',timezone:'America/Mexico_City'};
+   for(const args of [{action:'crear',operationId:id(5),config},{action:'previsualizar',programId:id(4),config},{action:'iniciar',programId:id(4),operationId:id(6),expectedVersion:1,previewHash:'a'.repeat(64)}]){
+    const result=await client.callTool({name:'warmup_manage',arguments:args});expect(result.isError).not.toBe(true);expect(JSON.stringify(result)).not.toContain('HUMAN_ACTION_REQUIRED');
+   }
+   expect(seen.map(r=>r.url)).toEqual(['https://commerce.example.test/v2/warmup/programs','https://commerce.example.test/v2/warmup/preview',`https://commerce.example.test/v2/warmup/programs/${id(4)}/commands`]);
+   expect(seen[2]!.body).toEqual({environment:'REAL',action:'start',operationId:id(6),expectedVersion:1,previewHash:'a'.repeat(64)});
+   const before=seen.length;const invalid=await client.callTool({name:'warmup_manage',arguments:{action:'iniciar',programId:id(4),operationId:id(6),expectedVersion:1}});expect(invalid.isError).toBe(true);expect(seen).toHaveLength(before);
+  }finally{await client.close();await server.close();}
+ });
+});

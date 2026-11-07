@@ -8,8 +8,17 @@ y demostración de PR fallido bloqueado y correcto aprobado. Actions mantiene US
 ## Ruta mínima sin entregar credenciales GitHub al worker
 
 1. Superar primero el control económico total: infraestructura existente, transición,
-   CI, almacenamiento, tráfico e impuestos dentro de USD 100 mensuales, con créditos
-   suficientes. Ni habilitar una API ni tener créditos prueba ese control.
+   CI, almacenamiento, tráfico e impuestos dentro de USD 150 mensuales, con créditos
+   suficientes o presupuesto del dueño explícitamente autorizado. Ni habilitar
+   una API ni tener créditos prueba ese control.
+   Brandon autorizó el nuevo techo bruto el 6-nov-2026, conservando todos los
+   respaldos. Actualizar también la imagen confiable del controlador y comprobar
+   su revisión; cambiar este documento o el candidato no cambia el límite del
+   servicio instalado. La proyección vigente y los demás controles siguen exigidos.
+   Su última indicación permite cargos aunque se agoten los créditos. Esa vía usa
+   `owner_budget` con hash de la decisión, mes y techo, manteniendo
+   `credit_verified: false`; no se inventa un saldo de créditos.
+   Véase [decisión y controles](adr-v7-gross-cap-2026-11-06.md).
 2. Desde la identidad Google autorizada, habilitar Cloud Build y preparar una SA
    dedicada `commerce-v7-verify`, repositorio Artifact Registry `commerce-ci` y bucket
    privado de fuentes CI. No reutilizar el bucket B02. La SA de verificación necesita

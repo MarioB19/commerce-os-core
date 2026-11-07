@@ -53,6 +53,13 @@ export async function exportProfileData(db:ProfileExecutor,authority:ProfileAuth
  }
  for(const row of (await db.query("SELECT id,family_id,version,document,current_release_id,archived_at,created_at,updated_at FROM market_variants WHERE workspace_id=$1 AND environment='REAL' ORDER BY id",[db.workspaceId])).rows)line('variants',row);
  for(const row of (await db.query("SELECT * FROM commercial_assignments WHERE workspace_id=$1 AND environment='REAL' ORDER BY id",[db.workspaceId])).rows)line('assignments',row);
+ // V7.2 group configuration, immutable library versions and their evidence.
+ for(const table of ['warmup_programs','warmup_library_releases','warmup_content','warmup_conversations','warmup_program_operations'] as const){
+  let cursor:string|null=null;
+  for(;;){const page:Record<string,any>[]=(await db.query(`SELECT * FROM ${table} WHERE workspace_id=$1 AND environment='REAL' AND ($2::uuid IS NULL OR id>$2::uuid) ORDER BY id LIMIT $3`,[db.workspaceId,cursor,BATCH])).rows;
+   for(const row of page)line(table,row);if(page.length<BATCH)break;cursor=page.at(-1)!.id;
+  }
+ }
  line('manifest',{rows:rows+1,sections:{...sections,manifest:1}});
  gzip.end();await done;
  const buffer=Buffer.concat(chunks),sha256=createHash('sha256').update(buffer).digest('hex');

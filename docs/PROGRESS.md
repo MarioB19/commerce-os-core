@@ -1,5 +1,103 @@
 # Estado de publicación
 
+## 6-nov-2026 — V7.2: calentamiento de grupos propios con biblioteca, API y MCP
+
+Implementado en `codex/v7-2-group-warmup`, con publicación autorizada por el dueño.
+El estado de instalación se registra por separado al terminar la ventana.
+
+El FULL `3c97e477-11a5-477a-b70f-bd840c15a9be` de `8c36c2b` se detuvo en
+integración: `v7-life` devolvió 500 en una alta concurrente. Los 23 casos de
+grupos pasaron. La reproducción local bajo CPU limitada mostró el vencimiento
+de adquisición del pool: cinco conexiones ocupadas y catorce solicitudes en
+espera. El fixture de corrección admite sus veinte actores HTTP y el worker
+en 21 conexiones, sin cambiar pools productivos, límites ni assertions. Sus
+50 eventos pasan con la misma restricción de CPU; tipos y lint pasan. El worker
+del fixture se detiene también si falla una assertion. Se conserva el FULL
+fallido y se requiere FULL nuevo. Reasignar sólo reservas aún no consumidas
+mantiene la estimación en US$149.98, con respaldos conservados y límite US$150.
+
+Actualización de cuota: el FULL `91c69bac-c937-4640-b456-39f1b4a21839` pasó las
+21 etapas sobre `01aab61`. Monitoring identificó el segundo rechazo HTTP429 en
+la cuota de solicitudes, conservada por Google Cloud en 60/minuto. La
+[ventana previa a la aprobación](adr-v7-native-approval-quota.md) separa los
+inventarios y conserva la revalidación inmediata antes del POST. Se requiere
+FULL del nuevo SHA. El ensayo de restauración aislado comprobó 188 tablas,
+11,425,703 filas y 117 migraciones idénticas al respaldo previo. Producción aún
+conserva V7.1.1. Proyección conservadora actual: US$149.76, admitida en US$150.
+
+Actualización de publicación: FULL `6d590da9-5937-42d0-b7bd-eec827f524cb` pasó
+las 21 etapas sobre `dddcf75`, incluidas recuperación y comparación visual Linux.
+La aprobación de la atestación recibió un 429, fue conciliada sin reembolso y
+su UUID quedó consumido. La reserva posterior se detuvo antes de aprobar.
+La [recuperación de atestaciones sin intención](adr-v7-unsubmitted-attestation-recovery.md)
+añade su cierre explícito con evidencia, sin reutilizar compuertas ni afirmar
+éxito. Pasan 1,949 casos Python (1,947 aprobados, 2 omitidos). El conductor observa
+GCS durante la aprobación para no competir con la cuota de Cloud Build.
+Este nuevo commit requiere su propio FULL; la aplicación de calentamiento no
+cambia. La proyección con un FULL adicional y reservas es US$147.05 redondeados
+hacia arriba, admitida conservadoramente en US$148 dentro de los US$150.
+
+Preparación del release: el dueño autorizó US$150 brutos mensuales, incluso sin
+créditos. El controlador conserva créditos sin verificar en `false` y acepta una
+decisión de presupuesto explícita ligada al mes y a la revisión. Los 1,943 casos
+Python del candidato pasan (1,941 aprobados, 2 omitidos); las pruebas de aplicación
+siguen en 2,205 unitarias y 1,516 PostgreSQL. La imagen confiable del controlador y
+los dos triggers de atestación ya incorporan ese control, conservando la aprobación
+requerida. Tres discos históricos desconectados fueron archivados y retirados con
+autorización específica; se conservan los 21 snapshots anteriores, las tres copias
+nuevas, PITR y producción. La proyección de noviembre es US$146.29; se prepara la
+admisión con US$147. FULL nativo e instalación de V7.2 siguen pendientes.
+
+- Nuevo recorrido Números → Calentamientos: grupo existente de 2–10 números
+  propios, emisores seleccionados, horario, topes, mantenimiento y pausa.
+- 500 guiones originales / 5,000 mensajes estáticos; importación versionada,
+  validación de duplicados y cobertura, siete días sin reutilizar texto por grupo
+  o número. No hay generación ni llamadas a IA en este modo.
+- `/v2/warmup` y `warmup_manage` permiten crear, revisar e iniciar por sesión
+  humana o token de perfil, conservando autoridad QR, scopes y controles comunes.
+- Migración 0118 aditiva: historial, pausas, episodios y créditos previos
+  conservados. Nuevas conexiones esperan selección del grupo; el modo anterior
+  mantiene su semántica hasta una transición explícita.
+- Validación específica: 23 pruebas PostgreSQL con roles restringidos, grupos
+  2/3/10, idempotencia/concurrencia/cuotas, importación, identidad, reconexión,
+  incertidumbre, aislamiento, crédito saliente al cambiar el día sin duplicación
+  y actualización 0117→0118 idempotente. Las 13 pruebas E2E de navegación y
+  accesibilidad pasan localmente; los snapshots Linux se validan en FULL. Regresión completa y
+  publicación del SHA exacto se documentan en la evidencia de release.
+- Tres pruebas concurrentes reprodujeron el orden inverso de locks entre
+  observación de integrantes y compuerta final. Pasan con observación serial por
+  perfil y emisión que difiere sin esperar cuando el perfil está ocupado.
+  Tipos/lint/build y 2,205 unitarias vuelven a pasar después de la corrección.
+- Dependencia necesaria para el gate de publicación: Better Auth 1.7.2→1.7.7
+  corrige GHSA-965c-763c-88jm y GHSA-r4xp-prcw-77qf. Commerce OS no habilita los
+  plugins Magic Link/OAuth Proxy ni proveedores OAuth afectados; se actualiza el
+  parche sin introducir métodos de acceso nuevos. El issuer histórico se declara
+  como campo adicional interno, conservando su restricción y sin desactivar la
+  validación del esquema. Se repite la regresión de
+  autenticación. El test de teclado espera contenido visible en vez de inactividad
+  de red en pantallas que se actualizan periódicamente. El recorrido masivo del
+  navegador espacia solicitudes reales para respetar el límite de 300/minuto.
+- Fixtures de regresión: el emisor Root sintético usa el reloj PostgreSQL para
+  evidencia y validación pura; no depende del desfase host/Docker. El test de
+  actualización histórica espera ahora las 118 migraciones y 199 relaciones;
+  el inventario 0068 excluye sólo las dos tablas introducidas en 0118. La
+  conexión QR sintética se observa un segundo después de su comando y un
+  segundo antes del reloj de la base, evitando evidencia accidentalmente futura.
+  No se relajan
+  las comprobaciones productivas de tiempo, roles ni fuente limpia.
+- El fixture del laboratorio toma captura y estimación del mismo reloj de
+  PostgreSQL. En Colima local se observaron pasos de reloj hacia atrás de
+  100–130 ms del agente Lima, coincidentes con
+  [Lima #5543](https://github.com/lima-vm/lima/issues/5543). La verificación se
+  repite en un clúster PostgreSQL sintético limpio, con NTP activo y protección
+  temporal del reloj frente al agente. La configuración local se restaura al
+  terminar; las restricciones SQL de frescura y leases se conservan.
+- Ningún test simulado acredita intercambio físico, reputación ni preparación
+  de teléfonos. El primer grupo real requiere líneas vinculadas y sus recibos.
+
+Contrato y uso: [ADR](adr-v7-2-group-library-warmup.md),
+[operación](warmup-v7-2.md), [API/MCP](reference/api-mcp-v7.md).
+
 ## 27-oct-2026 — V7.1.1: el servicio de correo ya no rechaza todo envío por una alarma anidada (Agente: Claude)
 
 La invitación de prueba de producción llegó a App Engine y recibió `409` en

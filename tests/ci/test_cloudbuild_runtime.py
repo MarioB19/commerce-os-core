@@ -331,6 +331,25 @@ class AttestorTests(unittest.TestCase):
 
 
 class BoundaryTests(unittest.TestCase):
+    def test_approval_revalidates_after_quota_wait_and_posts_immediately(self):
+        calls = []
+        api = Mock(); api.approve_once.side_effect = lambda build: calls.append(('approve', build))
+        fenced = m.FencedBuildAPI(api, lambda: calls.append('fresh-fence'), lambda: calls.append('quiet'))
+        fenced.approve_once(ATTEMPT)
+        self.assertEqual(calls, ['quiet', 'fresh-fence', ('approve', ATTEMPT)])
+
+    def test_pause_expiry_or_changed_inventory_during_quota_wait_prevents_approval(self):
+        for reason in ('CONTROL_CHANGED', 'APPROVAL_EXPIRED', 'NATIVE_INVENTORY_CHANGED'):
+            api = Mock(); quiet = Mock(); fence = Mock(side_effect=RuntimeError(reason))
+            fenced = m.FencedBuildAPI(api, fence, quiet)
+            with self.assertRaisesRegex(RuntimeError, reason): fenced.approve_once(ATTEMPT)
+            quiet.assert_called_once(); fence.assert_called_once(); api.approve_once.assert_not_called()
+
+    def test_create_preserves_immediate_fence_without_approval_wait(self):
+        api = Mock(); quiet = Mock(); fence = Mock()
+        m.FencedBuildAPI(api, fence, quiet).create_once({'synthetic': True})
+        quiet.assert_not_called(); fence.assert_called_once(); api.create_once.assert_called_once()
+
     def test_fixed_factory_construction_has_no_network(self):
         with patch.object(urllib.request.OpenerDirector, 'open', side_effect=AssertionError('network')):
             value = m.RuntimeFactory(config())

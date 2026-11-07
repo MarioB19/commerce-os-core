@@ -172,8 +172,8 @@ def validate_task(task, clock):
 
 class FencedBuildAPI:
     """Trusted post-CAS revalidation immediately before the only native POST."""
-    def __init__(self, api, fence):
-        self.api = api; self.fence = fence
+    def __init__(self, api, fence, approval_quiet_window):
+        self.api = api; self.fence = fence; self.approval_quiet_window = approval_quiet_window
 
     def __getattr__(self, name):
         return getattr(self.api, name)
@@ -183,6 +183,7 @@ class FencedBuildAPI:
         return self.api.create_once(request)
 
     def approve_once(self, build_id):
+        self.approval_quiet_window()
         self.fence()
         return self.api.approve_once(build_id)
 
@@ -407,7 +408,7 @@ class RuntimeFactory:
         self.source_reader.connect()
         self.diagnostic_phase = 'WORK_VALIDATE'
         eligibility = lambda attempt, proposal: self._eligibility(work, attempt, proposal)
-        api = FencedBuildAPI(self.api, lambda: self._fence(work))
+        api = FencedBuildAPI(self.api, lambda: self._fence(work), self.inventory_pacer.before_approval_fence)
         full = FullController(self.ledger_store, api, self.full_reader, eligibility, clock=self.clock)
         gate = GateController(self.ledger_store, api, self.full_reader, eligibility, clock=self.clock)
         if task['phase'] == 'ADMIT': result = self._admit(work)

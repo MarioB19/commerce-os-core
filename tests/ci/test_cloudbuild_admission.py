@@ -178,11 +178,56 @@ class BudgetAndStateTests(unittest.TestCase):
 
     def test_missing_credit_over_cap_incomplete_inventory_and_expiry_fail(self):
         cases = [{'credit_verified': False}, {'inventory_complete': False},
-                 {'projected_gross_microusd': 100_000_001},
+                 {'projected_gross_microusd': 150_000_001},
                  {'projected_gross_microusd': True}, {'expires_at': m.stamp(NOW)}]
         for changes in cases:
             value = admission(); value.update(changes)
             with self.subTest(changes=changes), self.assertRaises(m.AdmissionError):
+                step(approved(), 'reserve', admission=value)
+
+    def test_owner_approved_150_gross_cap_accepts_boundary_and_preserves_evidence(self):
+        for amount in (100_000_001, 150_000_000):
+            with self.subTest(amount=amount):
+                value = admission(); value['projected_gross_microusd'] = amount
+                doc = step(approved(), 'reserve', admission=value).document
+                self.assertEqual(doc['attempts'][ATTEMPT]['state'], 'RESERVED')
+                self.assertEqual(doc['attempts'][ATTEMPT]['admission'], value)
+
+    def owner_funded_admission(self):
+        return {**admission(), 'credit_verified': False,
+                'projected_gross_microusd': 150_000_000,
+                'owner_budget': {'decision_sha256': '7'*64, 'month': '2026-10',
+                                 'monthly_cap_microusd': 150_000_000}}
+
+    def test_owner_budget_reserves_without_claiming_credit_and_preserves_history(self):
+        value = self.owner_funded_admission()
+        original = approved(); before = deepcopy(original)
+        doc = step(original, 'reserve', admission=value).document
+        self.assertEqual(original, before)
+        self.assertEqual(doc['attempts'][ATTEMPT]['state'], 'RESERVED')
+        self.assertEqual(doc['attempts'][ATTEMPT]['admission'], value)
+        self.assertFalse(doc['attempts'][ATTEMPT]['admission']['credit_verified'])
+        # Reload validates historical funding against its reservation timestamp.
+        replay = step(doc, 'discover', now=NOW+timedelta(days=32), plan=plan()).document
+        self.assertEqual(replay['attempts'][ATTEMPT]['admission'], value)
+
+    def test_owner_budget_rejects_wrong_month_cap_unknown_fields_and_missing_receipt(self):
+        changes = [{'month': '2026-09'}, {'month': '2026-11'},
+                   {'monthly_cap_microusd': 150_000_001},
+                   {'monthly_cap_microusd': 149_999_999},
+                   {'monthly_cap_microusd': True}, {'decision_sha256': ''},
+                   {'allow_overage': True}]
+        for change in changes:
+            value = self.owner_funded_admission(); value['owner_budget'].update(change)
+            with self.subTest(change=change), self.assertRaises(m.AdmissionError):
+                step(approved(), 'reserve', admission=value)
+
+    def test_owner_budget_does_not_relax_inventory_expiry_review_or_gross_cap(self):
+        for change in ({'inventory_complete': False}, {'credit_verified': True},
+                       {'credit_verified': 0}, {'expires_at': m.stamp(NOW)},
+                       {'approval_sha256': '0'*64}, {'projected_gross_microusd': 150_000_001}):
+            value = self.owner_funded_admission(); value.update(change)
+            with self.subTest(change=change), self.assertRaises(m.AdmissionError):
                 step(approved(), 'reserve', admission=value)
 
     def test_1200_minute_limit_includes_imported_bootstrap_and_failures(self):
@@ -1340,6 +1385,90 @@ class ThirdPoolExtensionTests(unittest.TestCase):
         m.validate_ledger(out)
         self.assertEqual(sorted(k for k in out if k.startswith('limit_')),
                          ['limit_extension', 'limit_reduction', 'limit_second_extension', 'limit_third_extension'])
+
+class AbortBeforeApprovalTests(unittest.TestCase):
+    def reserved_gate(self, now=NOW):
+        value = plan(event='unapproved-gate', stage='attestation')
+        return step(approved(now=now, value=value), 'reserve', now,
+                    admission=admission(now, value)).document
+
+    def command(self, **changes):
+        return {'op': 'abort_before_approval', 'attempt_id': ATTEMPT,
+                'evidence_sha256': '9'*64, 'native_verified': True, **changes}
+
+    def test_preserves_all_evidence_and_charges_the_full_reservation(self):
+        before = self.reserved_gate(); saved = deepcopy(before)
+        later = NOW + timedelta(minutes=10)
+        result = m.transition(before, self.command(), now=later)
+        self.assertEqual(before, saved)
+        self.assertIsNone(result.proposed_effect)
+        after = result.document; row = after['attempts'][ATTEMPT]
+        self.assertEqual(row['state'], 'ABORTED_BEFORE_APPROVAL')
+        self.assertEqual(row['abortion'], {'evidence_sha256': '9'*64,
+            'aborted_at': m.stamp(later), 'reserved_seconds': 120})
+        for key, value in before['attempts'][ATTEMPT].items():
+            if key != 'state': self.assertEqual(row[key], value)
+        for key in ('events', 'external_builds', 'monthly_limit_seconds', 'blocked'):
+            self.assertEqual(after[key], before[key])
+        self.assertFalse({'intent', 'submitted_at', 'build_id', 'terminal'} & set(row))
+        self.assertIsNone(after['active_attempt'])
+        self.assertEqual(m.budget_usage(after, now=later)['2026-10'],
+            {'confirmed_seconds': 120, 'reserved_seconds': 0, 'total_seconds': 120})
+
+    def test_wrong_stage_unverified_or_injected_fields_never_write(self):
+        for doc, changes in [(reserved(), {}), (self.reserved_gate(), {'native_verified': False}),
+                (self.reserved_gate(), {'native_verified': 1}),
+                (self.reserved_gate(), {'evidence_sha256': ''}),
+                (self.reserved_gate(), {'build_id': BUILD})]:
+            store = MemoryStore(doc)
+            with self.subTest(changes=changes), self.assertRaises(m.AdmissionError):
+                m.transact(store, self.command(**changes), now=NOW)
+            self.assertEqual(store.document, doc); self.assertEqual(store.cas_count, 0)
+
+    def test_existing_approval_intent_or_native_execution_cannot_be_aborted(self):
+        fixture = AbandonWithoutNativeTests()
+        for is_bound in (False, True):
+            doc = fixture.gate_unknown(bound=is_bound)
+            store = MemoryStore(doc)
+            with self.assertRaises(m.AdmissionError):
+                m.transact(store, self.command(), now=NOW)
+            self.assertEqual(store.document, doc); self.assertEqual(store.cas_count, 0)
+        submitted = fixture.gate_unknown()
+        submitted['attempts'][ATTEMPT].pop('uncertainty')
+        submitted['attempts'][ATTEMPT]['state'] = 'SUBMIT_INTENT'
+        with self.assertRaises(m.AdmissionError):
+            m.transition(submitted, self.command(), now=NOW)
+
+    def test_replay_is_read_only_and_event_cannot_be_reopened(self):
+        doc = m.transition(self.reserved_gate(), self.command(), now=NOW).document
+        store = MemoryStore(doc)
+        result = m.transact(store, self.command(), now=NOW + timedelta(minutes=1))
+        self.assertFalse(result.changed); self.assertEqual(store.cas_count, 0)
+        with self.assertRaisesRegex(m.AdmissionError, 'ABORTION_EVIDENCE_CHANGED'):
+            m.transition(doc, self.command(evidence_sha256='8'*64), now=NOW)
+        replay = step(doc, 'discover', attempt=str(uuid.uuid4()),
+                      plan=plan(event='unapproved-gate', stage='attestation'))
+        self.assertFalse(replay.changed); self.assertEqual(replay.attempt_id, ATTEMPT)
+        self.assertIsNone(doc['active_attempt'])
+
+    def test_forged_native_fields_wrong_stage_and_charge_are_rejected(self):
+        doc = m.transition(self.reserved_gate(), self.command(), now=NOW).document
+        for mutation in ('build_id', 'stage', 'charge'):
+            bad = deepcopy(doc); row = bad['attempts'][ATTEMPT]
+            if mutation == 'build_id': row['build_id'] = BUILD
+            elif mutation == 'stage': row['plan']['stage'] = 'full'
+            else: row['abortion']['reserved_seconds'] = 0
+            with self.subTest(mutation=mutation), self.assertRaises(m.AdmissionError):
+                m.validate_ledger(bad)
+
+    def test_month_boundary_does_not_refund_either_reservation_month(self):
+        start = datetime(2026, 10, 31, 23, 59, tzinfo=timezone.utc)
+        end = start + timedelta(minutes=5)
+        doc = m.transition(self.reserved_gate(start), self.command(), now=end).document
+        usage = m.budget_usage(doc, now=end)
+        for month in ('2026-10', '2026-11'):
+            self.assertEqual(usage[month], {'confirmed_seconds': 120, 'reserved_seconds': 0, 'total_seconds': 120})
+
 
 if __name__ == '__main__':
     unittest.main()

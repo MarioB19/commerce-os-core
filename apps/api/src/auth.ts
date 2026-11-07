@@ -13,6 +13,9 @@ export function createAuth(client?:pg.PoolClient){
  const database=client?{db:new Kysely<any>({dialect:new PostgresDialect({pool:{options:{},connect:async()=>({query:client.query.bind(client),release:()=>{}}),end:async()=>{}}})}),type:'postgres' as const,transaction:false}:pool;
  return betterAuth({database,secret:process.env.BETTER_AUTH_SECRET,baseURL:process.env.BETTER_AUTH_URL??'http://localhost:3001',trustedOrigins,
   logger:{disabled:true},
+  // Keep our historical credential issuer constraint when upgrading from
+  // Better Auth 1.7.2. It is server-owned, never supplied or returned by clients.
+  account:{additionalFields:{issuer:{type:'string',required:true,defaultValue:'local:credential',input:false,returned:false}}},
   emailAndPassword:{enabled:true,disableSignUp:true,minPasswordLength:12,maxPasswordLength:128,resetPasswordTokenExpiresIn:resetTTLSeconds,revokeSessionsOnPasswordReset:true,
    sendResetPassword:async({user,token})=>{if(!client)throw new Error('IDENTITY_TRANSACTION_REQUIRED');await enqueueResetMail(client,user,token);}},
   verification:{storeIdentifier:{default:'plain',overrides:{'reset-password:':{hash:async identifier=>identityDigest('reset',identifier)}}}},

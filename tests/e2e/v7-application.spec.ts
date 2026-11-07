@@ -9,6 +9,17 @@ import {provisionUser} from '../../apps/api/src/auth.js';
 // saying so. Every main page is checked with axe (WCAG 2 A/AA), without
 // browser errors and without horizontal overflow at 390 px.
 test.use({screenshot:'off',trace:'off',video:'off'});
+test.beforeEach(async({page})=>{
+ // This audit reloads dozens of pages faster than a person can navigate.
+ // Pace the real API requests instead of changing production rate limits or
+ // retrying mutations when the whole browser suite shares one loopback IP.
+ let nextRequest=0;
+ await page.route(/\/(?:v1|v2|api\/auth)(?:\/|\?)/,async route=>{
+  const now=Date.now(),wait=Math.max(0,nextRequest-now);nextRequest=Math.max(now,nextRequest)+300;
+  if(wait)await new Promise(resolve=>setTimeout(resolve,wait));
+  await route.continue();
+ });
+});
 const profile=process.env.WORKSPACE_ID??'local';
 const sections=[['Inicio','/home'],['Productos','/products'],['Ventas','/sales/inbox'],['Números','/numbers'],['Campañas','/campaigns'],['Resultados','/results']] as const;
 const pages:[string,RegExp][]=[
@@ -64,7 +75,7 @@ test('six sections, account menu and every main page: accessible, without errors
 // least 44 px and, per page, at most one primary action in view on arrival.
 test('keyboard reaches every section, targets are 44 px and one primary action per page',async({page})=>{
  await signIn(page,await owner());
- await page.goto('/home');await page.waitForLoadState('networkidle');
+ await page.goto('/home');await expect(page.getByRole('heading',{level:1,name:/^Inicio/})).toBeVisible();
  // The application moves focus to <main> on each route; from the top of the
  // document the first stop is the skip link.
  await page.evaluate(()=>{const b=document.body;b.tabIndex=-1;b.focus();b.removeAttribute('tabindex');});
@@ -73,7 +84,7 @@ test('keyboard reaches every section, targets are 44 px and one primary action p
  await page.keyboard.press('Enter');
  await expect(page.locator('#profile-main')).toBeFocused();
  for(const [label,href] of sections){
-  await page.goto('/home');await page.waitForLoadState('networkidle');
+  await page.goto('/home');await expect(page.getByRole('heading',{level:1,name:/^Inicio/})).toBeVisible();
   await page.evaluate(()=>{const b=document.body;b.tabIndex=-1;b.focus();b.removeAttribute('tabindex');});
   const link=page.getByRole('navigation',{name:'Navegación del perfil'}).getByRole('link',{name:label,exact:true});
   let reached=false;
@@ -83,8 +94,8 @@ test('keyboard reaches every section, targets are 44 px and one primary action p
  }
  for(const width of [1440,390]){
   await page.setViewportSize({width,height:width===390?844:1050});
-  for(const [path] of pages){
-   await page.goto(path);await page.waitForLoadState('networkidle');
+  for(const [path,heading] of pages){
+   await page.goto(path);await expect(page.getByRole('heading',{level:1,name:heading})).toBeVisible();
    const small=await page.evaluate(()=>[...document.querySelectorAll('main button,main summary,main a[data-variant],main input:not([type=checkbox]):not([type=radio]):not([type=hidden]),main select,main textarea,nav a,header button')]
     .filter(e=>{const r=e.getBoundingClientRect(),st=getComputedStyle(e);return r.width>0&&r.height>0&&st.visibility!=='hidden';})
     .filter(e=>e.getBoundingClientRect().height<43.5).map(e=>(e.tagName+':'+(e.textContent??'').trim()).slice(0,60)));
@@ -125,4 +136,33 @@ test('identity pages work without a selected profile; an invitation link without
  await page.goto('/forgot-password');await expect(page.getByRole('heading',{name:'Recupera tu acceso'})).toBeVisible();await axe(page,'/forgot-password');
  await page.goto('/login');await expect(page.getByRole('heading',{name:'Bienvenido de nuevo'})).toBeVisible();await axe(page,'/login');
  await page.getByRole('link',{name:'Olvidé mi contraseña'}).click();await expect(page).toHaveURL(/\/forgot-password$/);
+});
+
+test('V7.2 group warmup: review, start, library preview and accessible mobile controls',async({page})=>{
+ const id=(n:number)=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
+ const numbers=[2,3].map(n=>({id:id(n),label:'Línea interna '+n,connected:true,status:'AWAITING_PEER',reason:'GROUP_SELECTION_REQUIRED',group_required:true,effective_days:0}));
+ const group={id:id(1),name:'Equipo interno',version:1,members:numbers.map(n=>({accountId:n.id,resolved:true,admin:true})),eligible:true,reason:null};
+ const library={version:'operacion-interna-es/v1',name:'Coordinación y revisión de materiales',manifest:{scripts:500,messages:5000,topics:['Alcance']}};
+ let started=false,config:any;const commands:any[]=[];
+ await page.route('**/v2/warmup**',async route=>{
+  const request=route.request(),url=new URL(request.url()),body=request.method()==='POST'?request.postDataJSON():undefined;
+  let data:any;
+  if(url.pathname==='/v2/warmup')data={programs:started?[{id:id(4),name:config.name,version:2,status:'ACTIVE',config,numbers:numbers.map(n=>({...n,reason:'GROUP_PLANNED',group_required:false})),history:[]}]:[],numbers,ai:false};
+  else if(url.pathname==='/v2/warmup/groups')data=[group];
+  else if(url.pathname==='/v2/warmup/libraries')data=[library];
+  else if(url.pathname==='/v2/warmup/library')data={version:library.version,total:1,nextOffset:null,scripts:[{label:'Alcance: guía de bienvenida',topic:'Alcance',ownership_confirmed:true,turns:[{kind:'text',text:'Propongo revisar las instrucciones antes de compartir el material.'},{kind:'text',text:'Podemos empezar por identificar los pasos que necesitan un ejemplo.'}]}]};
+  else if(url.pathname==='/v2/warmup/preview')data={ready:true,previewHash:'a'.repeat(64),members:numbers.map(n=>n.id),groupName:group.name,blockers:[],coverage:{uniqueMessages:5000,requiredMessages:1680,maximumDaily:200,sufficient:true},outgoingBudget:{total:30,per_sender:15},transition:[]};
+  else if(url.pathname==='/v2/warmup/programs'){config=body.config;data={id:id(4),version:1,status:'DRAFT'};}
+  else if(url.pathname===`/v2/warmup/programs/${id(4)}/commands`){commands.push(body);started=true;data={id:id(4),version:2,status:'ACTIVE'};}
+  else throw Error('Unexpected warmup route '+url.pathname);
+  await route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({data})});
+ });
+ await signIn(page,await owner());await page.goto('/numbers');await page.getByRole('button',{name:'Calentamientos',exact:true}).click();
+ await expect(page.getByRole('heading',{level:1,name:'Calentamientos'})).toBeVisible();await page.getByRole('button',{name:'Nuevo calentamiento'}).click();
+ await page.getByLabel('Grupo existente').selectOption(id(1));await page.getByRole('button',{name:'Revisar',exact:true}).click();
+ await expect(page.getByText('Resumen del calentamiento',{exact:true})).toBeVisible();await axe(page,'group warmup review');
+ await page.getByRole('button',{name:'Guardar e iniciar'}).click();await expect(page.getByText('Activo',{exact:true})).toBeVisible();
+ expect(commands).toHaveLength(1);expect(commands[0]).toMatchObject({action:'start',expectedVersion:1,previewHash:'a'.repeat(64)});expect(config.senderIds).toEqual(numbers.map(n=>n.id));
+ await page.setViewportSize({width:390,height:844});await axe(page,'group warmup mobile');expect(await page.evaluate(()=>document.documentElement.scrollWidth-window.innerWidth)).toBeLessThanOrEqual(1);
+ await page.getByRole('button',{name:'Ver biblioteca',exact:true}).click();await page.getByText('Alcance: guía de bienvenida',{exact:true}).click();await expect(page.getByText('Propongo revisar las instrucciones antes de compartir el material.',{exact:true})).toBeVisible();await axe(page,'static library browser');
 });

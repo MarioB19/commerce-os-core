@@ -156,6 +156,29 @@ class PacingTests(unittest.TestCase):
         with self.assertRaisesRegex(m.EvidenceError, 'INVENTORY_TIME_BOUND'):
             self.pacer.open(self.remote, req, deadline=101)
         self.assertEqual(len(self.issued), 1)
+
+    def test_approval_quiet_window_separates_fresh_scans_without_cached_reads(self):
+        first = self.reader().snapshot()
+        previous = self.issued[-1]
+        self.pacer.before_approval_fence()
+        second = self.reader().snapshot()
+        self.assertGreaterEqual(self.issued[first['requests']] - previous, 65)
+        self.assertEqual(second['requests'], first['requests'])
+        self.assertEqual(len(self.remote.calls), 6)
+
+    def test_approval_wait_handles_early_wakeup_and_already_quiet_clock(self):
+        self.reader().snapshot()
+        previous = self.issued[-1]
+        sleeps = []
+        def early(seconds):
+            sleeps.append(seconds)
+            self.time.value += min(seconds, 20)
+        self.pacer.sleep = early
+        self.pacer.before_approval_fence()
+        self.assertEqual(self.time.value - previous, 65)
+        self.assertEqual(len(sleeps), 4)
+        self.pacer.before_approval_fence()
+        self.assertEqual(len(sleeps), 4)
     def test_http_failure_consumes_slot_and_is_never_retried(self):
         self.remote.error_region = 'us-east1'
         with self.assertRaisesRegex(m.EvidenceError, 'INVENTORY_HTTP_403'): self.reader().snapshot()

@@ -78,6 +78,7 @@ const platformTables=['platform_admins','platform_operations','platform_tokens']
 // V7 F1 (0111) and later: platform tables created after the retirement
 // boundary. A catalog through 0108 (or 0109-0110) does not have them yet.
 // V7 RF-01.5 (0117): platform deletion requests, outside every profile.
+const environmentAddedAfterRetirement=['warmup_library_releases','warmup_program_operations'];
 const addedAfterRetirement=['platform_backup_runs','platform_profile_deletions'];
 // V7 RF-19.d: laboratory example receipts (0113), preserved only when present.
 // V7 RF-07.e: owner alert mail (0116), profile scoped, preserved only when present.
@@ -93,7 +94,7 @@ const retiredByV7=new Set<string>(V7_RETIRED_TABLES);
 const historicalTableNames=[...environmentTables,...sharedProfileTables,...globalIdentityTables,...privateLaboratoryTables,...quotaTables,...privacyFenceTables,...retiredTables,...privacyComponentTables,...privacyReferenceTables,...cutoverTables,...platformTables,...integrationTables,'profile_cutover_historical_tables','profiles','schema_migrations','ai_model_prices','manual_controls'].sort();
 /** Metadata inventory only, for composition/review. Does not grant access.
  * The current schema (0109 onward); the historical one adds V7_RETIRED_TABLES. */
-export const commerceProfileRowTableNames:readonly string[]=Object.freeze([...historicalTableNames.filter(name=>!retiredByV7.has(name)),...addedAfterRetirement,...profileAddedAfterRetirement,...laboratoryAddedAfterRetirement]);
+export const commerceProfileRowTableNames:readonly string[]=Object.freeze([...historicalTableNames.filter(name=>!retiredByV7.has(name)),...addedAfterRetirement,...environmentAddedAfterRetirement,...profileAddedAfterRetirement,...laboratoryAddedAfterRetirement]);
 export const commerceProfileHistoricalRowTableNames:readonly string[]=Object.freeze(historicalTableNames);
 function check(value:unknown,code:string):asserts value{if(!value)throw Error(code);}
 
@@ -114,6 +115,7 @@ export function commerceProfileRowPolicy(catalog:ProfileCatalog):ProfileRowIsola
   add(name,{mode:'scope',workspace,environment,roles:[...applicationRoles],initialize_permission:!table.rls});
  };
  for(const name of live(environmentTables))scoped(name,'workspace_id','environment');
+ for(const name of environmentAddedAfterRetirement)if(rows.has(name))scoped(name,'workspace_id','environment');
  for(const name of live(sharedProfileTables))scoped(name,'workspace_id',null);
  for(const name of profileAddedAfterRetirement)if(rows.has(name))scoped(name,'workspace_id',null);
  scoped('profiles','id',null);

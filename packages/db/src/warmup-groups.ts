@@ -5,6 +5,9 @@ import {hash,encrypt,decrypt,stableJson,appendEvent,type QueryExecutor} from './
 
 export async function observeGroup(c:QueryExecutor,account:DomainRecord,snapshot:ProviderGroup,now=new Date()){
  if(!snapshot.complete||snapshot.runtime.engine!==String(account.body.engine??'SIMULATOR')||Date.parse(snapshot.observedAt)>now.getTime()+1000)throw new Error('GROUP_CAPABILITY_UNVERIFIED');
+ // Same first lock as QR group planning, commands and final emission. Taking
+ // a group row first would invert program/group locks during membership changes.
+ await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`group-warmup:${account.workspace_id}:${account.environment}`]);
  const identities=(await c.query('SELECT account_id,address_fingerprint,address_ciphertext FROM warmup_identities WHERE workspace_id=$1 AND environment=$2',[account.workspace_id,account.environment])).rows;
  const members=snapshot.members.map(m=>({account_id:identities.find(i=>m.verifiedIdentity&&i.address_fingerprint===hash(canonicalIdentity(m.verifiedIdentity)))?.account_id??null,identity_hash:hash(m.identity),verified_hash:m.verifiedIdentity?hash(canonicalIdentity(m.verifiedIdentity)):null,admin:m.admin,mapping_source:m.mappingSource})).sort((a,b)=>a.identity_hash.localeCompare(b.identity_hash));
  const fingerprint=hash(snapshot.id);
@@ -15,16 +18,16 @@ export async function observeGroup(c:QueryExecutor,account:DomainRecord,snapshot
  const capabilities={protocol:'v1',observations,all_members_resolved:members.every(m=>m.account_id&&m.verified_hash),member_read:true,authenticated_receive:true};
  const row=(await c.query(`INSERT INTO warmup_groups(workspace_id,environment,provider,group_fingerprint,group_ciphertext,name,members,permissions,capabilities,observed_at,expires_at,source)
  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'provider_read') ON CONFLICT(workspace_id,environment,provider,group_fingerprint) DO UPDATE SET members=EXCLUDED.members,permissions=EXCLUDED.permissions,capabilities=EXCLUDED.capabilities,name=EXCLUDED.name,observed_at=EXCLUDED.observed_at,expires_at=EXCLUDED.expires_at,version=warmup_groups.version+$12 RETURNING *`,[account.workspace_id,account.environment,account.body.provider,fingerprint,encrypt(snapshot.id),snapshot.name,JSON.stringify(members),permissions,capabilities,now,new Date(now.getTime()+60000),changed?1:0])).rows[0];
- if(changed){await c.query("UPDATE warmup_programs SET status=CASE WHEN status='ARCHIVED' THEN status ELSE 'PAUSED' END,review_hash=NULL,version=version+1 WHERE group_id=$1",[row.id]);await c.query("UPDATE warmup_pools SET paused=true,version=version+1,breaker_reason='GROUP_MEMBERSHIP_CHANGED' WHERE group_id=$1",[row.id]);}
+ if(changed){await c.query("UPDATE warmup_programs SET status=CASE WHEN status='ARCHIVED' THEN status ELSE 'PAUSED' END,review_hash=NULL,version=version+1 WHERE group_id=$1",[row.id]);await c.query("UPDATE warmup_pools SET paused=true,version=version+1,breaker_reason='GROUP_MEMBERSHIP_CHANGED' WHERE group_id=$1",[row.id]);await c.query("UPDATE outbox SET status='CANCELLED',result=result||'{\"reason\":\"GROUP_MEMBERSHIP_CHANGED\"}'::jsonb,updated_at=now() WHERE workspace_id=$1 AND environment=$2 AND kind='warmup' AND payload->>'group_id'=$3 AND status IN('READY','BLOCKED')",[account.workspace_id,account.environment,row.id]);}
  await appendEvent(c,{workspace_id:account.workspace_id,environment:account.environment,event_type:'warmup.group_observed',aggregate_id:row.id,payload:{account_id:account.id,membership_version:row.version,changed:!!changed,members:members.length,resolved:capabilities.all_members_resolved,runtime:snapshot.runtime},occurred_at:now.toISOString()});
  return row;
 }
-export function groupEligibility(group:Body,accountIds:string[],now=new Date()){
+export function groupEligibility(group:Body,accountIds:string[],now=new Date(),senderIds=accountIds){
  const members:Body[]=group.members??[],unique=new Set(members.map(m=>m.account_id));
  if(group.retired_at)return 'GROUP_RETIRED';
  if(!group.capabilities?.all_members_resolved||members.some(m=>!m.account_id))return 'GROUP_MEMBER_UNRESOLVED';
  if(unique.size!==members.length||unique.size!==accountIds.length||accountIds.some(id=>!unique.has(id)))return 'GROUP_ALL_MEMBERS_REQUIRED';
- if(group.permissions?.admin_only&&members.some(m=>!m.admin))return 'GROUP_SEND_PERMISSION_REQUIRED';
+ if(group.permissions?.admin_only&&members.some(m=>senderIds.includes(m.account_id)&&!m.admin))return 'GROUP_SEND_PERMISSION_REQUIRED';
  if(new Date(group.expires_at).getTime()<=now.getTime()||new Date(group.observed_at)>now)return 'GROUP_MEMBERSHIP_STALE';
  if(accountIds.some(id=>!group.capabilities.observations?.[id]))return 'GROUP_SHARED_IDENTITY_UNVERIFIED';
  if(accountIds.some(id=>{const t=Date.parse(group.capabilities.observations[id].observed_at);return !Number.isFinite(t)||now.getTime()-t<0||now.getTime()-t>=60000;}))return 'GROUP_MEMBERSHIP_STALE';
@@ -34,6 +37,7 @@ export function groupEligibility(group:Body,accountIds:string[],now=new Date()){
 export async function classifyGroupEvent(c:QueryExecutor,account:DomainRecord,e:CanonicalEvent,envelopeId:string){
  const groupId=e.groupId??(/@g\.us$/.test(e.identity??'')?String(e.identity).replace(/^opaque:/,''):null);
  if(!groupId)return false;
+ if(e.type==='group_membership')await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`group-warmup:${account.workspace_id}:${account.environment}`]);
  const group=(await c.query('SELECT * FROM warmup_groups WHERE workspace_id=$1 AND environment=$2 AND provider=$3 AND group_fingerprint=$4',[account.workspace_id,account.environment,account.body.provider,hash(groupId)])).rows[0];
  const classification=!group?'UNKNOWN_GROUP':group.retired_at?'RETIRED_GROUP':e.fromMe?'SELF_ECHO':e.type==='group_membership'?'MEMBERSHIP_CHANGED':e.type==='ack'&&!e.participantIdentity?'GLOBAL_ACK':'GROUP_EVENT';
  await c.query('INSERT INTO warmup_group_events(workspace_id,environment,account_id,group_fingerprint,canonical_key,envelope_id,classification,observed_at,event_ciphertext) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING',[account.workspace_id,account.environment,account.id,hash(groupId),e.key,envelopeId,classification,e.providerAt,encrypt(e)]);
@@ -41,6 +45,7 @@ export async function classifyGroupEvent(c:QueryExecutor,account:DomainRecord,e:
   await c.query("UPDATE warmup_groups SET expires_at=LEAST(expires_at,now()),version=version+1 WHERE id=$1",[group.id]);
   await c.query("UPDATE warmup_programs SET review_hash=NULL,version=version+1,status=CASE WHEN status='ARCHIVED' THEN status ELSE 'PAUSED' END WHERE group_id=$1",[group.id]);
   await c.query("UPDATE warmup_pools SET paused=true,version=version+1,breaker_reason='GROUP_MEMBERSHIP_CHANGED' WHERE group_id=$1",[group.id]);
+  await c.query("UPDATE outbox SET status='CANCELLED',result=result||'{\"reason\":\"GROUP_MEMBERSHIP_CHANGED\"}'::jsonb,updated_at=now() WHERE workspace_id=$1 AND environment=$2 AND kind='warmup' AND payload->>'group_id'=$3 AND status IN('READY','BLOCKED')",[account.workspace_id,account.environment,group.id]);
  }
  if(group&&classification==='GROUP_EVENT')await correlateGroupEvents(c,group.id);
  return true;
