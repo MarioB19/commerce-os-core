@@ -104,6 +104,19 @@ export class MetaReader {
     }
     return{data:output,complete:false,issue:{code:'META_PAGE_LIMIT',message:'Inventario parcial por límite de páginas.',action:'Revisa el tamaño del inventario antes de aumentar el límite operativo.',retryable:false}};
   }
+  /** One resumable page. Provider URLs never become request destinations. */
+  async page(path:string,fields:string,params:Record<string,string>={},after=''){
+    const result=await this.get(path,{...params,fields,limit:'100',...(after?{after}:{})});
+    if(!Array.isArray(result.data))throw new MetaReadError({code:'META_INVALID_RESPONSE',message:'Inventario no válido.',action:'Reintenta la lectura.',retryable:true});
+    let cursor:string|null=null;
+    if(result.paging?.next){
+      let next:URL;try{next=new URL(String(result.paging.next));}catch{throw new MetaReadError({code:'META_UNSAFE_PAGINATION',message:'Paginación fuera del recurso.',action:'Revisa la integración.',retryable:false});}
+      if(next.origin!=='https://graph.facebook.com'||next.pathname!==`/${META_GRAPH_VERSION}/${path}`||next.username||next.password)throw new MetaReadError({code:'META_UNSAFE_PAGINATION',message:'Paginación fuera del recurso.',action:'Revisa la integración.',retryable:false});
+      cursor=String(result.paging?.cursors?.after??next.searchParams.get('after')??'');
+      if(!cursor||cursor===after||cursor.length>4096)throw new MetaReadError({code:'META_PAGINATION_INCOMPLETE',message:'Cursor inválido o repetido.',action:'Revisa la lectura.',retryable:false});
+    }
+    return{data:result.data as Json[],cursor};
+  }
   async debug(){return this.get('debug_token',{input_token:this.token});}
 }
 const safeText=(value:unknown,fallback:string)=>typeof value==='string'?value.replace(/EAA[A-Za-z0-9]{20,}|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,'[redactado]').replace(/\b\d[\d ()+-]{9,}\d\b/g,match=>'••••'+match.replace(/\D/g,'').slice(-4)).slice(0,240):fallback;

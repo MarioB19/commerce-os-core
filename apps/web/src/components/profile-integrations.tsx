@@ -1,6 +1,7 @@
+import {MetaConnections} from './meta-connections.js';
 import {useEffect,useId,useRef,useState,type FormEvent} from 'react';
 import type {ProfileRole,ProfileState} from '../../../../packages/contracts/src/profiles.js';
-import {aiProviderLabels,aiStateText,failureText,loadIntegrations,metaStateText,saveAiKey,saveAiPreferences,saveMetaToken,setAiKeyEnabled,setMetaEnabled,usd,type AiProvider,type AiProviderStatus,type Integrations} from '../lib/profile-integrations.js';
+import {aiProviderLabels,aiStateText,failureText,loadIntegrations,saveAiKey,saveAiPreferences,setAiKeyEnabled,usd,type AiProvider,type AiProviderStatus,type Integrations} from '../lib/profile-integrations.js';
 import type {ProfileFence} from '../lib/profile-request.js';
 import {Alert,Badge,Button,Card,CardHead,Field,Input,NativeSelect,PageHeader,Progress,Skeleton,Tabs,TabsContent,TabsList,TabsTrigger,toneOf} from './ui';
 import {Bot,Megaphone} from 'lucide-react';
@@ -17,7 +18,7 @@ export function ProfileIntegrations({selection,role,state}:{selection:ProfileFen
  const [tab,setTab]=useState<string>(()=>{try{return window.location.hash==='#meta'?'meta':'ai';}catch{return 'ai';}});
  if(role==='viewer')return <><PageHeader title="Integraciones"/><Alert tone="info">Las integraciones solo están disponibles para Dueño y Operador.</Alert></>;
  return <>
-  <PageHeader title="Integraciones" description="Este negocio usa sus propias claves de IA y su propio token de Meta. Nadie más puede leerlas: después de guardarlas solo verás sus últimos cuatro caracteres."/>
+  <PageHeader title="Integraciones" description="Este negocio usa sus propias claves de IA y sus propias conexiones de Meta. Nadie más puede leerlas: después de guardarlas solo verás sus últimos cuatro caracteres."/>
   {error&&<Alert tone="error">{error}</Alert>}{notice&&<Alert tone="success">{notice}</Alert>}
   {!data&&!error&&<Skeleton lines={4} label="Consultando integraciones…"/>}
   {data&&<Tabs value={tab} onValueChange={v=>{setTab(v);try{history.replaceState(null,'',v==='meta'?'#meta':'#ai');}catch{/* no history */}}}>
@@ -76,21 +77,4 @@ function AiProviderRow({status,owner,busy,selection,act,setData,refresh}:{status
   </form>}
  </li>;
 }
-function MetaSection({data,owner,busy,selection,act,setData,refresh}:SectionProps){
- const id=useId(),[token,setToken]=useState(''),[open,setOpen]=useState(false),meta=data.meta;
- function save(event:FormEvent){event.preventDefault();const value=token.trim();setToken('');void act(async()=>{
-  const result=await saveMetaToken(selection,meta.revision,value);setData(result.integrations);setOpen(false);
-  return result.check.state==='VERIFIED'?'Token de Meta verificado.':`Token guardado. ${failureText[result.check.reason??'']??''}`;});}
- return <Card id="meta" aria-labelledby={id}>
-  <CardHead id={id} title="Meta (opcional)" description="Con un token de usuario del sistema de tu propio Business Manager, Commerce OS solo consulta tus campañas y resultados; nunca crea, pausa ni modifica anuncios."/>
-  <div className="cluster"><Badge tone={toneOf(meta.state)}>{metaStateText[meta.state]}</Badge>{meta.hint&&<code>{meta.hint}</code>}</div>
-  {meta.reason&&<Alert tone="warn">{failureText[meta.reason]??'Meta no aceptó el token.'}</Alert>}
-  {meta.grantedScopes.length>0&&<p className="muted text-sm">Permisos concedidos: {meta.grantedScopes.join(', ')}.</p>}
-  {owner&&!open&&<div className="cluster"><Button type="button" variant="secondary" disabled={busy} onClick={()=>setOpen(true)}>{meta.state==='MISSING'?'Agregar token':'Reemplazar token'}</Button>
-   {meta.revision>0&&<Button type="button" variant="ghost" disabled={busy} onClick={()=>{void act(async()=>{await setMetaEnabled(selection,meta.revision,!meta.enabled);await refresh();return meta.enabled?'Token desactivado.':'Token reactivado.';});}}>{meta.enabled?'Desactivar':'Reactivar'}</Button>}</div>}
-  {open&&<form onSubmit={save} className="form">
-   <Field label="Token de usuario del sistema" id={id+'-token'} help="Necesita el permiso ads_read. Se guarda cifrado."><Input type="password" autoComplete="off" spellCheck={false} value={token} required minLength={20} maxLength={4096} onChange={e=>setToken(e.target.value)}/></Field>
-   <div className="form-actions"><Button type="submit" disabled={busy||token.trim().length<20} loading={busy}>Guardar y verificar</Button><Button type="button" variant="ghost" disabled={busy} onClick={()=>{setToken('');setOpen(false);}}>Cancelar</Button></div>
-  </form>}
- </Card>;
-}
+function MetaSection({selection,owner}:SectionProps){return <MetaConnections selection={selection} owner={owner}/>;}

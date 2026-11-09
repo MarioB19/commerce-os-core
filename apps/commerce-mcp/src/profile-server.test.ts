@@ -11,6 +11,16 @@ async function connect(fetcher:typeof fetch){
 }
 const json=(status:number,body:unknown)=>new Response(JSON.stringify(body),{status,headers:{'content-type':'application/json'}});
 describe('composed V7 profile MCP server',()=>{
+ it('exposes V7.3 portfolio filters, export parity and read operation IDs without token entry',async()=>{
+  const urls:string[]=[],report={filters:{currency:'MXN',from:'2026-11-01',to:'2026-11-08'},groups:{portfolios:[{id:'100',name:'A',spend_minor:100,quality:{status:'SYNCED'}}],accounts:[],campaigns:[],ads:[]}};
+  const {client,server}=await connect(async(input)=>{urls.push(String(input));return json(200,{data:{report,inventory:{portfolios:[{id:'100'}],counts:{selectedPortfolios:1}}}});});
+  try{
+   const args={from:'2026-11-01',to:'2026-11-08',portfolio_id:'100',meta_ad_account_id:'act_123',currency:'MXN'};
+   const portfolio=await client.callTool({name:'campaigns_read',arguments:{action:'portafolios',...args}});expect(portfolio.isError).not.toBe(true);expect(JSON.stringify(portfolio)).toContain('selectedPortfolios');
+   const csv=await client.callTool({name:'campaigns_read',arguments:{action:'exportar',...args}});expect(csv.isError).not.toBe(true);expect(JSON.stringify(csv)).toContain('COMMERCE_APPROVED_PAYMENTS');expect(urls.every(u=>u.includes('portfolio_id=100')&&u.includes('meta_ad_account_id=act_123'))).toBe(true);
+   const n=urls.length,secret=await client.callTool({name:'integrations_manage',arguments:{action:'guardar',provider:'meta'}});expect(JSON.stringify(secret)).toContain('HUMAN_ACTION_REQUIRED');expect(urls).toHaveLength(n);
+  }finally{await client.close();await server.close();}
+ });
  it('rejects a missing origin or a non personal token before registering tools',()=>{
   expect(()=>createProfileMcp('commerce.example.test',token)).toThrow('MCP_CONFIGURATION_REQUIRED');
   expect(()=>createProfileMcp('https://commerce.example.test','service-token-value-123456')).toThrow('MCP_PROFILE_TOKEN_REQUIRED');

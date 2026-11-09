@@ -105,7 +105,9 @@ it('schedules text reminders inside the variant hours and stops them when the cu
  const after=await timersOf(second.id);
  expect(after.find(t=>t.id===due[1].id).status).toBe('CANCELLED');
  // RF-10.e: the variant's follow-up results for the day.
- const today=new Date().toISOString().slice(0,10);
+ // This legacy projection casts date boundaries in the database session's
+ // calendar. Use that same day, independently of the host or variant timezone.
+ const today=await inProfile(async c=>(await c.query('SELECT clock_timestamp()::date::text AS report_day')).rows[0].report_day);
  const results=data(await call('GET',`/v2/variants/${v.id}/remarketing/results?from=${today}&to=${today}`));
  expect(results).toMatchObject({entered:2,reached:1,messages:{sent:1,uncertain:0},replied:1,opted_out:0,recovered_sales:0,recovered_revenue:[]});
  expect(results.entered_by_stage).toEqual({AGREEMENT:2,COLLECTION:0});

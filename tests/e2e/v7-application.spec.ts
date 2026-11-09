@@ -90,7 +90,7 @@ test('keyboard reaches every section, targets are 44 px and one primary action p
   let reached=false;
   for(let i=0;i<40&&!reached;i++){await page.keyboard.press('Tab');reached=await link.evaluate(e=>e===document.activeElement);}
   expect(reached,label+' by keyboard').toBe(true);
-  await page.keyboard.press('Enter');await expect(page).toHaveURL(new RegExp(href.replace(/\//g,'\\/')+'$'));
+  await page.keyboard.press('Enter');await expect(page).toHaveURL(new RegExp(href.replace(/\//g,'\\/')+'(?:\\?.*)?$'));
  }
  for(const width of [1440,390]){
   await page.setViewportSize({width,height:width===390?844:1050});

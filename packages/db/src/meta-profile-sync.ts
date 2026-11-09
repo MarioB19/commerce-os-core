@@ -33,6 +33,7 @@ export type MetaSyncRequest={status:'QUEUED';jobId:string}|{status:'ALREADY_QUEU
  * active-job index also covers V5 jobs of the same workspace). */
 export async function requestMetaProfileSync(db:ProfileExecutor,input:{actorId:string;scheduled:boolean}):Promise<MetaSyncRequest>{
  await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['meta-profile-sync:'+db.workspaceId]);
+ await db.query(`UPDATE meta_insight_jobs SET status='UNAVAILABLE',result='{"issues":[{"code":"RETRY_EXHAUSTED"}]}',lease_until=NULL,updated_at=clock_timestamp() WHERE workspace_id=$1 AND request->>'source'='V7_PROFILE' AND status='RUNNING' AND lease_until<clock_timestamp() AND attempts>=3`,[db.workspaceId]);
  const credential=(await db.query("SELECT revision FROM meta_profile_credentials WHERE workspace_id=$1 AND enabled AND state='VERIFIED'",[db.workspaceId])).rows[0];
  if(!credential)return{status:'NOT_CONNECTED'};
  const open=(await db.query("SELECT id,request->>'source' AS source FROM meta_insight_jobs WHERE workspace_id=$1 AND environment='REAL' AND status IN('PENDING','RUNNING') LIMIT 1",[db.workspaceId])).rows[0];

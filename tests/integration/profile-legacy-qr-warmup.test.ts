@@ -179,9 +179,10 @@ describe('legacy QR adoption and reconnect, isolated PostgreSQL',()=>{
   if(policy==='standard-15d/v1'){
    expect((await planned(f)).planned).toBe(0);
    // Explicit synthetic historical declarations, never produced by adoption.
+   const timezone=(await admin.query("SELECT config->>'timezone' timezone FROM warmup_profiles WHERE id=$1",[f.p.profile_id])).rows[0].timezone;
    for(const q of [f.q,other.q]){
     await admin.query("UPDATE warmup_episodes SET started_at=clock_timestamp()-interval '6 days' WHERE account_id=$1",[q.account]);
-    for(const [index,task]of ['authentic_profile','responsible_device','consented_contacts','human_conversations'].entries())await admin.query("INSERT INTO warmup_manual_declarations(episode_id,task,status,actor,source,recorded_at,local_date,note) SELECT id,$2,'COMPLETED',$3,'operator_declaration',clock_timestamp()-$4::integer*interval '1 day',(clock_timestamp()-$4::integer*interval '1 day')::date,'SYNTHETIC HISTORICAL FIXTURE' FROM warmup_episodes WHERE account_id=$1",[q.account,task,actor,5-index]);
+    for(const [index,task]of ['authentic_profile','responsible_device','consented_contacts','human_conversations'].entries())await admin.query("INSERT INTO warmup_manual_declarations(episode_id,task,status,actor,source,recorded_at,local_date,note) SELECT id,$2,'COMPLETED',$3,'operator_declaration',clock_timestamp()-$4::integer*interval '1 day',((clock_timestamp()-$4::integer*interval '1 day') AT TIME ZONE $5)::date,'SYNTHETIC HISTORICAL FIXTURE' FROM warmup_episodes WHERE account_id=$1",[q.account,task,actor,5-index,timezone]);
    }
   }
   expect((await planned(f)).planned).toBeGreaterThan(0);

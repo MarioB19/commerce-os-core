@@ -1,5 +1,26 @@
 # Estado de publicación
 
+## 8-nov-2026 — V7.3: Meta por portafolio y cuenta, candidato local
+
+Implementada en `codex/v7-3-meta-portfolios`, desde `1c1c24df6c19c2c5bc83135014955c5fe6b3785d`.
+Brandon encargó a Codex preparar y probar; el release corresponde a Claude y la
+conexión posterior de ambos portafolios a Codex. Producción no se modificó.
+
+- Varias conexiones cifradas por perfil, cinco portafolios seleccionados,
+  cuentas únicas, propiedad observada e histórico inicial reanudable de 90 días.
+- Informes de Meta y pagos aprobados por portafolio/cuenta, calidad independiente,
+  monedas/calendarios explícitos, CSV y paridad web/API/MCP.
+- Migración aditiva 0119, inventarios de aislamiento/privacidad y cola del
+  instalador 118→119. Recuperación local de ambas conexiones e historial.
+- Tipos/lint/build y 2,211 unitarias; integración consolidada 1,528/1,528 en
+  152 archivos (recorrido completo más repetición del fixture de calendario);
+  Python 1,957 aprobadas y 2 omitidas; 45 contratos Node, 14 de navegador y
+  11 E2E montados. Auditoría sin high/critical. Las dos comparaciones visuales
+  Linux permanecen en el FULL nativo del release, junto a los demás gates.
+
+[Contrato](adr-v7-3-meta-portfolios.md), [validación y release](v7-3-meta-release.md).
+La validación local no acredita FULL nativo, paquete, instalación ni conexión real.
+
 ## 7-nov-2026 — V7.2: instalador incremental 117→118 y techo US$155 (Claude)
 
 El ensayo aislado del paquete de main `0c288fa5` mostró que `copy-runtime` no admitía añadir 0118 sobre la base V7 de 117 migraciones. Se admite sólo esa cola exacta, sin trabajo del corte (ver `docs/adr-v7-2-incremental-migration-2026-11-07.md`). El techo bruto pasa a US$155 por decisión de Brandon (`docs/adr-v7-gross-cap-2026-11-06.md`, enmienda). 1,959 pruebas Python de `tests/ci` pasan. La aplicación de calentamiento no cambia.

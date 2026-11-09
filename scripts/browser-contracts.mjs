@@ -14,6 +14,7 @@ export const browserContracts = Object.freeze([
   'scripts/test-payments-register.mjs',
   'scripts/test-receipt-policies.mjs',
   'scripts/test-results.mjs',
+  'scripts/test-meta-portfolios.mjs',
 ]);
 export async function runBrowserContracts(run) {
   for (const path of browserContracts) {

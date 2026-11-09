@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "version": "7.3",
+  "recorded_at": "2026-11-09T00:54:47.163747+00:00",
+  "base_commit": "1c1c24df6c19c2c5bc83135014955c5fe6b3785d",
+  "branch": "codex/v7-3-meta-portfolios",
+  "local_validation_only": true,
+  "production_changed": false,
+  "real_meta_credentials_configured": false,
+  "native_release_gates_pending": true,
+  "environment": {
+    "node": "24.20.0",
+    "pnpm": "10.34.5",
+    "postgresql": "17.11",
+    "database_timezone": "UTC",
+    "browser_platform": "macOS"
+  },
+  "unit": {
+    "passed": 2211,
+    "files": 178
+  },
+  "integration": {
+    "consolidated_passed": 1528,
+    "files": 152,
+    "full_run": {
+      "passed": 1527,
+      "failed": 1,
+      "exit_code": 1
+    },
+    "resolved_failure": {
+      "file": "tests/integration/v7-remarketing.test.ts",
+      "cause": "Fixture date differed from the existing SQL projection calendar",
+      "application_changed": false,
+      "targeted_rerun_passed": 1,
+      "targeted_rerun_exit_code": 0
+    }
+  },
+  "python_ci": {
+    "ran": 1959,
+    "passed": 1957,
+    "skipped": 2
+  },
+  "node_contracts": {
+    "passed": 45
+  },
+  "browser_contracts": {
+    "passed": 14
+  },
+  "mounted_e2e": {
+    "passed": 11,
+    "linux_visual_cases_pending_native_full": 2
+  },
+  "dependency_audit": {
+    "high": 0,
+    "critical": 0,
+    "moderate": 26,
+    "low": 5
+  },
+  "volume": {
+    "dbQueries": 40895,
+    "fixture": "v73-meta-volume",
+    "portfolios": 5,
+    "accounts": 15,
+    "accountDays": 1350,
+    "loadMs": 15208,
+    "reportMs": 571,
+    "rssMiB": 198,
+    "externalCalls": 0
+  },
+  "migration_0119_sha256": "7eb33a916fea03f9794427eb37b5afab0e9426756154cec044854ab30eb4e530",
+  "private_log_sha256": {
+    "unit-final.log": "e85cb1fd53aa1ca58e8c1eadb2cd2b6d8a4e53c740953db1b7b91c3637aeaa33",
+    "integration-utc-final.log": "e3dae6c8b3c1ee83d3c458fbdcc05a5845047b5869d12bbed4e0fb1b1ec85ddb",
+    "remarketing-final.log": "f384777d29bc8abbfd83e52371e047937a84948bc81758b4914deb7f58d273c2",
+    "utc-regression.log": "b34ffa46218c506a4b609f07dd88648037fe8e4df57ec97c17e7d1d5a471409b",
+    "ci-python.log": "c4803ba4f180ecc395fdded64b8c53175f7f47e5b75d2ea1e1341f32ebd115ec",
+    "node-contracts.log": "c5fffeb71da957a17ff3de3e798ad403ce47846bf940adc19d920eea1074d917",
+    "browser-contracts.log": "51b6f999d3e51ce18f5928d1e8b186b120eab5e09c4f74a9de1ae8cbc65b8416",
+    "audit.log": "cadb59d1ca9d328a25681f7c0ab83e6c4a03010cbdba2ce7ee5858954d3a3b3b",
+    "mounted-e2e.log": "e25b62bfeed734d481d62907dbcb55079e153bfe2ce44cd9b6b44d0b54071582",
+    "recovery-final.log": "b4a3e43b910db0bebbc053f5e0304a28b8fba38e781ed4043be4481ad4667de5",
+    "recovery-final.json": "2814806cd6ba2767d43629927d483fddc3487515f7029c39ce71374bdf23b9d1",
+    "typecheck.log": "1b962376d9eb82f83f850281dd0cc3e3af50c2fb27dc14801aea9849491cb8b5",
+    "lint.log": "720a26ee18b7145b1a6a310b6f979e8ae4ad982fb69129ed3ac64181cc8f50a2",
+    "build.log": "3179ff9afc3ce4fb82228f4930a9eb6cacc8e3b9113da34ab9dce57a9b25b1bc"
+  },
+  "recovery": {
+    "passed": true,
+    "meta_v73_restore": {
+      "connections": 2,
+      "portfolios": 2,
+      "ciphertext_and_history_preserved": true
+    },
+    "password_hash_preserved": true,
+    "private_assets_verified": 1,
+    "dispatch_frozen": true,
+    "session_recovery_disabled": true,
+    "tamper_rejected_before_database_creation": true,
+    "authenticated_symlink_archive_rejected_before_database_creation": true,
+    "limits": "Local restore test; no production RTO/RPO claim, no WAL/PITR or offsite restore validated."
+  }
+}

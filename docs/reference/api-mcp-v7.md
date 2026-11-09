@@ -2,7 +2,7 @@
 
 > Generada por `scripts/api-reference.ts` desde el código (OpenAPI de la app y registro MCP tipado). No se edita a mano: CI falla si difiere del código.
 
-Contenido: `266f2b3a4cfd48fb` · 208 operaciones HTTP en 184 rutas · 40 herramientas MCP (presupuesto 40).
+Contenido: `bacc5e2e85b63890` · 217 operaciones HTTP en 193 rutas · 40 herramientas MCP (presupuesto 40).
 
 ## Herramientas MCP
 
@@ -11,7 +11,7 @@ Contenido: `266f2b3a4cfd48fb` · 208 operaciones HTTP en 184 rutas · 40 herrami
 | `profile_context` | perfil | `/v2/profile` | `profiles:read` | actual, listar, cambiar | — |
 | `home_get` | perfil | `/v2/home` | `home:read` | resumen | — |
 | `employees_manage` | perfil | `/v2/employees` | `employees:read`, `employees:write` | listar, invitaciones, invitar, cancelar_invitacion, cambiar_rol, desactivar, consultar_operacion | reenviar_invitacion |
-| `integrations_manage` | perfil | `/v2/integrations` | `integrations:read`, `integrations:write` | listar, guardar, validar, rotar, preferencias, activar, desactivar, eliminar | — |
+| `integrations_manage` | perfil | `/v2/integrations` | `integrations:read`, `integrations:write` | listar, guardar, validar, rotar, preferencias, activar, desactivar, eliminar, conexiones_meta, seleccionar_portafolio, estado_conexion_meta, descubrir_cuentas_meta | — |
 | `api_tokens_manage` | perfil | `/v2/tokens` | `tokens:read`, `tokens:write` | listar, crear, revocar, consultar_operacion | — |
 | `products_manage` | perfil | `/v2/products` | `products:read`, `products:write` | listar, leer, crear, editar, archivar, restaurar, dependencias | — |
 | `variants_manage` | perfil | `/v2/variants` | `variants:read`, `variants:write` | listar, leer, adoptar, crear, editar, revisar, duplicar, publicar, version, historial, archivar, restaurar, consultar_operacion | — |
@@ -30,7 +30,7 @@ Contenido: `266f2b3a4cfd48fb` · 208 operaciones HTTP en 184 rutas · 40 herrami
 | `receipts_manage` | perfil | `/v2/receipts` | `receipts:read`, `receipts:review` | listar, leer, archivo, revisar | — |
 | `payments_manage` | perfil | `/v2/payments` | `payments:read`, `payments:write`, `payments:export` | opciones, listar, exportar | leer, registrar, conciliar, corregir |
 | `remarketing_manage` | perfil | `/v2/variants/{id}/remarketing` | `remarketing:read`, `remarketing:write` | leer, guardar, validar, publicar, historial, resultados, ciclos, previsualizar_reprogramacion, reprogramar | — |
-| `campaigns_read` | perfil | `/v2/campaigns` | `campaigns:read`, `integrations:write` | cuentas, resultados, campanas, anuncios, sincronizar_lectura | portafolios |
+| `campaigns_read` | perfil | `/v2/campaigns` | `campaigns:read`, `integrations:write` | cuentas, resultados, campanas, anuncios, sincronizar_lectura, portafolios, exportar, consultar_lectura, reanudar_lectura, cargar_periodo | — |
 | `results_read` | perfil | `/v2/results` | `results:read` | opciones, resumen | embudo, series, comparar, exportar |
 | `goals_manage` | perfil | `/v2/goals` | `goals:read`, `goals:write` | listar, leer, avance, crear, editar, consultar_operacion | eliminar |
 | `number_test_manage` | perfil | `/v2/number-tests` | `tests:read`, `tests:run` | diagnosticar, estimar, crear, leer, ultima, mensaje, seleccionar, avanzar_reloj, continuar, reiniciar, adjuntar, revisar_comprobante, exportar, estimar_suite, ejecutar_suite, informe | — |
@@ -245,6 +245,7 @@ Contenido: `266f2b3a4cfd48fb` · 208 operaciones HTTP en 184 rutas · 40 herrami
 | Método | Ruta | Acceso |
 |---|---|---|
 | GET | `/v2/campaigns` | autenticado |
+| GET | `/v2/campaigns/export` | autenticado |
 | POST | `/v2/campaigns/sync` | autenticado |
 
 ### `/v2/continuity`
@@ -351,6 +352,19 @@ Contenido: `266f2b3a4cfd48fb` · 208 operaciones HTTP en 184 rutas · 40 herrami
 | GET | `/v2/me` | autenticado |
 | POST | `/v2/me/profile-selection` | autenticado |
 | GET | `/v2/me/profiles` | autenticado |
+
+### `/v2/meta`
+
+| Método | Ruta | Acceso |
+|---|---|---|
+| GET | `/v2/meta` | autenticado |
+| POST | `/v2/meta/connections/{id}/discover` | autenticado |
+| POST | `/v2/meta/connections/{id}/state` | autenticado |
+| PUT | `/v2/meta/connections/{id}/token` | autenticado |
+| GET | `/v2/meta/operations/{id}` | autenticado |
+| POST | `/v2/meta/operations/{id}/retry` | autenticado |
+| PATCH | `/v2/meta/portfolios/{id}` | autenticado |
+| POST | `/v2/meta/sync` | autenticado |
 
 ### `/v2/number-tests`
 

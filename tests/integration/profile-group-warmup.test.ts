@@ -221,7 +221,7 @@ describe('V7.2 own group programs under restricted PostgreSQL',()=>{
    const before=(await old.pool.query('SELECT * FROM warmup_states WHERE account_id=$1',[account])).rows[0];
    await migrate({pool:old.pool,log:()=>{}});await migrate({pool:old.pool,log:()=>{}});
    const {group_required,...after}=(await old.pool.query('SELECT * FROM warmup_states WHERE account_id=$1',[account])).rows[0];expect(after).toEqual(before);expect(group_required).toBe(false);
-   expect((await old.pool.query('SELECT count(*)::int n FROM schema_migrations')).rows[0].n).toBe(118);expect((await old.pool.query('SELECT count(*)::int n FROM outbox')).rows[0].n).toBe(0);
+   expect((await old.pool.query('SELECT count(*)::int n FROM schema_migrations')).rows[0].n).toBe(119);expect((await old.pool.query('SELECT count(*)::int n FROM outbox')).rows[0].n).toBe(0);
   }finally{await old.close();}
  });
 
