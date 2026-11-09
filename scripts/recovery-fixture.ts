@@ -15,6 +15,14 @@ try{
  await insertPersonalToken(pool,{workspace_id:workspace,user_id:user.id,name:'Synthetic recovery PAT',allowed_environments:['SIMULATION'],expires_at:new Date(Date.now()+86400000).toISOString()});
  await pool.query("INSERT INTO identity_mail_settings(singleton,version,enabled,config,updated_by) VALUES(true,1,true,$1,$2)",[{mode:'local',host:'localhost',port:2527,tls:'none',from:'security@example.invalid',name:'Commerce OS'},user.id]);
 
+ // V7.3: two independently encrypted connections survive backup/restore intact.
+ for(let n=1;n<=2;n++){
+  const id=uuid(),token='synthetic-meta-restore-'+uuid();
+  await pool.query("INSERT INTO meta_connections(workspace_id,id,alias,updated_by) VALUES($1,$2,$3,'fixture')",[workspace,id,'Restore '+n]);
+  await pool.query("INSERT INTO meta_connection_versions(workspace_id,connection_id,revision,ciphertext,key_hint,created_by) VALUES($1,$2,1,$3,$4,'fixture')",[workspace,id,encrypt({scope:'profile.meta.connection.v1',workspaceId:workspace,connectionId:id,revision:1,token}),token.slice(-4)]);
+  await pool.query("INSERT INTO meta_portfolios(workspace_id,business_id,name,selected) VALUES($1,$2,$3,true)",[workspace,String(n),'Portfolio '+n]);
+  await pool.query("INSERT INTO meta_account_portfolio_history(workspace_id,meta_ad_account_id,business_id,valid_from,basis) VALUES($1,$2,$3,'0001-01-01','CURRENT_OWNER_BASELINE')",[workspace,'act_'+n,String(n)]);
+ }
  const category=await putRecord(pool,{workspaceId:workspace,environment,kind:'category',body:{name:'Recovery category',knowledge:[{id:'scope',topic:'audience',title:'Scope',content:'Synthetic source',source:'recovery fixture'}]}});
  const product=await putRecord(pool,{workspaceId:workspace,environment,kind:'product',body:{name:'Recovery product',category_id:category.id,knowledge:[]}});
  const seller=await putRecord(pool,{workspaceId:workspace,environment,kind:'agent',body:{name:'Recovery seller',product_id:product.id,revision:1}});

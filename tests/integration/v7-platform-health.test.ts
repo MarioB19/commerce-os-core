@@ -28,7 +28,8 @@ it('keeps backup rows owner-only and exposes the bounded status to the API role'
   await client.query(`SELECT public.record_platform_backup_run('{"kind":"PITR_FULL","status":"SUCCEEDED","label":"20261013-100000F","started_at":"2026-10-13T10:00:00Z","finished_at":"2026-10-13T10:05:00Z","database_bytes":10,"repository_bytes":2}'::jsonb)`);
   await client.query('SET LOCAL ROLE commerce_api');
   const status=(await client.query('SELECT public.platform_recovery_status() AS s')).rows[0].s;
-  expect(status).toMatchObject({archive_mode:'off',last_full_at:'2026-10-13T10:05:00+00:00',pending:0});
+  expect(status).toMatchObject({archive_mode:'off',pending:0});
+  expect(new Date(status.last_full_at).toISOString()).toBe('2026-10-13T10:05:00.000Z');
   await client.query('SAVEPOINT s');
   await expect(client.query('SELECT count(*) FROM platform_backup_runs')).rejects.toThrow(/permission denied/);
   await client.query('ROLLBACK TO SAVEPOINT s');

@@ -1,3 +1,4 @@
+import {metaPortfolioRoutes} from './meta-portfolios.js';
 import type {FastifyInstance,FastifyReply,FastifyRequest} from 'fastify';
 import pg from 'pg';
 import {z} from 'zod';
@@ -54,6 +55,7 @@ async function event(db:ProfileExecutor,req:FastifyRequest,profile:Profile,type:
  await appendEvent(db,{workspace_id:db.workspaceId,environment:'REAL',event_type:type,aggregate_id:aggregate,correlation_id:req.id,actor:actor(profile),payload});
 }
 export async function profileIntegrationRoutes(app:FastifyInstance,deps:IntegrationRouteDependencies={}){
+ await metaPortfolioRoutes(app,deps);
  const aiRuntime=deps.aiRuntime??defaultAiRuntime,aiKey=deps.aiKey??(()=>aiCredentialKey()),request=deps.request;
  const view=(req:FastifyRequest)=>withProfileRequest(req,'REAL',{scope:'integrations:read',mutation:false},async({db,profile})=>({ai:await readAiIntegrations(db,profile.authority,'REAL'),meta:await readMetaIntegration(db,profile.authority)}),request);
  app.get('/v2/integrations',async(req,reply)=>{headers(reply);noQuery(req);return{data:await mapped(()=>view(req))};});

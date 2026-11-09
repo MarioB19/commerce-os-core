@@ -1,3 +1,4 @@
+import {syncMetaPortfolios} from './meta-portfolios.js';
 import {randomUUID} from 'node:crypto';
 import {createDatabaseWorkerRuntime,runtimeRoleLogin} from '../../../packages/db/src/index.js';
 import {withWorkerProfilePhase,type WorkerProfileSelection} from '../../../packages/db/src/profile-worker-scope.js';
@@ -63,7 +64,7 @@ export async function processMetaProfileSync(ports?:MetaProfileSyncPorts){
  const profiles:{profile:string;status?:string;error?:string}[]=[];
  for(const selection of await runtime.discover()){
   if(selection.state!=='ACTIVE')continue;
-  try{const result=await runtime.run(selection,()=>syncMetaProfile(ports?.fetcher));profiles.push({profile:selection.workspaceId,status:result.processed?result.status:'IDLE'});}
+  try{const result=await runtime.run(selection,async()=>await syncMetaPortfolios(ports?.fetcher)?{processed:true as const,status:'V73'}:syncMetaProfile(ports?.fetcher));profiles.push({profile:selection.workspaceId,status:result.processed?result.status:'IDLE'});}
   catch(error){profiles.push({profile:selection.workspaceId,error:code(error)});}
  }
  const failed=profiles.find(row=>row.error);

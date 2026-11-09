@@ -125,5 +125,16 @@ describe('Receipt → sale → campaign performance in PostgreSQL',()=>{
   await executeInsightJob(job,fetcher);expect((await pool.query('SELECT count(*)::int n FROM meta_insight_days WHERE workspace_id=$1',[w])).rows[0].n).toBe(2);expect(paths.every(p=>/adaccounts|insights|ads/.test(p))).toBe(true);
   await withTransaction(async c=>{await c.query('SET LOCAL ROLE commerce_automation');expect((await c.query('SELECT count(*)::int n FROM integration_secrets WHERE workspace_id=$1 AND type=\'meta\'',[w])).rows[0].n).toBe(1);});
  });
+ it('V7.3 attributes approved payments by unique account and historical portfolio without distributing unknown sales',async()=>{
+  const f=await fixture(10700),unknown=await fixture(9700,false,false);await spend(f.p);await review(f.receipt);await review(unknown.receipt);await periodReceipts();
+  await pool.query("INSERT INTO meta_portfolios(workspace_id,business_id,name) VALUES($1,'100','Before'),($1,'200','After')",[w]);
+  await pool.query("INSERT INTO meta_account_portfolio_history(workspace_id,meta_ad_account_id,business_id,valid_from,basis) VALUES($1,'act_123','100','0001-01-01','CURRENT_OWNER_BASELINE'),($1,'act_123','200','2026-10-01','OBSERVED_CHANGE')",[w]);
+  const r=await report();expect(r.groups.accounts[0]).toMatchObject({portfolio_id:'100',spend_minor:10000,attributed_sales:1,attributed_revenue_minor:10700,roas:1.07});expect(r.groups.portfolios[0]).toMatchObject({id:'100',sales:1,revenue_minor:10700});expect(r.quality.unattributed).toMatchObject({sales:1,revenue_minor:9700});
+  expect((await report('&portfolio_id=100')).summary).toMatchObject({sales:1,revenue_minor:10700});expect((await report('&portfolio_id=200')).summary.sales).toBe(0);
+  // Same ad ID in a second account is ambiguous without exact account evidence.
+  await pool.query("INSERT INTO meta_ad_metadata(workspace_id,environment,meta_ad_account_id,ad_id,campaign_id,ad_name,campaign_name,source) VALUES($1,'SIMULATION','act_456','55','44','Repeated ad','Repeated campaign','SIMULATION_FIXTURE')",[w]);
+  expect((await report('&portfolio_id=100')).summary.attributed_sales).toBe(0);expect((await report('&portfolio_id=100')).summary.sales).toBe(0);expect((await report()).quality.unattributed).toMatchObject({sales:2,revenue_minor:20400});
+
+ });
  it('refuses Meta external reads in simulation',async()=>{let calls=0;await expect(executeInsightJob({environment:'SIMULATION'},async()=>{calls++;throw Error();})).rejects.toThrow('META_REAL_ENVIRONMENT_REQUIRED');expect(calls).toBe(0);});
 });

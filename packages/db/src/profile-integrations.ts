@@ -1,3 +1,4 @@
+import {connectionViews,saveMetaConnection,recordConnectionCheck,setMetaConnectionEnabled} from './meta-portfolios.js';
 import {encrypt} from './index.js';
 import type {ProfileExecutor} from './profile-context.js';
 import {authorizeProfileAction,type ProfileAuthority} from '../../domain/src/core/profile-authorization.js';
@@ -18,6 +19,8 @@ export type MetaState='MISSING'|'UNVERIFIED'|'VERIFIED'|'INVALID'|'DISABLED';
 export interface MetaIntegrationView {state:MetaState;revision:number;enabled:boolean;hint:string|null;reason:string|null;checkedAt:string|null;grantedScopes:string[];updatedAt:string|null}
 export async function readMetaIntegration(db:ProfileExecutor,authority:ProfileAuthority):Promise<MetaIntegrationView>{
  await authorize(db,authority,'integrations:read',false);
+ const connections=await connectionViews(db);
+ if(connections.length){const c=connections.find(c=>c.state==='VERIFIED')??connections[0]!;return{state:c.state as MetaState,revision:c.revision,enabled:c.enabled,hint:c.hint,reason:c.reason,checkedAt:c.checkedAt,grantedScopes:c.grantedScopes,updatedAt:c.checkedAt};}
  const row=(await db.query(`SELECT c.revision,c.enabled,c.state,c.reason,c.checked_at,c.granted_scopes,c.updated_at,v.key_hint FROM meta_profile_credentials c
   JOIN meta_profile_credential_versions v ON (v.workspace_id,v.revision)=(c.workspace_id,c.revision) WHERE c.workspace_id=$1`,[db.workspaceId])).rows[0];
  if(!row)return{state:'MISSING',revision:0,enabled:false,hint:null,reason:null,checkedAt:null,grantedScopes:[],updatedAt:null};
@@ -27,6 +30,7 @@ const tokenPattern=/^[A-Za-z0-9_|.-]{20,4096}$/;
 /** Interactive owner action: a new revision, always UNVERIFIED until checked. */
 export async function saveMetaToken(db:ProfileExecutor,authority:ProfileAuthority,input:{expectedRevision:number;token:string}){
  await authorize(db,authority,'integrations:write',true,true);
+ const connections=await connectionViews(db);if(connections.length){const target=connections.find(c=>c.legacy)??(connections.length===1?connections[0]:null);need(target,'META_CONNECTION_REQUIRED');const saved=await saveMetaConnection(db,authority,{id:target.id,alias:target.alias,...input});return{revision:saved.revision};}
  need(Number.isSafeInteger(input.expectedRevision)&&input.expectedRevision>=0&&typeof input.token==='string'&&tokenPattern.test(input.token),'META_TOKEN_INVALID',400);
  await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['meta-token:'+db.workspaceId]);
  const prior=(await db.query('SELECT revision FROM meta_profile_credentials WHERE workspace_id=$1 FOR UPDATE',[db.workspaceId])).rows[0];
@@ -60,6 +64,7 @@ export async function checkMetaToken(token:string,fetcher:typeof fetch=fetch,gra
 /** Records a conclusive check only for the exact revision that was checked. */
 export async function recordMetaCheck(db:ProfileExecutor,authority:ProfileAuthority,revision:number,check:MetaCheck){
  await authorize(db,authority,'integrations:write',true);
+ const connections=await connectionViews(db);if(connections.length){const target=connections.find(c=>c.legacy)??(connections.length===1?connections[0]:null);need(target,'META_CONNECTION_REQUIRED');await recordConnectionCheck(db,target.id,revision,check);return{recorded:check.state!=='UNKNOWN'&&target.revision===revision};}
  if(check.state==='UNKNOWN')return{recorded:false};
  const row=(await db.query('UPDATE meta_profile_credentials SET state=$3,reason=$4,checked_at=clock_timestamp(),granted_scopes=$5,updated_by=$6 WHERE workspace_id=$1 AND revision=$2 RETURNING revision',
   [db.workspaceId,revision,check.state,check.state==='INVALID'?check.reason:null,check.grantedScopes,authority.membership.userId])).rows[0];
@@ -67,6 +72,7 @@ export async function recordMetaCheck(db:ProfileExecutor,authority:ProfileAuthor
 }
 export async function setMetaEnabled(db:ProfileExecutor,authority:ProfileAuthority,input:{expectedRevision:number;enabled:boolean}){
  await authorize(db,authority,'integrations:write',true);
+ const connections=await connectionViews(db);if(connections.length){const target=connections.find(c=>c.legacy)??(connections.length===1?connections[0]:null);need(target,'META_CONNECTION_REQUIRED');return setMetaConnectionEnabled(db,authority,target.id,input.expectedRevision,input.enabled);}
  need(Number.isSafeInteger(input.expectedRevision)&&input.expectedRevision>0&&typeof input.enabled==='boolean','META_INPUT_INVALID',400);
  const row=(await db.query('UPDATE meta_profile_credentials SET enabled=$3,updated_by=$4 WHERE workspace_id=$1 AND revision=$2 RETURNING revision,enabled',[db.workspaceId,input.expectedRevision,input.enabled,authority.membership.userId])).rows[0];
  need(row,'META_TOKEN_VERSION_CONFLICT');return{revision:row.revision as number,enabled:row.enabled as boolean};
@@ -80,7 +86,7 @@ export async function readOnboarding(db:ProfileExecutor,authority:ProfileAuthori
  await authorize(db,authority,'profile:read',false);
  const facts=(await db.query(`SELECT
    EXISTS(SELECT 1 FROM ai_credentials WHERE workspace_id=$1 AND environment='REAL' AND enabled AND state='VERIFIED') AS ai,
-   EXISTS(SELECT 1 FROM meta_profile_credentials WHERE workspace_id=$1 AND enabled AND state='VERIFIED') AS meta,
+   (EXISTS(SELECT 1 FROM meta_connections WHERE workspace_id=$1 AND enabled AND state='VERIFIED') OR EXISTS(SELECT 1 FROM meta_profile_credentials WHERE workspace_id=$1 AND enabled AND state='VERIFIED' AND NOT EXISTS(SELECT 1 FROM meta_connections WHERE workspace_id=$1))) AS meta,
    EXISTS(SELECT 1 FROM market_variants WHERE workspace_id=$1 AND environment='REAL') AS product,
    EXISTS(SELECT 1 FROM records WHERE workspace_id=$1 AND environment='REAL' AND kind='channel_account' AND COALESCE(body->>'status','')<>'ARCHIVED') AS number`,[db.workspaceId])).rows[0];
  const stored=(await db.query('SELECT version,meta_skipped,dismissed FROM profile_onboarding WHERE workspace_id=$1',[db.workspaceId])).rows[0];

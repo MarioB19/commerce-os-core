@@ -87,6 +87,7 @@ const profileAddedAfterRetirement=['owner_alert_mail_attempts','owner_alert_mail
 const laboratoryAddedAfterRetirement=['commerce_number_lab.attachments','commerce_number_lab.retention_receipts','commerce_number_lab.suites','commerce_number_lab.suite_cases'];
 // V7 F2 profile integrations (0101): reviewed profile and environment guards in
 // the migration; only the API and the closed AI/platform readers reach rows.
+const metaV73Tables=['meta_connections','meta_connection_versions','meta_portfolios','meta_account_access','meta_account_portfolio_history','meta_read_operations','meta_read_tasks','meta_read_pages'];
 const integrationTables=['ai_profile_preferences','meta_profile_credential_versions','meta_profile_credentials','profile_onboarding'];
 // V7 F8-E: the tables migration 0109 drops. A catalog holds all of them
 // (through 0108) or none (0109 onward); anything in between is refused.
@@ -94,7 +95,7 @@ const retiredByV7=new Set<string>(V7_RETIRED_TABLES);
 const historicalTableNames=[...environmentTables,...sharedProfileTables,...globalIdentityTables,...privateLaboratoryTables,...quotaTables,...privacyFenceTables,...retiredTables,...privacyComponentTables,...privacyReferenceTables,...cutoverTables,...platformTables,...integrationTables,'profile_cutover_historical_tables','profiles','schema_migrations','ai_model_prices','manual_controls'].sort();
 /** Metadata inventory only, for composition/review. Does not grant access.
  * The current schema (0109 onward); the historical one adds V7_RETIRED_TABLES. */
-export const commerceProfileRowTableNames:readonly string[]=Object.freeze([...historicalTableNames.filter(name=>!retiredByV7.has(name)),...addedAfterRetirement,...environmentAddedAfterRetirement,...profileAddedAfterRetirement,...laboratoryAddedAfterRetirement]);
+export const commerceProfileRowTableNames:readonly string[]=Object.freeze([...historicalTableNames.filter(name=>!retiredByV7.has(name)),...addedAfterRetirement,...environmentAddedAfterRetirement,...profileAddedAfterRetirement,...laboratoryAddedAfterRetirement,...metaV73Tables]);
 export const commerceProfileHistoricalRowTableNames:readonly string[]=Object.freeze(historicalTableNames);
 function check(value:unknown,code:string):asserts value{if(!value)throw Error(code);}
 
@@ -134,6 +135,7 @@ export function commerceProfileRowPolicy(catalog:ProfileCatalog):ProfileRowIsola
  for(const name of platformTables){const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_PLATFORM_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Platform administration outside every profile; only the closed platform owner reaches rows, through aggregate-only ports.'});}
  for(const name of laboratoryAddedAfterRetirement){if(!rows.has(name))continue;const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_LAB_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Dedicated021 control of one profile run: sealed example receipts (RF-19.d), content-free retention receipts (RF-19.o) and automatic-buyer suites (RF-19.p); never a REAL asset.'});}
  for(const name of addedAfterRetirement){if(!rows.has(name))continue;const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_PLATFORM_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Platform recovery evidence outside every profile (V7 F1); only the cluster owner writes rows and the API reads a bounded status function.'});}
+ for(const name of metaV73Tables){if(!rows.has(name))continue;const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_META_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'V7.3 profile-owned Meta configuration and read-only analytics, with reviewed REAL and profile guards.'});}
  for(const name of integrationTables){const row=rows.get(name);check(row?.rls&&row.force_rls,'COMMERCE_ROW_INTEGRATION_COMPONENT_REQUIRED');add(name,{mode:'preserve',reason:'Profile integration configuration with reviewed profile/environment guards; secrets are ciphertext readable only by their closed runtime role.'});}
  add('profile_cutover_historical_tables',{mode:'preserve',reason:'Global immutable list of historical table names used by the isolation model; no tenant data.'});
  check(Object.keys(result).length===rows.size,'COMMERCE_ROW_UNCLASSIFIED_RELATION');

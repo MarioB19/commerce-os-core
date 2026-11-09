@@ -57,7 +57,11 @@
     "preferencias",
     "activar",
     "desactivar",
-    "eliminar"
+    "eliminar",
+    "conexiones_meta",
+    "seleccionar_portafolio",
+    "estado_conexion_meta",
+    "descubrir_cuentas_meta"
    ],
    "audience": "profile",
    "family": "/v2/integrations",
@@ -429,14 +433,17 @@
     "resultados",
     "campanas",
     "anuncios",
-    "sincronizar_lectura"
+    "sincronizar_lectura",
+    "portafolios",
+    "exportar",
+    "consultar_lectura",
+    "reanudar_lectura",
+    "cargar_periodo"
    ],
    "audience": "profile",
    "family": "/v2/campaigns",
    "name": "campaigns_read",
-   "pending": [
-    "portafolios"
-   ],
+   "pending": [],
    "scopes": [
     "campaigns:read",
     "integrations:write"

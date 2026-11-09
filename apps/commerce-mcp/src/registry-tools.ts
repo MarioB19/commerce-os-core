@@ -1,3 +1,4 @@
+import {campaignCsv} from '../../../packages/contracts/src/campaign-export.js';
 import {groupWarmupConfigSchema,libraryImportSchema} from '../../../packages/contracts/src/group-warmup.js';
 import {remarketingPolicySchema} from '../../../packages/contracts/src/sales-flow.js';
 import type {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -77,6 +78,10 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
  });
  tool('integrations_manage','Integraciones de IA y Meta','Estado de las claves propias del negocio (sólo últimos cuatro caracteres) y preferencias de IA. Guardar, rotar o validar una clave se hace en la aplicación.',{
   listar:v('GET',empty,()=>'/v2/integrations')(c.v2),
+  conexiones_meta:v('GET',empty,()=>'/v2/meta')(c.v2),
+  seleccionar_portafolio:v('PATCH',z.object({portfolioId:z.string().regex(/^\d+$/),expectedVersion:z.number().int().positive(),selected:z.boolean()}).strict(),i=>'/v2/meta/portfolios/'+id(i.portfolioId),i=>({expectedVersion:i.expectedVersion,selected:i.selected}))(c.v2),
+  estado_conexion_meta:v('POST',z.object({connectionId:z.uuid(),expectedRevision:z.number().int().positive(),enabled:z.boolean()}).strict(),i=>'/v2/meta/connections/'+id(i.connectionId)+'/state',i=>({expectedRevision:i.expectedRevision,enabled:i.enabled}))(c.v2),
+  descubrir_cuentas_meta:v('POST',z.object({operationId:z.uuid(),connectionId:z.uuid()}).strict(),i=>'/v2/meta/connections/'+id(i.connectionId)+'/discover',i=>({operationId:i.operationId}))(c.v2),
   guardar:{schema:z.object({provider:z.enum(['openai','anthropic','google','meta'])}).strict(),read:false,run:humanAction('/account/integrations','Las claves sólo se escriben en la aplicación por la persona Dueña.')},
   rotar:{schema:z.object({provider:z.enum(['openai','anthropic','google','meta'])}).strict(),read:false,run:humanAction('/account/integrations','Reemplaza la clave en la aplicación; se verifica al guardarla.')},
   validar:{schema:z.object({provider:z.enum(['openai','anthropic','google','meta'])}).strict(),read:false,run:humanAction('/account/integrations','La validación ocurre al guardar la clave.')},
@@ -228,13 +233,18 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
    return c.variant('POST','/v2/number-tests',{account_id:v.run.account_id,mode:'CHAT',accepted_maximum_microusd:i.acceptedMaximumMicrousd},i.operationId);}},
  });
  // V7 F7 (RF-11, RF-09.k): read only; spend, conversations and the sales they brought.
- const period=z.object({from:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),to:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),currency:z.string().regex(/^[A-Z]{3}$/).optional()}).strict();
- const campaigns=(pick:(v:any)=>unknown):ManageAction=>({schema:period,read:true,run:async i=>{const raw=await c.variant('GET','/v2/campaigns?from='+i.from+'&to='+i.to+(i.currency?'&currency='+i.currency:'')) as any;const v=raw&&typeof raw==='object'&&'data' in raw?raw.data:raw;return pick(v);}});
+ const period=z.object({from:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),to:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),currency:z.string().regex(/^[A-Z]{3}$/).optional(),portfolio_id:z.string().regex(/^\d+$/).optional(),meta_ad_account_id:z.string().regex(/^act_\d+$/).optional(),campaign_id:z.string().regex(/^\d+$/).optional(),timezone:z.string().optional()}).strict();
+ const campaigns=(pick:(v:any)=>unknown):ManageAction=>({schema:period,read:true,run:async i=>{const raw=await c.variant('GET','/v2/campaigns'+query(i)) as any;const v=raw&&typeof raw==='object'&&'data' in raw?raw.data:raw;return pick(v);}});
  tool('campaigns_read','Campañas (sólo lectura)','Gasto, conversaciones, ventas e ingresos atribuidos por campaña y anuncio, cruzados con la hoja de pagos. Sólo lee: no crea, pausa ni cambia presupuesto; sincronizar_lectura pide una lectura nueva a Meta.',{
-  cuentas:campaigns(v=>({connected:v.connected,accounts:v.accounts})),
+  exportar:campaigns(v=>({mimeType:'text/csv',filename:'commerce-meta.csv',csv:v.report?campaignCsv(v.report):null})),
+  cuentas:campaigns(v=>({connected:v.connected,accounts:v.inventory?.accounts??v.accounts,results:v.report?.groups.accounts??[]})),
+  portafolios:campaigns(v=>({portfolios:v.inventory?.portfolios??[],counts:v.inventory?.counts??null,results:v.report?.groups.portfolios??[]})),
   resultados:campaigns(v=>({connected:v.connected,summary:v.report?.summary??null,quality:v.report?.quality??null})),
   campanas:campaigns(v=>({connected:v.connected,campaigns:v.report?.groups.campaigns??[]})),
   anuncios:campaigns(v=>({connected:v.connected,ads:v.report?.groups.ads??[]})),
+  consultar_lectura:v('GET',z.object({operationId:z.uuid()}).strict(),i=>'/v2/meta/operations/'+id(i.operationId))(c.v2),
+  reanudar_lectura:v('POST',z.object({operationId:z.uuid()}).strict(),i=>'/v2/meta/operations/'+id(i.operationId)+'/retry',()=>({}))(c.v2),
+  cargar_periodo:v('POST',period.extend({operationId:z.uuid()}).omit({currency:true,campaign_id:true,timezone:true}).strict(),()=>'/v2/meta/sync',i=>i)(c.v2),
   // Asks for a fresh GET-only read with the profile's own token (owner, integrations:write).
   sincronizar_lectura:{schema:z.object({operationId:z.uuid()}).strict(),read:false,run:i=>c.variant('POST','/v2/campaigns/sync',{},i.operationId)},
  });

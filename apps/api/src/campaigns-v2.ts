@@ -1,3 +1,6 @@
+import {campaignCsv} from '../../../packages/contracts/src/campaign-export.js';
+import {randomUUID} from 'node:crypto';
+import {metaInventory,hasMetaConnections,requestMetaRead,validateMetaSelection} from '../../../packages/db/src/meta-portfolios.js';
 import type {FastifyInstance,FastifyReply} from 'fastify';
 import {z} from 'zod';
 import {withProfileRequest,type ProfileRequestDependencies} from './profile-request.js';
@@ -12,24 +15,34 @@ import {readMetaSyncState,requestMetaProfileSync} from '../../../packages/db/src
  * for a fresh read (POST /v2/campaigns/sync); the worker performs it with GET
  * calls only, otherwise hourly. */
 const query=z.object({from:z.string(),to:z.string(),currency:z.string().regex(/^[A-Z]{3}$/).optional(),granularity:z.enum(['day','week','month']).optional(),
- campaign_id:z.string().regex(/^\d+$/).optional(),meta_ad_account_id:z.string().regex(/^act_\d+$/).optional(),environment:z.literal('REAL').optional()}).strict();
+ portfolio_id:z.string().regex(/^\d+$/).optional(),timezone:z.string().optional(),campaign_id:z.string().regex(/^\d+$/).optional(),meta_ad_account_id:z.string().regex(/^act_\d+$/).optional(),environment:z.literal('REAL').optional()}).strict();
 function headers(reply:FastifyReply){reply.header('Cache-Control','no-store').header('Vary','Cookie, Authorization');}
 export async function campaignsV2Routes(app:FastifyInstance,deps?:ProfileRequestDependencies){
  app.get('/v2/campaigns',async(req,reply)=>{headers(reply);const {environment:_,...q}=query.parse(req.query??{});
   const filters=campaignFilterSchema.parse({...q,environment:'REAL',limit:100});
-  return{data:await withProfileRequest(req,'REAL',{scope:'campaigns:read',mutation:false},async({db})=>{
+  return{data:await withProfileRequest(req,'REAL',{scope:'campaigns:read',mutation:false},async({db,profile})=>{
+   await validateMetaSelection(db,q);
+   const inventory=await metaInventory(db);
    const sync=await readMetaSyncState(db);
+   if(inventory.connections.length){sync.credential=inventory.connections.some(c=>c.state==='VERIFIED')?'VERIFIED':'MISSING';const latest=inventory.operations[0];sync.last_sync=latest?{status:latest.status,requested_at:latest.createdAt,updated_at:latest.updatedAt,issues:latest.issues}:null;}
+   const publicInventory={...inventory,connections:[]};
    const accounts=(await db.query(`SELECT meta_ad_account_id,name,currency,timezone,status,last_success_at FROM meta_insight_accounts WHERE workspace_id=$1 AND environment='REAL' ORDER BY name,meta_ad_account_id`,[db.workspaceId])).rows
     .map(a=>({id:String(a.meta_ad_account_id),name:String(a.name),currency:String(a.currency),timezone:String(a.timezone),status:String(a.status),last_success_at:a.last_success_at?new Date(a.last_success_at).toISOString():null}));
    const connected=sync.credential==='VERIFIED';
-   if(!accounts.length)return{connected,accounts,report:null,sync,read_only:true,note:connected?(sync.last_sync?.status==='SYNCED'||sync.last_sync?.status==='PARTIAL'?'Tu token de Meta no tiene cuentas publicitarias con datos de lectura.':'Leyendo tus cuentas de Meta por primera vez. Vuelve en unos minutos.'):'Conecta tu cuenta de Meta en Integraciones para ver tus campañas. Sólo se lee: nada cambia en tus anuncios.'};
-   return{connected,accounts,report:await campaignPerformance(db as never,db.workspaceId,'REAL',filters),sync,read_only:true};
+   if(!accounts.length)return{connected,accounts,inventory:publicInventory,report:null,sync,read_only:true,note:connected?(sync.last_sync?.status==='SYNCED'||sync.last_sync?.status==='PARTIAL'?'Tu token de Meta no tiene cuentas publicitarias con datos de lectura.':'Leyendo tus cuentas de Meta por primera vez. Vuelve en unos minutos.'):'Conecta tu cuenta de Meta en Integraciones para ver tus campañas. Sólo se lee: nada cambia en tus anuncios.'};
+   return{connected,accounts,inventory:publicInventory,report:await campaignPerformance(db as never,db.workspaceId,'REAL',{...filters,profile_timezone:profile.profile?.timezone??filters.profile_timezone}),sync,read_only:true};
   },deps)};});
- app.post('/v2/campaigns/sync',{bodyLimit:256},async(req,reply)=>{headers(reply);
+ app.get('/v2/campaigns/export',async(req,reply)=>{headers(reply);const {environment:_,...q}=query.parse(req.query??{});const filters=campaignFilterSchema.parse({...q,environment:'REAL',limit:100});
+  const report=await withProfileRequest(req,'REAL',{scope:'campaigns:read',mutation:false},async({db,profile})=>{await validateMetaSelection(db,q);return campaignPerformance(db as never,db.workspaceId,'REAL',{...filters,profile_timezone:profile.profile?.timezone??filters.profile_timezone});},deps);
+  const csv=campaignCsv(report);
+  return reply.header('Content-Type','text/csv; charset=utf-8').header('Content-Disposition','attachment; filename="commerce-meta.csv"').send(csv);
+ });
+ app.post('/v2/campaigns/sync' ,{bodyLimit:256},async(req,reply)=>{headers(reply);
   const extra=Object.entries((req.query??{}) as Record<string,unknown>).filter(([k,v])=>!(k==='environment'&&v==='REAL'));
   if(extra.length)throw Object.assign(new Error('PROFILE_QUERY_NOT_ALLOWED'),{code:'PROFILE_QUERY_NOT_ALLOWED',statusCode:400});
   if(req.body!==undefined&&req.body!==null&&!(typeof req.body==='object'&&!Array.isArray(req.body)&&Object.keys(req.body).length===0))throw Object.assign(new Error('META_SYNC_INPUT_INVALID'),{code:'META_SYNC_INPUT_INVALID',statusCode:400});
   return{data:await withProfileRequest(req,'REAL',{scope:'integrations:write',mutation:true},async({db,profile})=>{
+   if(await hasMetaConnections(db)){const operationId=typeof req.headers['idempotency-key']==='string'&&/^[0-9a-f-]{36}$/.test(req.headers['idempotency-key'])?req.headers['idempotency-key']:randomUUID();const result=await requestMetaRead(db,profile.authority,{operationId});return{status:'QUEUED',jobId:result.id,read_only:true};}
    const result=await requestMetaProfileSync(db,{actorId:profile.authority.membership.userId,scheduled:false});
    if(result.status==='NOT_CONNECTED')throw Object.assign(new Error('META_NOT_CONNECTED'),{code:'META_NOT_CONNECTED',statusCode:409});
    if(result.status==='QUEUED')await appendEvent(db,{workspace_id:db.workspaceId,environment:'REAL',event_type:'profile.campaigns.sync_requested',aggregate_id:result.jobId,correlation_id:req.id,
