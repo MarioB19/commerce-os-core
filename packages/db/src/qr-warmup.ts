@@ -15,7 +15,7 @@ function need(value:unknown,code:string):asserts value{if(!value)throw new QrWar
  * provider profile update or user-supplied address can become a QR observation. */
 export async function enrollCurrentQrWarmup(db:ProfileExecutor,environment:'REAL'|'SIMULATION',accountId:string){
  environmentSchema.parse(environment);accountId=idSchema.parse(accountId);
- if((await db.query("SELECT 1 FROM records WHERE id=$1 AND workspace_id=$2 AND environment=$3 AND kind='channel_account' AND body->>'warmup_mode'='DECLARED_READY'",[accountId,db.workspaceId,environment])).rowCount)return resultSchema.parse({state:'WARMUP_NOT_REQUESTED'});
+ if((await db.query("SELECT 1 FROM public.records WHERE id=$1 AND workspace_id=$2 AND environment=$3 AND kind='channel_account' AND body->>'warmup_mode'='DECLARED_READY'",[accountId,db.workspaceId,environment])).rowCount)return resultSchema.parse({state:'WARMUP_NOT_REQUESTED'});
  const grant=await readCurrentQrContinuity(db,environment,accountId);
  need(grant?.source.kind==='VERIFIED_QR_CONNECTION','QR_CURRENT_CONNECTION_REQUIRED');
  const row=(await db.query(`SELECT revision,observed_identity_ciphertext,expected_identity_fingerprint
@@ -35,7 +35,7 @@ export async function enrollQrWarmupProfile(db:ProfileExecutor,environment:'REAL
  // V7.4 D: a number its owner declared ready is never registered for warm-up
  // by a worker, a reconnection, a restart or a release. The choice is read
  // from the number itself, where it was stored when the number was created.
- const rows=(await db.query(`SELECT s.account_id FROM channel_sessions s JOIN records r ON r.id=s.account_id AND r.workspace_id=s.workspace_id AND r.environment=s.environment
+ const rows=(await db.query(`SELECT s.account_id FROM channel_sessions s JOIN public.records r ON r.id=s.account_id AND r.workspace_id=s.workspace_id AND r.environment=s.environment
   WHERE s.workspace_id=$1 AND s.environment=$2 AND r.kind='channel_account' AND NOT(r.body?'deleted_at') AND r.body->>'warmup_mode' IS DISTINCT FROM 'DECLARED_READY'
   AND s.archived_at IS NULL AND s.observed_state='CONNECTED' AND s.auth_state='VERIFIED'
   AND s.observed_identity_ciphertext IS NOT NULL AND s.health_expires_at>clock_timestamp()
