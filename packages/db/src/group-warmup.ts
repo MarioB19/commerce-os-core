@@ -77,7 +77,8 @@ export async function previewGroupWarmup(db:ProfileExecutor,environment:Environm
  const group=(await db.query('SELECT * FROM warmup_groups WHERE workspace_id=$1 AND environment=$2 AND id=$3',[db.workspaceId,environment,config.groupId])).rows[0];
  // V7.4 C/D: participants are this profile's lines whose owner asked for
  // warm-up. Own lines declared ready and external members only receive.
- const audience=group?await groupAudience(db,environment,group):{participants:[] as string[],ownReady:[] as string[],external:0,total:0,externalDigest:hash('[]')},members:string[]=audience.participants;
+ const audience=group?await groupAudience(db,environment,group):{participants:[] as string[],ownReady:[] as string[],external:0,total:0,externalDigest:hash('[]'),unresolvedObservers:[] as string[]},members:string[]=audience.participants;
+ if(audience.unresolvedObservers.length)blockers.push('GROUP_OWN_LINE_UNRESOLVED');
  if(config.senderIds.some(id=>audience.ownReady.includes(id)))blockers.push('SENDER_WARMUP_NOT_REQUESTED');
  else if(config.senderIds.some(id=>!members.includes(id)))blockers.push('SENDER_NOT_IN_GROUP');
  if(members.length<2||members.length>10)blockers.push('GROUP_SIZE_UNSUPPORTED');
@@ -196,11 +197,15 @@ export async function groupAudience(db:ProfileExecutor,environment:Environment,g
  const all:Body[]=group.members??[],ownIds=[...new Set(all.map(m=>m.account_id).filter(Boolean))].sort() as string[],modes=await groupOwnLines(db,environment,ownIds);
  const participants=ownIds.filter(id=>modes.get(id)==='REQUIRED'),ownReady=ownIds.filter(id=>modes.get(id)==='DECLARED_READY');
  const external=all.filter(m=>!m.account_id||!modes.has(m.account_id));
- return{participants,ownReady,external:external.length,total:all.length,externalDigest:hash(stableJson(external.map(m=>m.identity_hash).sort()))};
+ // A line that read the group is one of its members by construction. When the
+ // provider gave no explicit mapping for it, that line shows up as external:
+ // say so instead of offering a group it could never send to.
+ const unresolvedObservers=Object.keys(group.capabilities?.observations??{}).filter(id=>!ownIds.includes(id));
+ return{participants,ownReady,external:external.length,total:all.length,externalDigest:hash(stableJson(external.map(m=>m.identity_hash).sort())),unresolvedObservers};
 }
 export async function listWarmupGroups(db:ProfileExecutor,environment:Environment){
  const rows=(await db.query('SELECT id,name,version,members,permissions,capabilities,observed_at,expires_at,retired_at FROM warmup_groups WHERE workspace_id=$1 AND environment=$2 AND retired_at IS NULL ORDER BY name,id LIMIT 100',[db.workspaceId,environment])).rows,now=new Date(),result=[];
- for(const g of rows){const audience=await groupAudience(db,environment,g),reason=audience.participants.length<2?'GROUP_SIZE_UNSUPPORTED':groupEligibility(g,audience.participants,now,audience.participants,{audience:true});
+ for(const g of rows){const audience=await groupAudience(db,environment,g),reason=audience.unresolvedObservers.length?'GROUP_OWN_LINE_UNRESOLVED':audience.participants.length<2?'GROUP_SIZE_UNSUPPORTED':groupEligibility(g,audience.participants,now,audience.participants,{audience:true});
   result.push({id:g.id,name:g.name,version:g.version,permissions:g.permissions,observed_at:g.observed_at,expires_at:g.expires_at,
    members:g.members.map((m:Body)=>{const kind=m.account_id&&audience.participants.includes(m.account_id)?'own':m.account_id&&audience.ownReady.includes(m.account_id)?'own_ready':'external';return{accountId:kind==='external'?null:m.account_id,admin:m.admin,resolved:kind!=='external',kind};}),
    audience:{participants:audience.participants.length,ownReady:audience.ownReady.length,external:audience.external,total:audience.total},eligible:!reason,reason});}

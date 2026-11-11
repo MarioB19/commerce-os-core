@@ -25,9 +25,6 @@ export async function observeGroup(c:QueryExecutor,account:DomainRecord,snapshot
   own.set(key,row.account_id);
  }
  const members=snapshot.members.map(m=>({account_id:(m.verifiedIdentity?own.get(hash(canonicalIdentity(m.verifiedIdentity))):undefined)??null,identity_hash:hash(m.identity),verified_hash:m.verifiedIdentity?hash(canonicalIdentity(m.verifiedIdentity)):null,admin:m.admin,mapping_source:m.mappingSource})).sort((a,b)=>a.identity_hash.localeCompare(b.identity_hash));
- // The line that read the group is one of its members by construction; when
- // the provider gives no explicit mapping for it the read proves nothing.
- if(!members.some(m=>m.account_id===account.id))throw new Error('GROUP_OWN_LINE_UNRESOLVED');
  if(new Set(members.filter(m=>m.account_id).map(m=>m.account_id)).size!==members.filter(m=>m.account_id).length)throw new Error('GROUP_OWN_IDENTITY_AMBIGUOUS');
  const fingerprint=hash(snapshot.id);
  await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`group:${account.workspace_id}:${account.environment}:${fingerprint}`]);

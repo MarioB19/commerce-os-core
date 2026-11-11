@@ -23,10 +23,10 @@ export async function refreshActiveNumberGroups(owner:string,factory:ProviderFac
  AND EXISTS(SELECT 1 FROM warmup_pools p WHERE p.group_id=g.id AND p.enabled AND NOT p.paused)
  ORDER BY g.last_probe_at NULLS FIRST,g.id FOR UPDATE SKIP LOCKED LIMIT 5)
  UPDATE warmup_groups g SET probe_until=now()+interval '60 seconds',probe_owner=$1,last_probe_at=now()
- FROM candidates c WHERE g.id=c.id RETURNING g.*,(SELECT COALESCE(array_agg(DISTINCT a),'{}') FROM warmup_programs w CROSS JOIN LATERAL unnest(w.account_ids) a WHERE w.group_id=g.id AND w.status='ACTIVE') AS participant_ids`,[owner,JSON.stringify(eligible)])).rows;
+ FROM candidates c WHERE g.id=c.id RETURNING g.*,(SELECT COALESCE(array_agg(DISTINCT s.account_id),'{}') FROM warmup_states s JOIN warmup_pools p ON p.id=s.pool_id WHERE p.group_id=g.id AND p.enabled AND NOT p.paused) AS participant_ids`,[owner,JSON.stringify(eligible)])).rows;
  });
- // V7.4 C: probe through the lines that take part in an active program; an
- // external member or an own line that only receives is never a probe.
+ // V7.4 C: probe through the lines registered in an active pool of the group;
+ // an external member or an own line that only receives is never a probe.
  const work=groups.flatMap(g=>g.members.filter((m:any)=>m.account_id&&(g.participant_ids??[]).includes(m.account_id)).map((m:any)=>({group:g,accountId:m.account_id})));
  const failures=new Set<string>(),deadline=Date.now()+45000;let cursor=0;
  await Promise.all(Array.from({length:Math.min(4,work.length)},async()=>{while(cursor<work.length&&Date.now()<deadline){const item=work[cursor++];try{const account=await getRecord(pool,item.group.workspace_id,'channel_account',item.accountId);if(!account||account.environment!==item.group.environment)throw Error('GROUP_ACCOUNT_SCOPE_INVALID');const observe=async()=>{const provider=await factory(account);if(!provider.group)throw new Error('GROUP_PROVIDER_UNSUPPORTED');return provider.group(decrypt(item.group.group_ciphertext));};const snapshot=account.environment==='REAL'?await withTransaction(async c=>{if((await readOperationalSettings(c,account.workspace_id,'REAL',{lock:'share'})).release_hold)throw new Error('RELEASE_HOLD_ACTIVE');return observe();}):await observe();await withTransaction(async c=>{if(account.environment==='REAL'&&(await readOperationalSettings(c,account.workspace_id,'REAL',{lock:'share'})).release_hold)throw new Error('RELEASE_HOLD_ACTIVE');if(!(await c.query('SELECT id FROM warmup_groups WHERE id=$1 AND probe_owner=$2 AND probe_until>now()',[item.group.id,owner])).rowCount)throw Error('GROUP_PROBE_CLAIM_LOST');return observeGroup(c,account,snapshot,await numberNow(c,account.workspace_id,account.environment));});}catch{failures.add(item.group.id);}}}));
