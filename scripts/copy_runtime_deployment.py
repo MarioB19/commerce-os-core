@@ -24,7 +24,10 @@ INITIAL = frozenset({'api', 'web', 'postgres', 'caddy', 'portal'})
 # prepared spare slot per active profile, so the host carries up to six canonical
 # gateways (slots 1-6). Each one is still adopted only with its canonical
 # provisioning receipt (verify_gateway_provisioning); the bounds below follow.
-GATEWAYS = frozenset('waha-%02d' % slot for slot in range(1, 7))
+# V7.4: one canonical gateway per number slot. The product admits 20 numbers per
+# installation (NUMBER_CAPACITY_LIMIT) and the supervisor keeps one prepared spare,
+# so the inventory covers every slot it can create (waha-07 exists since 11-nov-2026).
+GATEWAYS = frozenset('waha-%02d' % slot for slot in range(1, 21))
 MAX_CONTAINERS = len(CORE | GATEWAYS)
 # core, proxy, API edge, consumer edge, PITR egress + one bridge per gateway.
 MAX_NETWORKS = 5 + len(GATEWAYS)
@@ -693,12 +696,13 @@ V7_PROFILE_MIGRATION_NAMES = frozenset({
     '0100_v7_platform_admin.sql', '0101_v7_profile_integrations.sql', '0102_v7_platform_tokens.sql', '0103_v7_capacity_agent_tokens.sql', '0104_v7_number_identity_claims.sql',
     '0105_v7_variant_documents.sql', '0106_v7_ai_price_catalog.sql', '0107_v7_ai_budget_continuity.sql',
     '0108_v7_number_lab_queue.sql', '0109_v7_retire_modules.sql', '0110_v7_meta_profile_sync.sql',
-    '0111_v7_platform_recovery.sql', '0112_v7_invitation_mail_queue.sql', '0113_v7_number_lab_attachments.sql', '0114_v7_number_lab_retention.sql', '0115_v7_number_lab_suites.sql', '0116_v7_owner_alert_mail.sql', '0117_v7_profile_deletion_request.sql', '0118_v72_group_library_warmup.sql', '0119_v73_meta_portfolios.sql'})
+    '0111_v7_platform_recovery.sql', '0112_v7_invitation_mail_queue.sql', '0113_v7_number_lab_attachments.sql', '0114_v7_number_lab_retention.sql', '0115_v7_number_lab_suites.sql', '0116_v7_owner_alert_mail.sql', '0117_v7_profile_deletion_request.sql', '0118_v72_group_library_warmup.sql', '0119_v73_meta_portfolios.sql',
+    '0120_v74_numbers_warmup_choice.sql'})
 V7_PROFILE_MIGRATION_TOTAL = 68 + len(V7_PROFILE_MIGRATION_NAMES)
 # Additive migrations published after the 68→117 V7 cutover. A database already at
-# the V7 base receives only this exact tail (V7.3: 118→119); the cutover-only work
+# the V7 base receives only this exact tail (V7.4: 119→120); the cutover-only work
 # (0109 retirement export, 0072 token versions) never runs again.
-V7_INCREMENTAL_MIGRATION_NAMES = frozenset({'0119_v73_meta_portfolios.sql'})
+V7_INCREMENTAL_MIGRATION_NAMES = frozenset({'0120_v74_numbers_warmup_choice.sql'})
 V7_INCREMENTAL_BASELINE = V7_PROFILE_MIGRATION_TOTAL - len(V7_INCREMENTAL_MIGRATION_NAMES)
 
 

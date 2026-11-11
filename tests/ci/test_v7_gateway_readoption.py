@@ -67,20 +67,26 @@ def run(b, rows, networks, gateways, files=None):
 
 
 class BoundsTests(unittest.TestCase):
-    def test_six_canonical_gateways_and_their_bridges_fit_every_bound(self):
-        self.assertEqual(runtime.GATEWAYS, frozenset('waha-0'+str(i) for i in range(1, 7)))
+    def test_canonical_gateways_and_their_bridges_fit_every_bound(self):
+        # V7.4: one canonical gateway per number slot of the installation (20).
+        self.assertEqual(runtime.GATEWAYS, frozenset('waha-%02d' % i for i in range(1, 21)))
         self.assertEqual(contract.GATEWAY_NAMES, runtime.GATEWAYS)
-        self.assertEqual((runtime.MAX_CONTAINERS, runtime.MAX_NETWORKS), (14, 11))
+        self.assertEqual((runtime.MAX_CONTAINERS, runtime.MAX_NETWORKS), (28, 25))
         state, rows, raw = fx.fixture(6)
         self.assertEqual(len(runtime.validate_inventory(state, rows)), 14)
         plan = json.loads(raw)
         with mock.patch.object(contract, 'validate_portal_backup', lambda value: value):
             self.assertEqual(contract.plan_version(plan), 3)
+            # Up to one gateway per slot (20) is a valid inventory; one more is not.
+            for extra_gateway in range(14):
+                plan['preserved_runtime']['%064x' % (0xf000+extra_gateway)] = 'e'*64
+            self.assertEqual(len(plan['preserved_runtime']), 28)
+            self.assertEqual(contract.plan_version(plan), 3)
             plan['preserved_runtime']['f'*64] = 'e'*64
             with self.assertRaisesRegex(RuntimeError, 'BACKUP_RUNTIME_STAGE_COUNT_INVALID'):
                 contract.plan_version(plan)
         extra = copy.deepcopy(rows[-1]); extra['Id'] = fx.checksum(3000)
-        extra['Config']['Labels']['com.docker.compose.service'] = 'waha-07'
+        extra['Config']['Labels']['com.docker.compose.service'] = 'waha-21'
         with self.assertRaises(ReleaseError):
             runtime.inspect_inventory(rows + [extra], portal=state['portal'], caddy_id=state['service_inventory']['caddy'])
 
