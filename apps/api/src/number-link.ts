@@ -16,6 +16,7 @@ import {assertPermission} from '../../../packages/domain/src/core/permissions.js
 import {principal,envOf,parseBody,mutate,fail,audit,scopedRecord,command} from './context.js';
 import {capacityReserve} from './number-capacity.js';
 import {verifiedPhysicalProvision} from './number-capacity-lifecycle.js';
+import {capacityReadbackIsFresh,gatewaySlot} from './number-capacity-state.js';
 import {lifecycleSafety} from './channel-command-safety.js';
 import {numberNow} from '../../../packages/db/src/number-clock.js';
 import {randomUUID} from 'node:crypto';
@@ -94,7 +95,7 @@ async function readLink(req:FastifyRequest,id:string){
    account=await scopedRecord(req,'channel_account',id,c);
   }
   if(account.body.removal_requested_at&&!account.body.deleted_at)account=await finalizeRemoval(req,c,account);
-  return view(await linkFacts(c,account));
+  return{...view(await linkFacts(c,account)),...await removalView(c,account)};
  });
 }
 async function finalizeRemoval(req:FastifyRequest,c:QueryExecutor,account:DomainRecord){
@@ -117,6 +118,29 @@ async function finalizeRemoval(req:FastifyRequest,c:QueryExecutor,account:Domain
  await audit(c,req,'channel.deleted',account.id,{reason:'Eliminación solicitada desde Números',history_preserved:true,v7_removal:true,slot_released_to_profile:released.map(r=>Number(r.slot))},account.environment);
  return deleted;
 }
+/** V7.4 E: why a requested removal has not finished, and what unblocks it.
+ * A session whose technical owner predates a migration cannot be closed from
+ * here without an isolation proof (that protection stays). The owner can then
+ * unlink the device on the phone and confirm it; the confirmation is accepted
+ * only with a fresh, empty readback of this number's current gateway and no
+ * pending or uncertain work. It is recorded as an unlink accredited by the
+ * owner, never as a remote logout that did not run. */
+async function removalFacts(c:QueryExecutor,account:DomainRecord){
+ const ownership=(await c.query('SELECT frozen,lease_expires_at>now() AS live FROM session_ownership WHERE workspace_id=$1 AND account_id=$2',[account.workspace_id,account.id])).rows[0];
+ const logout=(await c.query("SELECT id,status,result FROM commands WHERE workspace_id=$1 AND environment=$2 AND resource_id=$3 AND kind='channel_command' AND payload->>'type'='logout' ORDER BY created_at DESC,id DESC LIMIT 1",[account.workspace_id,account.environment,account.id])).rows[0];
+ const pending=!!(await c.query("SELECT 1 FROM commands WHERE workspace_id=$1 AND environment=$2 AND resource_id=$3 AND kind='channel_command' AND status='PENDING' LIMIT 1",[account.workspace_id,account.environment,account.id])).rowCount;
+ const uncertain=!!(await c.query("SELECT 1 FROM commands WHERE workspace_id=$1 AND environment=$2 AND resource_id=$3 AND kind='channel_command' AND status='FAILED' AND payload->>'type' IN('connect','restart','disconnect','logout') AND COALESCE(result->>'remote_outcome','UNKNOWN')='UNKNOWN' AND NOT(result?'reconciled_at') LIMIT 1",[account.workspace_id,account.environment,account.id])).rowCount;
+ const inflight=!!(await c.query("SELECT 1 FROM outbox WHERE workspace_id=$1 AND environment=$2 AND account_id=$3 AND status IN('SENDING','UNKNOWN') LIMIT 1",[account.workspace_id,account.environment,account.id])).rowCount;
+ const blocked=!!ownership&&!account.body.unlinked_at&&!pending&&!uncertain&&!inflight&&logout?.status==='FAILED'&&logout.result?.remote_outcome==='NOT_ATTEMPTED';
+ const phase=!account.body.removal_requested_at||account.body.deleted_at?null:pending?'CLOSING_SESSION':uncertain||inflight?'CONFIRMING_PREVIOUS_WORK':blocked?'UNLINK_CONFIRMATION_REQUIRED':'FINISHING';
+ return{ownership,logout,pending,uncertain,inflight,blocked,phase};
+}
+const removalDetail:Record<string,string>={CLOSING_SESSION:'Estamos cerrando la sesión de este número.',CONFIRMING_PREVIOUS_WORK:'Estamos confirmando el resultado de una operación anterior antes de terminar la eliminación.',
+ UNLINK_CONFIRMATION_REQUIRED:'No pudimos cerrar esta sesión desde aquí. En el teléfono abre WhatsApp → Dispositivos vinculados, quita este dispositivo y después confirma aquí que ya lo desvinculaste.',FINISHING:'Terminando la eliminación.'};
+async function removalView(c:QueryExecutor,account:DomainRecord){
+ const facts=await removalFacts(c,account);
+ return facts.phase?{removal:{phase:facts.phase,detail:removalDetail[facts.phase]},...(facts.phase==='UNLINK_CONFIRMATION_REQUIRED'?{next_action:{code:'confirm_unlinked',label:'Ya lo desvinculé en mi teléfono'},detail:removalDetail[facts.phase]}:{detail:removalDetail[facts.phase]})}:{};
+}
 async function removalImpact(c:QueryExecutor,account:DomainRecord){
  const products=(await c.query("SELECT p.body->>'name' AS name FROM commercial_assignments a JOIN records p ON p.id=a.product_id AND p.workspace_id=a.workspace_id WHERE a.workspace_id=$1 AND a.environment=$2 AND a.account_id=$3 AND a.state='ACTIVE' ORDER BY 1",[account.workspace_id,account.environment,account.id])).rows.map(r=>maskedAlias(String(r.name??'Producto')));
  const conversations=Number((await c.query("SELECT count(*)::int n FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='conversation' AND body->>'account_id'=$3 AND COALESCE(body->>'status','OPEN') NOT IN('CLOSED','ARCHIVED')",[account.workspace_id,account.environment,account.id])).rows[0].n);
@@ -129,7 +153,7 @@ async function removalImpact(c:QueryExecutor,account:DomainRecord){
 /** V7 operator state (glossary): the link state first; once connected, an
  * explicit pause, then selling with a live permanent grant, then warming. */
 async function overviewRow(c:QueryExecutor,account:DomainRecord){
- const facts=await linkFacts(c,account),base=view(facts);
+ const facts=await linkFacts(c,account),base={...view(facts),...await removalView(c,account)};
  const paused=!!(await c.query("SELECT 1 FROM manual_controls WHERE workspace_id=$1 AND ((scope_type='channel_account' AND scope_id=$2) OR (scope_type='workspace' AND scope_id=$1)) AND (paused OR suppressed OR takeover) LIMIT 1",[account.workspace_id,account.id])).rowCount;
  const grants=(await c.query(`SELECT c.state->'source'->>'kind' AS kind,(c.state->>'humanPaused')::boolean AS paused,p.body->>'name' AS product FROM continuous_authorizations c
   LEFT JOIN commercial_assignments a ON a.id=c.assignment_id AND a.workspace_id=c.workspace_id AND a.environment=c.environment AND a.state='ACTIVE'
@@ -275,6 +299,42 @@ export async function numberLinkRoutes(app:FastifyInstance){
   return{data:result.data};
  });
  app.get('/v1/numbers/:id/removal',async req=>{const p=manage(req),id=idOf(req);return{data:await withProfileTransaction(pool,p.workspace_id,async c=>({id,...await removalImpact(c,await scopedRecord(req,'channel_account',id,c))}))};});
+ app.post('/v1/numbers/:id/removal/unlink-confirmation',async req=>{
+  const p=manage(req),id=idOf(req),input=z.object({expected_version:z.number().int().positive(),confirmation:z.literal('DEVICE_UNLINKED_ON_PHONE')}).strict().parse(parseBody(req));
+  // What happened on the owner's phone is stated by a person, in the application.
+  if(p.service||p.authentication_method==='personal_access_token')throw fail(403,'HUMAN_CONFIRMATION_REQUIRED','Confirma la desvinculación desde la aplicación, con tu sesión.');
+  const result=await mutate(req,'number.removal-unlink:'+id,async c=>{
+   await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['channel-command:'+id]);
+   const account=await scopedRecord(req,'channel_account',id,c);
+   if(account.body.deleted_at)return{data:{id,state:'REMOVED',label:numberLinkLabels.REMOVED}};
+   if(!account.body.removal_requested_at)throw fail(409,'NUMBER_REMOVAL_NOT_REQUESTED','Solicita primero la eliminación de este número.');
+   if(account.version!==input.expected_version)throw fail(409,'VERSION_CONFLICT','El número cambió. Actualiza y vuelve a intentar.');
+   const facts=await removalFacts(c,account);
+   if(facts.pending||facts.uncertain||facts.inflight)throw fail(409,'RECONCILIATION_REQUIRED','Hay una operación de este número cuyo resultado aún se está confirmando.');
+   if(!facts.blocked)throw fail(409,'UNLINK_CONFIRMATION_NOT_REQUIRED','Este número no necesita esta confirmación.');
+   if(facts.ownership.live||!facts.ownership.frozen||account.body.sending_enabled===true)throw fail(409,'OWNERSHIP_ISOLATION_REQUIRED','La sesión de este número todavía tiene actividad. Intenta en un momento.');
+   const session=(await c.query('SELECT id,revision,desired_state,operational_pause,recovery_enabled,gateway_id FROM channel_sessions WHERE account_id=$1 AND workspace_id=$2 AND environment=$3 AND archived_at IS NULL FOR UPDATE',[id,account.workspace_id,account.environment])).rows[0];
+   if(session&&(session.desired_state!=='STOPPED'||!session.operational_pause||session.recovery_enabled))throw fail(409,'STOP_AND_ISOLATE_BEFORE_DRAIN','La sesión de este número aún no está detenida.');
+   // Fresh evidence from the bounded administrator for exactly this number's
+   // current gateway. It proves the current host holds no session; together
+   // with the owner's statement it accredits the unlink. Alone it would not.
+   const slot=(await c.query("SELECT id,slot,readback FROM number_capacity_slots WHERE workspace_id=$1 AND environment=$2 AND account_id=$3 AND host_ref='primary' FOR SHARE",[account.workspace_id,account.environment,id])).rows[0];
+   const reference=slot?'waha-'+String(slot.slot).padStart(2,'0'):null;
+   const sessionSlot=session?.gateway_id?gatewaySlot(String(session.gateway_id).replace(/^unconfigured:/,'')):null;
+   if(!slot||account.body.gateway_ref!==reference||(sessionSlot!==null&&sessionSlot!==Number(slot.slot)))throw fail(409,'GATEWAY_SLOT_MISMATCH','No pudimos identificar el servidor actual de este número. Revísalo con soporte.');
+   if(!capacityReadbackIsFresh(slot.readback,await numberNow(c,account.workspace_id,account.environment))||slot.readback?.source!=='bounded_administrator')throw fail(409,'FRESH_GATEWAY_EVIDENCE_REQUIRED','Estamos comprobando el servidor de este número. Intenta de nuevo en un minuto.');
+   if(slot.readback.session_count!==0||(slot.readback.connected_sessions??0)!==0)throw fail(409,'GATEWAY_SESSION_STILL_PRESENT','El servidor todavía tiene una sesión de este número. Quita el dispositivo en WhatsApp → Dispositivos vinculados e intenta de nuevo.');
+   const at=new Date().toISOString();
+   const unlinked=await putRecord(c,{id,workspaceId:account.workspace_id,environment:account.environment,kind:account.kind,version:account.version,
+    body:{...account.body,status:'STOPPED',sending_enabled:false,identity_verified:false,unlinked_at:at,unlink_method:'primary_device_revocation_confirmed_and_current_gateway_empty',unlink_confirmed_by:p.user.id}});
+   await audit(c,req,'channel.unlink_reconciled',id,{method:'primary_device_revocation_confirmed_and_current_gateway_empty',remote_logout_executed:false,owner_confirmation:'DEVICE_UNLINKED_ON_PHONE',
+    gateway:{slot:Number(slot.slot),observed_at:slot.readback.observed_at,session_count:0,connected_sessions:0,source:'bounded_administrator'},blocked_command_id:facts.logout.id,blocked_reason:facts.logout.result?.error??null,
+    previous_owner_preserved_frozen:true,isolation_proof_fabricated:false,external_effects:0},account.environment);
+   const final=await finalizeRemoval(req,c,unlinked),state=final.body.deleted_at?'REMOVED':'REMOVING';
+   return{data:{id,state,label:numberLinkLabels[state],unlink_reconciled:true}};
+  });
+  return{data:result.data};
+ });
  app.post('/v1/numbers/:id/removal',async(req,reply)=>{
   const p=manage(req),id=idOf(req),input=z.object({expected_version:z.number().int().positive(),confirmation:z.literal('REMOVE_NUMBER')}).strict().parse(parseBody(req));
   const result=await mutate(req,'number.removal:'+id,async c=>{
