@@ -1,5 +1,34 @@
 # Estado de publicación
 
+## 11-nov-2026 — V7.4: números y calentamiento sin fricción, candidato (Claude)
+
+Implementada en `claude/v7-4-numbers-warmup`, desde `2f5c8be30b374105d676905c6a516467438bf57e`
+(V7.3.0 instalada). Encargo y autorización de Brandon del 11-nov. Decisiones:
+`docs/adr-v7-4-numbers-warmup.md`; guía: `docs/numbers-warmup-v7-4.md`.
+
+- **A. Alta y QR.** Una lectura de salud anterior a la integración del gateway ya
+  no cambia `NEW` ni abre incidente; el alta que V7.3 dejó en `UNKNOWN` se recupera
+  sola dentro de la misma operación, sólo si nunca se vinculó. Preparación veraz
+  (`PREPARING`, `PREPARATION_DELAYED`, `PREPARATION_FAILED`) con reintento de la
+  misma operación; ventana de QR sin peticiones superpuestas ni errores silenciados.
+- **B. Grupos.** Adaptador para WAHA 2026.8.2/GOWS (`JID`/`Name`, `pn`, `adminsOnly`)
+  conservando formatos previos; consulta por las líneas administradas listas, con
+  resultado por línea, durable, sin duplicados y con causas distinguibles.
+- **C. Externos.** Grupos con integrantes sin cuenta ni QR: sólo reciben; revisión
+  con audiencia y confirmación de consentimiento ligada a la membresía; evidencia
+  de entrega sólo de líneas propias.
+- **D. Elección por número.** «Necesita calentamiento» o «ya está preparado»,
+  guardada con el alta, editable y auditada; guardas en base (migración 0120).
+- **E.** Estados separados y sin día nominal; baja de números migrados mediante
+  desvinculación acreditada por el dueño con evidencia fresca del gateway.
+- Instalador 119→120, inventario de un gateway por plaza (20), verificación del
+  portal conservado en origen, techo bruto US$175 (US$155 + bolsa V7.4 de US$20).
+
+Verificación local del candidato: tipos y lint; 2,222 unitarias; integración
+PostgreSQL por archivo (153 grupos, incluidas las regresiones nuevas que fallan
+antes del arreglo); 1,962 pruebas Python de CI; 15 E2E con accesibilidad y móvil.
+FULL nativo, paquete, ensayo e instalación: ver el cierre del release.
+
 ## 8-nov-2026 — V7.3: Meta por portafolio y cuenta, candidato local
 
 Implementada en `codex/v7-3-meta-portfolios`, desde `1c1c24df6c19c2c5bc83135014955c5fe6b3785d`.
