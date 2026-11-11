@@ -35,7 +35,7 @@ const reasons:Record<string,string>={
  LIBRARY_LIMITS_INFEASIBLE:'Los límites elegidos no permiten completar suficientes intercambios. Amplía el horario o los máximos diarios.',LIBRARY_EXHAUSTED:'Biblioteca sin contenido disponible; espera el periodo de reutilización o cambia de biblioteca.',WARMUP_PREVIEW_CHANGED:'El grupo o sus líneas cambiaron. Vuelve a revisar.',WARMUP_VERSION_CONFLICT:'El calentamiento cambió. Actualiza para continuar.',
  QUIET_HOURS:'Fuera del horario elegido',DAILY_LIMIT_REACHED:'Límite de hoy alcanzado',DAILY_CAPACITY_RESERVED:'Envíos de hoy programados',WINDOW_TOO_SHORT:'La ventana de hoy ya no alcanza para otro intercambio',
  PREVIOUS_MODE_DAY_PRESERVED:'El modo anterior ya tiene actividad hoy; el grupo comenzará en el siguiente día disponible.',PREPARATION_EVALUATION_PENDING:'Evaluando la preparación con evidencia de entrega y conexión',
- PREPARATION_COMPLETED:'Preparación completada',GROUP_MAINTENANCE:'Mantenimiento',GROUP_PLANNED:'Calentando',PROGRAM_PAUSED:'Pausado',COMMERCIAL_PRIORITY:'Atendiendo primero las conversaciones de ventas',
+ PREPARATION_COMPLETED:'Preparación completada',GROUP_MAINTENANCE:'Mantenimiento',GROUP_PLANNED:'Envíos programados',PROGRAM_PAUSED:'Pausado',COMMERCIAL_PRIORITY:'Atendiendo primero las conversaciones de ventas',
  REAL_OPERATION_NOT_ENABLED:'La operación está pausada en la plataforma.',LIBRARY_DUPLICATE_MESSAGE:'La biblioteca contiene mensajes repetidos.',LIBRARY_DUPLICATE_SCRIPT:'La biblioteca repite títulos de guion.',LIBRARY_PERSONAL_DATA_OR_PLACEHOLDER:'Retira datos personales, enlaces y campos sin completar de la biblioteca.',
 };
 const explain=(code:string)=>reasons[code]??'Revisa la conexión, los integrantes y la configuración del calentamiento.';

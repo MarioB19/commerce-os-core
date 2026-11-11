@@ -1,5 +1,7 @@
 # F3 — preparación automática desde una conexión QR verificada
 
+> **Antecedente.** V7.4 (11-nov-2026) cambia dos reglas de esta decisión: admite participantes externos en el grupo y deja al dueño elegir, por número, si necesita calentamiento. Ver [ADR V7.4](adr-v7-4-numbers-warmup.md).
+
 Decisión adoptada por Root el12-oct-2026 antes del código, sobre RF07 y D17.
 Conectar QR autoriza permanentemente preparación entre números propios del
 mismo perfil. No añade activación, renovación, campaña ni destinatario ajeno.

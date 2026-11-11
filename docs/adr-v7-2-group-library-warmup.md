@@ -1,5 +1,7 @@
 # V7.2 — Grupos propios, biblioteca y autoridad QR
 
+> **Antecedente.** V7.4 (11-nov-2026) cambia dos reglas de esta decisión: admite participantes externos en el grupo y deja al dueño elegir, por número, si necesita calentamiento. Ver [ADR V7.4](adr-v7-4-numbers-warmup.md).
+
 Estado: aprobado por Brandon el 5 de noviembre de 2026; implementado y en validación de release.
 
 Brandon autorizó implementar, probar y publicar V7.2. Crear e iniciar programas
