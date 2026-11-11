@@ -141,6 +141,52 @@ class CloudBuildReleaseProviderTests(unittest.TestCase):
         bad = copy.deepcopy(native); bad['report']['components']['portal']['source_sha'] = SHA
         with self.assertRaises(ReleaseError): evidence.deployment_payload(admitted,bad,core,portal_https)
 
+    def test_portal_routed_to_another_host_is_verified_at_its_origin_without_assuming_a_version(self):
+        admitted,native,core,portal_https = observation()
+        container = '7'*64; native = copy.deepcopy(native)
+        native['report']['components']['portal']['container_id'] = container
+        origin = {'source':'PRESERVED_CONTAINER_LOOPBACK','container_id':container,'release':'1'*40,'activities':480}
+        v2 = {**native,'schema_version':2,'portal_origin':origin}
+        route = {'state':'PUBLIC_DOMAIN_NOT_ROUTED_TO_HOST','host':'ciclo.inovaris.online','resolved_addresses':2,'resolves_to_host':False}
+        payload = evidence.deployment_payload(admitted,v2,core,None,route)
+        self.assertEqual((payload['portal_verification'],payload['portal_public_route']),('ROOT_ORIGIN_READBACK','PUBLIC_DOMAIN_NOT_ROUTED_TO_HOST'))
+        # The public read still works unchanged when the name is served by the host.
+        self.assertNotIn('portal_verification',evidence.deployment_payload(admitted,v2,core,portal_https))
+        self.assertNotIn('portal_verification',evidence.deployment_payload(admitted,native,core,portal_https))
+        # The control is not retired: a missing public answer alone proves nothing.
+        with self.assertRaises(ReleaseError): evidence.deployment_payload(admitted,v2,core,None)
+        with self.assertRaises(ReleaseError): evidence.deployment_payload(admitted,native,core,None,route)
+        for bad_origin in ({**origin,'release':'2'*40},{**origin,'activities':479},{**origin,'container_id':'8'*64},
+                           {**origin,'source':'PUBLIC'},None):
+            with self.subTest(origin=bad_origin),self.assertRaises(ReleaseError):
+                evidence.deployment_payload(admitted,{**v2,'portal_origin':bad_origin},core,None,route)
+        for bad_route in ({**route,'resolves_to_host':True},{**route,'resolved_addresses':0},{**route,'state':'ROUTED'},
+                          {**route,'host':'example.invalid'},{**route,'extra':1}):
+            with self.subTest(route=bad_route),self.assertRaises(ReleaseError):
+                evidence.deployment_payload(admitted,v2,core,None,bad_route)
+        # A public document and a route claim together are contradictory.
+        with self.assertRaises(ReleaseError): evidence.deployment_payload(admitted,v2,core,portal_https,route)
+        with self.assertRaises(ReleaseError): evidence.validate_installed(admitted,{**v2,'unexpected':1},core,None,route)
+
+    def test_public_portal_read_is_excused_only_when_the_name_resolves_outside_the_host(self):
+        host = frozenset({'203.0.113.10'}); document = {'release':'1'*40,'activities':480}
+        def down(_url): raise ReleaseError('PUBLIC_VERSION_RESPONSE_INVALID')
+        self.assertEqual(evidence.portal_public(host,resolver=lambda _h:{'198.51.100.7'},fetch=lambda _u:document),(document,None))
+        self.assertEqual(evidence.portal_public(host,resolver=lambda _h:{'198.51.100.7','198.51.100.8'},fetch=down),
+                         (None,{'state':'PUBLIC_DOMAIN_NOT_ROUTED_TO_HOST','host':'ciclo.inovaris.online','resolved_addresses':2,'resolves_to_host':False}))
+        # Still pointing at the VM and not answering: a failure, never excused.
+        for resolved in ({'203.0.113.10'},{'198.51.100.7','203.0.113.10'},set()):
+            with self.subTest(resolved=resolved),self.assertRaises(ReleaseError):
+                evidence.portal_public(host,resolver=lambda _h,r=resolved:r,fetch=down)
+        with self.assertRaises(ReleaseError): evidence.portal_public(frozenset(),resolver=lambda _h:{'198.51.100.7'},fetch=down)
+
+    def test_vm_external_addresses_come_from_the_exact_installed_instance(self):
+        instance = {'id':'6334472381123916728','name':'commerce-os-test','networkInterfaces':[{'accessConfigs':[{'natIP':'203.0.113.10'}]}]}
+        self.assertEqual(evidence.host_external_addresses(runner=lambda *_a,**_k:instance),frozenset({'203.0.113.10'}))
+        for bad in ({**instance,'id':'1'},{**instance,'networkInterfaces':[]},{**instance,'networkInterfaces':[{'accessConfigs':[{'natIP':'not-an-ip'}]}]}):
+            with self.subTest(bad=bad.get('id')),self.assertRaises(ReleaseError):
+                evidence.host_external_addresses(runner=lambda *_a,b=bad,**_k:b)
+
     def test_root_and_https_receipts_must_match_exact_candidate(self):
         admitted,native,core,portal_https = observation()
         for key,value in (('archive_sha256','0'*64),('source_tree','0'*40),('runtime_stage','CORE_PREPARED'),
