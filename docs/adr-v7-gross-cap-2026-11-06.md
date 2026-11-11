@@ -71,3 +71,12 @@ release, un gasto superior al de la operación base requiere otra decisión.
 La aplicación operativa sigue la misma regla: imágenes derivadas de los digests
 instalados con sólo este módulo cambiado; no se amplían minutos de CI, medidor,
 permisos ni ejecuciones.
+
+Aplicación operativa (Claude, 11-nov-2026, controles en pausa, sin intento
+activo): controlador `controller@sha256:c916abb8fcf4880b69dac8f8fb4cd57a034046260778fe7cdc1a34889e738ab7`
+(revisión `commerce-v7-controller-core-v74-cap175`, derivada de `a07b8e7a…`) y
+atestador `attestor@sha256:0541d12d696aa9e249a9a490959339fe67997517a56ba3656eac9cbf0ff41d26`
+(derivado de `b03b467a…`) en los disparadores `commerce-v7-attestation-main` y
+`-pr`. La única diferencia de cada imagen es la línea `GROSS_CAP_MICROUSD` de
+`/opt/trusted/cloudbuild_admission.py`; variables, recursos, cuenta de servicio
+y aprobación requerida no cambiaron.
