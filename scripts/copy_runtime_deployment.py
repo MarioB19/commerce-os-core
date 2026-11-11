@@ -209,7 +209,10 @@ def static_projection(row):
             and type(row['Mounts']) is list and type(row['NetworkSettings']) is dict,
             'COPY_RUNTIME_INSPECT_INVALID')
     networks = row['NetworkSettings'].get('Networks')
-    require(type(networks) is dict and 0 < len(networks) <= 8,
+    # ingress and channel-worker join one bridge per canonical gateway besides core
+    # and the proxy network (9 with waha-01..07 on 11-nov-2026), so the per-container
+    # bound follows the host inventory instead of the six-gateway era constant 8.
+    require(type(networks) is dict and 0 < len(networks) <= MAX_NETWORKS,
             'COPY_RUNTIME_NETWORKS_INVALID')
     definition = {key: copy.deepcopy(row[key]) for key in
                   ('Id', 'Image', 'Name', 'Config', 'HostConfig', 'Mounts')}

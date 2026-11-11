@@ -90,6 +90,22 @@ class BoundsTests(unittest.TestCase):
         with self.assertRaises(ReleaseError):
             runtime.inspect_inventory(rows + [extra], portal=state['portal'], caddy_id=state['service_inventory']['caddy'])
 
+    def test_container_projection_accepts_one_bridge_per_gateway(self):
+        # 11-nov-2026: production ingress sits on core, seven gateway bridges and the proxy
+        # network (9). The old per-container bound of 8 refused the capture.
+        state, rows, raw = fx.fixture(6)
+        row = copy.deepcopy(next(r for r in rows if r['Config']['Labels'].get('com.docker.compose.service') == 'ingress'))
+        endpoint = copy.deepcopy(next(iter(row['NetworkSettings']['Networks'].values())))
+        def joined(count):
+            value = copy.deepcopy(row)
+            value['NetworkSettings']['Networks'] = {'commerce-os_net-%02d' % i: {**copy.deepcopy(endpoint), 'NetworkID': fx.checksum(5000+i)}
+                                                    for i in range(count)}
+            return value
+        self.assertEqual(len(runtime.static_projection(joined(9))['NetworkSettings']['Networks']), 9)
+        self.assertEqual(len(runtime.static_projection(joined(runtime.MAX_NETWORKS))['NetworkSettings']['Networks']), runtime.MAX_NETWORKS)
+        with self.assertRaisesRegex(ReleaseError, 'COPY_RUNTIME_NETWORKS_INVALID'):
+            runtime.static_projection(joined(runtime.MAX_NETWORKS+1))
+
     def test_network_snapshot_accepts_one_bridge_per_gateway(self):
         services = {'a': {'Id': 'a', 'NetworkSettings': {'Networks': {'n%d' % i: {} for i in range(11)}}}}
         listing = [{'Name': 'n%d' % i, 'Id': str(i), 'Driver': 'bridge', 'Internal': False, 'EnableIPv6': False,
