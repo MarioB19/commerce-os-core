@@ -5,6 +5,7 @@ import type {DomainRecord} from '@commerce/contracts';
 import {withProfileTransaction} from '../../../packages/db/src/profile-context.js';
 import {confirmLinkedNumber,numberLinkLabels,numberLinkState,phoneFingerprint,warmupModeOf,declarationCurrent,PREPARATION_EXPECTED_MS,type NumberLinkState,type WarmupMode} from '../../../packages/db/src/number-link.js';
 import {lockWarmupProfile} from '../../../packages/db/src/group-warmup.js';
+import {applyWarmupMode} from '../../../packages/db/src/number-warmup-mode.js';
 import {bindProfileEnvironment} from '../../../packages/db/src/profile-environment.js';
 import type {ProfileExecutor} from '../../../packages/db/src/profile-context.js';
 import {normalizePhone,numberCountries,PhoneError,type NumberCountry} from '../../../packages/domain/src/numbers/phone.js';
@@ -45,7 +46,7 @@ const nextAction:Record<NumberLinkState,{code:string;label:string}|null>={REMOVE
 async function linkFacts(c:QueryExecutor,account:DomainRecord){
  const session=(await c.query('SELECT * FROM channel_sessions WHERE account_id=$1 AND workspace_id=$2 AND archived_at IS NULL',[account.id,account.workspace_id])).rows[0];
  const profile=account.body.gateway_ref?await readIntegrationSettings(c,account.workspace_id,account.environment,'waha:'+account.body.gateway_ref,{secrets:false}).catch(()=>undefined):undefined;
- const provision=(await c.query("SELECT id,state,version,created_at,updated_at,result->>'reason' AS reason FROM number_operations WHERE workspace_id=$1 AND environment=$2 AND action='PROVISION' AND input->>'account_id'=$3 ORDER BY created_at DESC LIMIT 1",[account.workspace_id,account.environment,account.id])).rows[0];
+ const provision=(await c.query("SELECT id,state,version,created_at,updated_at,result->>'reason' AS reason,result->>'retry_requested_at' AS retry_requested_at FROM number_operations WHERE workspace_id=$1 AND environment=$2 AND action='PROVISION' AND input->>'account_id'=$3 ORDER BY created_at DESC LIMIT 1",[account.workspace_id,account.environment,account.id])).rows[0];
  const connectPending=!!(await c.query("SELECT 1 FROM commands WHERE workspace_id=$1 AND environment=$2 AND resource_id=$3 AND kind='channel_command' AND payload->>'type' IN('connect','restart') AND status='PENDING' LIMIT 1",[account.workspace_id,account.environment,account.id])).rowCount;
  return{account,session,profileReady:profile?.enabled===true||account.environment==='SIMULATION',provision,connectPending,now:await numberNow(c,account.workspace_id,account.environment)};
 }
@@ -57,7 +58,7 @@ function view(facts:Awaited<ReturnType<typeof linkFacts>>){
  return{id:a.id,version:a.version,alias:maskedAlias(String(a.body.name??'Número')),masked_number:a.body.masked_number??null,state,label:numberLinkLabels[state],qr_available:qr,
   next_action:nextAction[state],confirmed_at:a.body.link_confirmed_at??a.body.ownership_confirmed_at??null,observed_at:facts.session?.last_health_at??null,
   detail:preparing?preparationDetail[state]:null,
-  preparation:preparing?{since:facts.provision?.created_at?new Date(facts.provision.created_at).toISOString():null,expected_seconds:PREPARATION_EXPECTED_MS/1000,automatic_retry:state!=='PREPARATION_FAILED',retryable:state==='PREPARATION_FAILED'}:null,
+  preparation:preparing?{since:facts.provision?.retry_requested_at??(facts.provision?.created_at?new Date(facts.provision.created_at).toISOString():null),expected_seconds:PREPARATION_EXPECTED_MS/1000,automatic_retry:state!=='PREPARATION_FAILED',retryable:state==='PREPARATION_FAILED'}:null,
   warmup_mode:warmupModeOf(a.body)};
 }
 /** V7.4 D/E: what is true about this number's warm-up, without counting a
@@ -256,34 +257,18 @@ export async function numberLinkRoutes(app:FastifyInstance){
  // keep reconciling, a human pause stays, and nothing starts by itself.
  app.post('/v1/numbers/:id/warmup',async req=>{
   const p=manage(req),id=idOf(req),input=z.object({mode:warmupChoice,expected_version:z.number().int().positive()}).strict().parse(parseBody(req)),target=modeOfChoice(input.mode);
-  const result=await mutate(req,'number.warmup-mode:'+id,async c=>{
-   // Same first lock as group planning, commands and final emission.
+  const result=await mutate(req,'warmup.number-mode:'+id,async c=>{
+   // Same lock order as group planning, commands and final emission: the
+   // warm-up profile lock first, then the shared operational policy.
    await lockWarmupProfile(c,envOf(req));
+   if(envOf(req)==='REAL'&&(await readOperationalSettings(c,p.workspace_id,'REAL',{lock:'share'})).release_hold)throw fail(409,'RELEASE_HOLD_ACTIVE','Estamos actualizando la plataforma. Intenta en un momento.');
    await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['channel-command:'+id]);
    const account=await scopedRecord(req,'channel_account',id,c);
    if(account.body.deleted_at||account.body.removal_requested_at)throw fail(409,'NUMBER_REMOVAL_IN_PROGRESS','Este número se está eliminando.');
    const current=warmupModeOf(account.body),rebind=target==='DECLARED_READY'&&current==='DECLARED_READY'&&!declarationCurrent(account.body);
    if(current===target&&!rebind&&account.body.warmup_mode_source==='owner_choice')return{data:{id,version:account.version,warmup_mode:current,changed:false}};
    if(account.version!==input.expected_version)throw fail(409,'VERSION_CONFLICT','El número cambió. Actualiza y vuelve a intentar.');
-   const effects={cancelled_unsent:0,programs_paused:0,deliveries_to_confirm:0};
-   if(target==='DECLARED_READY'&&current!=='DECLARED_READY'){
-    const programs=(await c.query('SELECT g.id,g.pool_id,g.account_ids FROM warmup_account_reservations v JOIN warmup_programs g ON g.id=v.program_id WHERE v.account_id=$1 AND g.workspace_id=$2 AND g.environment=$3 FOR UPDATE OF g',[id,account.workspace_id,account.environment])).rows;
-    effects.cancelled_unsent=(await c.query(`UPDATE outbox o SET status='CANCELLED',result=result||'{"reason":"OWNER_DECLARED_READY"}'::jsonb,updated_at=now()
-     WHERE o.workspace_id=$1 AND o.environment=$2 AND o.kind='warmup' AND o.status IN('READY','BLOCKED') AND
-      (o.account_id=$3::text OR o.contact_id=$3::text OR EXISTS(SELECT 1 FROM warmup_turns t WHERE t.effect_id=o.id AND $3::uuid=ANY(t.recipient_ids)) OR o.payload->>'warmup_pool_id'=ANY($4::text[]))`,[account.workspace_id,account.environment,id,programs.map(g=>String(g.pool_id)).filter(v=>v!=='null')])).rowCount??0;
-    effects.deliveries_to_confirm=Number((await c.query("SELECT count(*)::int n FROM outbox WHERE workspace_id=$1 AND environment=$2 AND kind='warmup' AND account_id=$3::text AND status IN('SENDING','UNKNOWN')",[account.workspace_id,account.environment,id])).rows[0].n);
-    for(const g of programs){
-     await c.query("UPDATE warmup_programs SET status=CASE WHEN status='ACTIVE' THEN 'PAUSED' ELSE status END,review_hash=NULL,version=version+1,updated_at=now() WHERE id=$1",[g.id]);
-     if(g.pool_id)await c.query("UPDATE warmup_pools SET paused=true,breaker_reason='PARTICIPANT_WARMUP_CHOICE_CHANGED',version=version+1 WHERE id=$1",[g.pool_id]);
-     effects.programs_paused++;
-    }
-    await c.query('DELETE FROM warmup_account_reservations WHERE account_id=$1',[id]);
-    await c.query("UPDATE warmup_states SET status=CASE WHEN status='GRADUATED' THEN status ELSE 'PAUSED' END,reason=CASE WHEN status='GRADUATED' THEN reason ELSE 'OWNER_DECLARED_READY' END,group_required=true,version=version+1,updated_at=now() WHERE account_id=$1 AND workspace_id=$2 AND environment=$3",[id,account.workspace_id,account.environment]);
-   }
-   if(target==='REQUIRED'&&current!=='REQUIRED')await c.query("UPDATE warmup_states SET status='AWAITING_PEER',reason='GROUP_SELECTION_REQUIRED',group_required=true,version=version+1,updated_at=now() WHERE account_id=$1 AND workspace_id=$2 AND environment=$3 AND status='PAUSED' AND reason='OWNER_DECLARED_READY'",[id,account.workspace_id,account.environment]);
-   const {warmup_declared_identity:_previous,...body}=account.body;
-   const saved=await putRecord(c,{id,workspaceId:account.workspace_id,environment:account.environment,kind:account.kind,version:account.version,
-    body:{...body,warmup_mode:target,warmup_mode_source:'owner_choice',warmup_mode_set_at:new Date().toISOString(),warmup_mode_set_by:p.user.id,...(target==='DECLARED_READY'&&account.body.identity_fingerprint?{warmup_declared_identity:account.body.identity_fingerprint}:{})}});
+   const {saved,effects}=await applyWarmupMode(c,account,target,p.user.id);
    await audit(c,req,'number.warmup_mode_changed',id,{from:current,to:target,rebound_to_current_identity:rebind,...effects,history_preserved:true,external_effects:0},account.environment);
    return{data:{id,version:saved.version,warmup_mode:target,changed:true,...effects}};
   });

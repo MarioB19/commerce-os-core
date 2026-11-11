@@ -9,6 +9,10 @@ import {planQrGroupPool} from '../../apps/automation-worker/src/group-qr-planner
 import {observeGroup,classifyGroupEvent} from '../../packages/db/src/warmup-groups.js';
 import {groupWarmupConfigSchema,type GroupWarmupConfig} from '../../packages/contracts/src/group-warmup.js';
 import {getRecord} from '../../packages/db/src/index.js';
+import {requestGroupRefresh,groupReadableLines} from '../../packages/db/src/group-warmup.js';
+import {processNumberOperations} from '../../apps/channel-worker/src/number-operations.js';
+import {WahaProvider} from '../../packages/messaging/src/providers.js';
+import {applyWarmupMode} from '../../packages/db/src/number-warmup-mode.js';
 /** Restricted real PostgreSQL over explicitly synthetic connection observations.
  * No provider, physical QR, host or external message is invoked. */
 import {randomBytes,randomUUID} from 'node:crypto';
@@ -337,5 +341,116 @@ describe('V7.2 own group programs under restricted PostgreSQL',()=>{
   await admin.query("UPDATE records SET body=body||'{\"warmup_mode\":\"DECLARED_READY\"}'::jsonb,version=version+1 WHERE id=$1",[f.lines[0]!.account]);
   await asProfileOwner(admin,f.w,db=>db.query("UPDATE outbox SET status='CANCELLED' WHERE workspace_id=$1 AND status IN('READY','BLOCKED')",[f.w]));
   expect(await f.schedule(p.id)).toMatchObject({planned:0,reason:'PARTICIPANT_WARMUP_NOT_REQUESTED'});
+ });
+
+ // ---- V7.4 B: reading groups from the selected managed lines ----
+ /** Synthetic WAHA 2026.8.2 / GOWS gateway of one line: JID/Name rows,
+  * participants v2 with id (LID) + pn, and adminsOnly. No network is used. */
+ function gowsFactory(w:string,lines:{account:string;raw:string}[],externalCount:number,faults:Record<string,'unavailable'|'incompatible'|'starting'|undefined>={}){
+  const jid='1203630000'+suffix.replace(/\D/g,'0').padEnd(8,'0')+'@g.us',lid=(i:number)=>'9000000000'+String(i).padStart(4,'0')+'@lid';
+  const participants=[...lines.map((q,i)=>({id:lid(i),pn:q.raw,role:i===0?'superadmin':'participant'})),...Array.from({length:externalCount},(_,i)=>i%2===0?{id:lid(100+i),pn:'52155999'+String(10000+i)+'@c.us',role:'participant'}:{id:lid(100+i),role:'participant'})];
+  const calls:string[]=[];
+  const factory=async(account:any)=>new WahaProvider({baseUrl:'http://waha-fixture:3000',apiKey:'fixture',session:'default',engine:'GOWS'},async(input:string|URL|Request)=>{
+   const path=new URL(String(input)).pathname,fault=faults[account.id];calls.push(account.id+' '+path);
+   if(fault==='unavailable')return new Response('{}',{status:503});if(fault==='starting')return new Response('{}',{status:422});
+   if(path==='/api/server/version')return new Response(JSON.stringify({version:'2026.8.2',engine:'GOWS'}));
+   if(path.endsWith('/participants/v2'))return new Response(JSON.stringify(participants));
+   if(path.endsWith('/settings/security/messages-admin-only'))return new Response(JSON.stringify({adminsOnly:false}));
+   if(fault==='incompatible')return new Response(JSON.stringify([{chat:'unexpected'}]));
+   const row={JID:jid,Name:'Grupo mixto sintético',Participants:[],ParticipantCount:participants.length,IsAnnounce:false};
+   return new Response(JSON.stringify(path.endsWith('/groups')?[row]:row));}) as any;
+  return{factory,calls,w};
+ }
+ async function gowsLines(n:number){const w=await profile(),lines:Awaited<ReturnType<typeof connection>>[]=[];for(let i=0;i<n;i++){const q=await connection(w);await enrollment(w,q.account);lines.push(q);}
+  await admin.query("UPDATE records SET body=body||'{\"engine\":\"GOWS\"}'::jsonb,version=version+1 WHERE workspace_id=$1 AND kind='channel_account'",[w]);return{w,lines};}
+ const operation=async(id:string)=>(await admin.query('SELECT state,input,result FROM number_operations WHERE id=$1',[id])).rows[0];
+ const refresh=(w:string,ids:string[],id=randomUUID())=>tx(w,'commerce_api',db=>requestGroupRefresh(db,'REAL',id,ids,actor));
+
+ it('reads a mixed GOWS group from the managed lines selected to consult, without asking the externals for anything (V7.4)',async()=>{
+  const {w,lines}=await gowsLines(3),gateway=gowsFactory(w,lines,2);
+  const requested=await refresh(w,lines.map(q=>q.account));expect(requested).toMatchObject({state:'REQUESTED',joined:false});expect(requested.lines.every((l:any)=>l.state==='READY')).toBe(true);
+  // A second click, tab or agent joins the running read instead of queueing another.
+  expect(await refresh(w,lines.map(q=>q.account))).toMatchObject({id:requested.id,joined:true});
+  expect((await admin.query("SELECT count(*)::int n FROM number_operations WHERE workspace_id=$1 AND action='GROUP_REFRESH'",[w])).rows[0].n).toBe(1);
+  await processNumberOperations('v74-fixture',gateway.factory);
+  const done=await operation(requested.id);expect(done.state).toBe('SUCCEEDED');expect(done.result.summary).toEqual({lines_read:3,lines_failed:0,groups:1});
+  expect(Object.values(done.result.accounts)).toEqual([{state:'READ',groups:1},{state:'READ',groups:1},{state:'READ',groups:1}]);
+  const group=(await admin.query('SELECT members,permissions,capabilities,name FROM warmup_groups WHERE workspace_id=$1',[w])).rows[0];
+  expect(group.name).toBe('Grupo mixto sintético');expect(group.permissions).toEqual({admin_only:false});expect(group.capabilities).toMatchObject({own_members:3,external_members:2,all_members_resolved:false});
+  expect(group.members.filter((m:any)=>m.account_id).map((m:any)=>m.account_id).sort()).toEqual(lines.map(q=>q.account).sort());
+  expect(group.members.filter((m:any)=>!m.account_id).map((m:any)=>m.mapping_source).sort()).toEqual(['provider_explicit_mapping','unresolved']);
+  // Stored members are hashes: no phone or provider identity of an external is kept in clear.
+  expect(JSON.stringify(group.members)).not.toMatch(/52155999|@lid|@c\.us/);
+  // Refreshing reads; it never sends, schedules or registers anything.
+  expect((await admin.query('SELECT count(*)::int n FROM outbox WHERE workspace_id=$1',[w])).rows[0].n).toBe(0);
+  expect((await tx(w,'commerce_api',db=>listWarmupGroups(db,'REAL')))[0]).toMatchObject({eligible:true,reason:null,audience:{participants:3,ownReady:0,external:2,total:5}});
+  // The read is durable: after a reload the overview still shows its result.
+  expect((await tx(w,'commerce_api',db=>groupWarmupOverview(db,'REAL'))).refresh).toMatchObject({id:requested.id,state:'SUCCEEDED'});
+ });
+ it('tells a verifiable wait from a missing connection and never asks to scan a valid QR again (V7.4)',async()=>{
+  const {w,lines}=await gowsLines(3),[ready,pending,off]=lines.map(q=>q.account) as [string,string,string];
+  // Connected and scanned, but its identity confirmation is still in flight.
+  await admin.query("UPDATE records SET body=body||'{\"identity_verified\":false}'::jsonb,version=version+1 WHERE id=$1",[pending]);
+  await admin.query("UPDATE channel_sessions SET observed_state='STOPPED',desired_state='STOPPED' WHERE account_id=$1",[off]);
+  const states=Object.fromEntries((await tx(w,'commerce_api',db=>groupReadableLines(db,'REAL'))).map(l=>[l.accountId,l.state]));
+  expect(states).toEqual({[ready]:'READY',[pending]:'VERIFICATION_PENDING',[off]:'NOT_CONNECTED'});
+  await expect(refresh(w,[pending])).rejects.toThrow('GROUP_LINES_VERIFICATION_PENDING');
+  await expect(refresh(w,[pending,off])).rejects.toThrow('GROUP_LINES_VERIFICATION_PENDING');
+  await expect(refresh(w,[off])).rejects.toThrow('GROUP_LINES_NOT_CONNECTED');
+  await expect(refresh(w,[ready,randomUUID()])).rejects.toThrow('ACCOUNT_SCOPE_INVALID');
+  // One ready line is enough to consult; the others are recorded with their reason.
+  const requested=await refresh(w,[ready,pending,off]);expect((await operation(requested.id)).input).toMatchObject({account_ids:[ready]});
+  expect((await operation(requested.id)).input.skipped.map((l:any)=>l.state).sort()).toEqual(['NOT_CONNECTED','VERIFICATION_PENDING']);
+  // A revoked or paused authority and a real identity conflict still block.
+  await admin.query("UPDATE channel_sessions SET operational_pause=true WHERE account_id=$1",[ready]);await expect(refresh(w,[ready],randomUUID())).rejects.toThrow('GROUP_LINES_PAUSED');
+  await admin.query("UPDATE channel_sessions SET operational_pause=false WHERE account_id=$1",[ready]);await admin.query("UPDATE records SET body=body||'{\"identity_conflict\":true}'::jsonb,version=version+1 WHERE id=$1",[ready]);
+  await expect(refresh(w,[ready],randomUUID())).rejects.toThrow('GROUP_LINES_IDENTITY_CONFLICT');
+ });
+ it('keeps what the healthy lines read when another gateway is unreachable, starting or incompatible (V7.4)',async()=>{
+  const {w,lines}=await gowsLines(3),[a,b,c]=lines.map(q=>q.account) as [string,string,string];
+  const partial=await refresh(w,[a,b,c]);await processNumberOperations('v74-fixture',gowsFactory(w,lines,2,{[b]:'unavailable',[c]:'starting'}).factory);
+  const mixed=await operation(partial.id);expect(mixed.state).toBe('SUCCEEDED');expect(mixed.result.summary).toEqual({lines_read:1,lines_failed:2,groups:1});
+  expect(mixed.result.accounts).toEqual({[a]:{state:'READ',groups:1},[b]:{state:'FAILED',groups:0,reason:'GROUP_PROVIDER_UNAVAILABLE'},[c]:{state:'FAILED',groups:0,reason:'GROUP_SESSION_NOT_READY'}});
+  const broken=await refresh(w,[a,b,c]);await processNumberOperations('v74-fixture',gowsFactory(w,lines,2,{[a]:'incompatible',[b]:'incompatible',[c]:'incompatible'}).factory);
+  const failed=await operation(broken.id);expect(failed.state).toBe('FAILED');expect(failed.result.reason).toBe('GROUP_LIST_RESPONSE_UNSUPPORTED');expect(failed.result.summary.lines_failed).toBe(3);
+  // A line with no groups is a valid answer, not a failure.
+  const empty=await refresh(w,[a]);await processNumberOperations('v74-fixture',async()=>new WahaProvider({baseUrl:'http://waha-fixture:3000',apiKey:'fixture',session:'default',engine:'GOWS'},async()=>new Response('[]')) as any);
+  expect(await operation(empty.id)).toMatchObject({state:'SUCCEEDED',result:{summary:{lines_read:1,lines_failed:0,groups:0}}});
+ });
+
+ it('declaring a participant ready keeps history, cancels only unsent work, pauses its program and never restarts by itself (V7.4)',async()=>{
+  const f=await groupFixture(3),p=await f.start();await f.schedule(p.id);const leaving=f.lines[0]!.account;
+  // One message was already accepted and one is uncertain: both must survive.
+  const [sent,unknown]=(await admin.query("SELECT id FROM outbox WHERE workspace_id=$1 AND account_id=$2 ORDER BY not_before LIMIT 2",[f.w,leaving])).rows.map(r=>r.id);
+  await asProfileOwner(admin,f.w,async db=>{await db.query("UPDATE outbox SET status='SENT',attempts=1 WHERE id=$1",[sent]);await db.query("UPDATE outbox SET status='UNKNOWN',attempts=1 WHERE id=$1",[unknown]);});
+  await admin.query("INSERT INTO manual_controls(workspace_id,scope_type,scope_id,paused,reason,actor_id) VALUES($1,'channel_account',$2,true,'Pausado por ti',$3)",[f.w,f.lines[1]!.account,actor]);
+  const before={episodes:(await admin.query('SELECT id,started_at,closed_at FROM warmup_episodes WHERE workspace_id=$1 ORDER BY id',[f.w])).rows,state:await state(leaving),total:(await admin.query('SELECT count(*)::int n FROM outbox WHERE workspace_id=$1',[f.w])).rows[0].n};
+  const change=(mode:'REQUIRED'|'DECLARED_READY')=>tx(f.w,'commerce_api',async db=>{await lockWarmupProfile(db,'REAL');return applyWarmupMode(db,(await getRecord(db,f.w,'channel_account',leaving))!,mode,actor);});
+  const {effects,saved}=await change('DECLARED_READY');
+  expect(effects.programs_paused).toBe(1);expect(effects.deliveries_to_confirm).toBe(1);expect(effects.cancelled_unsent).toBeGreaterThan(0);
+  expect(saved.body).toMatchObject({warmup_mode:'DECLARED_READY',warmup_mode_source:'owner_choice',warmup_declared_identity:saved.body.identity_fingerprint});
+  const statuses=Object.fromEntries((await admin.query('SELECT status,count(*)::int n FROM outbox WHERE workspace_id=$1 GROUP BY status',[f.w])).rows.map(r=>[r.status,r.n]));
+  expect(statuses).toEqual({SENT:1,UNKNOWN:1,CANCELLED:before.total-2});
+  expect((await admin.query("SELECT result->>'reason' reason FROM outbox WHERE workspace_id=$1 AND status='CANCELLED' LIMIT 1",[f.w])).rows[0].reason).toBe('OWNER_DECLARED_READY');
+  const program=await tx(f.w,'commerce_api',db=>readGroupProgram(db,'REAL',p.id));expect(program).toMatchObject({status:'PAUSED',review_hash:null});
+  expect((await admin.query('SELECT account_id FROM warmup_account_reservations WHERE program_id=$1 ORDER BY account_id',[p.id])).rows.map(r=>r.account_id)).toEqual(f.lines.slice(1).map(q=>q.account).sort());
+  // History is kept: same episodes, same credits, the state row stays with its days.
+  expect((await admin.query('SELECT id,started_at,closed_at FROM warmup_episodes WHERE workspace_id=$1 ORDER BY id',[f.w])).rows).toEqual(before.episodes);
+  expect(await state(leaving)).toMatchObject({status:'PAUSED',reason:'OWNER_DECLARED_READY',group_required:true,effective_days:before.state.effective_days,paused:false,episode_id:before.state.episode_id,identity_id:before.state.identity_id});
+  // The human pause of another line is untouched.
+  expect((await admin.query("SELECT paused FROM manual_controls WHERE workspace_id=$1 AND scope_id=$2",[f.w,f.lines[1]!.account])).rows[0].paused).toBe(true);
+  // Workers, reconnection and restart do not bring it back; the paused program plans nothing.
+  await connection(f.w,leaving);expect(await enrollment(f.w,leaving)).toEqual({state:'WARMUP_NOT_REQUESTED'});
+  expect(await f.schedule(p.id)).toMatchObject({planned:0});
+  expect((await admin.query("SELECT count(*)::int n FROM outbox WHERE workspace_id=$1 AND status IN('READY','BLOCKED')",[f.w])).rows[0].n).toBe(0);
+  // The remaining two lines can be reviewed and resumed; the declared line only receives.
+  const config={...f.config,senderIds:f.lines.slice(1).map(q=>q.account)},preview=await tx(f.w,'commerce_api',db=>previewGroupWarmup(db,'REAL',config,p.id));
+  expect(preview.audience).toMatchObject({participants:2,ownReady:1,external:0,consentRequired:false});expect(preview.blockers).toEqual(['WARMUP_RECONCILIATION_REQUIRED']);
+  // Asking for warm-up again starts nothing: the number waits for a group.
+  expect((await change('REQUIRED')).saved.body.warmup_declared_identity).toBeUndefined();
+  expect(await state(leaving)).toMatchObject({status:'AWAITING_PEER',reason:'GROUP_SELECTION_REQUIRED',group_required:true,effective_days:before.state.effective_days});
+  expect((await tx(f.w,'commerce_api',db=>readGroupProgram(db,'REAL',p.id))).status).toBe('PAUSED');
+  expect((await admin.query("SELECT count(*)::int n FROM outbox WHERE workspace_id=$1 AND status IN('READY','BLOCKED')",[f.w])).rows[0].n).toBe(0);
+  expect((await admin.query('SELECT count(*)::int n FROM warmup_account_reservations WHERE account_id=$1',[leaving])).rows[0].n).toBe(0);
  });
 });

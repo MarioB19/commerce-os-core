@@ -28,11 +28,12 @@ export const phoneFingerprint=(digits:string)=>createHmac('sha256',phoneKey()).u
  * late (the same operation keeps being retried), and a terminal failure of the
  * operation offers a safe retry instead of an endless «unos segundos». */
 export const PREPARATION_EXPECTED_MS=5*60_000;
-export interface NumberLinkFacts {account:DomainRecord;session?:Record<string,any>;profileReady:boolean;provision?:{state:string;created_at?:Date|string|null;updated_at?:Date|string|null;reason?:string|null}|undefined;connectPending:boolean;now:Date}
+export interface NumberLinkFacts {account:DomainRecord;session?:Record<string,any>;profileReady:boolean;provision?:{state:string;created_at?:Date|string|null;updated_at?:Date|string|null;retry_requested_at?:Date|string|null;reason?:string|null}|undefined;connectPending:boolean;now:Date}
 export function preparationPhase(f:Pick<NumberLinkFacts,'provision'|'now'|'account'>):'PREPARING'|'PREPARATION_DELAYED'|'PREPARATION_FAILED'{
  const state=f.provision?.state;
  if(state==='FAILED'||state==='CANCELLED')return 'PREPARATION_FAILED';
- const since=f.provision?.created_at??f.account.created_at,age=since?f.now.getTime()-new Date(since).getTime():0;
+ // An explicit retry of the same operation starts a new observation window.
+ const since=f.provision?.retry_requested_at??f.provision?.created_at??f.account.created_at,age=since?f.now.getTime()-new Date(since).getTime():0;
  return age>PREPARATION_EXPECTED_MS?'PREPARATION_DELAYED':'PREPARING';
 }
 export function numberLinkState(f:NumberLinkFacts):{state:NumberLinkState;qr:boolean}{

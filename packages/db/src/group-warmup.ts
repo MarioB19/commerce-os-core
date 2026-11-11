@@ -178,7 +178,7 @@ export async function requestGroupRefresh(db:ProfileExecutor,environment:Environ
  return replay(db,environment,operationId,actor,{action:'refresh_groups',accountIds},async()=>{
   const lines=await groupReadableLines(db,environment,accountIds);need(lines.length===accountIds.length,'ACCOUNT_SCOPE_INVALID');
   const ready=lines.filter(l=>l.state==='READY').map(l=>l.accountId);
-  if(!ready.length)warmupError(lines.some(l=>l.state==='VERIFICATION_PENDING'||l.state==='HEALTH_PENDING')?'GROUP_LINES_VERIFICATION_PENDING':lines.some(l=>l.state==='PAUSED')?'GROUP_LINES_PAUSED':'GROUP_LINES_NOT_CONNECTED');
+  if(!ready.length)warmupError(lines.some(l=>l.state==='VERIFICATION_PENDING'||l.state==='HEALTH_PENDING')?'GROUP_LINES_VERIFICATION_PENDING':lines.some(l=>l.state==='PAUSED')?'GROUP_LINES_PAUSED':lines.some(l=>l.state==='IDENTITY_CONFLICT')?'GROUP_LINES_IDENTITY_CONFLICT':'GROUP_LINES_NOT_CONNECTED');
   // One profile-wide read at a time: a second click, tab or agent joins the
   // running operation instead of queueing another pass over the provider.
   const running=(await db.query("SELECT id,state FROM number_operations WHERE workspace_id=$1 AND environment=$2 AND action='GROUP_REFRESH' AND NOT(input?'group_id') AND state IN('REQUESTED','RESERVED','PREPARING') ORDER BY created_at LIMIT 1",[db.workspaceId,environment])).rows[0];
