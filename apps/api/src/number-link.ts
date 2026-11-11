@@ -7,7 +7,6 @@ import {confirmLinkedNumber,numberLinkLabels,numberLinkState,phoneFingerprint,wa
 import {lockWarmupProfile} from '../../../packages/db/src/group-warmup.js';
 import {applyWarmupMode} from '../../../packages/db/src/number-warmup-mode.js';
 import {bindProfileEnvironment} from '../../../packages/db/src/profile-environment.js';
-import type {ProfileExecutor} from '../../../packages/db/src/profile-context.js';
 import {normalizePhone,numberCountries,PhoneError,type NumberCountry} from '../../../packages/domain/src/numbers/phone.js';
 import {STANDARD_POLICY} from '../../../packages/domain/src/warmup/preparation.js';
 import {maskedAlias} from '../../../packages/domain/src/warmup/number-state.js';
