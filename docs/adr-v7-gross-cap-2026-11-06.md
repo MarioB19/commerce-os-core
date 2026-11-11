@@ -56,3 +56,18 @@ dueño y la proyección siguen exigiendo inventario completo, mes vigente,
 `credit_verified: false` sin saldo comprobado y evidencia vigente. Se conservan
 todos los respaldos, snapshots y PITR. La aplicación operativa sigue la misma
 regla: imágenes derivadas de los digests instalados con sólo este módulo cambiado.
+
+## Enmienda — 11-nov-2026: techo US$175 para V7.4
+
+Brandon autorizó el 11-nov, para el release V7.4, «como máximo US$20 adicionales
+en total de Google Cloud», una sola bolsa entre fases, reintentos y sesiones,
+sobre la operación base (tope anterior US$155). `GROSS_CAP_MICROUSD` pasa a
+175,000,000: es el techo anterior más esa bolsa, no un aumento general. La
+admisión sigue exigiendo `owner_budget` del mes, proyección dentro del
+presupuesto, inventario completo, evidencia vigente y `credit_verified: false`.
+Las pruebas aceptan exactamente US$175 y rechazan US$175.000001. El consumo
+incremental de V7.4 se registra aparte de la operación habitual; pasado este
+release, un gasto superior al de la operación base requiere otra decisión.
+La aplicación operativa sigue la misma regla: imágenes derivadas de los digests
+instalados con sólo este módulo cambiado; no se amplían minutos de CI, medidor,
+permisos ni ejecuciones.
