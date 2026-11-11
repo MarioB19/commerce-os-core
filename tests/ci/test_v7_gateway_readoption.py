@@ -106,6 +106,41 @@ class BoundsTests(unittest.TestCase):
         with self.assertRaisesRegex(ReleaseError, 'COPY_RUNTIME_NETWORKS_INVALID'):
             runtime.static_projection(joined(runtime.MAX_NETWORKS+1))
 
+    def test_supervisor_bridge_wiring_becomes_compose_aliases_only_on_gateway_bridges(self):
+        # 11-nov-2026: waha-05..07 were added by the supervisor (docker network connect, no
+        # aliases); the publication recreated ingress and channel-worker through Compose.
+        def nets(service, aliases_on_new):
+            pair = sorted(['commerce-os-%s-1' % service, service])
+            value = {'commerce-os_core': {'NetworkID': fx.checksum(1), 'Aliases': pair, 'GwPriority': 0},
+                     'commerce-os_gateway-01': {'NetworkID': fx.checksum(2), 'Aliases': pair, 'GwPriority': 0}}
+            for slot in (5, 6, 7):
+                value['commerce-os_gateway-%02d' % slot] = {'NetworkID': fx.checksum(10+slot), 'Aliases': aliases_on_new(pair), 'GwPriority': 0}
+            return {'HostConfig': {'Binds': None, 'Dns': None}, 'Mounts': [], 'NetworkSettings': {'Networks': value}}
+        for service in ('ingress', 'channel-worker'):
+            old, new = nets(service, lambda pair: []), nets(service, lambda pair: pair)
+            self.assertTrue(runtime.application_boundary_equal(service, old, new))
+            self.assertTrue(runtime.application_boundary_equal(service, new, copy.deepcopy(new)))
+            self.assertFalse(runtime.application_boundary_equal(service, new, old))  # never back to no aliases
+            for mutate in ('other_alias', 'network_id', 'priority', 'extra_network', 'core_alias', 'slot_21', 'foreign_name'):
+                bad_old, bad = copy.deepcopy(old), copy.deepcopy(new)
+                n_old, n_new = bad_old['NetworkSettings']['Networks'], bad['NetworkSettings']['Networks']
+                if mutate == 'other_alias': n_new['commerce-os_gateway-05']['Aliases'] = sorted(n_new['commerce-os_gateway-05']['Aliases'] + ['postgres'])
+                if mutate == 'network_id': n_new['commerce-os_gateway-06']['NetworkID'] = fx.checksum(99)
+                if mutate == 'priority': n_new['commerce-os_gateway-07']['GwPriority'] = 1
+                if mutate == 'extra_network': n_new['commerce-os_gateway-08'] = copy.deepcopy(n_new['commerce-os_gateway-07'])
+                if mutate == 'core_alias': n_old['commerce-os_core']['Aliases'] = []
+                if mutate == 'slot_21':
+                    n_old['commerce-os_gateway-21'] = {'NetworkID': fx.checksum(21), 'Aliases': [], 'GwPriority': 0}
+                    n_new['commerce-os_gateway-21'] = {**n_old['commerce-os_gateway-21'], 'Aliases': n_new['commerce-os_core']['Aliases']}
+                if mutate == 'foreign_name':
+                    n_old['other_gateway-05'] = {'NetworkID': fx.checksum(31), 'Aliases': [], 'GwPriority': 0}
+                    n_new['other_gateway-05'] = {**n_old['other_gateway-05'], 'Aliases': n_new['commerce-os_core']['Aliases']}
+                with self.subTest(service=service, mutate=mutate):
+                    self.assertFalse(runtime.application_boundary_equal(service, bad_old, bad))
+        # Only the services Compose attaches to the gateway bridges.
+        old, new = nets('api', lambda pair: []), nets('api', lambda pair: pair)
+        self.assertFalse(runtime.application_boundary_equal('api', old, new))
+
     def test_network_snapshot_accepts_one_bridge_per_gateway(self):
         services = {'a': {'Id': 'a', 'NetworkSettings': {'Networks': {'n%d' % i: {} for i in range(11)}}}}
         listing = [{'Name': 'n%d' % i, 'Id': str(i), 'Driver': 'bridge', 'Internal': False, 'EnableIPv6': False,

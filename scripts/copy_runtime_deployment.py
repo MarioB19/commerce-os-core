@@ -388,6 +388,40 @@ def engine_neutral_host(host):
     return view
 
 
+GATEWAY_BRIDGE = re.compile(r'commerce-os_gateway-([0-9]{2})')
+# Services Compose attaches to every gateway bridge (infra/compose/production.yaml).
+GATEWAY_BRIDGE_SERVICES = frozenset({'ingress', 'channel-worker'})
+
+
+def network_boundary_equal(name, old, new):
+    """Networks of one application service before/after a publication.
+
+    Equal, or the supervisor's bridge wiring made canonical: a canonical EXPAND
+    attaches ingress and channel-worker to the new gateway bridge with
+    `docker network connect`, which records no aliases, and the next publication
+    recreates both through Compose, which records [container, service]. Same
+    network IDs, same priority, only on commerce-os_gateway-NN of a canonical
+    slot, only from no aliases to exactly Compose's pair (11-nov-2026: the V7.4
+    rehearsal stopped here after waha-05..07 were added)."""
+    old_nets, new_nets = old['NetworkSettings']['Networks'], new['NetworkSettings']['Networks']
+    if old_nets == new_nets:
+        return True
+    if name not in GATEWAY_BRIDGE_SERVICES or set(old_nets) != set(new_nets):
+        return False
+    compose = sorted(['commerce-os-%s-1' % name, name])
+    for network, before in old_nets.items():
+        after = new_nets[network]
+        if before == after:
+            continue
+        match = GATEWAY_BRIDGE.fullmatch(network)
+        if not (match and 'waha-' + match[1] in GATEWAYS
+                and {key: value for key, value in before.items() if key != 'Aliases'}
+                == {key: value for key, value in after.items() if key != 'Aliases'}
+                and before.get('Aliases') == [] and after.get('Aliases') == compose):
+            return False
+    return True
+
+
 def application_boundary_equal(name, old, new):
     """Static projections of one application service before/after a publication.
 
@@ -397,7 +431,7 @@ def application_boundary_equal(name, old, new):
     first V7 publication can add it; afterwards plain equality applies again."""
     old_host, new_host = engine_neutral_host(old['HostConfig']), engine_neutral_host(new['HostConfig'])
     if old_host == new_host and old['Mounts'] == new['Mounts']:
-        return old['NetworkSettings'] == new['NetworkSettings']
+        return network_boundary_equal(name, old, new)
     if name != 'automation-worker' or old['NetworkSettings'] != new['NetworkSettings']:
         return False
     if any(m.get('Destination') == LAB_MOUNT for m in old['Mounts']):
