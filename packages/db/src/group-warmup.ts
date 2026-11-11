@@ -75,10 +75,13 @@ export async function importWarmupLibrary(db:ProfileExecutor,input:z.infer<typeo
 export async function previewGroupWarmup(db:ProfileExecutor,environment:Environment,raw:GroupWarmupConfig,programId?:string){
  const config=groupWarmupConfigSchema.parse(raw),blockers:string[]=[];const target=programId?await readGroupProgram(db,environment,programId):null;const now=(await db.query('SELECT clock_timestamp() AS now')).rows[0].now as Date;
  const group=(await db.query('SELECT * FROM warmup_groups WHERE workspace_id=$1 AND environment=$2 AND id=$3',[db.workspaceId,environment,config.groupId])).rows[0];
- const members:string[]=group?.members?.map((m:Body)=>m.account_id).filter(Boolean).sort()??[];
- if(!group)blockers.push('GROUP_NOT_FOUND');else{const reason=groupEligibility(group,members,now,config.senderIds);if(reason)blockers.push(reason);}
+ // V7.4 C/D: participants are this profile's lines whose owner asked for
+ // warm-up. Own lines declared ready and external members only receive.
+ const audience=group?await groupAudience(db,environment,group):{participants:[] as string[],ownReady:[] as string[],external:0,total:0,externalDigest:hash('[]')},members:string[]=audience.participants;
+ if(config.senderIds.some(id=>audience.ownReady.includes(id)))blockers.push('SENDER_WARMUP_NOT_REQUESTED');
+ else if(config.senderIds.some(id=>!members.includes(id)))blockers.push('SENDER_NOT_IN_GROUP');
  if(members.length<2||members.length>10)blockers.push('GROUP_SIZE_UNSUPPORTED');
- if(config.senderIds.some(id=>!members.includes(id)))blockers.push('SENDER_NOT_IN_GROUP');
+ if(!group)blockers.push('GROUP_NOT_FOUND');else if(!blockers.length){const reason=groupEligibility(group,members,now,config.senderIds,{audience:true});if(reason)blockers.push(reason);}
  const states=members.length?(await db.query(`SELECT s.*,p.continuity_mode,p.paused AS pool_paused,p.breaker_open,p.enabled,p.archived_at FROM warmup_states s JOIN warmup_pools p ON p.id=s.pool_id WHERE s.workspace_id=$1 AND s.environment=$2 AND s.account_id=ANY($3::uuid[]) ORDER BY s.account_id`,[db.workspaceId,environment,members])).rows:[];
  if(states.length!==members.length)blockers.push('QR_ENROLLMENT_PENDING');
  if(states.some(s=>s.paused||s.confirmed_block||s.breaker_open||s.pool_paused&&s.pool_id!==target?.pool_id))blockers.push('MEMBER_PAUSED_OR_PROTECTED');
@@ -88,8 +91,9 @@ export async function previewGroupWarmup(db:ProfileExecutor,environment:Environm
  if(uncertain)blockers.push('WARMUP_RECONCILIATION_REQUIRED');
  try{await groupQrAuthorities(db,environment,members);}catch(e){blockers.push(e instanceof Error?e.message:'CURRENT_QR_AUTHORITY_REQUIRED');}
  const scripts=await libraryScripts(db,environment,config.libraryVersion),coverage=libraryCoverage(config,scripts);if(!coverage.sufficient)blockers.push('LIBRARY_COVERAGE_INSUFFICIENT');if(!libraryLimitsFeasible(config,scripts))blockers.push('LIBRARY_LIMITS_INFEASIBLE');
- const snapshot={config,membershipVersion:group?.version??null,members,states:states.map(s=>({id:s.account_id,pool:s.pool_id,episode:s.episode_id,identity:s.identity_id,paused:s.paused})),reservations,libraryHash:hash(stableJson(scripts))};
- return{config,groupName:group?.name??null,members,senders:config.senderIds,membershipVersion:group?.version??null,coverage,previewHash:hash(stableJson(snapshot)),blockers:[...new Set(blockers)],ready:blockers.length===0,
+ const snapshot={config,membershipVersion:group?.version??null,members,audience:{ownReady:audience.ownReady,external:audience.external,externalDigest:audience.externalDigest},states:states.map(s=>({id:s.account_id,pool:s.pool_id,episode:s.episode_id,identity:s.identity_id,paused:s.paused})),reservations,libraryHash:hash(stableJson(scripts))};
+ return{config,groupName:group?.name??null,members,senders:config.senderIds,membershipVersion:group?.version??null,
+  audience:{participants:members.length,senders:config.senderIds.length,receiveOnly:Math.max(0,members.length-config.senderIds.length),ownReady:audience.ownReady.length,external:audience.external,total:audience.total,consentRequired:audience.external>0},coverage,previewHash:hash(stableJson(snapshot)),blockers:[...new Set(blockers)],ready:blockers.length===0,
   outgoingBudget:groupDailyBudget(config,Math.min(14,...states.filter(s=>config.senderIds.includes(s.account_id)).map(s=>s.effective_days))+1,now),
   transition:states.filter(s=>s.continuity_mode!=='QR_GROUP').map(s=>({accountId:s.account_id,from:s.continuity_mode,effectiveDays:s.effective_days,historyPreserved:true})),ai:false};
 }
@@ -98,11 +102,11 @@ export async function createGroupWarmup(db:ProfileExecutor,environment:Environme
   const p=await previewGroupWarmup(db,environment,config);need(p.membershipVersion,'GROUP_NOT_FOUND');
   const scripts=await libraryScripts(db,environment,config.libraryVersion),library=await persistLibrary(db,environment,config.libraryVersion,config.libraryVersion===BUNDLED_LIBRARY_VERSION?BUNDLED_LIBRARY_NAME:config.libraryVersion,scripts,actor,config.libraryVersion===BUNDLED_LIBRARY_VERSION?'BUNDLED':'IMPORTED');
   const profile=(await db.query('INSERT INTO warmup_profiles(workspace_id,environment,config) VALUES($1,$2,$3) RETURNING id',[db.workspaceId,environment,groupProfile(config)])).rows[0];
-  const program=(await db.query("INSERT INTO warmup_programs(workspace_id,environment,actor_id,name,topology,purpose,group_id,profile_id,account_ids,content_ids,scope) VALUES($1,$2,$3,$4,'group','preparation',$5,$6,$7,$8,$9) RETURNING id,version,status",[db.workspaceId,environment,actor,config.name,config.groupId,profile.id,p.members,library.content_ids,{...config,mode:'QR_GROUP',membershipVersion:p.membershipVersion,libraryHash:library.sha256}])).rows[0];
+  const program=(await db.query("INSERT INTO warmup_programs(workspace_id,environment,actor_id,name,topology,purpose,group_id,profile_id,account_ids,content_ids,scope) VALUES($1,$2,$3,$4,'group','preparation',$5,$6,$7,$8,$9) RETURNING id,version,status",[db.workspaceId,environment,actor,config.name,config.groupId,profile.id,p.members,library.content_ids,{...config,mode:'QR_GROUP',membershipVersion:p.membershipVersion,libraryHash:library.sha256,audience:{external:p.audience.external,ownReady:p.audience.ownReady,total:p.audience.total,membershipVersion:p.membershipVersion}}])).rows[0];
   await appendEvent(db,{workspace_id:db.workspaceId,environment,event_type:'warmup.program_created',aggregate_id:program.id,payload:{actor,version:program.version,mode:'QR_GROUP',external_effects:0}});return program;
  });
 }
-export function programConfig(program:Body){const {mode:_mode,membershipVersion:_membership,libraryHash:_library,...config}=program.scope;return groupWarmupConfigSchema.parse(config);}
+export function programConfig(program:Body){const {mode:_mode,membershipVersion:_membership,libraryHash:_library,audience:_audience,...config}=program.scope;return groupWarmupConfigSchema.parse(config);}
 export async function readGroupProgram(db:ProfileExecutor,environment:Environment,id:string,lock=false){const row=(await db.query(`SELECT * FROM warmup_programs WHERE workspace_id=$1 AND environment=$2 AND id=$3 AND scope->>'mode'='QR_GROUP'${lock?' FOR UPDATE':''}`,[db.workspaceId,environment,id])).rows[0];need(row,'WARMUP_PROGRAM_NOT_FOUND');return row;}
 export async function cancelGroupPending(db:ProfileExecutor,environment:Environment,ids:string[],reason:string){
  const result=await db.query(`UPDATE outbox o SET status='CANCELLED',result=result||jsonb_build_object('reason',$4::text),updated_at=now()
@@ -125,6 +129,12 @@ export async function commandGroupWarmup(db:ProfileExecutor,environment:Environm
   }else{
    need(input.action==='start'?['DRAFT','ARCHIVED','COMPLETED'].includes(p.status):input.action==='resume'?p.status==='PAUSED':['DRAFT','PAUSED','ARCHIVED','COMPLETED'].includes(p.status),'WARMUP_ACTION_STATE_INVALID');
    const preview=await previewGroupWarmup(db,environment,config,id);need(preview.previewHash===input.previewHash,'WARMUP_PREVIEW_CHANGED');need(preview.ready,preview.blockers[0]??'WARMUP_NOT_READY');
+   // V7.4 C: being in a group does not prove that people outside this profile
+   // agreed to this activity. Sending starts only with the owner's explicit
+   // confirmation, bound to this program and to the membership just reviewed.
+   if(input.action!=='configure'&&preview.audience.external>0)need(input.audienceConfirmed===true,'EXTERNAL_AUDIENCE_CONFIRMATION_REQUIRED');
+   const reviewedAudience={external:preview.audience.external,ownReady:preview.audience.ownReady,total:preview.audience.total,membershipVersion:preview.membershipVersion,
+    ...(input.action!=='configure'&&preview.audience.external>0?{consentConfirmedBy:actor,consentConfirmedAt:new Date().toISOString(),consentStatement:'EXTERNAL_PARTICIPANTS_AGREED_TO_GROUP_ACTIVITY'}:{})};
    const library=await persistLibrary(db,environment,config.libraryVersion,config.libraryVersion===BUNDLED_LIBRARY_VERSION?BUNDLED_LIBRARY_NAME:config.libraryVersion,await libraryScripts(db,environment,config.libraryVersion),actor,config.libraryVersion===BUNDLED_LIBRARY_VERSION?'BUNDLED':'IMPORTED');
    const profile=input.action==='configure'?(await db.query('INSERT INTO warmup_profiles(workspace_id,environment,config) VALUES($1,$2,$3) RETURNING id',[db.workspaceId,environment,groupProfile(config)])).rows[0].id:p.profile_id;
    // All recipients are reserved, including own lines not selected to send.
@@ -139,28 +149,74 @@ export async function commandGroupWarmup(db:ProfileExecutor,environment:Environm
    await db.query("UPDATE warmup_states SET pool_id=$2,profile_id=$3,group_required=false,status=CASE WHEN status='GRADUATED' THEN status ELSE 'WARMING' END,reason='GROUP_SELECTED',version=version+1 WHERE account_id=ANY($1::uuid[])",[preview.members,poolId,profile]);
    // Removed senders/recipients wait; no automatic fallback to direct checks.
    await db.query("UPDATE warmup_states SET group_required=true,reason='GROUP_SELECTION_REQUIRED' WHERE pool_id=$1 AND NOT(account_id=ANY($2::uuid[]))",[poolId,preview.members]);
-   await db.query('UPDATE warmup_programs SET name=$2,group_id=$3,profile_id=$4,account_ids=$5,content_ids=$6,scope=$7,pool_id=$8,status=$9,review_hash=$10,version=version+1,updated_at=now() WHERE id=$1',[id,config.name,config.groupId,profile,preview.members,library.content_ids,{...config,mode:'QR_GROUP',membershipVersion:preview.membershipVersion,libraryHash:library.sha256},poolId,status,preview.previewHash]);
+   await db.query('UPDATE warmup_programs SET name=$2,group_id=$3,profile_id=$4,account_ids=$5,content_ids=$6,scope=$7,pool_id=$8,status=$9,review_hash=$10,version=version+1,updated_at=now() WHERE id=$1',[id,config.name,config.groupId,profile,preview.members,library.content_ids,{...config,mode:'QR_GROUP',membershipVersion:preview.membershipVersion,libraryHash:library.sha256,audience:reviewedAudience},poolId,status,preview.previewHash]);
+   if(reviewedAudience.consentConfirmedBy)await appendEvent(db,{workspace_id:db.workspaceId,environment,event_type:'warmup.audience_consent_confirmed',aggregate_id:id,payload:{actor,external:reviewedAudience.external,membershipVersion:reviewedAudience.membershipVersion,operationId:input.operationId,external_effects:0}});
   }
   const result=await readGroupProgram(db,environment,id);await appendEvent(db,{workspace_id:db.workspaceId,environment,event_type:'warmup.program_'+input.action,aggregate_id:id,payload:{actor,version:result.version,status:result.status,operationId:input.operationId}});
   return{id,version:result.version,status:result.status};
  });
 }
+export type GroupLineState='READY'|'VERIFICATION_PENDING'|'HEALTH_PENDING'|'NOT_CONNECTED'|'PAUSED'|'IDENTITY_CONFLICT'|'UNSUPPORTED';
+/** V7.4 B: which managed lines can read their groups now. Reading groups is
+ * a provider read through a connected, identity-confirmed own session; it does
+ * not need a warm-up registration, and it never depends on the other members
+ * of a group having a session here. A line that is connected but whose
+ * identity or health confirmation is still in flight is a verifiable wait,
+ * not a request to scan again. */
+export async function groupReadableLines(db:ProfileExecutor,environment:Environment,ids?:string[]){
+ const rows=(await db.query(`SELECT r.id,r.body,s.desired_state,s.operational_pause,s.observed_state,s.auth_state,s.health_expires_at,s.archived_at,clock_timestamp() AS now
+  FROM records r LEFT JOIN channel_sessions s ON s.account_id=r.id AND s.workspace_id=r.workspace_id AND s.environment=r.environment AND s.archived_at IS NULL
+  WHERE r.workspace_id=$1 AND r.environment=$2 AND r.kind='channel_account' AND NOT(r.body?'deleted_at') AND ($3::uuid[] IS NULL OR r.id=ANY($3::uuid[])) ORDER BY r.id`,[db.workspaceId,environment,ids??null])).rows;
+ return rows.map(row=>{const b=row.body as Body,fresh=row.health_expires_at instanceof Date&&row.health_expires_at>row.now;
+  const state:GroupLineState=b.provider!==(environment==='REAL'?'waha':'simulator')?'UNSUPPORTED':b.identity_conflict===true?'IDENTITY_CONFLICT'
+   :b.removal_requested_at||!row.desired_state||row.desired_state!=='RUNNING'?'NOT_CONNECTED':row.operational_pause?'PAUSED'
+   :row.observed_state!=='CONNECTED'?'NOT_CONNECTED':!fresh?'HEALTH_PENDING'
+   :row.auth_state!=='VERIFIED'||b.status!=='WORKING'||b.identity_verified!==true||!b.identity_fingerprint||(b.registered_by==='v7_quick'&&!b.ownership_confirmed_at)?'VERIFICATION_PENDING':'READY';
+  return{accountId:row.id as string,state};});
+}
 export async function requestGroupRefresh(db:ProfileExecutor,environment:Environment,operationId:string,accountIds:string[],actor:string){
- return replay(db,environment,operationId,actor,{action:'refresh_groups',accountIds},async()=>{await groupQrAuthorities(db,environment,accountIds);
-  await db.query("INSERT INTO number_operations(id,workspace_id,environment,actor_id,action,input) VALUES($1,$2,$3,$4,'GROUP_REFRESH',$5)",[operationId,db.workspaceId,environment,actor,{account_ids:accountIds}]);return{id:operationId,state:'REQUESTED'};});
+ return replay(db,environment,operationId,actor,{action:'refresh_groups',accountIds},async()=>{
+  const lines=await groupReadableLines(db,environment,accountIds);need(lines.length===accountIds.length,'ACCOUNT_SCOPE_INVALID');
+  const ready=lines.filter(l=>l.state==='READY').map(l=>l.accountId);
+  if(!ready.length)warmupError(lines.some(l=>l.state==='VERIFICATION_PENDING'||l.state==='HEALTH_PENDING')?'GROUP_LINES_VERIFICATION_PENDING':lines.some(l=>l.state==='PAUSED')?'GROUP_LINES_PAUSED':'GROUP_LINES_NOT_CONNECTED');
+  // One profile-wide read at a time: a second click, tab or agent joins the
+  // running operation instead of queueing another pass over the provider.
+  const running=(await db.query("SELECT id,state FROM number_operations WHERE workspace_id=$1 AND environment=$2 AND action='GROUP_REFRESH' AND NOT(input?'group_id') AND state IN('REQUESTED','RESERVED','PREPARING') ORDER BY created_at LIMIT 1",[db.workspaceId,environment])).rows[0];
+  if(running)return{id:running.id,state:'REQUESTED',joined:true,lines};
+  await db.query("INSERT INTO number_operations(id,workspace_id,environment,actor_id,action,input) VALUES($1,$2,$3,$4,'GROUP_REFRESH',$5)",[operationId,db.workspaceId,environment,actor,{account_ids:ready,skipped:lines.filter(l=>l.state!=='READY')}]);return{id:operationId,state:'REQUESTED',joined:false,lines};});
+}
+/** The profile's lines seen in a group, with the owner's warm-up choice. */
+async function groupOwnLines(db:ProfileExecutor,environment:Environment,ids:string[]){
+ const rows=ids.length?(await db.query("SELECT id,COALESCE(body->>'warmup_mode','REQUIRED') AS mode FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='channel_account' AND NOT(body?'deleted_at') AND id=ANY($3::uuid[]) ORDER BY id",[db.workspaceId,environment,ids])).rows:[];
+ return new Map<string,'REQUIRED'|'DECLARED_READY'>(rows.map(r=>[r.id,r.mode==='DECLARED_READY'?'DECLARED_READY':'REQUIRED']));
+}
+/** Audience of a group as the review shows it: lines that take part in the
+ * warm-up, own lines that only receive (declared ready) and external members. */
+export async function groupAudience(db:ProfileExecutor,environment:Environment,group:Body){
+ const all:Body[]=group.members??[],ownIds=[...new Set(all.map(m=>m.account_id).filter(Boolean))].sort() as string[],modes=await groupOwnLines(db,environment,ownIds);
+ const participants=ownIds.filter(id=>modes.get(id)==='REQUIRED'),ownReady=ownIds.filter(id=>modes.get(id)==='DECLARED_READY');
+ const external=all.filter(m=>!m.account_id||!modes.has(m.account_id));
+ return{participants,ownReady,external:external.length,total:all.length,externalDigest:hash(stableJson(external.map(m=>m.identity_hash).sort()))};
 }
 export async function listWarmupGroups(db:ProfileExecutor,environment:Environment){
- return(await db.query('SELECT id,name,version,members,permissions,capabilities,observed_at,expires_at FROM warmup_groups WHERE workspace_id=$1 AND environment=$2 AND retired_at IS NULL ORDER BY name,id LIMIT 100',[db.workspaceId,environment])).rows.map(g=>({...g,members:g.members.map((m:Body)=>({accountId:m.account_id,admin:m.admin,resolved:!!m.account_id})),eligible:!groupEligibility(g,g.members.map((m:Body)=>m.account_id),new Date()),reason:groupEligibility(g,g.members.map((m:Body)=>m.account_id),new Date()),capabilities:undefined}));
+ const rows=(await db.query('SELECT id,name,version,members,permissions,capabilities,observed_at,expires_at,retired_at FROM warmup_groups WHERE workspace_id=$1 AND environment=$2 AND retired_at IS NULL ORDER BY name,id LIMIT 100',[db.workspaceId,environment])).rows,now=new Date(),result=[];
+ for(const g of rows){const audience=await groupAudience(db,environment,g),reason=audience.participants.length<2?'GROUP_SIZE_UNSUPPORTED':groupEligibility(g,audience.participants,now,audience.participants,{audience:true});
+  result.push({id:g.id,name:g.name,version:g.version,permissions:g.permissions,observed_at:g.observed_at,expires_at:g.expires_at,
+   members:g.members.map((m:Body)=>{const kind=m.account_id&&audience.participants.includes(m.account_id)?'own':m.account_id&&audience.ownReady.includes(m.account_id)?'own_ready':'external';return{accountId:kind==='external'?null:m.account_id,admin:m.admin,resolved:kind!=='external',kind};}),
+   audience:{participants:audience.participants.length,ownReady:audience.ownReady.length,external:audience.external,total:audience.total},eligible:!reason,reason});}
+ return result;
 }
 export async function groupWarmupOverview(db:ProfileExecutor,environment:Environment,id?:string,days=7){
  const programs=(await db.query("SELECT id,version,name,status,scope,pool_id,account_ids,created_at FROM warmup_programs WHERE workspace_id=$1 AND environment=$2 AND scope->>'mode'='QR_GROUP' AND ($3::uuid IS NULL OR id=$3) ORDER BY created_at DESC LIMIT 100",[db.workspaceId,environment,id??null])).rows;
- const numbers=(await db.query(`SELECT r.id,COALESCE(r.body->>'masked_number','Número') AS label,s.status,s.reason,s.group_required,s.effective_days,s.graduated_at,s.pool_id,(cs.observed_state='CONNECTED' AND cs.auth_state='VERIFIED' AND NOT cs.operational_pause) AS connected
+ const numbers=(await db.query(`SELECT r.id,COALESCE(r.body->>'masked_number','Número') AS label,r.body->>'name' AS alias,CASE WHEN r.body->>'warmup_mode'='DECLARED_READY' THEN 'DECLARED_READY' ELSE 'REQUIRED' END AS warmup_mode,s.status,s.reason,s.group_required,s.effective_days,s.graduated_at,s.pool_id,COALESCE(cs.observed_state='CONNECTED' AND cs.auth_state='VERIFIED' AND NOT cs.operational_pause AND cs.archived_at IS NULL AND cs.health_expires_at>clock_timestamp(),false) AS connected
   FROM records r LEFT JOIN warmup_states s ON s.account_id=r.id LEFT JOIN channel_sessions cs ON cs.account_id=r.id WHERE r.workspace_id=$1 AND r.environment=$2 AND r.kind='channel_account' AND NOT(r.body?'deleted_at') ORDER BY r.id`,[db.workspaceId,environment])).rows;
  for(const p of programs){const stats=(await db.query(`SELECT v.local_date::text date,o.account_id,
   count(*) FILTER(WHERE o.status IN('SENT','DELIVERED','READ'))::int sent,count(*) FILTER(WHERE o.status IN('DELIVERED','READ'))::int delivered,
   count(*) FILTER(WHERE o.status IN('READY','BLOCKED'))::int pending,count(*) FILTER(WHERE o.status='UNKNOWN')::int uncertain,
   min(o.not_before) FILTER(WHERE o.status IN('READY','BLOCKED')) next_send
   FROM warmup_conversations v JOIN outbox o ON o.conversation_id=v.id::text WHERE v.pool_id=$1 AND v.local_date>=((now() AT TIME ZONE $2)::date-($3::int-1)) GROUP BY v.local_date,o.account_id ORDER BY v.local_date DESC,o.account_id`,[p.pool_id,p.scope.timezone,days])).rows;
-  p.history=stats;p.numbers=numbers.filter(n=>p.account_ids.includes(n.id));p.config=programConfig(p);delete p.scope;
- }return{programs,numbers,ai:false};
+  p.history=stats;p.numbers=numbers.filter(n=>p.account_ids.includes(n.id));p.config=programConfig(p);p.audience=p.scope.audience??null;delete p.scope;
+ }
+ const lines=await groupReadableLines(db,environment),last=(await db.query("SELECT id,state,result->>'reason' AS reason,result->'accounts' AS accounts,created_at,updated_at FROM number_operations WHERE workspace_id=$1 AND environment=$2 AND action='GROUP_REFRESH' AND NOT(input?'group_id') ORDER BY created_at DESC LIMIT 1",[db.workspaceId,environment])).rows[0]??null;
+ return{programs,numbers:numbers.map(n=>({...n,line:lines.find(l=>l.accountId===n.id)?.state??'NOT_CONNECTED'})),refresh:last,ai:false};
 }

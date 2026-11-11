@@ -35,6 +35,11 @@ export async function warmupOverview(c:QueryExecutor,workspace:string,environmen
 export async function commercialWarmupGuard(c:QueryExecutor,account:DomainRecord){
  await bindRecordEnvironment(c,account.workspace_id,account.environment);
  const state=(await c.query("SELECT s.status,s.paused,s.confirmed_block,s.pool_id,s.profile_ready_at,p.enabled,p.paused AS pool_paused,p.breaker_open,to_jsonb(p)->>'continuity_mode' AS continuity_mode,i.address_fingerprint,i.address_ciphertext,to_jsonb(i)->>'qr_verified_at' qr_verified_at,to_jsonb(i)->>'qr_command_id' qr_command_id,to_jsonb(i)->>'qr_identity_fingerprint' qr_identity_fingerprint FROM warmup_states s JOIN warmup_pools p ON p.id=s.pool_id LEFT JOIN warmup_identities i ON i.id=s.identity_id AND i.account_id=s.account_id WHERE s.account_id=$1 AND s.workspace_id=$2 AND s.environment=$3 AND (s.enrolled_at IS NOT NULL OR p.enabled)",[account.id,account.workspace_id,account.environment])).rows[0];
+ // V7.4 D: the owner declared this phone already prepared. Warm-up is not a
+ // gate for it; connection, identity, health, pause and the human assignment
+ // are separate conditions and keep running in their own gates. The
+ // declaration stands only for the identity it was made for.
+ if(account.body.warmup_mode==='DECLARED_READY')return account.body.warmup_declared_identity&&account.body.identity_fingerprint&&account.body.warmup_declared_identity!==account.body.identity_fingerprint?'WARMUP_DECLARATION_IDENTITY_CHANGED':null;
  if(isStandard15dPolicy(account.body.number_policy_version)&&!state)return 'ACCOUNT_PREPARATION_REQUIRED';
  if(state&&account.environment==='REAL'&&account.body.provider==='waha'&&!warmupIdentityMatches(account,state))return 'WARMUP_REGISTERED_IDENTITY_CHANGED';
  if(state?.continuity_mode==='QR_CONTINUOUS'&&['AWAITING_PEER','WARMING','AWAITING_CONTENT'].includes(state.status)

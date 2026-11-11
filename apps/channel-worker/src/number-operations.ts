@@ -19,23 +19,40 @@ export async function processNumberOperations(owner='number-operations',factory:
     await pool.query("UPDATE number_operations SET state='HUMAN_ACTION_REQUIRED',result=$2,lease_until=NULL,version=version+1 WHERE id=$1 AND lease_owner=$3 AND state='PREPARING' AND lease_until>now()",[id,{reason:'BOUNDED_ADMINISTRATOR_REQUIRED',next_action:'APPLY_REVIEWED_CAPACITY',no_session_started:true},owner]);continue;
    }
    if(op.action==='GROUP_REFRESH'){
-    const checkpoint=op.result?.checkpoint??{account:0,offset:0,index:0},observed=op.result?.observed??[];
+    // V7.4 B: one line or one group that cannot be read does not discard what
+    // the other lines read. Each line keeps its own outcome and reason, so the
+    // operator can tell an unreachable gateway from an incompatible answer or
+    // a session that is still starting.
+    const checkpoint=op.result?.checkpoint??{account:0,offset:0,index:0},observed=op.result?.observed??[],accounts:Record<string,{state:'READ'|'FAILED';groups:number;reason?:string;skipped?:Record<string,number>}>=op.result?.accounts??{};
     const deadline=Date.now()+45000;let reads=0;
+    const target=op.input.group_id?(await pool.query('SELECT group_ciphertext FROM warmup_groups WHERE id=$1 AND workspace_id=$2 AND environment=$3',[op.input.group_id,op.workspace_id,op.environment])).rows[0]:null;
+    if(op.input.group_id&&!target)throw new Error('GROUP_SCOPE_INVALID');
+    const save=(c:import('@commerce/db').QueryExecutor)=>c.query('UPDATE number_operations SET result=$2,updated_at=now() WHERE id=$1',[id,{checkpoint,observed,accounts,source:'provider_read'}]);
+    const next=()=>{checkpoint.account++;checkpoint.offset=0;checkpoint.index=0;};
     while(checkpoint.account<op.input.account_ids.length&&reads<16&&Date.now()<deadline){
      const accountId=op.input.account_ids[checkpoint.account],account=await getRecord(pool,op.workspace_id,'channel_account',accountId);
      if(!account||account.environment!==op.environment)throw new Error('ACCOUNT_SCOPE_INVALID');
-     const target=op.input.group_id?(await pool.query('SELECT group_ciphertext FROM warmup_groups WHERE id=$1 AND workspace_id=$2 AND environment=$3',[op.input.group_id,op.workspace_id,op.environment])).rows[0]:null;
-     if(op.input.group_id&&!target)throw new Error('GROUP_SCOPE_INVALID');
-     const page=target?{groups:[{id:decrypt(target.group_ciphertext)}],hasMore:false}:await providerRead(account,factory,async provider=>{if(!provider.listGroups||!provider.group)throw new Error('GROUP_PROVIDER_UNSUPPORTED');return provider.listGroups({offset:checkpoint.offset,limit:20});});reads++;
+     const line=accounts[accountId]??={state:'READ',groups:0};
+     let page:{groups:{id:string}[];hasMore:boolean};
+     try{page=target?{groups:[{id:decrypt(target.group_ciphertext)}],hasMore:false}:await providerRead(account,factory,async provider=>{if(!provider.listGroups||!provider.group)throw new Error('GROUP_PROVIDER_UNSUPPORTED');return provider.listGroups({offset:checkpoint.offset,limit:20});});reads++;}
+     catch(error){const reason=groupReadReason(error);if(reason==='RELEASE_HOLD_ACTIVE')throw error;reads++;accounts[accountId]={...line,state:'FAILED',reason};next();await withTransaction(async c=>{await assertClaim(c,op.id,owner);await save(c);});continue;}
      while(checkpoint.index<page.groups.length&&reads<16&&Date.now()<deadline){
-      const snapshot=await providerRead(account,factory,async provider=>{if(!provider.group)throw new Error('GROUP_PROVIDER_UNSUPPORTED');return provider.group(page.groups[checkpoint.index]!.id);});reads++;
-      await withTransaction(async c=>{await assertClaim(c,op.id,owner);const group=await observeGroup(c,account,snapshot,await numberNow(c,account.workspace_id,account.environment));observed.push({group_id:group.id,account_id:account.id,version:group.version});checkpoint.index++;await c.query('UPDATE number_operations SET result=$2,updated_at=now() WHERE id=$1',[id,{checkpoint,observed,source:'provider_read'}]);});
+      try{
+       const snapshot=await providerRead(account,factory,async provider=>{if(!provider.group)throw new Error('GROUP_PROVIDER_UNSUPPORTED');return provider.group(page.groups[checkpoint.index]!.id);});
+       await withTransaction(async c=>{await assertClaim(c,op.id,owner);const group=await observeGroup(c,account,snapshot,await numberNow(c,account.workspace_id,account.environment));observed.push({group_id:group.id,account_id:account.id,version:group.version});line.groups++;checkpoint.index++;await save(c);});
+      }catch(error){const reason=groupReadReason(error);if(reason==='RELEASE_HOLD_ACTIVE'||reason==='OPERATION_CLAIM_LOST')throw error;(line.skipped??={})[reason]=(line.skipped[reason]??0)+1;checkpoint.index++;await withTransaction(async c=>{await assertClaim(c,op.id,owner);await save(c);});}
+      reads++;
      }
      if(checkpoint.index<page.groups.length)break;
-     if(page.hasMore){checkpoint.offset+=20;checkpoint.index=0;if(checkpoint.offset>=200)throw new Error('GROUP_PAGINATION_LIMIT');}
-     else{checkpoint.account++;checkpoint.offset=0;checkpoint.index=0;}
+     if(page.hasMore){checkpoint.offset+=20;checkpoint.index=0;if(checkpoint.offset>=200){(line.skipped??={}).GROUP_PAGINATION_LIMIT=1;next();}}
+     else next();
     }
-    await withTransaction(async c=>{await assertClaim(c,id,owner);await c.query("UPDATE number_operations SET state=$2,result=$3,version=version+1,lease_until=NULL,updated_at=now() WHERE id=$1",[id,checkpoint.account===op.input.account_ids.length?'SUCCEEDED':'REQUESTED',{checkpoint,observed,source:'provider_read',next_action:checkpoint.account===op.input.account_ids.length?'READ_GROUPS':'READ_OPERATION'}]);});
+    const done=checkpoint.account===op.input.account_ids.length,read=Object.values(accounts).filter(a=>a.state==='READ'),failed=Object.values(accounts).filter(a=>a.state==='FAILED');
+    // A line that read nothing because every one of its groups was unreadable
+    // did not succeed; an empty list is a valid answer (the line has no groups).
+    const unreadable=read.filter(a=>!a.groups&&a.skipped&&Object.keys(a.skipped).length),usable=read.length-unreadable.length;
+    const reason=done&&!usable?(failed[0]?.reason??Object.keys(unreadable[0]?.skipped??{})[0]??'GROUP_READ_FAILED'):undefined;
+    await withTransaction(async c=>{await assertClaim(c,id,owner);await c.query("UPDATE number_operations SET state=$2,result=$3,version=version+1,lease_until=NULL,updated_at=now() WHERE id=$1",[id,!done?'REQUESTED':reason?'FAILED':'SUCCEEDED',{checkpoint,observed,accounts,source:'provider_read',...(reason?{reason}:{}),summary:{lines_read:usable,lines_failed:failed.length+unreadable.length,groups:new Set(observed.map((o:{group_id:string})=>o.group_id)).size},next_action:!done?'READ_OPERATION':reason?'REVIEW_OPERATION':'READ_GROUPS'}]);});
    }else if(op.action==='IDENTITY_OBSERVE'){
     const account=await getRecord(pool,op.workspace_id,'channel_account',op.input.account_id);if(!account||account.environment!==op.environment)throw new Error('ACCOUNT_SCOPE_INVALID');const {profile,signals}=await providerRead(account,factory,async provider=>{if(!provider.profile)throw new Error('PROFILE_READ_UNSUPPORTED');const profile=await provider.profile(),signals=await provider.health();return{profile,signals};});const identity=signals.find(s=>s.dimension==='transport'&&s.status==='OK'&&(s.value as {identity_fingerprint?:string})?.identity_fingerprint===hash(profile.identity));if(!identity)throw new Error('IDENTITY_READ_NOT_CONFIRMED');
     await withTransaction(async c=>{await assertClaim(c,id,owner);const current=(await getRecord(c,op.workspace_id,'channel_account',account.id))!;if(current.body.identity_fingerprint&&current.body.identity_fingerprint!==hash(profile.identity))throw new Error('IDENTITY_CONFLICT');const session=(await c.query('SELECT desired_state FROM channel_sessions WHERE account_id=$1',[account.id])).rows[0];if(current.body.status==='WORKING'&&current.body.last_lifecycle_at&&session?.desired_state==='RUNNING')await observeChannelSession(c,current,signals,'number-identity-observe');await c.query('UPDATE channel_sessions SET observed_identity_ciphertext=$2,last_health_at=$3 WHERE account_id=$1',[account.id,encrypt(profile.identity),identity.observedAt]);const now=await numberNow(c,account.workspace_id,account.environment);await putRecord(c,{id:account.id,workspaceId:account.workspace_id,environment:account.environment,kind:account.kind,version:current.version,body:{...current.body,identity_verified:current.body.identity_verified===true,identity_fingerprint:hash(profile.identity),identity_conflict:false,status:'WORKING',health_checked_at:now.toISOString(),health_status:'OK',masked_number:'•••• '+profile.identity.replace(/\D/g,'').slice(-4)}});for(const s of signals)await putRecord(c,{workspaceId:account.workspace_id,environment:account.environment,kind:'health_signal',body:{account_id:account.id,dimension:s.dimension,status:s.status,value:s.value,source:s.source,scope:s.scope,observed_at:s.observedAt,expires_at:s.expiresAt}});await c.query("UPDATE number_operations SET state='SUCCEEDED',result=$2,version=version+1,lease_until=NULL WHERE id=$1",[id,{account_id:account.id,identity_observed:true,next_action:'CONFIRM_OWNERSHIP'}]);});
@@ -49,6 +66,14 @@ export async function processNumberOperations(owner='number-operations',factory:
  return processed;
 }
 
+/** Why a group read failed, in the operator's categories (V7.4 B). */
+export function groupReadReason(error:unknown):string{
+ const code=error instanceof Error?(typeof (error as {code?:unknown}).code==='string'?(error as unknown as {code:string}).code:error.message):'';
+ const http=/^PROVIDER_HTTP_(\d{3})$/.exec(code);
+ if(http)return http[1]==='401'||http[1]==='403'?'GROUP_PROVIDER_REJECTED':http[1]==='404'||http[1]==='422'?'GROUP_SESSION_NOT_READY':'GROUP_PROVIDER_UNAVAILABLE';
+ if(/^(GROUP|RELEASE|OPERATION|PROVIDER_RUNTIME|ACCOUNT)_[A-Z_]+$/.test(code))return code;
+ return 'GROUP_PROVIDER_UNAVAILABLE';
+}
 async function assertClaim(c:import('@commerce/db').QueryExecutor,id:string,owner:string){
  const claim=await c.query("SELECT id FROM number_operations WHERE id=$1 AND lease_owner=$2 AND state='PREPARING' AND lease_until>now() FOR UPDATE",[id,owner]);
  if(!claim.rowCount)throw new Error('OPERATION_CLAIM_LOST');

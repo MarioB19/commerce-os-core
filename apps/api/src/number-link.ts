@@ -3,7 +3,10 @@ import {z} from 'zod';
 import {pool,putRecord,readIntegrationSettings,readOperationalSettings,type QueryExecutor} from '@commerce/db';
 import type {DomainRecord} from '@commerce/contracts';
 import {withProfileTransaction} from '../../../packages/db/src/profile-context.js';
-import {confirmLinkedNumber,numberLinkLabels,numberLinkState,phoneFingerprint,type NumberLinkState} from '../../../packages/db/src/number-link.js';
+import {confirmLinkedNumber,numberLinkLabels,numberLinkState,phoneFingerprint,warmupModeOf,declarationCurrent,PREPARATION_EXPECTED_MS,type NumberLinkState,type WarmupMode} from '../../../packages/db/src/number-link.js';
+import {lockWarmupProfile} from '../../../packages/db/src/group-warmup.js';
+import {bindProfileEnvironment} from '../../../packages/db/src/profile-environment.js';
+import type {ProfileExecutor} from '../../../packages/db/src/profile-context.js';
 import {normalizePhone,numberCountries,PhoneError,type NumberCountry} from '../../../packages/domain/src/numbers/phone.js';
 import {STANDARD_POLICY} from '../../../packages/domain/src/warmup/preparation.js';
 import {maskedAlias} from '../../../packages/domain/src/warmup/number-state.js';
@@ -14,7 +17,6 @@ import {capacityReserve} from './number-capacity.js';
 import {verifiedPhysicalProvision} from './number-capacity-lifecycle.js';
 import {lifecycleSafety} from './channel-command-safety.js';
 import {numberNow} from '../../../packages/db/src/number-clock.js';
-import {readPreparation} from '../../../packages/db/src/preparation.js';
 import {randomUUID} from 'node:crypto';
 
 /** V7 F3 number journey (RF-07.a/c/d, RF-17.f, wireframe D): register with a
@@ -29,22 +31,54 @@ const idOf=(req:FastifyRequest)=>z.object({id:z.uuid()}).parse(req.params).id;
  * transaction, so the guard's own try-lock then succeeds. */
 const awaitQuotaTurn=(c:QueryExecutor)=>c.query('SELECT pg_advisory_xact_lock(743912014::bigint)');
 const manage=(req:FastifyRequest)=>{const p=principal(req);assertPermission(p,'channels:manage');return p;};
-const quickSchema=z.object({alias:z.string().trim().min(2).max(100),country:z.enum(Object.keys(numberCountries) as [NumberCountry,...NumberCountry[]]),phone:z.string().trim().min(4).max(32).optional()}).strict();
+/** V7.4 D: «required» = the line waits for a warm-up group after its QR;
+ * «ready» = the owner declares the phone already prepared and no warm-up is
+ * scheduled for it. Clients that predate the choice omit it and keep the
+ * earlier behaviour (required); an omitted value never changes a stored one. */
+const warmupChoice=z.enum(['required','ready']);
+const modeOfChoice=(choice:z.infer<typeof warmupChoice>):WarmupMode=>choice==='ready'?'DECLARED_READY':'REQUIRED';
+const quickSchema=z.object({alias:z.string().trim().min(2).max(100),country:z.enum(Object.keys(numberCountries) as [NumberCountry,...NumberCountry[]]),phone:z.string().trim().min(4).max(32).optional(),warmup:warmupChoice.optional()}).strict();
 const nextAction:Record<NumberLinkState,{code:string;label:string}|null>={REMOVED:null,REMOVING:null,PHONE_MISMATCH:{code:'unlink',label:'Desvincular y volver a intentar'},
- NUMBER_UNAVAILABLE:{code:'unlink',label:'Desvincular este teléfono'},PREPARING:null,PREPARATION_FAILED:{code:'support',label:'Revisar con soporte'},READY_TO_LINK:{code:'link',label:'Mostrar QR'},
+ NUMBER_UNAVAILABLE:{code:'unlink',label:'Desvincular este teléfono'},PREPARING:null,PREPARATION_DELAYED:null,PREPARATION_FAILED:{code:'retry_preparation',label:'Reintentar la preparación'},READY_TO_LINK:{code:'link',label:'Mostrar QR'},
  WAITING_SCAN:{code:'qr',label:'Mostrar QR'},CONFIRMING:null,CONNECTED:{code:'view',label:'Ver número'},NEEDS_QR:{code:'link',label:'Volver a vincular'},RECONNECTING:null,DISCONNECTED:{code:'link',label:'Volver a vincular'}};
 
 async function linkFacts(c:QueryExecutor,account:DomainRecord){
  const session=(await c.query('SELECT * FROM channel_sessions WHERE account_id=$1 AND workspace_id=$2 AND archived_at IS NULL',[account.id,account.workspace_id])).rows[0];
  const profile=account.body.gateway_ref?await readIntegrationSettings(c,account.workspace_id,account.environment,'waha:'+account.body.gateway_ref,{secrets:false}).catch(()=>undefined):undefined;
- const provision=(await c.query("SELECT state FROM number_operations WHERE workspace_id=$1 AND environment=$2 AND action='PROVISION' AND input->>'account_id'=$3 ORDER BY created_at DESC LIMIT 1",[account.workspace_id,account.environment,account.id])).rows[0];
+ const provision=(await c.query("SELECT id,state,version,created_at,updated_at,result->>'reason' AS reason FROM number_operations WHERE workspace_id=$1 AND environment=$2 AND action='PROVISION' AND input->>'account_id'=$3 ORDER BY created_at DESC LIMIT 1",[account.workspace_id,account.environment,account.id])).rows[0];
  const connectPending=!!(await c.query("SELECT 1 FROM commands WHERE workspace_id=$1 AND environment=$2 AND resource_id=$3 AND kind='channel_command' AND payload->>'type' IN('connect','restart') AND status='PENDING' LIMIT 1",[account.workspace_id,account.environment,account.id])).rowCount;
  return{account,session,profileReady:profile?.enabled===true||account.environment==='SIMULATION',provision,connectPending,now:await numberNow(c,account.workspace_id,account.environment)};
 }
+const preparationDetail:Record<string,string>={PREPARING:'Estamos preparando la conexión de este número. Suele tardar entre uno y cinco minutos; el QR aparece aquí en cuanto esté lista.',
+ PREPARATION_DELAYED:'La preparación está tardando más de lo normal. Seguimos intentándolo automáticamente y tu número está guardado: no necesitas registrarlo otra vez. Puedes cerrar esta ventana y volver después.',
+ PREPARATION_FAILED:'No pudimos preparar la conexión de este número. Tu número está guardado; puedes reintentar la preparación sin registrarlo otra vez.'};
 function view(facts:Awaited<ReturnType<typeof linkFacts>>){
- const {state,qr}=numberLinkState(facts),a=facts.account;
+ const {state,qr}=numberLinkState(facts),a=facts.account,preparing=state==='PREPARING'||state==='PREPARATION_DELAYED'||state==='PREPARATION_FAILED';
  return{id:a.id,version:a.version,alias:maskedAlias(String(a.body.name??'Número')),masked_number:a.body.masked_number??null,state,label:numberLinkLabels[state],qr_available:qr,
-  next_action:nextAction[state],confirmed_at:a.body.link_confirmed_at??a.body.ownership_confirmed_at??null,observed_at:facts.session?.last_health_at??null};
+  next_action:nextAction[state],confirmed_at:a.body.link_confirmed_at??a.body.ownership_confirmed_at??null,observed_at:facts.session?.last_health_at??null,
+  detail:preparing?preparationDetail[state]:null,
+  preparation:preparing?{since:facts.provision?.created_at?new Date(facts.provision.created_at).toISOString():null,expected_seconds:PREPARATION_EXPECTED_MS/1000,automatic_retry:state!=='PREPARATION_FAILED',retryable:state==='PREPARATION_FAILED'}:null,
+  warmup_mode:warmupModeOf(a.body)};
+}
+/** V7.4 D/E: what is true about this number's warm-up, without counting a
+ * calendar day as progress. Effective days are credited by observed evidence. */
+const WARMUP_TARGET_DAYS=14;
+async function warmupSummary(c:QueryExecutor,account:DomainRecord,connected:boolean){
+ const mode=warmupModeOf(account.body),base={mode,source:String(account.body.warmup_mode_source??'compatibility_default'),effective_days:0,target_days:WARMUP_TARGET_DAYS,program:null as null|{id:string;name:string;status:string;role:'sender'|'receiver'}};
+ const row=(await c.query(`SELECT s.status,s.reason,s.group_required,s.effective_days,s.paused,s.confirmed_block,g.id AS program_id,g.name AS program_name,g.status AS program_status,COALESCE(g.scope->'senderIds' ? s.account_id::text,false) AS sender
+  FROM warmup_states s LEFT JOIN warmup_account_reservations v ON v.account_id=s.account_id LEFT JOIN warmup_programs g ON g.id=v.program_id AND g.workspace_id=s.workspace_id AND g.environment=s.environment
+  WHERE s.account_id=$1 AND s.workspace_id=$2 AND s.environment=$3`,[account.id,account.workspace_id,account.environment])).rows[0];
+ const days=Number(row?.effective_days??0);
+ if(mode==='DECLARED_READY')return declarationCurrent(account.body)?{...base,effective_days:days,state:'NOT_REQUESTED',label:'Ya preparado: sin calentamiento automático'}:{...base,effective_days:days,state:'CHOICE_REQUIRED',label:'Elige de nuevo si este teléfono necesita calentamiento'};
+ if(!connected)return{...base,effective_days:days,state:'WAITING_CONNECTION',label:'El calentamiento se configura cuando el número esté conectado'};
+ if(!row)return{...base,state:'REGISTERING',label:'Registrando la línea para calentamiento'};
+ const program=row.program_id?{id:row.program_id as string,name:String(row.program_name),status:String(row.program_status),role:row.sender?'sender' as const:'receiver' as const}:null,withProgram={...base,effective_days:days,program};
+ if(row.status==='GRADUATED')return{...withProgram,state:'COMPLETED',label:'Calentamiento completado'};
+ if(row.paused||row.confirmed_block||row.status==='QUARANTINED')return{...withProgram,state:'ATTENTION',label:'Calentamiento detenido: revisa este número'};
+ if(!program||row.group_required)return{...withProgram,program:null,state:'GROUP_REQUIRED',label:'Elige un grupo para empezar'};
+ if(program.status==='ACTIVE')return program.role==='sender'?{...withProgram,state:'ACTIVE',label:`Calentamiento activo · ${days} de ${WARMUP_TARGET_DAYS} días efectivos`}:{...withProgram,state:'RECEIVING',label:'Recibe mensajes del grupo; no envía'};
+ if(program.status==='PAUSED')return{...withProgram,state:'PROGRAM_PAUSED',label:'Calentamiento en pausa: revísalo para continuar'};
+ return{...withProgram,state:'PROGRAM_PENDING',label:'Calentamiento configurado; falta iniciarlo'};
 }
 /** Read, and confirm the line once the provider identity is back. */
 async function readLink(req:FastifyRequest,id:string){
@@ -102,20 +136,22 @@ async function overviewRow(c:QueryExecutor,account:DomainRecord){
   WHERE c.workspace_id=$1 AND c.environment=$2 AND c.account_id=$3 AND c.state->'revokedAt'='null'::jsonb`,[account.workspace_id,account.environment,account.id])).rows as {kind:string;paused:boolean;product:string|null}[];
  const selling=grants.filter(g=>g.kind==='COMMERCIAL_ASSIGNMENT'&&g.product&&!g.paused),humanPaused=grants.some(g=>g.paused);
  const products=(await c.query("SELECT p.body->>'name' AS name FROM commercial_assignments a JOIN records p ON p.id=a.product_id AND p.workspace_id=a.workspace_id WHERE a.workspace_id=$1 AND a.environment=$2 AND a.account_id=$3 AND a.state='ACTIVE' ORDER BY 1",[account.workspace_id,account.environment,account.id])).rows.map(r=>maskedAlias(String(r.name??'Producto')));
- const preparation=await readPreparation(c,account.workspace_id,account.environment,account.id,facts.now).catch(()=>null),progress=preparation?.progress as {day?:number;completed?:boolean}|null|undefined;
- const warming=!!progress&&!progress.completed;
+ const warmup=await warmupSummary(c,account,base.state==='CONNECTED');
  let status={code:base.state as string,label:base.label};
  if(base.state==='CONNECTED'){
   if(paused||humanPaused)status={code:'PAUSED_BY_YOU',label:'Pausado por ti'};
   else if(selling.length)status={code:'SELLING',label:'Vendiendo'};
-  else if(warming)status={code:'WARMING',label:`Calentando, día ${progress?.day??1} de 15`};
+  // V7.4 E: «Calentando» only while a program is active and this line sends.
+  else if(warmup.state==='ACTIVE')status={code:'WARMING',label:'Calentando'};
+  else if(warmup.state==='GROUP_REQUIRED'||warmup.state==='REGISTERING'||warmup.state==='PROGRAM_PENDING'||warmup.state==='PROGRAM_PAUSED')status={code:'WARMUP_PENDING',label:'Conectado · calentamiento por configurar'};
+  else if(warmup.state==='CHOICE_REQUIRED'||warmup.state==='ATTENTION')status={code:'NEEDS_ATTENTION',label:'Necesita atención'};
   else status={code:'READY_TO_ASSIGN',label:'Listo para asignar'};
  }
  // RF-19.n: the latest «Probar número» of this number, informative only (it never gates selling).
  const lab=account.environment==='REAL'?(await c.query(`SELECT r.id::text AS run_id,r.created_at,count(o.id)::int AS actions,count(o.id) FILTER(WHERE o.state IN('FAILED','UNKNOWN'))::int AS problems
   FROM commerce_number_lab.runs r LEFT JOIN commerce_number_lab.operations o ON o.workspace_id=r.workspace_id AND o.run_id=r.id
   WHERE r.workspace_id=$1 AND r.source_account_id=$2 GROUP BY r.id,r.created_at ORDER BY r.created_at DESC,r.id LIMIT 1`,[account.workspace_id,account.id])).rows[0]:undefined;
- return{...base,status,products,warmup:warming?{day:progress?.day??1,of:15}:null,
+ return{...base,status,products,warmup,
   last_test:lab&&lab.actions>0?{at:new Date(lab.created_at).toISOString(),ok:lab.problems===0,run_id:String(lab.run_id)}:null};
 }
 
@@ -124,6 +160,7 @@ export async function numberLinkRoutes(app:FastifyInstance){
   const p=principal(req);assertPermission(p,p.service?'channels:read':'sales:read');
   const canManage=p.permissions.includes('*')||p.permissions.includes('channels:manage');
   return{data:await withProfileTransaction(pool,p.workspace_id,async c=>{
+   await bindProfileEnvironment(c,envOf(req));
    const accounts=(await c.query("SELECT * FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='channel_account' AND NOT body?'deleted_at' ORDER BY created_at LIMIT 40",[p.workspace_id,envOf(req)])).rows as DomainRecord[];
    const rows=[];
    for(let account of accounts){
@@ -149,21 +186,34 @@ export async function numberLinkRoutes(app:FastifyInstance){
    const slot=await capacityReserve(c,p.workspace_id,environment);
    const account=await putRecord(c,{workspaceId:p.workspace_id,environment,kind:'channel_account',body:{name:input.alias,responsible:p.user.name||'Dueño',device_ref:'v7:'+randomUUID(),
     provider:environment==='SIMULATION'?'simulator':'waha',engine:environment==='SIMULATION'?'SIMULATOR':'GOWS',gateway_ref:'waha-'+String(slot.slot).padStart(2,'0'),session:'default',status:'NEW',
-    sending_enabled:false,identity_verified:false,number_policy_version:STANDARD_POLICY,country:input.country,...(phone?{declared_phone_fingerprint:fingerprint,masked_number:phone.masked}:{}),registered_by:'v7_quick'}});
+    sending_enabled:false,identity_verified:false,number_policy_version:STANDARD_POLICY,country:input.country,...(phone?{declared_phone_fingerprint:fingerprint,masked_number:phone.masked}:{}),registered_by:'v7_quick',
+    // V7.4 D: stored in the same insert as the number, before any worker can see it.
+    warmup_mode:modeOfChoice(input.warmup??'required'),warmup_mode_source:input.warmup?'owner_choice':'compatibility_default',warmup_mode_set_at:new Date().toISOString(),warmup_mode_set_by:p.user.id}});
    const op=(await c.query("INSERT INTO number_operations(workspace_id,environment,actor_id,action,state,input) VALUES($1,$2,$3,'PROVISION','RESERVED',$4) RETURNING *",[p.workspace_id,environment,p.user.id,{account_id:account.id,slot_id:slot.id}])).rows[0];
    await c.query("UPDATE number_capacity_slots SET state='RESERVED',account_id=$2,operation_id=CASE WHEN $4 THEN operation_id ELSE $3 END,version=version+1 WHERE id=$1",[slot.id,account.id,op.id,await verifiedPhysicalProvision(c,slot.operation_id)]);
-   await audit(c,req,'number.registered',account.id,{operation_id:op.id,slot:slot.slot,country:input.country,phone_declared:!!phone,external_effects:0});
-   return{data:{id:account.id,version:account.version,operation_id:op.id,state:'PREPARING',label:numberLinkLabels.PREPARING},status:202};
+   await audit(c,req,'number.registered',account.id,{operation_id:op.id,slot:slot.slot,country:input.country,phone_declared:!!phone,warmup_mode:account.body.warmup_mode,warmup_mode_source:account.body.warmup_mode_source,external_effects:0});
+   return{data:{id:account.id,version:account.version,operation_id:op.id,state:'PREPARING',label:numberLinkLabels.PREPARING,warmup_mode:account.body.warmup_mode,warmup_mode_source:account.body.warmup_mode_source},status:202};
   });
   return reply.code(202).send({data:result.data});
  });
  app.get('/v1/numbers/:id/link',async req=>({data:await readLink(req,idOf(req))}));
  app.post('/v1/numbers/:id/link',async(req,reply)=>{
-  manage(req);const id=idOf(req),input=z.object({action:z.enum(['link','unlink'])}).strict().parse(parseBody(req));
+  manage(req);const id=idOf(req),input=z.object({action:z.enum(['link','unlink','retry_preparation'])}).strict().parse(parseBody(req));
   const result=await mutate(req,'number.link:'+id,async c=>{
    await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['channel-command:'+id]);
    const account=await scopedRecord(req,'channel_account',id,c),facts=await linkFacts(c,account),{state}=numberLinkState(facts);
    if(account.body.deleted_at||account.body.removal_requested_at)throw fail(409,'NUMBER_REMOVAL_IN_PROGRESS','Este número se está eliminando.');
+   if(input.action==='retry_preparation'){
+    // V7.4 A: the same operation is queued again for the bounded administrator;
+    // nothing is duplicated and a number that was ever linked is not touched.
+    if(state!=='PREPARATION_FAILED')return{data:view(facts)};
+    const op=(await c.query("SELECT * FROM number_operations WHERE id=$1 AND workspace_id=$2 AND environment=$3 AND action='PROVISION' FOR UPDATE",[(facts.provision as {id?:string}|undefined)?.id??null,account.workspace_id,account.environment])).rows[0];
+    if(!op||!['FAILED','CANCELLED'].includes(op.state)||account.body.identity_fingerprint||account.body.link_confirmed_at)throw fail(409,'PREPARATION_RETRY_NOT_AVAILABLE','La preparación de este número no se puede reintentar ahora.');
+    if(!(await c.query('SELECT 1 FROM number_capacity_slots WHERE id::text=$1 AND account_id=$2',[op.input.slot_id??'',id])).rowCount)throw fail(409,'CAPACITY_ACCOUNT_BINDING_CHANGED','La plaza de este número cambió. Elimínalo y regístralo de nuevo.');
+    await c.query("UPDATE number_operations SET state='RESERVED',lease_owner=NULL,lease_until=NULL,version=version+1,result=result||$2::jsonb,updated_at=now() WHERE id=$1",[op.id,{retry_requested_at:new Date().toISOString(),retries:Number(op.result?.retries??0)+1,previous_state:op.state,previous_reason:op.result?.reason??null}]);
+    await audit(c,req,'number.preparation_retry_requested',id,{operation_id:op.id,previous_state:op.state,retries:Number(op.result?.retries??0)+1,external_effects:0},account.environment);
+    return{data:view(await linkFacts(c,account)),status:202};
+   }
    if(input.action==='unlink'){
     if(!facts.session||facts.session.desired_state==='STOPPED'&&!facts.connectPending){
      if(account.body.link_problem)await putRecord(c,{id,workspaceId:account.workspace_id,environment:account.environment,kind:account.kind,version:account.version,body:{...account.body,link_problem:null}});
@@ -177,7 +227,7 @@ export async function numberLinkRoutes(app:FastifyInstance){
    }
    if(['CONNECTED','CONFIRMING','WAITING_SCAN','RECONNECTING'].includes(state))return{data:view(facts)};
    if(state==='PHONE_MISMATCH'||state==='NUMBER_UNAVAILABLE')throw fail(409,state,'Desvincula este teléfono antes de intentar de nuevo.');
-   if(!facts.profileReady)throw fail(409,'NUMBER_PREPARING','Estamos preparando tu número. Intenta en unos segundos.');
+   if(!facts.profileReady)throw fail(409,state==='PREPARATION_FAILED'?'NUMBER_PREPARATION_FAILED':'NUMBER_PREPARING',preparationDetail[state]??'Estamos preparando la conexión de este número.');
    if(account.environment==='REAL'){const policy=await readOperationalSettings(c,account.workspace_id,'REAL');if(policy.release_hold)throw fail(409,'RELEASE_HOLD_ACTIVE','Estamos actualizando la plataforma. Intenta en un momento.');if(!onboardingEnabled(policy.body))throw fail(409,'NUMBER_LINKING_DISABLED','La vinculación de números está deshabilitada en este perfil.');}
    await lifecycleSafety(c,account,'connect');
    await c.query("UPDATE channel_sessions SET desired_state='RUNNING',operational_pause=false,revision=revision+1,updated_at=now() WHERE account_id=$1",[id]);
@@ -198,6 +248,44 @@ export async function numberLinkRoutes(app:FastifyInstance){
     [account.workspace_id,id,input.paused,input.paused?'Pausado por ti':'Reanudado por ti',p.user.id])).rows[0];
    await audit(c,req,input.paused?'number.paused':'number.resumed',id,{control_version:row.version,external_effects:0},account.environment);
    return{data:{id,paused:row.paused,label:row.paused?'Pausado por ti':'Reanudado'}};
+  });
+  return{data:result.data};
+ });
+ // V7.4 D: change the owner's warm-up choice of an existing number. History is
+ // kept; only work that has not started is cancelled, uncertain deliveries
+ // keep reconciling, a human pause stays, and nothing starts by itself.
+ app.post('/v1/numbers/:id/warmup',async req=>{
+  const p=manage(req),id=idOf(req),input=z.object({mode:warmupChoice,expected_version:z.number().int().positive()}).strict().parse(parseBody(req)),target=modeOfChoice(input.mode);
+  const result=await mutate(req,'number.warmup-mode:'+id,async c=>{
+   // Same first lock as group planning, commands and final emission.
+   await lockWarmupProfile(c,envOf(req));
+   await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['channel-command:'+id]);
+   const account=await scopedRecord(req,'channel_account',id,c);
+   if(account.body.deleted_at||account.body.removal_requested_at)throw fail(409,'NUMBER_REMOVAL_IN_PROGRESS','Este número se está eliminando.');
+   const current=warmupModeOf(account.body),rebind=target==='DECLARED_READY'&&current==='DECLARED_READY'&&!declarationCurrent(account.body);
+   if(current===target&&!rebind&&account.body.warmup_mode_source==='owner_choice')return{data:{id,version:account.version,warmup_mode:current,changed:false}};
+   if(account.version!==input.expected_version)throw fail(409,'VERSION_CONFLICT','El número cambió. Actualiza y vuelve a intentar.');
+   const effects={cancelled_unsent:0,programs_paused:0,deliveries_to_confirm:0};
+   if(target==='DECLARED_READY'&&current!=='DECLARED_READY'){
+    const programs=(await c.query('SELECT g.id,g.pool_id,g.account_ids FROM warmup_account_reservations v JOIN warmup_programs g ON g.id=v.program_id WHERE v.account_id=$1 AND g.workspace_id=$2 AND g.environment=$3 FOR UPDATE OF g',[id,account.workspace_id,account.environment])).rows;
+    effects.cancelled_unsent=(await c.query(`UPDATE outbox o SET status='CANCELLED',result=result||'{"reason":"OWNER_DECLARED_READY"}'::jsonb,updated_at=now()
+     WHERE o.workspace_id=$1 AND o.environment=$2 AND o.kind='warmup' AND o.status IN('READY','BLOCKED') AND
+      (o.account_id=$3::text OR o.contact_id=$3::text OR EXISTS(SELECT 1 FROM warmup_turns t WHERE t.effect_id=o.id AND $3::uuid=ANY(t.recipient_ids)) OR o.payload->>'warmup_pool_id'=ANY($4::text[]))`,[account.workspace_id,account.environment,id,programs.map(g=>String(g.pool_id)).filter(v=>v!=='null')])).rowCount??0;
+    effects.deliveries_to_confirm=Number((await c.query("SELECT count(*)::int n FROM outbox WHERE workspace_id=$1 AND environment=$2 AND kind='warmup' AND account_id=$3::text AND status IN('SENDING','UNKNOWN')",[account.workspace_id,account.environment,id])).rows[0].n);
+    for(const g of programs){
+     await c.query("UPDATE warmup_programs SET status=CASE WHEN status='ACTIVE' THEN 'PAUSED' ELSE status END,review_hash=NULL,version=version+1,updated_at=now() WHERE id=$1",[g.id]);
+     if(g.pool_id)await c.query("UPDATE warmup_pools SET paused=true,breaker_reason='PARTICIPANT_WARMUP_CHOICE_CHANGED',version=version+1 WHERE id=$1",[g.pool_id]);
+     effects.programs_paused++;
+    }
+    await c.query('DELETE FROM warmup_account_reservations WHERE account_id=$1',[id]);
+    await c.query("UPDATE warmup_states SET status=CASE WHEN status='GRADUATED' THEN status ELSE 'PAUSED' END,reason=CASE WHEN status='GRADUATED' THEN reason ELSE 'OWNER_DECLARED_READY' END,group_required=true,version=version+1,updated_at=now() WHERE account_id=$1 AND workspace_id=$2 AND environment=$3",[id,account.workspace_id,account.environment]);
+   }
+   if(target==='REQUIRED'&&current!=='REQUIRED')await c.query("UPDATE warmup_states SET status='AWAITING_PEER',reason='GROUP_SELECTION_REQUIRED',group_required=true,version=version+1,updated_at=now() WHERE account_id=$1 AND workspace_id=$2 AND environment=$3 AND status='PAUSED' AND reason='OWNER_DECLARED_READY'",[id,account.workspace_id,account.environment]);
+   const {warmup_declared_identity:_previous,...body}=account.body;
+   const saved=await putRecord(c,{id,workspaceId:account.workspace_id,environment:account.environment,kind:account.kind,version:account.version,
+    body:{...body,warmup_mode:target,warmup_mode_source:'owner_choice',warmup_mode_set_at:new Date().toISOString(),warmup_mode_set_by:p.user.id,...(target==='DECLARED_READY'&&account.body.identity_fingerprint?{warmup_declared_identity:account.body.identity_fingerprint}:{})}});
+   await audit(c,req,'number.warmup_mode_changed',id,{from:current,to:target,rebound_to_current_identity:rebind,...effects,history_preserved:true,external_effects:0},account.environment);
+   return{data:{id,version:saved.version,warmup_mode:target,changed:true,...effects}};
   });
   return{data:result.data};
  });
