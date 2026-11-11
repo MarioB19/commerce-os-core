@@ -11,8 +11,8 @@ export function Badge({tone='neutral',children,className,icon=true,...props}:Rea
 /** Maps the operational tones used by the API labels to a badge tone. */
 export const toneOf=(code:string):Tone=>{
  if(['SELLING','CONNECTED','READY','VERIFIED','APPROVED','DONE','ACTIVE','PASSED','COMPLETED','SYNCED','ok','success'].includes(code))return 'success';
- if(['READY_TO_ASSIGN','WARMING','PENDING','RUNNING','QUEUED','ready','info','PARTIAL'].includes(code))return 'info';
- if(['NEEDS_SETUP','NEEDS_QR','DISCONNECTED','PAUSED','PAUSED_BY_YOU','REVIEW','HUMAN_REVIEW','NEEDS_OWNER','HUMAN_REQUIRED','UNCERTAIN','attention','warn','WARNING','SKIPPED'].includes(code))return 'warn';
+ if(['READY_TO_ASSIGN','WARMING','WARMUP_PENDING','PENDING','RUNNING','QUEUED','ready','info','PARTIAL'].includes(code))return 'info';
+ if(['NEEDS_SETUP','NEEDS_QR','NEEDS_ATTENTION','PREPARATION_DELAYED','DISCONNECTED','PAUSED','PAUSED_BY_YOU','REVIEW','HUMAN_REVIEW','NEEDS_OWNER','HUMAN_REQUIRED','UNCERTAIN','attention','warn','WARNING','SKIPPED'].includes(code))return 'warn';
  if(['REJECTED','FAILED','PHONE_MISMATCH','NUMBER_UNAVAILABLE','PREPARATION_FAILED','INVALID','FALSE','BLOCKING','bad','error','EXPIRED','CANCELLED','REMOVED'].includes(code))return 'error';
  return 'neutral';
 };
