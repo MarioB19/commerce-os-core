@@ -66,6 +66,28 @@ def installed_images(components, portal_state):
     need(len(portals) == 1 and portals[0]['running'] is True and portals[0]['image'] == portal_state['image'])
 
 
+PORTAL_VERSION_JS = ("fetch('http://127.0.0.1:'+process.env.PORT+'/api/version',{redirect:'error',signal:AbortSignal.timeout(8000)})"
+                     ".then(r=>r.status===200?r.text():Promise.reject(new Error('status')))"
+                     ".then(t=>{if(t.length>4096)throw new Error('size');process.stdout.write(t)})"
+                     ".catch(()=>process.exit(1))")
+
+
+def portal_origin(portal_state):
+    """V7.4: the preserved portal's own version, read inside its exact container.
+
+    The public name of the portal can be routed to another host; this read
+    never leaves the preserved container, uses fixed code and returns only its
+    public version fields."""
+    container = portal_state['container_id']
+    need(type(container) is str and re.fullmatch(r'[a-f0-9]{64}',container))
+    raw = subprocess.check_output(['docker','exec','-i',container,'node','-e',PORTAL_VERSION_JS],timeout=30,stderr=subprocess.DEVNULL)
+    need(0 < len(raw) <= 4096)
+    value = document(raw)
+    need(type(value) is dict and type(value.get('release')) is str and re.fullmatch(r'[a-f0-9]{40}',value['release'])
+         and type(value.get('activities')) is int and not isinstance(value['activities'],bool))
+    return {'source':'PRESERVED_CONTAINER_LOOPBACK','container_id':container,'release':value['release'],'activities':value['activities']}
+
+
 def collect(run_id, base=Path('/opt/commerce-os')):
     need(os.geteuid() == 0 and RUN.fullmatch(run_id))
     private = base/'private'; report_path = private/'deployments'/run_id/'report.json'
@@ -105,8 +127,11 @@ def collect(run_id, base=Path('/opt/commerce-os')):
               'provider_evidence','components')
     need(all(key in report for key in fields))
     need(read(report_path) == report_raw and current_link.resolve(strict=True) == current)
-    return {'schema_version':1,'custody':'ROOT_NATIVE_READBACK','report':{key:report[key] for key in fields},
-            'report_ref':ref(report_path,report_raw),'metadata_sha256':hashlib.sha256(read(current/'RELEASE.json')).hexdigest()}
+    origin = portal_origin(state['portal'])
+    need(read(report_path) == report_raw and current_link.resolve(strict=True) == current)
+    return {'schema_version':2,'custody':'ROOT_NATIVE_READBACK','report':{key:report[key] for key in fields},
+            'report_ref':ref(report_path,report_raw),'metadata_sha256':hashlib.sha256(read(current/'RELEASE.json')).hexdigest(),
+            'portal_origin':origin}
 
 
 if __name__ == '__main__':

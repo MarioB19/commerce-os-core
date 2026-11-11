@@ -25,8 +25,10 @@ PITR_NETWORK = 'commerce-os_pitr-edge'
 MAX_PRIVATE = 1024 * 1024
 # Fresh pre-deploy backup (local, COMOSB02). Health telemetry (8 days, adr-v7-health-retention)
 # took the encrypted dump past 1 GiB on 26-oct-2026 (1,089,064,996 bytes in the V7.1 rehearsal);
-# 2 GiB keeps the read bound while the 8-day window stays (V8 trims the remaining growth).
-PREDEPLOY_BACKUP_MAX_BYTES = 2 * 1024 ** 3
+# 2 GiB kept the read bound until 11-nov-2026, when the V7.4 rehearsal measured
+# 2,115,276,836 bytes (98.5 % of it, ~29 MB/day since V7.3). 4 GiB keeps the bound
+# and leaves room until the telemetry growth is trimmed.
+PREDEPLOY_BACKUP_MAX_BYTES = 4 * 1024 ** 3
 SOURCE_SHA = 'd36c090161eb7b0af0250cd91d466b38dc810813'
 PORTAL_BASE = Path('/opt/mcl-portal')
 PORTAL_FIELDS = {'report_ref', 'runtime_env_ref', 'manifest_ref', 'container_id',

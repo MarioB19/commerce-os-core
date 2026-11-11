@@ -20,7 +20,10 @@ export async function refreshEffectGroup(effectId:string,factory:ProviderFactory
  const account=await getRecord(pool,effect.workspace_id,'channel_account',effect.account_id),group=(await pool.query('SELECT * FROM warmup_groups WHERE id=$1 AND workspace_id=$2 AND environment=$3',[effect.payload.group_id,effect.workspace_id,effect.environment])).rows[0];
  if(!account||!group)return;
  const now=await numberNow(pool,effect.workspace_id,effect.environment);
- const required:string[]=[...new Set([account.id,...group.members.filter((m:Body)=>m.account_id&&now.getTime()-Date.parse(group.capabilities.observations?.[m.account_id]?.observed_at??'1970-01-01')>=30000).map((m:Body)=>m.account_id)])] as string[];
+ // V7.4 C: only the lines that take part are read. External members have no
+ // session here and own lines that only receive are not a send dependency.
+ const participants:string[]|null=(await pool.query("SELECT v.member_ids FROM warmup_turns t JOIN warmup_conversations v ON v.id=t.conversation_id WHERE t.id::text=$1 AND t.workspace_id=$2 AND t.environment=$3",[effect.payload.warmup_turn_id,effect.workspace_id,effect.environment])).rows[0]?.member_ids??null;
+ const required:string[]=[...new Set([account.id,...group.members.filter((m:Body)=>m.account_id&&(!participants||participants.includes(m.account_id))&&now.getTime()-Date.parse(group.capabilities.observations?.[m.account_id]?.observed_at??'1970-01-01')>=30000).map((m:Body)=>m.account_id)])] as string[];
  let cursor=0;await Promise.all(Array.from({length:Math.min(4,required.length)},async()=>{while(cursor<required.length){const id=required[cursor++]!,member=await getRecord(pool,effect.workspace_id,'channel_account',id);if(!member||member.environment!==effect.environment)throw new Error('GROUP_ACCOUNT_SCOPE_INVALID');const observe=async()=>{const provider=await factory(member);if(!provider.group)throw new Error('GROUP_PROVIDER_UNSUPPORTED');return provider.group(decrypt(group.group_ciphertext));};const snapshot=member.environment==='REAL'?await withTransaction(async c=>{if((await readOperationalSettings(c,member.workspace_id,'REAL',{lock:'share'})).release_hold)throw new Error('RELEASE_HOLD_ACTIVE');return observe();}):await observe();await withTransaction(async c=>{if(member.environment==='REAL'&&(await readOperationalSettings(c,member.workspace_id,'REAL',{lock:'share'})).release_hold)throw new Error('RELEASE_HOLD_ACTIVE');return observeGroup(c,member,snapshot,now);});}}));
 }
 export async function gateGroupDispatch(c:QueryExecutor,effect:Body,owner:string):Promise<{allowed:boolean;reason?:string;account?:DomainRecord;contact?:DomainRecord;leaseMs?:number}>{
@@ -43,7 +46,8 @@ export async function gateGroupDispatch(c:QueryExecutor,effect:Body,owner:string
  if(!group||group.version!==turn.membership_version)return deny('GROUP_MEMBERSHIP_CHANGED');
  const currentPool=(await c.query('SELECT enabled,paused,breaker_open,archived_at FROM warmup_pools WHERE id=$1 FOR SHARE',[turn.pool_id])).rows[0];
  if(!currentPool?.enabled||currentPool.paused||currentPool.breaker_open||currentPool.archived_at)return deny('WARMUP_POOL_PAUSED');
- const eligibility=groupEligibility(group,ids,now,qrProgram?programConfig(qrProgram).senderIds:ids);if(eligibility)return deny(eligibility);
+ const eligibility=groupEligibility(group,ids,now,qrProgram?programConfig(qrProgram).senderIds:ids,qrProgram?{audience:true}:{});if(eligibility)return deny(eligibility);
+ if(qrProgram&&(await c.query("SELECT 1 FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='channel_account' AND id=ANY($3::uuid[]) AND body->>'warmup_mode'='DECLARED_READY' LIMIT 1",[effect.workspace_id,effect.environment,ids])).rowCount)return deny('PARTICIPANT_WARMUP_NOT_REQUESTED');
  if(now.getTime()-new Date(group.observed_at).getTime()>5000)return deny('GROUP_FRESH_READ_REQUIRED');
  const profile=await profileFor(c,turn.profile_id);if(!localWindow(profile,now).open)return deny('WARMUP_QUIET_HOURS');
  const content=(await c.query('SELECT * FROM warmup_content WHERE id=$1 AND workspace_id=$2 AND environment=$3',[turn.content_id,effect.workspace_id,effect.environment])).rows[0];

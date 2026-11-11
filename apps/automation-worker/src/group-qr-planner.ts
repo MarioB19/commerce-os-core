@@ -17,7 +17,10 @@ export async function planQrGroupPool(db:ProfileExecutor,pool:Body,now:Date){
  if(pool.environment==='REAL'&&(policy.body.dispatch_frozen||!policy.body.real_sends_enabled||!policy.body.allow_real_operations))return stop('REAL_OPERATION_NOT_ENABLED');
  const group=(await db.query('SELECT * FROM warmup_groups WHERE id=$1 AND workspace_id=$2 AND environment=$3',[p.group_id,db.workspaceId,pool.environment])).rows[0];
  if(!group||group.version!==p.scope.membershipVersion)return stop('GROUP_MEMBERSHIP_CHANGED');
- const eligibility=groupEligibility(group,p.account_ids,now,config.senderIds);
+ const eligibility=groupEligibility(group,p.account_ids,now,config.senderIds,{audience:true});
+ // V7.4 D: the owner's «ya está preparado» choice is checked again where
+ // messages are reserved; a later change never leaves that line sending.
+ if((await db.query("SELECT 1 FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='channel_account' AND id=ANY($3::uuid[]) AND (body->>'warmup_mode'='DECLARED_READY' OR body?'deleted_at' OR body?'removal_requested_at') LIMIT 1",[db.workspaceId,pool.environment,p.account_ids])).rowCount)return stop('PARTICIPANT_WARMUP_NOT_REQUESTED');
  if(eligibility){if(eligibility==='GROUP_MEMBERSHIP_STALE')await db.query('SELECT request_active_warmup_group_refresh($1,$2)',[pool.environment,p.id]);return stop(eligibility);}
  const states=(await db.query('SELECT * FROM warmup_states WHERE workspace_id=$1 AND environment=$2 AND pool_id=$3 AND account_id=ANY($4::uuid[]) ORDER BY account_id FOR UPDATE',[db.workspaceId,pool.environment,pool.id,p.account_ids])).rows;
  if(states.length!==p.account_ids.length||states.some(s=>s.paused||s.confirmed_block||s.group_required||!s.identity_id))return stop('MEMBER_NOT_READY');

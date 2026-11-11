@@ -116,7 +116,7 @@ class RebindCommandTests(unittest.TestCase):
 
 class PredeployBoundTests(unittest.TestCase):
     def test_predeploy_backup_bound_is_two_gib(self):
-        self.assertEqual(native.PREDEPLOY_BACKUP_MAX_BYTES, 2 * 1024 ** 3)
+        self.assertEqual(native.PREDEPLOY_BACKUP_MAX_BYTES, 4 * 1024 ** 3)
         source = (ROOT / 'scripts/api_web_deployment.py').read_text()
         self.assertNotIn("36 < info.st_size <= 1024 ** 3", source)
 

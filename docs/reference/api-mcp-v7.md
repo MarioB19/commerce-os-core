@@ -2,7 +2,7 @@
 
 > Generada por `scripts/api-reference.ts` desde el código (OpenAPI de la app y registro MCP tipado). No se edita a mano: CI falla si difiere del código.
 
-Contenido: `bacc5e2e85b63890` · 217 operaciones HTTP en 193 rutas · 40 herramientas MCP (presupuesto 40).
+Contenido: `f5f95e86abde0903` · 219 operaciones HTTP en 195 rutas · 40 herramientas MCP (presupuesto 40).
 
 ## Herramientas MCP
 
@@ -21,8 +21,8 @@ Contenido: `bacc5e2e85b63890` · 217 operaciones HTTP en 193 rutas · 40 herrami
 | `sellers_manage` | perfil | `/v2/variants/{id}/seller` | `sellers:read`, `sellers:write` | leer, guardar, validar, publicar, historial | — |
 | `collections_manage` | perfil | `/v2/variants/{id}/collection` | `collections:read`, `collections:write` | leer, guardar, validar, historial | — |
 | `receipt_rules_manage` | perfil | `/v2/payments/policies` | `receipt-rules:read`, `receipt-rules:write` | leer_perfil, leer_variante, guardar_perfil, guardar_variante, consultar_operacion | — |
-| `numbers_manage` | perfil | `/v1/numbers` | `numbers:read`, `numbers:write` | listar, leer, crear, impacto_eliminar, eliminar | editar |
-| `number_connection_manage` | perfil | `/v1/numbers/{id}/link` | `numbers:read`, `numbers:connect` | estado, conectar, vincular, desconectar, pausar, reanudar | — |
+| `numbers_manage` | perfil | `/v1/numbers` | `numbers:read`, `numbers:write` | listar, leer, crear, cambiar_calentamiento, impacto_eliminar, eliminar | editar |
+| `number_connection_manage` | perfil | `/v1/numbers/{id}/link` | `numbers:read`, `numbers:connect` | estado, conectar, vincular, reintentar_preparacion, confirmar_desvinculacion, desconectar, pausar, reanudar | — |
 | `number_assignments_manage` | perfil | `/v2/continuity` | `assignments:read`, `assignments:write` | autorizaciones, autorizacion, autorizar, pausar, reanudar, revocar, consultar_operacion, asignar, retirar, impacto, historial, vista_inversa | — |
 | `warmup_manage` | perfil | `/v2/warmup` | `warmup:read`, `warmup:write` | progreso, pausar, reanudar, evidencia, listar_programas, leer_programa, grupos, actualizar_grupos, bibliotecas, ver_biblioteca, importar_biblioteca, previsualizar, crear, iniciar, pausar_programa, reanudar_programa, archivar, configurar, consultar_operacion | — |
 | `conversations_manage` | perfil | `/v1/conversations` | `conversations:read`, `conversations:write` | listar, leer, responder, registrar_acuerdo, cerrar, registrar_baja, tomar_control, liberar_control, pausar, reanudar | asignar_persona, elegir_variante |
@@ -144,6 +144,8 @@ Contenido: `bacc5e2e85b63890` · 217 operaciones HTTP en 193 rutas · 40 herrami
 | GET | `/v1/numbers/{id}/preparation` | autenticado |
 | GET | `/v1/numbers/{id}/removal` | autenticado |
 | POST | `/v1/numbers/{id}/removal` | autenticado |
+| POST | `/v1/numbers/{id}/removal/unlink-confirmation` | autenticado |
+| POST | `/v1/numbers/{id}/warmup` | autenticado |
 | GET | `/v1/numbers/overview` | autenticado |
 | POST | `/v1/numbers/quick` | autenticado |
 

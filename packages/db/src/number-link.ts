@@ -10,9 +10,9 @@ import {decrypt,hash,putRecord,type QueryExecutor} from './index.js';
  * Confirmation needs the identity read back from the provider after the scan,
  * equal to the registered phone (when one was given) and not confirmed on any
  * other live number of the installation. */
-export type NumberLinkState='REMOVED'|'REMOVING'|'PHONE_MISMATCH'|'NUMBER_UNAVAILABLE'|'PREPARING'|'PREPARATION_FAILED'|'READY_TO_LINK'|'WAITING_SCAN'|'CONFIRMING'|'CONNECTED'|'NEEDS_QR'|'RECONNECTING'|'DISCONNECTED';
+export type NumberLinkState='REMOVED'|'REMOVING'|'PHONE_MISMATCH'|'NUMBER_UNAVAILABLE'|'PREPARING'|'PREPARATION_DELAYED'|'PREPARATION_FAILED'|'READY_TO_LINK'|'WAITING_SCAN'|'CONFIRMING'|'CONNECTED'|'NEEDS_QR'|'RECONNECTING'|'DISCONNECTED';
 export const numberLinkLabels:Record<NumberLinkState,string>={REMOVED:'Eliminado',REMOVING:'Eliminación en curso',PHONE_MISMATCH:'El teléfono vinculado no coincide',NUMBER_UNAVAILABLE:'Este número no está disponible',
- PREPARING:'Preparando el número',PREPARATION_FAILED:'No se pudo preparar el número',READY_TO_LINK:'Listo para vincular',WAITING_SCAN:'Esperando escaneo',CONFIRMING:'Conectando',
+ PREPARING:'Preparando el número',PREPARATION_DELAYED:'La preparación está tardando más de lo normal',PREPARATION_FAILED:'No se pudo preparar el número',READY_TO_LINK:'Listo para vincular',WAITING_SCAN:'Esperando escaneo',CONFIRMING:'Conectando',
  CONNECTED:'Conectado',NEEDS_QR:'Necesita QR',RECONNECTING:'Reconectando',DISCONNECTED:'Desconectado'};
 
 export function phoneKey(secret=process.env.PRIVATE_DATA_KEY??process.env.DATA_ENCRYPTION_KEY??process.env.ENCRYPTION_KEY){
@@ -23,7 +23,19 @@ export function phoneKey(secret=process.env.PRIVATE_DATA_KEY??process.env.DATA_E
 /** Keyed, so a stored fingerprint cannot be reversed by enumerating numbers. */
 export const phoneFingerprint=(digits:string)=>createHmac('sha256',phoneKey()).update('phone:'+digits).digest('hex');
 
-export interface NumberLinkFacts {account:DomainRecord;session?:Record<string,any>;profileReady:boolean;provision?:{state:string}|undefined;connectPending:boolean;now:Date}
+/** V7.4 A: preparation is observed, never assumed. A gateway normally takes
+ * one to three supervisor cycles; past this window the operator is told it is
+ * late (the same operation keeps being retried), and a terminal failure of the
+ * operation offers a safe retry instead of an endless «unos segundos». */
+export const PREPARATION_EXPECTED_MS=5*60_000;
+export interface NumberLinkFacts {account:DomainRecord;session?:Record<string,any>;profileReady:boolean;provision?:{state:string;created_at?:Date|string|null;updated_at?:Date|string|null;retry_requested_at?:Date|string|null;reason?:string|null}|undefined;connectPending:boolean;now:Date}
+export function preparationPhase(f:Pick<NumberLinkFacts,'provision'|'now'|'account'>):'PREPARING'|'PREPARATION_DELAYED'|'PREPARATION_FAILED'{
+ const state=f.provision?.state;
+ if(state==='FAILED'||state==='CANCELLED')return 'PREPARATION_FAILED';
+ // An explicit retry of the same operation starts a new observation window.
+ const since=f.provision?.retry_requested_at??f.provision?.created_at??f.account.created_at,age=since?f.now.getTime()-new Date(since).getTime():0;
+ return age>PREPARATION_EXPECTED_MS?'PREPARATION_DELAYED':'PREPARING';
+}
 export function numberLinkState(f:NumberLinkFacts):{state:NumberLinkState;qr:boolean}{
  const a=f.account.body,s=f.session??{},fresh=!!s.health_expires_at&&new Date(s.health_expires_at)>f.now;
  if(a.deleted_at)return{state:'REMOVED',qr:false};
@@ -31,7 +43,7 @@ export function numberLinkState(f:NumberLinkFacts):{state:NumberLinkState;qr:boo
  if(a.link_problem==='PHONE_MISMATCH'||a.link_problem==='NUMBER_UNAVAILABLE')return{state:a.link_problem,qr:false};
  const connected=fresh&&s.observed_state==='CONNECTED',confirmed=!!a.ownership_confirmed_at&&!!a.identity_fingerprint;
  if(connected)return{state:confirmed?'CONNECTED':'CONFIRMING',qr:false};
- if(!f.profileReady)return{state:f.provision?.state==='FAILED'?'PREPARATION_FAILED':'PREPARING',qr:false};
+ if(!f.profileReady)return{state:preparationPhase(f),qr:false};
  const waiting=fresh&&(s.observed_state==='QR_REQUIRED'||s.observed_state==='STARTING');
  if(waiting||f.connectPending)return{state:'WAITING_SCAN',qr:fresh&&s.observed_state==='QR_REQUIRED'};
  if(confirmed){
@@ -62,7 +74,10 @@ export async function confirmLinkedNumber(c:QueryExecutor,account:DomainRecord,n
  await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['number-identity:'+account.body.identity_fingerprint]);
  if((await c.query('SELECT number_identity_claimed_elsewhere($1,$2,$3) AS claimed',[account.environment,account.id,account.body.identity_fingerprint])).rows[0]?.claimed===true)return problem(c,account,'NUMBER_UNAVAILABLE');
  await putRecord(c,{id:account.id,workspaceId:account.workspace_id,environment:account.environment,kind:account.kind,version:account.version,
-  body:{...account.body,identity_verified:true,identity_conflict:false,ownership_confirmed_at:now.toISOString(),link_confirmed_at:now.toISOString(),masked_number:'•••• '+digits.slice(-4),link_problem:null}});
+  // V7.4 D: «ya está preparado» is a statement about one phone. It is bound to
+  // the first identity confirmed for this number and is not inherited by another.
+  body:{...account.body,identity_verified:true,identity_conflict:false,ownership_confirmed_at:now.toISOString(),link_confirmed_at:now.toISOString(),masked_number:'•••• '+digits.slice(-4),link_problem:null,
+   ...(account.body.warmup_mode==='DECLARED_READY'&&!account.body.warmup_declared_identity?{warmup_declared_identity:account.body.identity_fingerprint}:{})}});
  await c.query("UPDATE number_capacity_slots SET state='CONNECTED',version=version+1,updated_at=now() WHERE account_id=$1 AND state IN('RESERVED','QR_PENDING','PREPARED')",[account.id]);
  return{confirmed:true};
 }
@@ -70,3 +85,10 @@ async function problem(c:QueryExecutor,account:DomainRecord,code:'PHONE_MISMATCH
  if(account.body.link_problem!==code)await putRecord(c,{id:account.id,workspaceId:account.workspace_id,environment:account.environment,kind:account.kind,version:account.version,body:{...account.body,link_problem:code}});
  return{confirmed:false,problem:code};
 }
+
+/** V7.4 D: the owner's choice for this number. Absent means the behaviour that
+ * existed before the choice: the line waits for a warm-up group. */
+export type WarmupMode='REQUIRED'|'DECLARED_READY';
+export const warmupModeOf=(body:Record<string,unknown>):WarmupMode=>body.warmup_mode==='DECLARED_READY'?'DECLARED_READY':'REQUIRED';
+/** A declaration made for another phone does not vouch for the one linked now. */
+export const declarationCurrent=(body:Record<string,unknown>)=>warmupModeOf(body)==='DECLARED_READY'&&(!body.warmup_declared_identity||!body.identity_fingerprint||body.warmup_declared_identity===body.identity_fingerprint);

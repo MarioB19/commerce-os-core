@@ -290,19 +290,30 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
  // V7 F3 (RF-07, wireframe D): the number journey. The QR is shown only in the
  // application to the person who scans it; no tool returns QR material.
  const numberId=z.object({numberId:z.uuid()}).strict(),countries=Object.keys(numberCountries) as [NumberCountry,...NumberCountry[]];
- tool('numbers_manage','Números de WhatsApp','Lista tus números con estado legible, agrega uno (alias, país y número privado), consulta el impacto antes de eliminar y elimina conservando la historia. Agregar no conecta ni envía.',{
+ tool('numbers_manage','Números de WhatsApp','Lista tus números con estado legible (conexión, preparación y calentamiento por separado), agrega uno (alias, país, número privado y si necesita calentamiento o ya está preparado), cambia esa elección, consulta el impacto antes de eliminar y elimina conservando la historia. Agregar no conecta ni envía; «listo» no inicia calentamiento ni crea asignaciones.',{
   listar:{schema:empty,read:true,run:()=>c.v1('GET','/v1/numbers/overview')},
   leer:{schema:numberId,read:true,run:i=>c.v1('GET','/v1/numbers/'+id(i.numberId)+'/link')},
-  crear:{schema:z.object({operationId:z.uuid(),alias:z.string().trim().min(2).max(100),country:z.enum(countries),phone:z.string().trim().min(4).max(32).optional()}).strict(),read:false,
-   run:i=>c.v1('POST','/v1/numbers/quick',{alias:i.alias,country:i.country,...(i.phone?{phone:i.phone}:{})},i.operationId)},
+  // V7.4 D: `calentamiento` is the owner's choice for this phone. «necesita» =
+  // after the QR it waits for a warm-up group; «listo» = already prepared, no
+  // warm-up is scheduled. Ask the owner; if it is omitted (clients that
+  // predate the choice) the number is registered as «necesita» and the answer
+  // says the value was a compatibility default.
+  crear:{schema:z.object({operationId:z.uuid(),alias:z.string().trim().min(2).max(100),country:z.enum(countries),phone:z.string().trim().min(4).max(32).optional(),calentamiento:z.enum(['necesita','listo']).optional()}).strict(),read:false,
+   run:i=>c.v1('POST','/v1/numbers/quick',{alias:i.alias,country:i.country,...(i.phone?{phone:i.phone}:{}),...(i.calentamiento?{warmup:i.calentamiento==='listo'?'ready':'required'}:{})},i.operationId)},
+  cambiar_calentamiento:{schema:z.object({operationId:z.uuid(),numberId:z.uuid(),expectedVersion:z.number().int().positive(),calentamiento:z.enum(['necesita','listo'])}).strict(),read:false,destructive:true,
+   run:i=>c.v1('POST','/v1/numbers/'+id(i.numberId)+'/warmup',{mode:i.calentamiento==='listo'?'ready':'required',expected_version:i.expectedVersion},i.operationId)},
   impacto_eliminar:{schema:numberId,read:true,run:i=>c.v1('GET','/v1/numbers/'+id(i.numberId)+'/removal')},
   eliminar:{schema:z.object({operationId:z.uuid(),numberId:z.uuid(),expectedVersion:z.number().int().positive()}).strict(),read:false,destructive:true,
    run:i=>c.v1('POST','/v1/numbers/'+id(i.numberId)+'/removal',{expected_version:i.expectedVersion,confirmation:'REMOVE_NUMBER'},i.operationId)},
  });
  const qr=humanAction('/numbers','El QR se muestra sólo en la aplicación, a la persona que lo escanea con su teléfono.');
- tool('number_connection_manage','Conexión del número','Estado de la vinculación del número. Conectar o vincular se hace en la aplicación con el QR; desconectar cierra la sesión de ese número sin borrar su historia.',{
+ tool('number_connection_manage','Conexión del número','Estado de la vinculación del número, incluida su preparación (en curso, demorada o fallida) y lo que falta para terminar una eliminación. Conectar o vincular se hace en la aplicación con el QR; desconectar cierra la sesión de ese número sin borrar su historia.',{
   estado:{schema:numberId,read:true,run:i=>c.v1('GET','/v1/numbers/'+id(i.numberId)+'/link')},
   conectar:{schema:numberId,read:false,run:qr},vincular:{schema:numberId,read:false,run:qr},
+  // V7.4 A: queue the same failed preparation again; nothing is duplicated.
+  reintentar_preparacion:{schema:z.object({operationId:z.uuid(),numberId:z.uuid()}).strict(),read:false,run:i=>c.v1('POST','/v1/numbers/'+id(i.numberId)+'/link',{action:'retry_preparation'},i.operationId)},
+  // V7.4 E: what happened on the owner's phone is confirmed by the owner, in the application.
+  confirmar_desvinculacion:{schema:numberId,read:false,run:humanAction('/numbers','La persona dueña confirma en la aplicación que ya quitó el dispositivo en WhatsApp → Dispositivos vinculados.')},
   desconectar:{schema:z.object({operationId:z.uuid(),numberId:z.uuid()}).strict(),read:false,destructive:true,run:i=>c.v1('POST','/v1/numbers/'+id(i.numberId)+'/link',{action:'unlink'},i.operationId)},
   pausar:{schema:z.object({operationId:z.uuid(),numberId:z.uuid()}).strict(),read:false,destructive:true,run:i=>c.v1('POST','/v1/numbers/'+id(i.numberId)+'/pause',{paused:true},i.operationId)},
   reanudar:{schema:z.object({operationId:z.uuid(),numberId:z.uuid()}).strict(),read:false,run:i=>c.v1('POST','/v1/numbers/'+id(i.numberId)+'/pause',{paused:false},i.operationId)},
@@ -321,7 +332,7 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
   if(!grant)throw Object.assign(new Error('WARMUP_NOT_AUTHORIZED'),{code:'WARMUP_NOT_AUTHORIZED'});
   return c.continuity({operation:'command',purpose:'warmup',id:grant.id,environment:'REAL',operationId:i.operationId,expectedVersion:grant.version,action});
  }});
- tool('warmup_manage','Calentamiento del número','Crear, previsualizar e iniciar calentamientos en grupos propios; biblioteca amplia sin IA, progreso y controles. Usa previsualizar antes de iniciar, reanudar o configurar; requiere QR vigente de todos los miembros del mismo perfil.',{
+ tool('warmup_manage','Calentamiento del número','Crear, previsualizar e iniciar calentamientos en un grupo de WhatsApp de tus líneas; biblioteca amplia sin IA, progreso y controles. El grupo puede incluir participantes externos (sin cuenta ni QR): sólo reciben y nunca envían. Usa previsualizar antes de iniciar, reanudar o configurar; exige QR vigente sólo de las líneas propias que participan. Con externos, iniciar o reanudar requiere audienceConfirmed:true, que sólo se envía cuando la persona dueña confirmó que esos participantes aceptan la actividad.',{
   progreso:{schema:numberId,read:true,run:i=>c.v1('GET','/v1/numbers/'+id(i.numberId)+'/preparation')},
   evidencia:{schema:numberId,read:true,run:i=>c.v1('GET','/v1/numbers/'+id(i.numberId)+'/episodes')},
   pausar:warmupCommand('pause'),reanudar:warmupCommand('resume'),
@@ -338,6 +349,7 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
    ['iniciar','start'],['pausar_programa','pause'],['reanudar_programa','resume'],['archivar','archive'],['configurar','configure'],
   ] as const).map(([action,command])=>[action,v('POST',z.object({programId:z.uuid(),operationId:z.uuid(),expectedVersion:z.number().int().positive(),
    ...(['start','resume','configure'].includes(command)?{previewHash:z.string().regex(/^[a-f0-9]{64}$/)}:{}),...(command==='configure'?{config:groupWarmupConfigSchema}:{}),
+   ...(['start','resume'].includes(command)?{audienceConfirmed:z.literal(true).optional()}:{}),
   }).strict(),i=>'/v2/warmup/programs/'+id(i.programId)+'/commands',i=>{const {programId:_program,...body}=i;return{...body,environment:'REAL',action:command};},{destructive:['pause','archive'].includes(command)})(c.v2)])),
   consultar_operacion:v('GET',z.object({operationId:z.uuid()}).strict(),i=>'/v2/warmup/operations/'+id(i.operationId)+'?environment=REAL')(c.v2),
  });

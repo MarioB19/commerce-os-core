@@ -48,8 +48,8 @@ Tratamiento de las 121: 62 sustituidas por una acción V7, 3 pasan a acción hum
 | `audit_read` | perfil | listar, exportar |
 | `operations_get` | perfil | leer_resultado |
 | `number_assignments_manage` | perfil | autorizaciones, autorizacion, consultar_operacion, autorizar, pausar, reanudar, revocar, asignar, retirar, impacto, historial, vista_inversa |
-| `numbers_manage` | perfil | listar, leer, crear, impacto_eliminar, eliminar |
-| `number_connection_manage` | perfil | estado, conectar, vincular, desconectar, pausar, reanudar |
+| `numbers_manage` | perfil | listar, leer, crear, cambiar_calentamiento, impacto_eliminar, eliminar |
+| `number_connection_manage` | perfil | estado, conectar, vincular, reintentar_preparacion, confirmar_desvinculacion, desconectar, pausar, reanudar |
 | `alerts_manage` | perfil | listar, leer, acusar |
 | `warmup_manage` | perfil | progreso, evidencia, pausar, reanudar |
 | `admin_profiles_manage` | plataforma | listar, crear, invitar_dueno, suspender, reactivar, limites |

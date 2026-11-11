@@ -1,5 +1,11 @@
 # Calentamiento de grupos en V7.2
 
+> **V7.4 (11-nov-2026):** el grupo puede incluir participantes externos y cada
+> número elige si necesita calentamiento. Lo que este documento dice sobre «todos
+> los integrantes deben pertenecer al perfil» queda como antecedente; la regla
+> vigente está en [Números y calentamiento en V7.4](numbers-warmup-v7-4.md) y en
+> el [ADR V7.4](adr-v7-4-numbers-warmup.md). Biblioteca, límites y horario no cambian.
+
 En Números → Calentamientos, actualiza los grupos desde tus líneas conectadas,
 elige uno existente y selecciona al menos dos emisores. Todos los integrantes
 físicos del grupo deben pertenecer al perfil y estar identificados y conectados;

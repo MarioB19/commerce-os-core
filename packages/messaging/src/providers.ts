@@ -1,4 +1,4 @@
-import {parseGroup} from './groups.js';
+import {parseGroup,parseGroupList} from './groups.js';
 import { ProviderError, type MessagingProvider, type ProviderCapabilities, type OutboundMessage, type SendResult, type HealthSignal, type Fetch } from './types.js';
 import {createHash} from 'node:crypto';
 import { guardedUrl, jsonRequest, limitedBytes } from './security.js';
@@ -55,9 +55,8 @@ export class WahaProvider implements MessagingProvider {
   async listGroups(input:{offset:number;limit:number}){
     if(!Number.isInteger(input.offset)||input.offset<0||!Number.isInteger(input.limit)||input.limit<1||input.limit>100)throw new ProviderError('GROUP_PAGINATION_INVALID');
     const value=await this.request(`/api/${encodeURIComponent(this.config.session)}/groups?offset=${input.offset}&limit=${input.limit}`);
-    const rows=Array.isArray(value)?value:Object.values(value);
-    if(rows.length>input.limit||rows.some((g:any)=>typeof g?.id!=='string'||!/^[\d-]+@g\.us$/.test(g.id)))throw new ProviderError('GROUP_LIST_RESPONSE_UNSUPPORTED');
-    return{groups:rows.map((g:any)=>({id:g.id,name:String(g.subject??g.name??'Grupo propio').slice(0,100)})),hasMore:rows.length===input.limit};
+    const groups=parseGroupList(value,input.limit);
+    return{groups,hasMore:groups.length===input.limit};
   }
   async group(id:string){
     if(!/^[\d-]+@g\.us$/.test(id))throw new ProviderError('GROUP_ID_INVALID');

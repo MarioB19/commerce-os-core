@@ -56,3 +56,27 @@ dueño y la proyección siguen exigiendo inventario completo, mes vigente,
 `credit_verified: false` sin saldo comprobado y evidencia vigente. Se conservan
 todos los respaldos, snapshots y PITR. La aplicación operativa sigue la misma
 regla: imágenes derivadas de los digests instalados con sólo este módulo cambiado.
+
+## Enmienda — 11-nov-2026: techo US$175 para V7.4
+
+Brandon autorizó el 11-nov, para el release V7.4, «como máximo US$20 adicionales
+en total de Google Cloud», una sola bolsa entre fases, reintentos y sesiones,
+sobre la operación base (tope anterior US$155). `GROSS_CAP_MICROUSD` pasa a
+175,000,000: es el techo anterior más esa bolsa, no un aumento general. La
+admisión sigue exigiendo `owner_budget` del mes, proyección dentro del
+presupuesto, inventario completo, evidencia vigente y `credit_verified: false`.
+Las pruebas aceptan exactamente US$175 y rechazan US$175.000001. El consumo
+incremental de V7.4 se registra aparte de la operación habitual; pasado este
+release, un gasto superior al de la operación base requiere otra decisión.
+La aplicación operativa sigue la misma regla: imágenes derivadas de los digests
+instalados con sólo este módulo cambiado; no se amplían minutos de CI, medidor,
+permisos ni ejecuciones.
+
+Aplicación operativa (Claude, 11-nov-2026, controles en pausa, sin intento
+activo): controlador `controller@sha256:c916abb8fcf4880b69dac8f8fb4cd57a034046260778fe7cdc1a34889e738ab7`
+(revisión `commerce-v7-controller-core-v74-cap175`, derivada de `a07b8e7a…`) y
+atestador `attestor@sha256:0541d12d696aa9e249a9a490959339fe67997517a56ba3656eac9cbf0ff41d26`
+(derivado de `b03b467a…`) en los disparadores `commerce-v7-attestation-main` y
+`-pr`. La única diferencia de cada imagen es la línea `GROSS_CAP_MICROUSD` de
+`/opt/trusted/cloudbuild_admission.py`; variables, recursos, cuenta de servicio
+y aprobación requerida no cambiaron.

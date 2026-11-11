@@ -67,22 +67,79 @@ def run(b, rows, networks, gateways, files=None):
 
 
 class BoundsTests(unittest.TestCase):
-    def test_six_canonical_gateways_and_their_bridges_fit_every_bound(self):
-        self.assertEqual(runtime.GATEWAYS, frozenset('waha-0'+str(i) for i in range(1, 7)))
+    def test_canonical_gateways_and_their_bridges_fit_every_bound(self):
+        # V7.4: one canonical gateway per number slot of the installation (20).
+        self.assertEqual(runtime.GATEWAYS, frozenset('waha-%02d' % i for i in range(1, 21)))
         self.assertEqual(contract.GATEWAY_NAMES, runtime.GATEWAYS)
-        self.assertEqual((runtime.MAX_CONTAINERS, runtime.MAX_NETWORKS), (14, 11))
+        self.assertEqual((runtime.MAX_CONTAINERS, runtime.MAX_NETWORKS), (28, 25))
         state, rows, raw = fx.fixture(6)
         self.assertEqual(len(runtime.validate_inventory(state, rows)), 14)
         plan = json.loads(raw)
         with mock.patch.object(contract, 'validate_portal_backup', lambda value: value):
             self.assertEqual(contract.plan_version(plan), 3)
+            # Up to one gateway per slot (20) is a valid inventory; one more is not.
+            for extra_gateway in range(14):
+                plan['preserved_runtime']['%064x' % (0xf000+extra_gateway)] = 'e'*64
+            self.assertEqual(len(plan['preserved_runtime']), 28)
+            self.assertEqual(contract.plan_version(plan), 3)
             plan['preserved_runtime']['f'*64] = 'e'*64
             with self.assertRaisesRegex(RuntimeError, 'BACKUP_RUNTIME_STAGE_COUNT_INVALID'):
                 contract.plan_version(plan)
         extra = copy.deepcopy(rows[-1]); extra['Id'] = fx.checksum(3000)
-        extra['Config']['Labels']['com.docker.compose.service'] = 'waha-07'
+        extra['Config']['Labels']['com.docker.compose.service'] = 'waha-21'
         with self.assertRaises(ReleaseError):
             runtime.inspect_inventory(rows + [extra], portal=state['portal'], caddy_id=state['service_inventory']['caddy'])
+
+    def test_container_projection_accepts_one_bridge_per_gateway(self):
+        # 11-nov-2026: production ingress sits on core, seven gateway bridges and the proxy
+        # network (9). The old per-container bound of 8 refused the capture.
+        state, rows, raw = fx.fixture(6)
+        row = copy.deepcopy(next(r for r in rows if r['Config']['Labels'].get('com.docker.compose.service') == 'ingress'))
+        endpoint = copy.deepcopy(next(iter(row['NetworkSettings']['Networks'].values())))
+        def joined(count):
+            value = copy.deepcopy(row)
+            value['NetworkSettings']['Networks'] = {'commerce-os_net-%02d' % i: {**copy.deepcopy(endpoint), 'NetworkID': fx.checksum(5000+i)}
+                                                    for i in range(count)}
+            return value
+        self.assertEqual(len(runtime.static_projection(joined(9))['NetworkSettings']['Networks']), 9)
+        self.assertEqual(len(runtime.static_projection(joined(runtime.MAX_NETWORKS))['NetworkSettings']['Networks']), runtime.MAX_NETWORKS)
+        with self.assertRaisesRegex(ReleaseError, 'COPY_RUNTIME_NETWORKS_INVALID'):
+            runtime.static_projection(joined(runtime.MAX_NETWORKS+1))
+
+    def test_supervisor_bridge_wiring_becomes_compose_aliases_only_on_gateway_bridges(self):
+        # 11-nov-2026: waha-05..07 were added by the supervisor (docker network connect, no
+        # aliases); the publication recreated ingress and channel-worker through Compose.
+        def nets(service, aliases_on_new):
+            pair = sorted(['commerce-os-%s-1' % service, service])
+            value = {'commerce-os_core': {'NetworkID': fx.checksum(1), 'Aliases': pair, 'GwPriority': 0},
+                     'commerce-os_gateway-01': {'NetworkID': fx.checksum(2), 'Aliases': pair, 'GwPriority': 0}}
+            for slot in (5, 6, 7):
+                value['commerce-os_gateway-%02d' % slot] = {'NetworkID': fx.checksum(10+slot), 'Aliases': aliases_on_new(pair), 'GwPriority': 0}
+            return {'HostConfig': {'Binds': None, 'Dns': None}, 'Mounts': [], 'NetworkSettings': {'Networks': value}}
+        for service in ('ingress', 'channel-worker'):
+            old, new = nets(service, lambda pair: []), nets(service, lambda pair: pair)
+            self.assertTrue(runtime.application_boundary_equal(service, old, new))
+            self.assertTrue(runtime.application_boundary_equal(service, new, copy.deepcopy(new)))
+            self.assertFalse(runtime.application_boundary_equal(service, new, old))  # never back to no aliases
+            for mutate in ('other_alias', 'network_id', 'priority', 'extra_network', 'core_alias', 'slot_21', 'foreign_name'):
+                bad_old, bad = copy.deepcopy(old), copy.deepcopy(new)
+                n_old, n_new = bad_old['NetworkSettings']['Networks'], bad['NetworkSettings']['Networks']
+                if mutate == 'other_alias': n_new['commerce-os_gateway-05']['Aliases'] = sorted(n_new['commerce-os_gateway-05']['Aliases'] + ['postgres'])
+                if mutate == 'network_id': n_new['commerce-os_gateway-06']['NetworkID'] = fx.checksum(99)
+                if mutate == 'priority': n_new['commerce-os_gateway-07']['GwPriority'] = 1
+                if mutate == 'extra_network': n_new['commerce-os_gateway-08'] = copy.deepcopy(n_new['commerce-os_gateway-07'])
+                if mutate == 'core_alias': n_old['commerce-os_core']['Aliases'] = []
+                if mutate == 'slot_21':
+                    n_old['commerce-os_gateway-21'] = {'NetworkID': fx.checksum(21), 'Aliases': [], 'GwPriority': 0}
+                    n_new['commerce-os_gateway-21'] = {**n_old['commerce-os_gateway-21'], 'Aliases': n_new['commerce-os_core']['Aliases']}
+                if mutate == 'foreign_name':
+                    n_old['other_gateway-05'] = {'NetworkID': fx.checksum(31), 'Aliases': [], 'GwPriority': 0}
+                    n_new['other_gateway-05'] = {**n_old['other_gateway-05'], 'Aliases': n_new['commerce-os_core']['Aliases']}
+                with self.subTest(service=service, mutate=mutate):
+                    self.assertFalse(runtime.application_boundary_equal(service, bad_old, bad))
+        # Only the services Compose attaches to the gateway bridges.
+        old, new = nets('api', lambda pair: []), nets('api', lambda pair: pair)
+        self.assertFalse(runtime.application_boundary_equal('api', old, new))
 
     def test_network_snapshot_accepts_one_bridge_per_gateway(self):
         services = {'a': {'Id': 'a', 'NetworkSettings': {'Networks': {'n%d' % i: {} for i in range(11)}}}}

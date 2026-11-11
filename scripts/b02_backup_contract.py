@@ -112,7 +112,7 @@ def sha256(value):
 
 READOPTION_JOURNAL = PRIVATE / 'v7-infra-adoption' / 'journal.json'
 # Canonical gateway services (scripts/copy_runtime_deployment.py GATEWAYS; tests keep both equal).
-GATEWAY_NAMES = frozenset('waha-%02d' % slot for slot in range(1, 7))
+GATEWAY_NAMES = frozenset('waha-%02d' % slot for slot in range(1, 21))
 
 
 def readoption_confirms(receipt, state, state_sha256, plan_sha256, journal):

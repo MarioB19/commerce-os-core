@@ -69,8 +69,10 @@ def main():
             admitted = evidence.deployment_admission(args.admission,evidence.ROOT,args.attempt)
             observation = evidence.installed_readback(admitted['installation_run_id'])
             core = evidence.https_json(evidence.ORIGIN+'/api/version')
-            portal = evidence.https_json('https://ciclo.inovaris.online/api/version')
-            payload = evidence.deployment_payload(admitted,observation,core,portal)
+            # V7.4: the portal's public name may be routed to another host. Then the
+            # preserved portal is verified at its origin by the Root readback.
+            portal, portal_route = evidence.portal_public(evidence.host_external_addresses())
+            payload = evidence.deployment_payload(admitted,observation,core,portal,portal_route)
             # Reread after all native requests; do not publish against changed input.
             fresh = evidence.deployment_admission(args.admission,evidence.ROOT,args.attempt)
             require(fresh == admitted, 'RELEASE_ADMISSION_CHANGED_DURING_READBACK')

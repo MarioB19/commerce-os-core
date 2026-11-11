@@ -8,25 +8,51 @@ export async function observeGroup(c:QueryExecutor,account:DomainRecord,snapshot
  // Same first lock as QR group planning, commands and final emission. Taking
  // a group row first would invert program/group locks during membership changes.
  await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`group-warmup:${account.workspace_id}:${account.environment}`]);
- const identities=(await c.query('SELECT account_id,address_fingerprint,address_ciphertext FROM warmup_identities WHERE workspace_id=$1 AND environment=$2',[account.workspace_id,account.environment])).rows;
- const members=snapshot.members.map(m=>({account_id:identities.find(i=>m.verifiedIdentity&&i.address_fingerprint===hash(canonicalIdentity(m.verifiedIdentity)))?.account_id??null,identity_hash:hash(m.identity),verified_hash:m.verifiedIdentity?hash(canonicalIdentity(m.verifiedIdentity)):null,admin:m.admin,mapping_source:m.mappingSource})).sort((a,b)=>a.identity_hash.localeCompare(b.identity_hash));
+ // V7.4 C: a member is one of this profile's own lines only through an
+ // explicit identity: its warm-up registration or the identity its own QR
+ // session observed. Everyone else is an external participant; it keeps the
+ // provider's opaque identity hash and never an account, grant or state.
+ const own=new Map<string,string>();
+ for(const row of (await c.query(`SELECT i.account_id,i.address_fingerprint FROM warmup_identities i JOIN records r ON r.id=i.account_id AND r.workspace_id=i.workspace_id AND r.environment=i.environment
+  WHERE i.workspace_id=$1 AND i.environment=$2 AND r.kind='channel_account' AND NOT(r.body?'deleted_at') ORDER BY i.account_id`,[account.workspace_id,account.environment])).rows)own.set(row.address_fingerprint,row.account_id);
+ for(const row of (await c.query(`SELECT s.account_id,s.observed_identity_ciphertext,s.expected_identity_fingerprint FROM channel_sessions s JOIN records r ON r.id=s.account_id AND r.workspace_id=s.workspace_id AND r.environment=s.environment
+  WHERE s.workspace_id=$1 AND s.environment=$2 AND s.archived_at IS NULL AND s.observed_identity_ciphertext IS NOT NULL AND r.kind='channel_account' AND NOT(r.body?'deleted_at')
+   AND r.body->>'ownership_confirmed_at' IS NOT NULL AND r.body->>'identity_fingerprint'=s.expected_identity_fingerprint ORDER BY s.account_id`,[account.workspace_id,account.environment])).rows){
+  let raw:string;try{raw=decrypt(row.observed_identity_ciphertext);}catch{continue;}
+  if(hash(raw)!==row.expected_identity_fingerprint)continue;
+  const canonical=canonicalIdentity(raw);if(!/^wa:\d{6,18}$/.test(canonical))continue;
+  const key=hash(canonical);if(own.has(key)&&own.get(key)!==row.account_id)throw new Error('GROUP_OWN_IDENTITY_AMBIGUOUS');
+  own.set(key,row.account_id);
+ }
+ const members=snapshot.members.map(m=>({account_id:(m.verifiedIdentity?own.get(hash(canonicalIdentity(m.verifiedIdentity))):undefined)??null,identity_hash:hash(m.identity),verified_hash:m.verifiedIdentity?hash(canonicalIdentity(m.verifiedIdentity)):null,admin:m.admin,mapping_source:m.mappingSource})).sort((a,b)=>a.identity_hash.localeCompare(b.identity_hash));
+ if(new Set(members.filter(m=>m.account_id).map(m=>m.account_id)).size!==members.filter(m=>m.account_id).length)throw new Error('GROUP_OWN_IDENTITY_AMBIGUOUS');
  const fingerprint=hash(snapshot.id);
  await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`group:${account.workspace_id}:${account.environment}:${fingerprint}`]);
  const old=(await c.query('SELECT * FROM warmup_groups WHERE workspace_id=$1 AND environment=$2 AND provider=$3 AND group_fingerprint=$4 FOR UPDATE',[account.workspace_id,account.environment,account.body.provider,fingerprint])).rows[0];
  const permissions={admin_only:snapshot.adminOnly},changed=old&&(stableJson(old.members)!==stableJson(members)||stableJson(old.permissions)!==stableJson(permissions));
  const observations:Body=changed?{}:old?.capabilities?.observations??{};observations[account.id]={observed_at:now.toISOString(),runtime:snapshot.runtime};
- const capabilities={protocol:'v1',observations,all_members_resolved:members.every(m=>m.account_id&&m.verified_hash),member_read:true,authenticated_receive:true};
+ const capabilities={protocol:'v1',observations,all_members_resolved:members.every(m=>m.account_id&&m.verified_hash),own_members:members.filter(m=>m.account_id).length,external_members:members.filter(m=>!m.account_id).length,member_read:true,authenticated_receive:true};
  const row=(await c.query(`INSERT INTO warmup_groups(workspace_id,environment,provider,group_fingerprint,group_ciphertext,name,members,permissions,capabilities,observed_at,expires_at,source)
  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'provider_read') ON CONFLICT(workspace_id,environment,provider,group_fingerprint) DO UPDATE SET members=EXCLUDED.members,permissions=EXCLUDED.permissions,capabilities=EXCLUDED.capabilities,name=EXCLUDED.name,observed_at=EXCLUDED.observed_at,expires_at=EXCLUDED.expires_at,version=warmup_groups.version+$12 RETURNING *`,[account.workspace_id,account.environment,account.body.provider,fingerprint,encrypt(snapshot.id),snapshot.name,JSON.stringify(members),permissions,capabilities,now,new Date(now.getTime()+60000),changed?1:0])).rows[0];
  if(changed){await c.query("UPDATE warmup_programs SET status=CASE WHEN status='ARCHIVED' THEN status ELSE 'PAUSED' END,review_hash=NULL,version=version+1 WHERE group_id=$1",[row.id]);await c.query("UPDATE warmup_pools SET paused=true,version=version+1,breaker_reason='GROUP_MEMBERSHIP_CHANGED' WHERE group_id=$1",[row.id]);await c.query("UPDATE outbox SET status='CANCELLED',result=result||'{\"reason\":\"GROUP_MEMBERSHIP_CHANGED\"}'::jsonb,updated_at=now() WHERE workspace_id=$1 AND environment=$2 AND kind='warmup' AND payload->>'group_id'=$3 AND status IN('READY','BLOCKED')",[account.workspace_id,account.environment,row.id]);}
  await appendEvent(c,{workspace_id:account.workspace_id,environment:account.environment,event_type:'warmup.group_observed',aggregate_id:row.id,payload:{account_id:account.id,membership_version:row.version,changed:!!changed,members:members.length,resolved:capabilities.all_members_resolved,runtime:snapshot.runtime},occurred_at:now.toISOString()});
  return row;
 }
-export function groupEligibility(group:Body,accountIds:string[],now=new Date(),senderIds=accountIds){
- const members:Body[]=group.members??[],unique=new Set(members.map(m=>m.account_id));
+/** `accountIds` are the profile's lines that take part (they send or give
+ * receive evidence). By default every member must be one of them (the strict
+ * rule of the earlier authorized mode). With `audience` (V7.4 C, QR groups)
+ * the group may also hold members that only receive: external participants
+ * without an account, and own lines that were not chosen to take part. */
+export function groupEligibility(group:Body,accountIds:string[],now=new Date(),senderIds=accountIds,options:{audience?:boolean}={}){
+ const members:Body[]=group.members??[],own=members.filter(m=>m.account_id),unique=new Set(own.map(m=>m.account_id));
  if(group.retired_at)return 'GROUP_RETIRED';
- if(!group.capabilities?.all_members_resolved||members.some(m=>!m.account_id))return 'GROUP_MEMBER_UNRESOLVED';
- if(unique.size!==members.length||unique.size!==accountIds.length||accountIds.some(id=>!unique.has(id)))return 'GROUP_ALL_MEMBERS_REQUIRED';
+ if(unique.size!==own.length)return 'GROUP_MEMBER_UNRESOLVED';
+ if(options.audience){
+  if(!accountIds.length||new Set(accountIds).size!==accountIds.length||accountIds.some(id=>!unique.has(id))||senderIds.some(id=>!accountIds.includes(id)))return 'GROUP_PARTICIPANT_NOT_IN_GROUP';
+ }else{
+  if(!group.capabilities?.all_members_resolved||members.some(m=>!m.account_id))return 'GROUP_MEMBER_UNRESOLVED';
+  if(unique.size!==accountIds.length||accountIds.some(id=>!unique.has(id)))return 'GROUP_ALL_MEMBERS_REQUIRED';
+ }
  if(group.permissions?.admin_only&&members.some(m=>senderIds.includes(m.account_id)&&!m.admin))return 'GROUP_SEND_PERMISSION_REQUIRED';
  if(new Date(group.expires_at).getTime()<=now.getTime()||new Date(group.observed_at)>now)return 'GROUP_MEMBERSHIP_STALE';
  if(accountIds.some(id=>!group.capabilities.observations?.[id]))return 'GROUP_SHARED_IDENTITY_UNVERIFIED';
@@ -60,7 +86,8 @@ export async function correlateGroupEvents(c:QueryExecutor,groupId?:string){
   let receiver=row.account_id;
   if(e.type==='ack'){
    if(!['DELIVERED','READ','PLAYED'].includes(e.status??'')||!e.participantIdentity)continue;
-   const member=(await c.query('SELECT account_id FROM warmup_identities WHERE workspace_id=$1 AND environment=$2 AND address_fingerprint=$3',[row.workspace_id,row.environment,hash(e.participantIdentity)])).rows[0];receiver=member?.account_id;
+   const member=(await c.query('SELECT account_id FROM warmup_identities WHERE workspace_id=$1 AND environment=$2 AND address_fingerprint=$3',[row.workspace_id,row.environment,hash(e.participantIdentity)])).rows[0]
+    ??(await c.query("SELECT m->>'account_id' AS account_id FROM warmup_groups g,jsonb_array_elements(g.members) m WHERE g.id=$1 AND m->>'account_id' IS NOT NULL AND (m->>'identity_hash'=$2 OR m->>'verified_hash'=$2)",[row.group_id,hash(e.participantIdentity)])).rows[0];receiver=member?.account_id;
   }
   if(!receiver||receiver===turn.sender_id||!turn.recipient_ids.includes(receiver))continue;
   await c.query(`INSERT INTO warmup_group_receipts(effect_id,receiver_id,sender_id,group_id,membership_version,provider_message_id,delivery_source,envelope_id,observed_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`,[turn.effect_id,receiver,turn.sender_id,turn.group_id,turn.membership_version,e.providerMessageId,e.type==='message'?'authenticated_receive':'participant_ack',row.envelope_id,e.providerAt]);

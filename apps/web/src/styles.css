@@ -972,6 +972,18 @@ th.num {
   cursor: pointer;
 }
 
+.choice {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  padding: var(--space-2) 0;
+  cursor: pointer;
+}
+.choice input {
+  margin-top: 0.25em;
+  flex: none;
+}
+
 /* -------------------------------------------------------------- controls */
 .input,
 .textarea,

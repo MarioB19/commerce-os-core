@@ -6,6 +6,7 @@ import {provisionUser} from '../../apps/api/src/auth.js';
 import {pool,putRecord,withTransaction,getRecord,hash} from '../../packages/db/src/index.js';
 import {saveIntegrationSetting} from '../../packages/db/src/integration-settings.js';
 import {processNumberOperations} from '../../apps/channel-worker/src/number-operations.js';
+import {recordHealth} from '../../apps/channel-worker/src/lifecycle.js';
 import {roleExecutor} from '../support/database-role.js';
 const withRole=roleExecutor(pool),workspace='capacity-contract-'+randomUUID(),origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0]!;
 // V7 F2: fixture workspaces are adopted profiles (max three per installation).
@@ -46,6 +47,14 @@ it('reserves concurrent distinct slots and creates only the reviewed initial int
  // Explicit synthetic host-readback fixture exercises the contract; this is not physical evidence.
  data(await call('POST','/v1/number-capacity/inventory',{observed_at:new Date().toISOString(),slots:[readback]},agent));
  const claim=data(await call('POST','/v1/number-capacity/administration/'+job.id,{action:'claim',expected_version:job.version,reason:'Contract fixture claim'},agent));
+ // V7.4 A: a real health cycle can run before the supervisor installs the
+ // integration. Its unreadable-provider observation must leave the alta in NEW
+ // (preparation progress is not observed health) and open no incident.
+ const unconfigured=async()=>{throw new Error('PROVIDER_NOT_CONFIGURED');};
+ await withRole('commerce_channel',async()=>recordHealth((await getRecord(pool,workspace,'channel_account',created[0].id))!,unconfigured));
+ const early=(await getRecord(pool,workspace,'channel_account',created[0].id))!;
+ expect(early.body.status).toBe('NEW');expect(early.body.health_status).toBe('UNKNOWN');
+ expect((await pool.query("SELECT count(*)::int n FROM records WHERE workspace_id=$1 AND kind='incident' AND body->>'account_id'=$2",[workspace,created[0].id])).rows[0].n).toBe(0);
  const before=data(await call('GET','/v1/settings/operations'));
  const reference='waha-'+String(slot.slot).padStart(2,'0'),patch={expected_version:0,capacity_operation_id:job.id,label:'Isolated fixture gateway',enabled:true,config:{base_url:'http://'+reference+':3000'},secrets:{api_key:randomBytes(24).toString('base64url'),webhook_secret:randomBytes(24).toString('base64url')},reason:'Initial integration bound to reviewed fixture'};
  const saved=data(await call('PUT','/v1/settings/integrations/waha:'+reference,patch,agent));expect(saved.operation_review_required).toBe(false);expect(saved.operational_revision).toBe(before.version);
@@ -61,9 +70,15 @@ it('reserves concurrent distinct slots and creates only the reviewed initial int
  expect((await call('POST','/v1/number-capacity/administration/'+secondJob.id,{action:'complete',expected_version:secondClaim.version,outcome:'VERIFIED',overlay_sha:'b'.repeat(64),slots:[secondReadback],reason:'Cannot steal a live claim'},replacement)).statusCode).toBe(409);
  const uncertain=data(await call('POST','/v1/number-capacity/administration/'+secondJob.id,{action:'complete',expected_version:secondClaim.version,outcome:'UNKNOWN',reason:'Synthetic lost response'},agent));
  const secondRef='waha-'+String(secondSlot.slot).padStart(2,'0');
+ // A number left by the V7.3 race (health wrote UNKNOWN before the integration
+ // existed) recovers through the same operation, with an audit event, and
+ // only while it was never linked.
+ await withTransaction(async c=>{const stuck=(await getRecord(c,workspace,'channel_account',created[1].id))!;await putRecord(c,{id:stuck.id,workspaceId:workspace,environment:'REAL',kind:'channel_account',version:stuck.version,body:{...stuck.body,status:'UNKNOWN',health_status:'UNKNOWN'}});});
  data(await call('PUT','/v1/settings/integrations/waha:'+secondRef,{...patch,capacity_operation_id:secondJob.id,config:{base_url:'http://'+secondRef+':3000'}},replacement));
  data(await call('POST','/v1/number-capacity/administration/'+secondJob.id,{action:'reconcile',expected_version:uncertain.version,outcome:'VERIFIED',overlay_sha:'b'.repeat(64),slots:[secondReadback],reason:'Existing resources read back by a new authorized session'},replacement));
  expect((await operation(secondJob.id)).state).toBe('SUCCEEDED');
+ expect((await getRecord(pool,workspace,'channel_account',created[1].id))!.body.status).toBe('NEW');
+ expect((await pool.query("SELECT count(*)::int n FROM domain_events WHERE workspace_id=$1 AND event_type='number.initial_provision_registration_recovered' AND aggregate_id=$2",[workspace,created[1].id])).rows[0].n).toBe(1);
  const account=(await getRecord(pool,workspace,'channel_account',created[0].id))!.body;expect(account.sending_enabled).toBe(false);expect(account.identity_verified).toBe(false);
  expect((await pool.query('SELECT body,version FROM records WHERE id=$1',[legacy.id])).rows[0]).toEqual({body:legacy.body,version:legacy.version});
  expect((await pool.query('SELECT * FROM channel_sessions WHERE account_id=$1',[legacy.id])).rows[0]).toEqual(legacySession);

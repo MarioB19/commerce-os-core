@@ -336,10 +336,49 @@ def https_json(url):
         return parse(response.read(65537))
 
 
-def validate_installed(admitted, observation, core, portal):
+PORTAL_HOST = 'ciclo.inovaris.online'
+PORTAL_ROUTED_ELSEWHERE = 'PUBLIC_DOMAIN_NOT_ROUTED_TO_HOST'
+
+
+def host_external_addresses(*, runner=command):
+    """External IPv4 addresses of the installed VM, from its native description."""
+    instance = runner([gcloud(),'compute','instances','describe','commerce-os-test','--zone=us-east1-d',*common()])
+    require(type(instance) is dict and str(instance.get('id')) == '6334472381123916728'
+            and instance.get('name') == 'commerce-os-test', 'PUBLISHER_VM_IDENTITY_MISMATCH')
+    addresses = {config.get('natIP') for interface in instance.get('networkInterfaces') or [] if type(interface) is dict
+                 for config in interface.get('accessConfigs') or [] if type(config) is dict}
+    addresses.discard(None)
+    require(addresses and all(type(value) is str and re.fullmatch(r'(?:[0-9]{1,3}\.){3}[0-9]{1,3}',value) for value in addresses),
+            'PUBLISHER_VM_ADDRESS_REQUIRED')
+    return frozenset(addresses)
+
+
+def portal_public(host_addresses, *, resolver=None, fetch=None):
+    """V7.4: read the preserved portal's public name, or prove it is another host.
+
+    Returns (document, None) when the public name answers its version, and
+    (None, route) only when every address the name resolves to is outside the
+    installed VM. A name that still points at the VM and does not answer is a
+    failure; it is never excused."""
+    import socket
+    resolver = resolver or (lambda host: {item[4][0] for item in socket.getaddrinfo(host,443,type=socket.SOCK_STREAM)})
+    fetch = fetch or https_json
+    try:
+        return fetch('https://'+PORTAL_HOST+'/api/version'), None
+    except Exception:
+        pass
+    resolved = {value for value in resolver(PORTAL_HOST) if type(value) is str}
+    require(type(host_addresses) in (set,frozenset) and host_addresses and resolved and not resolved & set(host_addresses),
+            'PRESERVED_PORTAL_HTTPS_MISMATCH')
+    return None, {'state':PORTAL_ROUTED_ELSEWHERE,'host':PORTAL_HOST,'resolved_addresses':len(resolved),'resolves_to_host':False}
+
+
+def validate_installed(admitted, observation, core, portal, portal_route=None):
     context = admitted['context']; run_id = admitted['installation_run_id']
-    require(type(observation) is dict and set(observation) == {'schema_version','custody','report','report_ref','metadata_sha256'}
-            and observation['schema_version'] == 1 and observation['custody'] == 'ROOT_NATIVE_READBACK',
+    base = {'schema_version','custody','report','report_ref','metadata_sha256'}
+    require(type(observation) is dict and observation.get('custody') == 'ROOT_NATIVE_READBACK'
+            and ((observation.get('schema_version') == 1 and set(observation) == base)
+                 or (observation.get('schema_version') == 2 and set(observation) == base | {'portal_origin'})),
             'ROOT_NATIVE_READBACK_REQUIRED')
     report = observation['report']; reference = observation['report_ref']
     require(type(reference) is dict and set(reference) == {'path','bytes','sha256'}
@@ -364,14 +403,28 @@ def validate_installed(admitted, observation, core, portal):
                 and type(value['image']) is str and re.fullmatch(r'sha256:[a-f0-9]{64}',value['image']),
                 'INSTALLED_COMPONENT_SOURCE_MISMATCH')
     preserved = components['portal']
-    require(type(preserved) is dict and preserved.get('action') == 'PRESERVED' and sha(preserved.get('source_sha'),40)
-            and type(portal) is dict and portal.get('release') == preserved['source_sha']
-            and portal.get('activities') == 480, 'PRESERVED_PORTAL_HTTPS_MISMATCH')
+    require(type(preserved) is dict and preserved.get('action') == 'PRESERVED' and sha(preserved.get('source_sha'),40),
+            'PRESERVED_PORTAL_HTTPS_MISMATCH')
+    if portal_route is None:
+        require(type(portal) is dict and portal.get('release') == preserved['source_sha']
+                and portal.get('activities') == 480, 'PRESERVED_PORTAL_HTTPS_MISMATCH')
+    else:
+        # V7.4: the portal's public name is served by another host. The control is
+        # kept: the preserved portal must answer its own release at its origin,
+        # read by Root inside the exact preserved container. No version is assumed.
+        origin = observation.get('portal_origin')
+        require(portal is None and portal_route == {'state':PORTAL_ROUTED_ELSEWHERE,'host':PORTAL_HOST,
+                    'resolved_addresses':portal_route.get('resolved_addresses'),'resolves_to_host':False}
+                and type(portal_route['resolved_addresses']) is int and portal_route['resolved_addresses'] > 0
+                and type(origin) is dict and origin == {'source':'PRESERVED_CONTAINER_LOOPBACK',
+                    'container_id':preserved.get('container_id'),'release':preserved['source_sha'],'activities':480}
+                and type(preserved.get('container_id')) is str and re.fullmatch(r'[a-f0-9]{64}',preserved['container_id']),
+                'PRESERVED_PORTAL_HTTPS_MISMATCH')
     return report
 
 
-def deployment_payload(admitted, observation, core, portal):
-    report = validate_installed(admitted,observation,core,portal)
+def deployment_payload(admitted, observation, core, portal, portal_route=None):
+    report = validate_installed(admitted,observation,core,portal,portal_route)
     context = admitted['context']
     publication_enabled(context, installed_report=report)
     return {'schema_version':2,'provider':PROVIDER,'package_origin':context['package_origin'],
@@ -381,7 +434,8 @@ def deployment_payload(admitted, observation, core, portal):
         'installation_run_id':admitted['installation_run_id'],'archive_sha256':admitted['archive_sha256'],
         'installer_status':'SUCCEEDED','deployment_scope':'copy-runtime','runtime_stage':'OPERATING',
         'consumers_started':True,'components':report['components'],'root_report_sha256':observation['report_ref']['sha256'],
-        'metadata_sha256':observation['metadata_sha256']}
+        'metadata_sha256':observation['metadata_sha256'],
+        **({'portal_verification':'ROOT_ORIGIN_READBACK','portal_public_route':PORTAL_ROUTED_ELSEWHERE} if portal_route else {})}
 
 
 def build_url(context):

@@ -560,6 +560,44 @@
     }
    }
   },
+  "/v1/numbers/{id}/removal/unlink-confirmation": {
+   "post": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "id",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Default Response"
+     }
+    }
+   }
+  },
+  "/v1/numbers/{id}/warmup": {
+   "post": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "id",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Default Response"
+     }
+    }
+   }
+  },
   "/v1/openapi.json": {
    "get": {
     "responses": {

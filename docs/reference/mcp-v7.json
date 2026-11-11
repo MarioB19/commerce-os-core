@@ -240,6 +240,7 @@
     "listar",
     "leer",
     "crear",
+    "cambiar_calentamiento",
     "impacto_eliminar",
     "eliminar"
    ],
@@ -259,6 +260,8 @@
     "estado",
     "conectar",
     "vincular",
+    "reintentar_preparacion",
+    "confirmar_desvinculacion",
     "desconectar",
     "pausar",
     "reanudar"
