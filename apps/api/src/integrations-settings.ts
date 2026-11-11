@@ -1,6 +1,6 @@
 import type {FastifyInstance,FastifyRequest} from 'fastify';
 import {z} from 'zod';
-import {pool,withTransaction,stableJson,type QueryExecutor} from '../../../packages/db/src/index.js';
+import {pool,withTransaction,stableJson,getRecord,putRecord,type QueryExecutor} from '../../../packages/db/src/index.js';
 import {bumpOperationalRevision,readOperationalSettings} from '../../../packages/db/src/operational-settings.js';
 import {integrationDefinitions,integrationMetadata,integrationPatchSchema,listIntegrationSettings,readIntegrationSettings,privateIntegrationDigest,publicSettingText,saveIntegrationSetting,splitIntegrationKey,type IntegrationPatch} from '../../../packages/db/src/integration-settings.js';
 import {audit,envOf,fail,parseBody,idempotencyActor,principal,assertResource} from './context.js';
@@ -63,12 +63,19 @@ export async function integrationSettingsRoutes(app:FastifyInstance){
    if(patch.capacity_operation_id){
     if(!(actor.service?actor.scopes:actor.permissions).some(scope=>scope==='*'||scope==='channels:capacity:agent'))throw fail(403,'CAPACITY_AGENT_REQUIRED');
     await readOperationalSettings(client,actor.workspace_id,environment,{lock:'update'});
-    const allowed=(await client.query(`SELECT 1 FROM number_operations o JOIN number_capacity_slots s ON s.id::text=o.input->>'slot_id' JOIN records a ON a.id=s.account_id
+    const allowed=(await client.query(`SELECT a.id AS account_id,a.body->>'status' AS account_status FROM number_operations o JOIN number_capacity_slots s ON s.id::text=o.input->>'slot_id' JOIN records a ON a.id=s.account_id
      WHERE o.id=$1 AND o.workspace_id=$2 AND o.environment=$3 AND o.action='PROVISION' AND ((o.state='PREPARING' AND o.lease_until>now() AND o.lease_owner=$4) OR (o.state='UNKNOWN' AND (s.readback->>'observed_at')::timestamptz>now()-interval '60 seconds' AND s.readback->>'source'='bounded_administrator' AND s.readback->>'session_count'='0'))
-     AND s.readback->>'verified'='true' AND a.body->>'provider'='waha' AND a.body->>'status'='NEW' AND COALESCE((a.body->>'identity_verified')::boolean,false)=false AND COALESCE((a.body->>'sending_enabled')::boolean,false)=false
+     AND s.readback->>'verified'='true' AND a.body->>'provider'='waha' AND COALESCE((a.body->>'identity_verified')::boolean,false)=false AND COALESCE((a.body->>'sending_enabled')::boolean,false)=false
+     AND (COALESCE(a.body->>'status','NEW')='NEW' OR (a.body->>'status'='UNKNOWN' AND NOT(a.body?'identity_fingerprint') AND NOT(a.body?'last_lifecycle_at') AND NOT(a.body?'link_confirmed_at') AND NOT(a.body?'ownership_confirmed_at') AND NOT(a.body?'unlinked_at') AND NOT(a.body?'deleted_at')
+      AND NOT EXISTS(SELECT 1 FROM session_ownership w WHERE w.workspace_id=a.workspace_id AND w.account_id=a.id::text)
+      AND NOT EXISTS(SELECT 1 FROM commands k WHERE k.workspace_id=a.workspace_id AND k.environment=a.environment AND k.resource_id=a.id::text AND k.kind='channel_command')
+      AND NOT EXISTS(SELECT 1 FROM channel_sessions cs WHERE cs.account_id=a.id AND cs.archived_at IS NULL AND (cs.desired_state<>'STOPPED' OR cs.last_connected_at IS NOT NULL))))
      AND $5='waha:'||(a.body->>'gateway_ref') AND NOT EXISTS(SELECT 1 FROM integration_settings i WHERE i.workspace_id=o.workspace_id AND i.environment=o.environment AND i.key=$5)
-     AND NOT EXISTS(SELECT 1 FROM outbox x WHERE x.account_id=a.id::text)`,[patch.capacity_operation_id,actor.workspace_id,environment,'capacity-agent:'+(actor.token_id??actor.user.id),key])).rowCount;
+     AND NOT EXISTS(SELECT 1 FROM outbox x WHERE x.account_id=a.id::text)`,[patch.capacity_operation_id,actor.workspace_id,environment,'capacity-agent:'+(actor.token_id??actor.user.id),key])).rows[0];
     if(!allowed||patch.expected_version!==0)throw fail(409,'INITIAL_PROVISION_SCOPE_REQUIRED');isolatedProvision=true;
+    // V7.4 A: a never-linked alta that an early health cycle of an older release
+    // left in UNKNOWN returns to NEW within this same reviewed operation.
+    if(allowed.account_status==='UNKNOWN'){const stuck=await getRecord(client,actor.workspace_id,'channel_account',allowed.account_id);if(stuck){await putRecord(client,{id:stuck.id,workspaceId:stuck.workspace_id,environment:stuck.environment,kind:stuck.kind,version:stuck.version,body:{...stuck.body,status:'NEW'}});await audit(client,req,'number.initial_provision_registration_recovered',stuck.id,{automatic:true,operation_id:patch.capacity_operation_id,from:'UNKNOWN',to:'NEW',never_linked:true,external_effects:0});}}
    }
    const operational=key==='openai:assistant'||isolatedProvision?await readOperationalSettings(client,actor.workspace_id,environment):await bumpOperationalRevision(client,actor.workspace_id,environment,actor.user.id);await gatewayCanChange(client,actor.workspace_id,environment,key,patch,release.body.dispatch_frozen===true&&release.body.real_sends_enabled===false&&release.body.allow_real_operations===false);const profile=await saveIntegrationSetting(client,actor.workspace_id,environment,key,patch,actor.user.id);const data={...integrationMetadata(profile),operational_revision:operational.version,operation_review_required:key!=='openai:assistant'&&!isolatedProvision,capacity_operation_id:patch.capacity_operation_id??null};
    await audit(client,req,'integration.settings_updated',key,{key,profile_revision:profile.version,operational_revision:operational.version,enabled:profile.enabled,capacity_operation_id:patch.capacity_operation_id??null,isolated_initial_provision:isolatedProvision,changed_secret_fields:[...Object.keys(patch.secrets),...patch.clear_secrets],reason:publicSettingText(patch.reason)});
