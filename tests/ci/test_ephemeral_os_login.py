@@ -9,6 +9,7 @@ import importlib.util
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
+import ephemeral_os_login
 from ephemeral_os_login import remove_ephemeral_key
 spec = importlib.util.spec_from_file_location('backup_cleanup_transport',
     Path(__file__).resolve().parents[2] / 'scripts' / 'b02-backup-ci.py')
@@ -172,3 +173,43 @@ class CleanupTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TransientReadTests(unittest.TestCase):
+    """R03 (V7.5): only the profile read is retried, bounded; never a success
+    without confirming the exact resource is absent."""
+    def setUp(self):
+        self.pauses = []
+        patcher = mock.patch.object(ephemeral_os_login, '_pause', self.pauses.append)
+        patcher.start(); self.addCleanup(patcher.stop)
+
+    def test_transient_read_failure_then_exact_removal(self):
+        before = profile(); after = copy.deepcopy(before); del after['sshPublicKeys'][OWN_ID]
+        calls = []; state = {'reads': 0}
+        def runner(args):
+            calls.append(args)
+            if args[3] == 'describe-profile':
+                state['reads'] += 1
+                if state['reads'] == 1:
+                    return subprocess.CompletedProcess(args, 1, '', 'transient')
+                value = before if state['reads'] == 2 else after
+                return subprocess.CompletedProcess(args, 0, json.dumps(value), '')
+            return subprocess.CompletedProcess(args, 0, '', '')
+        self.assertEqual(remove_ephemeral_key(PUBLIC, runner), {'key_absent_verified': True, 'remove_calls': 1, 'profile_reads': 2})
+        self.assertEqual(self.pauses, [2])
+        self.assertEqual([c for c in calls if c[3] == 'ssh-keys'], [['gcloud', 'compute', 'os-login', 'ssh-keys', 'remove', '--key=' + OWN_ID, '--quiet']])
+
+    def test_persistent_read_failure_is_never_success_and_removes_nothing(self):
+        calls = []
+        def runner(args):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 1, '', 'denied')
+        with self.assertRaisesRegex(RuntimeError, 'EPHEMERAL_OS_LOGIN_PROFILE_READ_FAILED'):
+            remove_ephemeral_key(PUBLIC, runner)
+        self.assertEqual(len(calls), ephemeral_os_login.READ_ATTEMPTS)
+        self.assertFalse(any(c[3] == 'ssh-keys' for c in calls))
+
+    def test_deploy_client_scopes_os_login_to_the_ssh_identity(self):
+        source = (Path(__file__).resolve().parents[2] / 'scripts' / 'deploy-ci-client.py').read_text()
+        self.assertIn("os_login.append('--account='+selected_account)", source)
+        self.assertIn('remove_ephemeral_key(public, lambda args: executor(args+os_login,check=False,capture=True))', source)

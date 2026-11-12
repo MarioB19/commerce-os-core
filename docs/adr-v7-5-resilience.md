@@ -81,7 +81,7 @@ condicionado y lo dice. Web y MCP consumen la misma lectura.
   proceso** adquirió esa generación (registro en memoria del proceso). Un
   heartbeat tardío solo no basta.
 - Propietario anterior (caso WA 5): operación canónica `POST
-  /v1/numbers/:id/ownership` (`number_connection_manage.conciliar_propiedad`)
+  /v1/numbers/:id/link` con `action=reconcile_ownership` (`number_connection_manage.conciliar_propiedad`, botón «Verificar y retomar control» en Números)
   que encola un `check_health` idempotente. El worker vigente transfiere la
   generación **sólo** con un comprobante de aislamiento válido sin consumir del
   propietario y generación exactos (lo consume una vez); si no existe responde
@@ -159,10 +159,13 @@ diagnóstico.
 
 ## 8. MCP (H04)
 
-`initialize` declara `version=<semver>+<sha12>` y el servidor publica la
-herramienta de lectura `platform_build` (perfil) con SHA, versión y
-capacidades V7.5. El cliente antiguo sigue funcionando; las capacidades nuevas
-se detectan por nombre de acción.
+`initialize` declara `version=7.5.0` (antes `7.0.0` fijo). `GET /v2/build`
+(público, sin autoridad) devuelve el SHA instalado y el contrato MCP que sirve
+(versión y lista de capacidades `herramienta.acción`). La acción de lectura
+`profile_context.version` compara ese contrato con el del cliente instalado y
+devuelve `compatible`, `missing` y la instrucción de actualizar. Un cliente
+antiguo sigue funcionando con lo que conoce; la paridad no se acredita contando
+herramientas.
 
 ## 9. Anthropic (H14)
 

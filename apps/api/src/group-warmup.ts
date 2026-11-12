@@ -1,8 +1,8 @@
 import type {FastifyInstance} from 'fastify';
 import {z} from 'zod';
 import {withProfileRequest,type ProfileRequestDependencies} from './profile-request.js';
-import {groupWarmupCreateSchema,groupWarmupPreviewSchema,groupWarmupCommandSchema,libraryImportSchema,warmupReadSchema} from '../../../packages/contracts/src/group-warmup.js';
-import {groupWarmupOverview,listWarmupGroups,requestGroupRefresh,previewGroupWarmup,createGroupWarmup,commandGroupWarmup,listWarmupLibraries,libraryScripts,importWarmupLibrary,warmupError} from '../../../packages/db/src/group-warmup.js';
+import {groupWarmupCreateSchema,groupWarmupPreviewSchema,groupWarmupCommandSchema,groupWarmupRecoveryPreviewSchema,libraryImportSchema,warmupReadSchema} from '../../../packages/contracts/src/group-warmup.js';
+import {groupWarmupOverview,listWarmupGroups,requestGroupRefresh,previewGroupWarmup,previewGroupRecovery,createGroupWarmup,commandGroupWarmup,listWarmupLibraries,libraryScripts,importWarmupLibrary,warmupError} from '../../../packages/db/src/group-warmup.js';
 const parameter=z.object({id:z.uuid()}).strict(),noQuery=(q:unknown)=>z.object({}).strict().parse(q??{});
 /** Session and personal token use exactly the same profile scopes. Starting a
  * group program is not an interactive-only sales assignment operation. */
@@ -21,6 +21,9 @@ export async function groupWarmupRoutes(app:FastifyInstance,deps?:ProfileRequest
  },deps)};});
  app.post('/v2/warmup/preview',{bodyLimit:4096},async req=>{noQuery(req.query);const input=groupWarmupPreviewSchema.parse(req.body);return{data:await withProfileRequest(req,input.environment,{scope:'warmup:read',mutation:false},({db})=>previewGroupWarmup(db,input.environment,input.config,input.programId),deps)};});
  app.post('/v2/warmup/programs',{bodyLimit:4096},async req=>{noQuery(req.query);const input=groupWarmupCreateSchema.parse(req.body);return{data:await withProfileRequest(req,input.environment,{scope:'warmup:write',mutation:true},({db,profile})=>createGroupWarmup(db,input.environment,input.operationId,input.config,profile.authority.membership.userId),deps)};});
+ // V7.5 §2 (H02): read-only review before recovering a protection.
+ app.post('/v2/warmup/programs/:id/recovery-preview',{bodyLimit:512},async req=>{noQuery(req.query);const {id}=parameter.parse(req.params),input=groupWarmupRecoveryPreviewSchema.parse(req.body??{});
+  return{data:await withProfileRequest(req,input.environment,{scope:'warmup:read',mutation:false},({db})=>previewGroupRecovery(db,input.environment,id),deps)};});
  app.post('/v2/warmup/programs/:id/commands',{bodyLimit:4096},async req=>{noQuery(req.query);const {id}=parameter.parse(req.params),input=groupWarmupCommandSchema.parse(req.body);return{data:await withProfileRequest(req,input.environment,{scope:'warmup:write',mutation:true},({db,profile})=>commandGroupWarmup(db,input.environment,id,input,profile.authority.membership.userId),deps)};});
  app.get('/v2/warmup/libraries',async req=>{const q=warmupReadSchema.parse(req.query??{});return{data:await withProfileRequest(req,q.environment,{scope:'warmup:read',mutation:false},({db})=>listWarmupLibraries(db,q.environment),deps)};});
  app.get('/v2/warmup/library',async req=>{const q=warmupReadSchema.extend({version:z.string().min(3).max(100),search:z.string().max(100).default(''),offset:z.coerce.number().int().min(0).max(2000).default(0),limit:z.coerce.number().int().min(1).max(20).default(10)}).parse(req.query??{});

@@ -48,7 +48,20 @@ async function linkFacts(c:QueryExecutor,account:DomainRecord){
  const profile=account.body.gateway_ref?await readIntegrationSettings(c,account.workspace_id,account.environment,'waha:'+account.body.gateway_ref,{secrets:false}).catch(()=>undefined):undefined;
  const provision=(await c.query("SELECT id,state,version,created_at,updated_at,result->>'reason' AS reason,result->>'retry_requested_at' AS retry_requested_at FROM number_operations WHERE workspace_id=$1 AND environment=$2 AND action='PROVISION' AND input->>'account_id'=$3 ORDER BY created_at DESC LIMIT 1",[account.workspace_id,account.environment,account.id])).rows[0];
  const connectPending=!!(await c.query("SELECT 1 FROM commands WHERE workspace_id=$1 AND environment=$2 AND resource_id=$3 AND kind='channel_command' AND payload->>'type' IN('connect','restart') AND status='PENDING' LIMIT 1",[account.workspace_id,account.environment,account.id])).rowCount;
- return{account,session,profileReady:profile?.enabled===true||account.environment==='SIMULATION',provision,connectPending,now:await numberNow(c,account.workspace_id,account.environment)};
+ // V7.5 §4 (H13): «Conectado» is the provider; operating also needs a live, unfrozen ownership.
+ const ownership=(await c.query('SELECT frozen,freeze_reason,release_frozen,lease_expires_at>clock_timestamp() AS live FROM session_ownership WHERE account_id=$1 AND workspace_id=$2',[account.id,account.workspace_id])).rows[0];
+ const lastCheck=(await c.query("SELECT id,status,result->>'error' AS error,updated_at FROM commands WHERE workspace_id=$1 AND environment=$2 AND resource_id=$3 AND kind='channel_command' AND payload->>'type'='check_health' ORDER BY created_at DESC LIMIT 1",[account.workspace_id,account.environment,account.id])).rows[0];
+ return{account,session,profileReady:profile?.enabled===true||account.environment==='SIMULATION',provision,connectPending,ownership,lastCheck,now:await numberNow(c,account.workspace_id,account.environment)};
+}
+/** V7.5 §4 (H13): whether this line can operate now, separate from the link. */
+function operabilityOf(facts:{account:DomainRecord;ownership?:Record<string,any>;lastCheck?:Record<string,any>}){
+ const o=facts.ownership,check=facts.lastCheck?{id:facts.lastCheck.id as string,status:facts.lastCheck.status as string,error:(facts.lastCheck.error as string|null)??null,at:new Date(facts.lastCheck.updated_at).toISOString()}:null;
+ if(facts.account.environment==='SIMULATION')return{state:'NOT_APPLICABLE',reason:null,next_action:null,last_check:check};
+ if(!o)return{state:'NO_OWNERSHIP',reason:'OWNERSHIP_NOT_CONFIRMED',next_action:'RECONCILE_OWNERSHIP',last_check:check};
+ if(o.release_frozen)return{state:'RELEASE_RECOVERY',reason:'RELEASE_RECOVERY_PENDING',next_action:null,last_check:check};
+ if(o.frozen)return{state:'FROZEN',reason:(o.freeze_reason as string|null)??'UNSPECIFIED',next_action:o.live?'WAIT_FOR_HEALTHY_READ':'RECONCILE_OWNERSHIP',last_check:check};
+ if(!o.live)return{state:'EXPIRED',reason:'OWNERSHIP_LEASE_EXPIRED',next_action:'RECONCILE_OWNERSHIP',last_check:check};
+ return{state:'OPERATIONAL',reason:null,next_action:null,last_check:check};
 }
 const preparationDetail:Record<string,string>={PREPARING:'Estamos preparando la conexión de este número. Suele tardar entre uno y cinco minutos; el QR aparece aquí en cuanto esté lista.',
  PREPARATION_DELAYED:'La preparación está tardando más de lo normal. Seguimos intentándolo automáticamente y tu número está guardado: no necesitas registrarlo otra vez. Puedes cerrar esta ventana y volver después.',
@@ -59,7 +72,7 @@ function view(facts:Awaited<ReturnType<typeof linkFacts>>){
   next_action:nextAction[state],confirmed_at:a.body.link_confirmed_at??a.body.ownership_confirmed_at??null,observed_at:facts.session?.last_health_at??null,
   detail:preparing?preparationDetail[state]:null,
   preparation:preparing?{since:facts.provision?.retry_requested_at??(facts.provision?.created_at?new Date(facts.provision.created_at).toISOString():null),expected_seconds:PREPARATION_EXPECTED_MS/1000,automatic_retry:state!=='PREPARATION_FAILED',retryable:state==='PREPARATION_FAILED'}:null,
-  warmup_mode:warmupModeOf(a.body)};
+  warmup_mode:warmupModeOf(a.body),operability:operabilityOf(facts)};
 }
 /** V7.4 D/E: what is true about this number's warm-up, without counting a
  * calendar day as progress. Effective days are credited by observed evidence. */
@@ -164,6 +177,7 @@ async function overviewRow(c:QueryExecutor,account:DomainRecord){
  let status={code:base.state as string,label:base.label};
  if(base.state==='CONNECTED'){
   if(paused||humanPaused)status={code:'PAUSED_BY_YOU',label:'Pausado por ti'};
+  else if(!['OPERATIONAL','NOT_APPLICABLE','RELEASE_RECOVERY'].includes(base.operability.state))status={code:'NEEDS_ATTENTION',label:'Conectado · sin control operativo vigente'};
   else if(selling.length)status={code:'SELLING',label:'Vendiendo'};
   // V7.4 E: «Calentando» only while a program is active and this line sends.
   else if(warmup.state==='ACTIVE')status={code:'WARMING',label:'Calentando'};
@@ -222,11 +236,25 @@ export async function numberLinkRoutes(app:FastifyInstance){
  });
  app.get('/v1/numbers/:id/link',async req=>({data:await readLink(req,idOf(req))}));
  app.post('/v1/numbers/:id/link',async(req,reply)=>{
-  manage(req);const id=idOf(req),input=z.object({action:z.enum(['link','unlink','retry_preparation'])}).strict().parse(parseBody(req));
+  manage(req);const id=idOf(req),input=z.object({action:z.enum(['link','unlink','retry_preparation','reconcile_ownership'])}).strict().parse(parseBody(req));
   const result=await mutate(req,'number.link:'+id,async c=>{
    await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['channel-command:'+id]);
    const account=await scopedRecord(req,'channel_account',id,c),facts=await linkFacts(c,account),{state}=numberLinkState(facts);
    if(account.body.deleted_at||account.body.removal_requested_at)throw fail(409,'NUMBER_REMOVAL_IN_PROGRESS','Este número se está eliminando.');
+   if(input.action==='reconcile_ownership'){
+    // V7.5 §4 (H13): one fenced health check by the current worker. It takes
+    // the generation only with a valid, unconsumed isolation receipt of the
+    // exact previous owner and generation; nothing is forced or unfrozen here.
+    if(state!=='CONNECTED')throw fail(409,'NUMBER_NOT_CONNECTED','Conecta el número antes de conciliar su control operativo.');
+    if(account.environment==='REAL'&&(await readOperationalSettings(c,account.workspace_id,'REAL')).release_hold)throw fail(409,'RELEASE_HOLD_ACTIVE','Estamos actualizando la plataforma. Intenta en un momento.');
+    const current=operabilityOf(facts);
+    if(current.state==='OPERATIONAL'||current.state==='NOT_APPLICABLE')return{data:view(facts)};
+    const pending=(await c.query("SELECT id FROM commands WHERE workspace_id=$1 AND environment=$2 AND resource_id=$3 AND kind='channel_command' AND status='PENDING' AND payload->>'type'='check_health' ORDER BY created_at LIMIT 1",[account.workspace_id,account.environment,id])).rows[0];
+    if(pending)return{data:{command_id:pending.id,joined:true,...view(facts)},status:202};
+    const cmd=await command(c,req,'channel_command',id,{type:'check_health',reason:'Conciliar el control operativo desde Números'},account.environment);
+    await audit(c,req,'number.ownership_reconcile_requested',id,{command_id:cmd.id,previous_state:current.state,previous_reason:current.reason,external_effects:0},account.environment);
+    return{data:{command_id:cmd.id,joined:false,...view(await linkFacts(c,account))},status:202};
+   }
    if(input.action==='retry_preparation'){
     // V7.4 A: the same operation is queued again for the bounded administrator;
     // nothing is duplicated and a number that was ever linked is not touched.

@@ -20,7 +20,7 @@ import {trustedOrigins} from './auth.js';
 import {authenticate,envOf} from './context.js';
 import {salesRoutes} from './sales.js';
 import {systemRoutes} from './system.js';
-import {registerVersionRoute} from './version.js';
+import {registerVersionRoute,registerBuildRoute} from './version.js';
 import {retiredRoutes} from './retired-routes.js';
 import {salesReadRoutes} from './sales-reads.js';
 import {channelSessionRoutes} from './channel-sessions.js';
@@ -39,7 +39,7 @@ app.setErrorHandler((error:any,req,reply)=>{if(error instanceof ZodError)return 
 app.addHook('onRequest',(req,reply,done)=>{reply.header('Cache-Control','no-store').header('X-Content-Type-Options','nosniff');if(!req.url.startsWith('/v1/')||req.url.startsWith('/v1/openapi')||isProfileSqlRequest(req))return done();authenticate(req).then(authority=>{try{runInRequestProfileScope(authority.workspaceId,()=>done());}catch(error){done(error as Error);}},error=>done(error));});
 app.addHook('preValidation',async req=>{if(req.url.startsWith('/v1/')&&!req.url.startsWith('/v1/openapi')){const environment=envOf(req);if(!isProfileSqlRequest(req))bindRequestProfileEnvironment(environment);}});
 app.addHook('onResponse',async()=>{closeRequestProfileScope();});
-registerVersionRoute(app);
+registerVersionRoute(app);registerBuildRoute(app);
 await app.register(profileRuntimeRoutes);
 app.get('/livez',async()=>({status:'ok',service:'api'}));app.get('/readyz',async()=>{await pool.query('SELECT 1');return{status:'ready',service:'api'};});app.get('/health/live',async()=>({status:'ok',service:'api'}));app.get('/health/ready',async()=>{await pool.query('SELECT 1');return{status:'ready',service:'api'};});
 // V7 F8-D: the /v1 surface keeps only what the V7 application, the V7 MCP,

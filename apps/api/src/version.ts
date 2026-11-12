@@ -1,4 +1,5 @@
 import type {FastifyInstance,FastifyReply} from 'fastify';
+import {MCP_RELEASE,MCP_CAPABILITIES} from '../../../packages/contracts/src/mcp-capabilities.js';
 
 const sourceSha=/^[a-f0-9]{40}$/;
 const releaseId=/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
@@ -40,5 +41,15 @@ export function registerVersionRoute(app:FastifyInstance):void{
  },async(_request,reply:FastifyReply)=>{
   reply.header('Cache-Control','no-store').header('X-Content-Type-Options','nosniff');
   return runtimeVersion();
+ });
+}
+
+/** V7.5 §8 (H04): build identity plus the MCP contract it serves, in the
+ * profile envelope, so an installed MCP client can say what it lacks. Public,
+ * content-free, no authority. */
+export function registerBuildRoute(app:FastifyInstance):void{
+ app.get('/v2/build',async(_request,reply:FastifyReply)=>{
+  reply.header('Cache-Control','no-store').header('X-Content-Type-Options','nosniff');
+  return{data:{...runtimeVersion(),mcp:{version:MCP_RELEASE,capabilities:[...MCP_CAPABILITIES]}}};
  });
 }

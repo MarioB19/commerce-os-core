@@ -15,10 +15,14 @@ export type GroupWarmupConfig=z.infer<typeof groupWarmupConfigSchema>;
 export const groupWarmupCreateSchema=z.object({environment:warmupEnvironment.default('REAL'),operationId:z.uuid(),config:groupWarmupConfigSchema}).strict();
 export const groupWarmupPreviewSchema=z.object({environment:warmupEnvironment.default('REAL'),programId:z.uuid().optional(),config:groupWarmupConfigSchema}).strict();
 export const groupWarmupCommandSchema=z.object({environment:warmupEnvironment.default('REAL'),operationId:z.uuid(),expectedVersion:z.number().int().positive(),
- action:z.enum(['start','pause','resume','archive','configure']),previewHash:z.string().regex(/^[a-f0-9]{64}$/).optional(),config:groupWarmupConfigSchema.optional(),
+ action:z.enum(['start','pause','resume','archive','configure','recover']),previewHash:z.string().regex(/^[a-f0-9]{64}$/).optional(),config:groupWarmupConfigSchema.optional(),
  /** V7.4 C: the owner confirms that the group's external participants agreed to this activity. Required to start or resume when the reviewed group has members outside the profile. */
  audienceConfirmed:z.literal(true).optional(),
-}).strict().superRefine((v,c)=>{if(['start','resume','configure'].includes(v.action)&&!v.previewHash)c.addIssue({code:'custom',message:'PREVIEW_REQUIRED',path:['previewHash']});if((v.action==='configure')!==!!v.config)c.addIssue({code:'custom',message:'CONFIG_ACTION_REQUIRED',path:['config']});});
+ /** V7.5 §2: `recover` reviews the protection; it requires the hash of its recovery preview and a short reason. It never resumes a paused program. */
+ recoveryHash:z.string().regex(/^[a-f0-9]{64}$/).optional(),reason:z.string().trim().min(3).max(300).optional(),
+}).strict().superRefine((v,c)=>{if(['start','resume','configure'].includes(v.action)&&!v.previewHash)c.addIssue({code:'custom',message:'PREVIEW_REQUIRED',path:['previewHash']});if((v.action==='configure')!==!!v.config)c.addIssue({code:'custom',message:'CONFIG_ACTION_REQUIRED',path:['config']});
+ if(v.action==='recover'&&(!v.recoveryHash||!v.reason))c.addIssue({code:'custom',message:'RECOVERY_REVIEW_REQUIRED',path:['recoveryHash']});if(v.action!=='recover'&&(v.recoveryHash||v.reason))c.addIssue({code:'custom',message:'RECOVERY_FIELDS_ONLY_FOR_RECOVER',path:['recoveryHash']});});
+export const groupWarmupRecoveryPreviewSchema=z.object({environment:warmupEnvironment.default('REAL')}).strict();
 export const libraryScriptSchema=z.object({label:z.string().trim().min(3).max(100),topic:z.string().trim().min(3).max(80),
  turns:z.array(z.object({kind:z.literal('text'),text:z.string().trim().min(12).max(1000)}).strict()).min(2).max(20),ownership_confirmed:z.literal(true),
 }).strict();

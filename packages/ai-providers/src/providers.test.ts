@@ -212,6 +212,30 @@ describe('provider contracts: synthetic only', () => {
       expect(JSON.parse(String(f.fetcher.mock.calls[0][1]?.body)).thinking).toEqual(thinking);
     });
   }
+  // V7.5 §8 (H14): Claude as seller, synthetic only.
+  it('Anthropic visible thinking text never reaches the answer, the result or the outcome', async () => {
+    const f = fixture('anthropic'); const value = raw('anthropic');
+    value.content = [{ type: 'thinking', thinking: 'synthetic-private-reasoning', signature: 'synthetic-signature' }, ...value.content];
+    f.fetcher.mockResolvedValue(jsonResponse(value)); const result = await f.adapter.invoke(f.options);
+    expect(result).toMatchObject({ state: 'SUCCEEDED', value: { ok: true } });
+    expect(JSON.stringify(result)).not.toContain('synthetic-private-reasoning'); expect(JSON.stringify(f.outcomes)).not.toContain('synthetic-private-reasoning');
+  });
+  it.each(['max_tokens', 'refusal', 'tool_use', 'pause_turn'])('Anthropic stop_reason %s with thinking is never a proposal and keeps usage', async (stop) => {
+    const f = fixture('anthropic'); const value = raw('anthropic'); value.stop_reason = stop;
+    value.content = [{ type: 'thinking', thinking: '', signature: 'synthetic-signature' }, ...value.content];
+    f.fetcher.mockResolvedValue(jsonResponse(value)); const result = await f.adapter.invoke(f.options);
+    expect(result).toMatchObject({ state: 'REJECTED', code: 'OUTPUT_REJECTED' }); expect(result).not.toHaveProperty('value'); expect(f.fetcher).toHaveBeenCalledTimes(1);
+  });
+  it.each([400, 401, 403, 429])('Anthropic HTTP %s is one attempt, never retried nor sent to another provider', async (status) => {
+    const f = fixture('anthropic'); f.fetcher.mockResolvedValue(new Response('synthetic-secret', { status }));
+    const result = await f.adapter.invoke(f.options); expect(result).toMatchObject({ state: 'REJECTED', code: 'HTTP_REJECTED' });
+    expect(f.fetcher).toHaveBeenCalledTimes(1); expect(String(f.fetcher.mock.calls[0][0])).toContain('api.anthropic.com');
+    expect(JSON.stringify(result)).not.toContain('synthetic-secret');
+  });
+  it('Anthropic text plus a server tool block stays rejected (no executable output)', async () => {
+    const f = fixture('anthropic'); const value = raw('anthropic'); value.content = [...value.content, { type: 'server_tool_use', name: 'web_search' }];
+    f.fetcher.mockResolvedValue(jsonResponse(value)); expect(await f.adapter.invoke(f.options)).toMatchObject({ code: 'OUTPUT_REJECTED' });
+  });
   it('provider tools cannot become executable output', async () => {
     const f = fixture('anthropic'); const value = raw('anthropic'); value.content = [{ type: 'tool_use', name: 'send' }];
     f.fetcher.mockResolvedValue(jsonResponse(value)); expect(await f.adapter.invoke(f.options)).toMatchObject({ code: 'OUTPUT_REJECTED' });
@@ -251,6 +275,17 @@ describe('capability routing and dated monetary bounds', () => {
   it('unsupported audio goes to human, never an invented Anthropic capability', () => {
     expect(resolveModel(profile(), 'mx', 'audio', [model('anthropic')], NOW)).toEqual({ state: 'HUMAN_REQUIRED', code: 'CAPABILITY_NOT_CONFIGURED' });
     const changed = model('anthropic'); changed.capabilities = ['audio']; expect(() => validateModel(changed, NOW)).toThrow('CAPABILITY');
+  });
+  it('V7.5 seller: Anthropic answers chat and vision; only audio goes to the configured OpenAI transcription alternate', () => {
+    const p = profile(); const audio = model('openai'); audio.model = 'synthetic-transcription'; audio.transport = 'transcriptions'; audio.capabilities = ['audio'];
+    const vision = model('anthropic'); vision.capabilities = ['chat', 'vision'];
+    p.variants = { mx: { provider: 'anthropic', model: vision.model } }; p.configuredProviders = ['anthropic', 'openai']; p.capabilityFallbacks = [audio];
+    const models = [vision, audio];
+    expect(resolveModel(p, 'mx', 'chat', models, NOW)).toMatchObject({ state: 'MODEL', model: { provider: 'anthropic' } });
+    expect(resolveModel(p, 'mx', 'vision', models, NOW)).toMatchObject({ state: 'MODEL', model: { provider: 'anthropic' } });
+    expect(resolveModel(p, 'mx', 'audio', models, NOW)).toMatchObject({ state: 'MODEL', selection: 'capability-fallback', model: { provider: 'openai', model: 'synthetic-transcription' } });
+    p.configuredProviders = ['anthropic'];
+    expect(resolveModel(p, 'mx', 'audio', models, NOW)).toEqual({ state: 'HUMAN_REQUIRED', code: 'CAPABILITY_NOT_CONFIGURED' });
   });
   it('cross-provider fallback needs that profile configured key and explicit selection', () => {
     const p = profile(); p.capabilityFallbacks = [{ provider: 'google', model: 'synthetic-reviewed-model' }];
