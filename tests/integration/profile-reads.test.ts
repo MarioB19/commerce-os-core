@@ -95,9 +95,32 @@ describe('V7 profile reads: home, usage, audit and operations',()=>{
   expect((await post(users.viewer,one,qr.id)).statusCode).toBe(403);
   expect((await post(users.other,two,qr.id)).statusCode).toBe(404);
   const ack=await post(users.owner,one,qr.id);expect(ack.statusCode).toBe(200);expect(ack.json().data.acknowledgedAt).toBeTruthy();
-  const after=(await get('/v2/alerts',users.owner,one)).json().data.alerts.find((a:any)=>a.id===qr.id);
+  const after=(await get('/v2/alerts?include=all',users.owner,one)).json().data.alerts.find((a:any)=>a.id===qr.id);
   expect(after.acknowledgedAt).toBeTruthy();expect(after.resolvedAt).toBeNull();
+  expect((await get('/v2/alerts',users.owner,one)).json().data.alerts.map((a:any)=>a.id)).not.toContain(qr.id);
+  expect((await get('/v2/home',users.owner,one)).json().data.pending).toMatchObject({alerts:1,criticalAlerts:1});
+  const repeated=await post(users.owner,one,qr.id);expect(repeated.json().data.acknowledgedAt).toBe(ack.json().data.acknowledgedAt);
+  const critical=alerts.find(a=>a.kind==='NUMBER_DOWN');
+  expect((await post(users.owner,one,critical.id)).statusCode).toBe(200);
+  expect((await get('/v2/home',users.owner,one)).json().data.pending).toMatchObject({alerts:0,criticalAlerts:0});
+  expect((await admin.query('SELECT status,resolved_at FROM operational_alerts WHERE id=$1',[critical.id])).rows[0]).toEqual({status:'PENDING',resolved_at:null});
   expect((await get('/v2/alerts',users.other,two)).json().data.alerts).toEqual([]);
   expect((await get('/v2/alerts?include=bad',users.owner,one)).statusCode).toBe(400);
+ });
+ it('filters seen and resolved notices before the limit, keeping new notices and profile/environment isolation',async()=>{
+  await admin.query(`INSERT INTO operational_alerts(workspace_id,environment,dedupe_key,kind,severity,summary_code,acknowledged_at)
+   SELECT $1,'REAL','seen-'||n,'NUMBER_DOWN','CRITICAL','NUMBER_DOWN',clock_timestamp() FROM generate_series(1,105) n`,[one]);
+  const pending=(await admin.query(`INSERT INTO operational_alerts(workspace_id,environment,dedupe_key,kind,severity,summary_code,created_at)
+   VALUES($1,'REAL','unread-old','NUMBER_DOWN','WARNING','NUMBER_DOWN',clock_timestamp()-interval '2 days') RETURNING id`,[one])).rows[0].id;
+  await admin.query(`INSERT INTO operational_alerts(workspace_id,environment,dedupe_key,kind,severity,summary_code,resolved_at)
+   VALUES($1,'REAL','resolved-date','NUMBER_DOWN','CRITICAL','NUMBER_DOWN',clock_timestamp()),
+    ($1,'SIMULATION','simulation-only','NUMBER_DOWN','CRITICAL','NUMBER_DOWN',null),
+    ($2,'REAL','other-profile','NUMBER_DOWN','CRITICAL','NUMBER_DOWN',null)`,[one,two]);
+  const open=(await get('/v2/alerts',users.owner,one)).json().data.alerts;
+  expect(open.map((a:any)=>a.id)).toEqual([pending]);
+  expect((await get('/v2/home',users.owner,one)).json().data.pending).toMatchObject({alerts:1,criticalAlerts:0});
+  expect((await get('/v2/home',users.other,two)).json().data.pending).toMatchObject({alerts:1,criticalAlerts:1});
+  const history=(await get('/v2/alerts?include=all',users.owner,one)).json().data.alerts;
+  expect(history.some((a:any)=>a.acknowledgedAt)).toBe(true);
  });
 });

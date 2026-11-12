@@ -32,8 +32,8 @@ export async function readProfileHome(db:ProfileExecutor,authority:ProfileAuthor
   SELECT (SELECT count(*) FROM records r,day WHERE r.workspace_id=$1 AND r.environment='REAL' AND r.kind='conversation' AND r.created_at>=day.start) AS conversations,
    (SELECT count(*) FROM records r,day WHERE r.workspace_id=$1 AND r.environment='REAL' AND r.kind='order' AND r.created_at>=day.start) AS orders,
    (SELECT count(*) FROM records r,day WHERE r.workspace_id=$1 AND r.environment='REAL' AND r.kind='receipt' AND r.body->>'status'='APPROVED' AND r.updated_at>=day.start) AS approved,
-   (SELECT count(*) FROM operational_alerts o WHERE o.workspace_id=$1 AND o.environment='REAL' AND o.status<>'RESOLVED') AS alerts,
-   (SELECT count(*) FROM operational_alerts o WHERE o.workspace_id=$1 AND o.environment='REAL' AND o.status<>'RESOLVED' AND o.severity='CRITICAL') AS critical`,[db.workspaceId,tz])).rows[0];
+   (SELECT count(*) FROM operational_alerts o WHERE o.workspace_id=$1 AND o.environment='REAL' AND o.status<>'RESOLVED' AND o.resolved_at IS NULL AND o.acknowledged_at IS NULL) AS alerts,
+   (SELECT count(*) FROM operational_alerts o WHERE o.workspace_id=$1 AND o.environment='REAL' AND o.status<>'RESOLVED' AND o.resolved_at IS NULL AND o.acknowledged_at IS NULL AND o.severity='CRITICAL') AS critical`,[db.workspaceId,tz])).rows[0];
  // RF-04.b: the same count the receipt queue shows (tests and false receipts are not pending).
  today.to_review=await pendingReceiptCount(db,'REAL');
  const onboarding=await readOnboarding(db,authority).catch(()=>null);
@@ -142,7 +142,7 @@ export async function listProfileAlerts(db:ProfileExecutor,authority:ProfileAuth
  await authorize(db,authority,'alerts:read');
  const rows=(await db.query(`SELECT a.id,a.kind,a.severity,a.status,a.account_id,a.created_at,a.resolved_at,a.acknowledged_at,r.body->>'name' AS alias
   FROM operational_alerts a LEFT JOIN records r ON r.id=a.account_id AND r.workspace_id=a.workspace_id AND r.kind='channel_account'
-  WHERE a.workspace_id=$1 AND a.environment='REAL' AND ($2::boolean OR a.resolved_at IS NULL) ORDER BY a.resolved_at IS NULL DESC,a.severity='CRITICAL' DESC,a.created_at DESC LIMIT 100`,[db.workspaceId,input.includeResolved===true])).rows;
+  WHERE a.workspace_id=$1 AND a.environment='REAL' AND ($2::boolean OR (a.resolved_at IS NULL AND a.status<>'RESOLVED' AND a.acknowledged_at IS NULL)) ORDER BY a.resolved_at IS NULL DESC,a.severity='CRITICAL' DESC,a.created_at DESC LIMIT 100`,[db.workspaceId,input.includeResolved===true])).rows;
  return{alerts:rows.map(row=>{const known=alertLabels[row.kind];return{id:row.id as string,kind:row.kind as string,label:known?.label??'Aviso del sistema',href:known?.href??'/home',
   severity:row.severity as 'WARNING'|'CRITICAL',number:row.account_id?{id:row.account_id as string,alias:String(row.alias??'Número').replace(/\+?\d[\d ()-]{8,}\d/g,v=>'•••• '+v.replace(/\D/g,'').slice(-4))}:null,
   createdAt:iso(row.created_at),resolvedAt:iso(row.resolved_at),acknowledgedAt:iso(row.acknowledged_at),notification:row.status==='RESOLVED'?'RESOLVED':['ACCEPTED','RECEIVED'].includes(row.status)?'SENT':row.status==='PENDING'?'PENDING':'UNCONFIRMED'};})};

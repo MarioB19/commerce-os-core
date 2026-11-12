@@ -1,5 +1,18 @@
 # Estado de publicación
 
+## 11-nov-2026 — Avisos vistos: corrección local del contador (Codex)
+
+Preparada en `codex/alerts-seen-counter`, desde V7.4.0 `b2fa4df3`.
+Inicio y el listado abierto excluyen los avisos vistos antes de aplicar el
+límite de 100. El historial, las causas operativas y los avisos nuevos se
+conservan. No modifica emisores, permisos ni envíos.
+
+Validación local: dos regresiones reproducidas antes del arreglo; después,
+6/6 pruebas de integración HTTP/PostgreSQL, TypeScript del servidor y lint de
+los archivos afectados aprobados. PostgreSQL 17 temporal e independiente del
+entorno local existente. FULL, paquete e instalación no ejecutados; publicación
+pendiente de autorización. [Comportamiento](alerts-read-state.md).
+
 ## 11-nov-2026 — V7.4: números y calentamiento sin fricción, candidato (Claude)
 
 Implementada en `claude/v7-4-numbers-warmup`, desde `2f5c8be30b374105d676905c6a516467438bf57e`
