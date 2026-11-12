@@ -1,5 +1,42 @@
 # Estado de publicación
 
+## 12-nov-2026 — V7.5: release resiliente y Claude vendedor, candidato (Claude)
+
+Implementada en `claude/v7-5-release`, desde V7.4.0 `b2fa4df3` (instalada el
+11-nov, SUCCEEDED/OPERATING, 120 migraciones; informe Root `cv-e5a49a0e…-1`).
+Integra sin sobrescribir las 11 regresiones de `codex/v7-5-analysis`, el
+contador de avisos vistos de `codex/alerts-seen-counter` (autoría Codex) y el
+adapter Anthropic `239c1ad`. Decisiones: `docs/adr-v7-5-resilience.md`.
+
+- **Calentamiento.** Lectura desconocida ≠ fallo (H01); recuperación auditada de
+  la protección con revisión, hash y motivo, sin reanudar una pausa humana (H02);
+  estado efectivo visible (H03); latencias con el reloj del perfil (H06/H07);
+  cierre diario con ventana de ACK tardío, nunca acreditado fuera de ella (H08);
+  el editor guarda la edición posterior a un fallo (H09).
+- **Sesiones.** Causa de congelación (`freeze_reason`); `STOPPED` confirmado se
+  recupera por el supervisor autorizado; el mismo proceso sano renueva su lease
+  (H12); `reconcile_ownership` y operabilidad por número (H13); clases de fallo
+  del proveedor con diagnóstico (H05).
+- **Avisos.** Incidente, notificación y acuse separados; episodios sin duplicado
+  horario, resolución real y recurrencia; paginación, lectura directa y acuse con
+  corte; respaldo vigente según el productor PITR (H10/H11).
+- **MCP.** `GET /v2/build`, MCP 7.5.0 por capacidades y `profile_context.version` (H04).
+- **Anthropic.** Razonamiento compatible con Claude 5.x (H14); la operación real
+  depende de la llave del Dueño.
+- **Capacidad y publicación.** Alerta temprana de disco con histéresis (R01);
+  limpieza de la llave efímera de OS Login con la misma cuenta del SSH (R03);
+  instalador 120→121. Migración aditiva 0121.
+
+Verificación local de `2b04d2d` (+ fixture de recuperación): tipos y lint;
+2,261 unitarias; integración PostgreSQL por archivo (154 grupos; la suite
+completa encontró un defecto real del alta nunca aprovisionada, corregido);
+1,967 Python CI (2 omitidas); 45 contratos Node; 16 E2E con accesibilidad y
+móvil, también con la configuración de revisión de campaña; recuperación con
+respaldo cifrado y restauración; auditoría sin high/critical. H09 reproducido
+en rojo en navegador contra el editor V7.4. `pnpm test:load` (arnés previo a
+V7) falla igual en `main` por la FK de perfiles; no forma parte de FULL.
+FULL nativo, paquete, ensayo e instalación: ver el cierre del release.
+
 ## 11-nov-2026 — Avisos vistos: corrección local del contador (Codex)
 
 Preparada en `codex/alerts-seen-counter`, desde V7.4.0 `b2fa4df3`.
