@@ -104,6 +104,34 @@ it('opens breaker from two distinct failures of ten, and a restart cannot clear 
  await withTransaction(c=>reconcileWarmupPool(c,{...f.group,breaker_open:true},new Date()));expect((await f.refresh()).breaker_open).toBe(true);
  await processWarmup(new Date());const runs=(await pool.query('SELECT kind,status FROM warmup_schedule_runs WHERE pool_id=$1',[f.group.id])).rows;expect(runs).toHaveLength(3);await processWarmup(new Date());expect((await pool.query('SELECT count(*)::int n FROM warmup_schedule_runs WHERE pool_id=$1',[f.group.id])).rows[0].n).toBe(3);
 });
+
+// V7.5 audit: UNKNOWN is not evidence of a confirmed account/provider failure.
+it('V7.5 audit: a transient unknown read does not become a failed-account breaker sample',async()=>{
+ const f=await fixture(3,0),at=new Date();
+ await pool.query("UPDATE records SET body=body||jsonb_build_object('health_checked_at',$2::text,'health_status','UNKNOWN','status','UNKNOWN'),version=version+1 WHERE id=$1",[f.accounts[0]!.id,at.toISOString()]);
+ await withTransaction(c=>evaluateWarmupPool(c,f.group,new Date(at.getTime()+1)));
+ expect.soft((await pool.query("SELECT kind FROM warmup_observations WHERE account_id=$1 AND evidence_ref=$2",[f.accounts[0]!.id,`health:${f.accounts[0]!.id}:${at.toISOString()}`])).rows).not.toEqual([{kind:'FAILED'}]);
+ expect.soft((await f.refresh()).breaker_open).toBe(false);
+});
+
+it('V7.5 audit: reconsiders an ACK-complete prior day after a transient closing health failure',async()=>{
+ const f=await fixture(10,10),now=new Date();await f.plan();const today=localWindow(f.profile,now).date;
+ // Same synthetic day-change mechanism as the existing graduation tests.
+ await withTransaction(async c=>{await c.query('SET LOCAL session_replication_role=replica');await c.query("UPDATE warmup_plans SET local_date=($2::date-1) WHERE workspace_id=$1",[f.workspace,today]);});
+ await pool.query("UPDATE warmup_conversations SET local_date=($2::date-1) WHERE workspace_id=$1",[f.workspace,today]);
+ await pool.query("UPDATE outbox SET status='DELIVERED' WHERE workspace_id=$1",[f.workspace]);
+ expect((await pool.query('SELECT planned_messages,budget FROM warmup_plans WHERE account_id=$1',[f.accounts[0]!.id])).rows[0].planned_messages).toBeGreaterThan(0);
+ await pool.query("UPDATE records SET body=body||jsonb_build_object('health_checked_at',$2::text,'health_status','UNKNOWN','status','UNKNOWN'),version=version+1 WHERE id=$1",[f.accounts[0]!.id,now.toISOString()]);
+ await withTransaction(c=>evaluateWarmupPool(c,f.group,now));
+ expect((await f.refresh()).breaker_open).toBe(false);
+ expect((await pool.query("SELECT count(*)::int n FROM warmup_states WHERE pool_id=$1 AND effective_days=1",[f.group.id])).rows[0].n).toBe(9);
+ await pool.query("UPDATE records SET body=body||jsonb_build_object('health_checked_at',$2::text,'health_status','OK','status','WORKING'),version=version+1 WHERE id=$1",[f.accounts[0]!.id,new Date(now.getTime()+1000).toISOString()]);
+ // One unknown member out of ten does not open the breaker. The second pass
+ // uses the latest pool row, isolating the irreversible prior-day transition.
+ const refreshed=await f.refresh();
+ await withTransaction(c=>evaluateWarmupPool(c,refreshed,new Date(now.getTime()+1001)));
+ expect((await f.state()).effective_days).toBe(1);
+});
 it.each([60,120])('resets stability after a %i-minute gap before deciding graduation in that same tick',async gapMinutes=>{
  const f=await fixture(2,10),now=new Date(),oldStable=new Date(now.getTime()-8*86400000);
  // Real planner output supplies 30 mature sent/ACKed effects per number, above the minimum sample.

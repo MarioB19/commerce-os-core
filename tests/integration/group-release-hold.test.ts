@@ -89,3 +89,10 @@ it('rechecks hold after effect SDK read before any observeGroup write',async()=>
 it('rechecks hold after active SDK read and preserves its prior claim until lease expiry',async()=>{await race('active');});
 
 it('defers held group dispatch without outbox/gate schedule churn or provider factory',async()=>{const f=await fixture('REAL',undefined,true),reads:string[]=[],before=await state(f),schedule=(await admin.query('SELECT * FROM outbox_gate_schedule WHERE effect_id=$1',[f.effect])).rows;expect(await dispatch(20,provider(f,reads))).toBe(0);expect(reads).toEqual([]);expect(await state(f)).toEqual(before);expect((await admin.query('SELECT * FROM outbox_gate_schedule WHERE effect_id=$1',[f.effect])).rows).toEqual(schedule);});
+
+// V7.5 H07 audit: real elapsed time with a synthetic provider, no network.
+it.each([1200,3000,4500])('V7.5 audit: accepts a valid group read that takes %i ms',async latency=>{
+ const f=await fixture(),reads:string[]=[];
+ await expect(effectRefresh(f.effect,provider(f,reads,()=>pause(latency)))).resolves.toBeUndefined();
+ expect(reads).toEqual([f.account.id]);
+});

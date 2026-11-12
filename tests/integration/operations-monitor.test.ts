@@ -156,3 +156,28 @@ it('deduplicates a fresh but blocked worker incident and resolves only with vali
  await putRecord(pool,{id:heartbeat.id,version:heartbeat.version,workspaceId:scope,environment:'REAL',kind:'service_heartbeat',body:{...body,status:'OK'}});
  await collectOperationalAlerts();expect((await incidents())[0].resolved_at).not.toBeNull();
 });
+
+// V7.5 audit: desired behavior, deliberately red until the release fixes land.
+it('V7.5 audit: retains one open backup incident across hourly monitor ticks',async()=>{
+ const scope=await workspace();await putRecord(pool,{workspaceId:scope,environment:'REAL',kind:'channel_account',body:{provider:'simulator'}});
+ const kind='EXTERNAL_BACKUP_NOT_CURRENT';
+ await pool.query("INSERT INTO operational_alerts(workspace_id,environment,dedupe_key,kind,severity,summary_code) VALUES($1,'REAL',$2,$3,'CRITICAL',$3)",[scope,kind+':2001-01-01T00',kind]);
+ await collectOperationalAlerts();
+ expect((await pool.query('SELECT count(*)::int n FROM operational_alerts WHERE workspace_id=$1 AND kind=$2 AND resolved_at IS NULL',[scope,kind])).rows[0].n).toBe(1);
+});
+
+it('V7.5 audit: resolves the backup incident when current verified evidence arrives',async()=>{
+ const scope=await workspace();await putRecord(pool,{workspaceId:scope,environment:'REAL',kind:'channel_account',body:{provider:'simulator'}});
+ await collectOperationalAlerts();
+ await pool.query("INSERT INTO operational_evidence(workspace_id,environment,kind,status,source,evidence_ref,details,observed_at,expires_at,actor_id) VALUES($1,'REAL','backup_external','VERIFIED','SERVER_JOB','synthetic-local-backup','{}',now(),now()+interval '1 day','synthetic')",[scope]);
+ await collectOperationalAlerts();
+ expect((await pool.query("SELECT count(*)::int n FROM operational_alerts WHERE workspace_id=$1 AND kind='EXTERNAL_BACKUP_NOT_CURRENT' AND resolved_at IS NULL",[scope])).rows[0].n).toBe(0);
+});
+
+it('V7.5 audit: does not require legacy schedules from an empty QR pool',async()=>{
+ const scope=await workspace();await putRecord(pool,{workspaceId:scope,environment:'REAL',kind:'channel_account',body:{provider:'simulator'}});
+ const profile=(await pool.query("INSERT INTO warmup_profiles(workspace_id,environment,config) VALUES($1,'REAL',$2) RETURNING id",[scope,warmupProfileSchema.parse({name:'Synthetic unused QR pool',timezone:'UTC'})])).rows[0];
+ await pool.query("INSERT INTO warmup_pools(workspace_id,environment,profile_id,enabled,continuity_mode) VALUES($1,'REAL',$2,true,'QR_CONTINUOUS')",[scope,profile.id]);
+ await collectOperationalAlerts();
+ expect((await pool.query("SELECT kind FROM operational_alerts WHERE workspace_id=$1 AND kind IN('WARMUP_HEALTH_OVERDUE','WARMUP_RECONCILE_OVERDUE','WARMUP_DAILY_OVERDUE')",[scope])).rows).toEqual([]);
+});

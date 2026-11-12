@@ -24,7 +24,7 @@ import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {withProfileTransaction,type ProfileExecutor,type ProfilePool} from '../../packages/db/src/profile-context.js';
 import {issueVerifiedQrContinuity,applyContinuousProtection} from '../../packages/db/src/continuous-authorization.js';
 import {enrollCurrentQrWarmup} from '../../packages/db/src/qr-warmup.js';
-import {planWarmupPool,evaluateWarmupPool} from '../../apps/automation-worker/src/warmup.js';
+import {planWarmupPool,evaluateWarmupPool,processQrWarmupProfile} from '../../apps/automation-worker/src/warmup.js';
 import {hash,encrypt,decrypt,readOperationalSettings,writeOperationalSettings} from '../../packages/db/src/index.js';
 
 function deferred<T>(){let resolve!:(value:T)=>void;const promise=new Promise<T>(done=>{resolve=done;});return{promise,resolve};}
@@ -105,6 +105,17 @@ describe('V7.2 own group programs under restricted PostgreSQL',()=>{
   expect(effects.length).toBeGreaterThan(0);expect(effects.every(e=>e.payload.group_id===f.config.groupId&&e.authorization_id===null&&e.continuous_authorization_id&&e.payload.program_revision===p.version)).toBe(true);
   const again=await f.schedule(p.id);expect(again.planned).toBe(0);expect((await admin.query('SELECT count(*)::int n FROM outbox WHERE workspace_id=$1',[f.w])).rows[0].n).toBe(effects.length);
   expect((await tx(f.w,'commerce_api',db=>groupWarmupOverview(db,'REAL'))).programs[0].history.length).toBe(n);
+ });
+
+ it('V7.5 audit: does not reserve effects in the same cycle that opens a group breaker',async()=>{
+  const f=await groupFixture(3),p=await f.start();
+  const settings=await readOperationalSettings(admin as any,f.w,'REAL');await writeOperationalSettings(admin as any,f.w,'REAL',settings.version,{...settings.body,dispatch_frozen:false,allow_real_operations:true,real_sends_enabled:true},'synthetic-audit');
+  await admin.query("INSERT INTO warmup_observations(workspace_id,environment,account_id,kind,evidence_ref,observed_at) VALUES($1,'REAL',$2,'FAILED',$3,clock_timestamp()-interval '1 second')",[f.w,f.lines[0]!.account,randomUUID()]);
+  await tx(f.w,'commerce_automation',db=>processQrWarmupProfile(db,'REAL'));
+  expect((await admin.query('SELECT breaker_open FROM warmup_pools WHERE program_id=$1',[p.id])).rows[0].breaker_open).toBe(true);
+  const effects=(await admin.query('SELECT * FROM outbox WHERE workspace_id=$1',[f.w])).rows;
+  expect.soft(effects).toHaveLength(0);
+  if(effects[0])expect(await tx(f.w,'commerce_channel',db=>gateWarmupDispatch(db,effects[0],'synthetic-audit'))).toMatchObject({allowed:false,reason:'WARMUP_POOL_PAUSED'});
  });
  it('reserves all recipients while sending only from the selected subset',async()=>{
   const f=await groupFixture(3),selected={...f.config,senderIds:f.config.senderIds.slice(0,2)},p=await f.start(selected);await f.schedule(p.id);
