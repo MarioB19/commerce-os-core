@@ -13,6 +13,16 @@ function text(value: unknown): string {
   return value;
 }
 export interface WireRequest { url: string; headers: Record<string, string>; body: string | FormData; bytes: number }
+/** Claude 5.x models think by default and return `thinking` blocks (text
+ * omitted, signature only) before the answer; that thinking also spends the
+ * output ceiling. These calls carry no tools and expect a direct answer, so
+ * each reviewed model gets the lowest thinking setting it accepts at its
+ * default effort (Haiku 5.5 accepts `disabled`; Sonnet 5.5 rejects it and its
+ * floor is `between_tools`, which means none without tools). Unknown models
+ * keep the provider default. https://platform.claude.com/docs/en/build-with-claude/thinking */
+const anthropicThinking: Readonly<Record<string, { type: 'disabled' | 'between_tools' }>> = Object.freeze({
+  'claude-haiku-5-5': { type: 'disabled' }, 'claude-sonnet-5-5': { type: 'between_tools' },
+});
 export function request(model: Model, input: Input): WireRequest {
   const media = input.media;
   const encoded = media ? Buffer.from(media.bytes).toString('base64') : undefined;
@@ -45,8 +55,9 @@ export function request(model: Model, input: Input): WireRequest {
       if (media) content.push({ type: media.mimeType === 'application/pdf' ? 'document' : 'image',
         source: { type: 'base64', media_type: media.mimeType, data: encoded } });
       headers['anthropic-version'] = '2023-06-01'; url = 'https://api.anthropic.com/v1/messages';
+      const thinking = Object.hasOwn(anthropicThinking, model.model) ? anthropicThinking[model.model] : undefined;
       body = { model: model.model, max_tokens: model.outputTokenCeiling, system: instruction,
-        messages: [{ role: 'user', content }], service_tier: 'standard_only', stream: false };
+        messages: [{ role: 'user', content }], service_tier: 'standard_only', stream: false, ...(thinking ? { thinking } : {}) };
       break;
     }
     case 'generateContent': {
@@ -134,7 +145,16 @@ export function output(model: Model, data: unknown): string {
   if (model.provider === 'anthropic') {
     requireAi(value.type === 'message' && value.role === 'assistant' && value.stop_reason === 'end_turn'
       && Array.isArray(value.content) && value.content.length <= 32, 'OUTPUT_REJECTED');
-    return text(value.content.map(raw => { const part = object(raw); requireAi(part.type === 'text', 'OUTPUT_REJECTED'); return text(part.text); }).join(''));
+    // Thinking blocks are the model's private reasoning, never customer output
+    // (same as OpenAI `reasoning` items and Gemini `thought` parts). Anything
+    // else that is not text, such as tool_use, stays rejected.
+    const texts: string[] = [];
+    for (const raw of value.content) {
+      const part = object(raw);
+      if (part.type === 'thinking' || part.type === 'redacted_thinking') continue;
+      requireAi(part.type === 'text', 'OUTPUT_REJECTED'); texts.push(text(part.text));
+    }
+    return text(texts.join(''));
   }
   requireAi(Array.isArray(value.candidates) && value.candidates.length === 1 &&
     !(value.promptFeedback && object(value.promptFeedback).blockReason), 'OUTPUT_REJECTED');

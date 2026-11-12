@@ -195,6 +195,23 @@ describe('provider contracts: synthetic only', () => {
     const result = await f.adapter.invoke(f.options); expect(result).toMatchObject({ code: 'OUTPUT_REJECTED', outcome: { costMicrousd: 14 } });
     expect(JSON.stringify(result)).not.toContain('raw-secret');
   });
+  it('Anthropic thinking blocks are skipped and only the text is parsed', async () => {
+    const f = fixture('anthropic'); const value = raw('anthropic');
+    value.content = [{ type: 'thinking', thinking: '', signature: 'synthetic-signature' }, { type: 'redacted_thinking', data: 'synthetic' }, ...value.content];
+    f.fetcher.mockResolvedValue(jsonResponse(value)); expect(await f.adapter.invoke(f.options)).toMatchObject({ state: 'SUCCEEDED', value: { ok: true } });
+  });
+  it('Anthropic thinking without a text answer is rejected', async () => {
+    const f = fixture('anthropic'); const value = raw('anthropic'); value.content = [{ type: 'thinking', thinking: '', signature: 'synthetic-signature' }];
+    f.fetcher.mockResolvedValue(jsonResponse(value)); expect(await f.adapter.invoke(f.options)).toMatchObject({ code: 'OUTPUT_REJECTED' });
+  });
+  for (const [name, thinking] of [['claude-haiku-5-5', { type: 'disabled' }], ['claude-sonnet-5-5', { type: 'between_tools' }], ['synthetic-reviewed-model', undefined]] as const) {
+    it(`Anthropic ${name}: thinking setting ${thinking ? thinking.type : 'left to the provider'}`, async () => {
+      const f = fixture('anthropic'); f.options.model = { ...model('anthropic'), model: name, responseModels: [name] };
+      f.fetcher.mockResolvedValue(jsonResponse({ ...raw('anthropic'), model: name }));
+      expect((await f.adapter.invoke(f.options)).state).toBe('SUCCEEDED');
+      expect(JSON.parse(String(f.fetcher.mock.calls[0][1]?.body)).thinking).toEqual(thinking);
+    });
+  }
   it('provider tools cannot become executable output', async () => {
     const f = fixture('anthropic'); const value = raw('anthropic'); value.content = [{ type: 'tool_use', name: 'send' }];
     f.fetcher.mockResolvedValue(jsonResponse(value)); expect(await f.adapter.invoke(f.options)).toMatchObject({ code: 'OUTPUT_REJECTED' });
