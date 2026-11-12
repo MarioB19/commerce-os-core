@@ -132,6 +132,17 @@ def normalize_step(step):
     return result
 
 
+def native_digest(value):
+    """A SHA-256 from a native fileHash: standard or URL-safe base64, padded or not."""
+    if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9+/_-]{43}=?', value):
+        return None
+    try:
+        raw = base64.b64decode(value.replace('-', '+').replace('_', '/') + '=' * (-len(value) % 4), validate=True)
+    except ValueError:
+        return None
+    return raw if len(raw) == 32 else None
+
+
 def validate_native(m, build, github, project_number=None):
     validate_manifest(m)
     need(isinstance(build, dict) and isinstance(github, dict)
@@ -192,8 +203,11 @@ def validate_native(m, build, github, project_number=None):
     values = archive_hashes.get('fileHash', [])
     need(isinstance(values, list) and all(isinstance(item, dict) for item in values),
          'NATIVE_ARCHIVE_HASH_INVALID')
-    expected = base64.b64encode(bytes.fromhex(m['archive_sha256'])).decode()
-    need(any(item.get('type') == 'SHA256' and item.get('value') == expected for item in values),
+    # proto3 JSON encodes `bytes` as base64; the REST API answers with the
+    # standard alphabet and the gcloud CLI with the URL-safe one. Compare the
+    # decoded digest, never the spelling (V7.5 R02).
+    expected = bytes.fromhex(m['archive_sha256'])
+    need(any(item.get('type') == 'SHA256' and native_digest(item.get('value')) == expected for item in values),
          'NATIVE_ARCHIVE_HASH_MISMATCH')
     return 'success'
 
