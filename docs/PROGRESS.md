@@ -26,6 +26,14 @@ Queda `SENT` con ese ID y el evento `warmup.effect_reconciled_from_group_event`;
 las recepciones se acreditan por la ruta normal. Sin evidencia positiva no se
 acredita nada (el primer turno real del piloto, recibido por WA 4 y WA 5).
 
+R02 incorporado en este mismo release (antes PR #32): el publicador canónico lee
+el FULL con `gcloud builds describe`, que escribe los `bytes` de `fileHash` en
+base64 URL-safe, mientras el lector REST usa el alfabeto estándar; el validador
+comparaba cadenas y rechazó el FULL válido de `963638fd` con
+`NATIVE_ARCHIVE_HASH_MISMATCH` al registrar el GitHub Deployment. Ahora decodifica
+cualquiera de las dos grafías y compara los 32 bytes. Prueba en rojo sobre `main`
+y verde con el cambio (`tests/ci/test_cloudbuild_publish_status.py`).
+
 ## 12-nov-2026 — V7.5: release resiliente y Claude vendedor, candidato (Claude)
 
 Implementada en `claude/v7-5-release`, desde V7.4.0 `b2fa4df3` (instalada el

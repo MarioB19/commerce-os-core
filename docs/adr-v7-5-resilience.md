@@ -188,6 +188,8 @@ la guarda el Dueño en la web.
   datos.
 - R02: imagen confiable del publicador derivada del `main` vigente; lector del
   portal preservado en origen.
+  V7.5.1: el lector compara el digest nativo decodificado (base64 estándar o
+  URL-safe), no su grafía; `gcloud` y REST escriben los `bytes` distinto.
 - R03: limpieza de la llave efímera de OS Login atribuida por bytes exactos con
   reintento acotado de lectura/eliminación; si no puede confirmarse queda
   `CLEANUP_UNCONFIRMED`, nunca éxito.

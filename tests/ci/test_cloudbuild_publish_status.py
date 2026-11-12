@@ -120,6 +120,26 @@ class NativeEvidenceTests(unittest.TestCase):
         with self.assertRaises(m.EvidenceError):
             self.native()
 
+    def test_archive_hash_accepts_the_cli_url_safe_spelling_of_the_same_digest(self):
+        # V7.5 R02: `gcloud builds describe` answers proto3 bytes in URL-safe
+        # base64; the REST API in the standard alphabet. Same digest, same verdict.
+        digest = bytes([0xfb, 0xff, 0xbe]) * 10 + bytes([0xfb, 0xef])
+        self.manifest['archive_sha256'] = digest.hex()
+        hashes = self.build['sourceProvenance']['fileHashes']
+        standard = base64.b64encode(digest).decode()
+        self.assertTrue('+' in standard and '/' in standard)
+        for value in (standard, base64.urlsafe_b64encode(digest).decode(), base64.urlsafe_b64encode(digest).decode().rstrip('=')):
+            next(iter(hashes.values()))['fileHash'] = [{'type': 'SHA256', 'value': value}]
+            try:
+                self.assertEqual(self.native(), 'success')
+            except m.EvidenceError as error:
+                self.assertNotEqual(str(error), 'NATIVE_ARCHIVE_HASH_MISMATCH')
+                raise
+        for value in (base64.urlsafe_b64encode(bytes(32)).decode(), standard[:-2] + '*=', standard + standard):
+            next(iter(hashes.values()))['fileHash'] = [{'type': 'SHA256', 'value': value}]
+            with self.assertRaisesRegex(m.EvidenceError, 'NATIVE_ARCHIVE_HASH_MISMATCH'):
+                self.native()
+
     def test_native_step_cannot_add_command_environment_or_skip_failure(self):
         changes = [lambda b: b['steps'][0]['args'].append('bypass'),
                    lambda b: b['steps'][0]['env'].append('TOKEN=synthetic'),
