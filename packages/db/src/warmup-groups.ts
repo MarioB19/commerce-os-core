@@ -1,3 +1,4 @@
+import {recordProfileExecutor} from './profile-record-context.js';
 import type {CanonicalEvent,ProviderGroup} from '../../messaging/src/types.js';
 import type {Body,DomainRecord} from '../../contracts/src/index.js';
 import {canonicalIdentity} from '../../messaging/src/security.js';
@@ -76,12 +77,34 @@ export async function classifyGroupEvent(c:QueryExecutor,account:DomainRecord,e:
  if(group&&classification==='GROUP_EVENT')await correlateGroupEvents(c,group.id);
  return true;
 }
-export async function correlateGroupEvents(c:QueryExecutor,groupId?:string){
- const events=(await c.query(`SELECT e.*,g.id group_id FROM warmup_group_events e JOIN warmup_groups g ON g.workspace_id=e.workspace_id AND g.environment=e.environment AND g.group_fingerprint=e.group_fingerprint WHERE NOT e.correlated AND e.classification='GROUP_EVENT' AND ($1::uuid IS NULL OR g.id=$1) ORDER BY e.last_reconciled_at NULLS FIRST,e.observed_at LIMIT 200 FOR UPDATE OF e SKIP LOCKED`,[groupId??null])).rows;
+/** V7.5.1: `workspaceId` limits correlation to the profile the caller's transaction is bound to. */
+export async function correlateGroupEvents(c:QueryExecutor,groupId?:string,workspaceId?:string){
+ const events=(await c.query(`SELECT e.*,g.id group_id FROM warmup_group_events e JOIN warmup_groups g ON g.workspace_id=e.workspace_id AND g.environment=e.environment AND g.group_fingerprint=e.group_fingerprint WHERE NOT e.correlated AND e.classification='GROUP_EVENT' AND ($1::uuid IS NULL OR g.id=$1) AND ($2::text IS NULL OR e.workspace_id=$2) ORDER BY e.last_reconciled_at NULLS FIRST,e.observed_at LIMIT 200 FOR UPDATE OF e SKIP LOCKED`,[groupId??null,workspaceId??null])).rows;
  for(const row of events){
   await c.query('UPDATE warmup_group_events SET last_reconciled_at=now() WHERE id=$1',[row.id]);
   const e=JSON.parse(decrypt(row.event_ciphertext))as CanonicalEvent;if(!e.providerMessageId||e.fromMe)continue;
   const turns=(await c.query(`SELECT t.*,o.status,o.provider_message_id,v.group_id,v.membership_version,v.member_ids FROM warmup_turns t JOIN warmup_conversations v ON v.id=t.conversation_id JOIN outbox o ON o.id=t.effect_id JOIN warmup_identities i ON i.account_id=t.sender_id WHERE v.group_id=$1 AND o.provider_message_id=$2 AND t.workspace_id=$3 AND t.environment=$4 AND (( $5='message' AND $6=ANY(t.recipient_ids) AND (i.address_fingerprint=$7 OR EXISTS(SELECT 1 FROM warmup_groups g,jsonb_array_elements(g.members) m WHERE g.id=v.group_id AND m->>'account_id'=t.sender_id::text AND m->>'identity_hash'=$7))) OR ($5='ack' AND t.sender_id=$6))`,[row.group_id,e.providerMessageId,row.workspace_id,row.environment,e.type,row.account_id,hash(e.senderIdentity??'')])).rows;
+  // V7.5.1: a send whose provider answer was never recorded (SENDING/UNKNOWN,
+  // no provider ID) is reconciled only by positive evidence: an own line
+  // received, in the same group, a message from the turn's sender identity
+  // with the turn's exact text, within the claim window. Exactly one turn
+  // must match; absence of evidence never credits anything.
+  if(!turns.length&&e.type==='message'&&typeof e.text==='string'&&e.senderIdentity){
+   const candidates=(await c.query(`SELECT t.*,o.status,o.provider_message_id,o.payload->>'text' AS sent_text,v.group_id,v.membership_version,v.member_ids FROM warmup_turns t JOIN warmup_conversations v ON v.id=t.conversation_id JOIN outbox o ON o.id=t.effect_id JOIN warmup_identities i ON i.account_id=t.sender_id
+    WHERE v.group_id=$1 AND t.workspace_id=$2 AND t.environment=$3 AND o.kind='warmup' AND o.provider_message_id IS NULL AND o.status IN('SENDING','UNKNOWN') AND o.claimed_at IS NOT NULL
+     AND $4::timestamptz BETWEEN o.claimed_at-interval '5 seconds' AND o.claimed_at+interval '10 minutes' AND $5=ANY(t.recipient_ids)
+     AND (i.address_fingerprint=$6 OR EXISTS(SELECT 1 FROM warmup_groups g,jsonb_array_elements(g.members) m WHERE g.id=v.group_id AND m->>'account_id'=t.sender_id::text AND m->>'identity_hash'=$6)) FOR UPDATE OF o`,
+    [row.group_id,row.workspace_id,row.environment,row.observed_at,row.account_id,hash(e.senderIdentity)])).rows.filter((t:any)=>t.sent_text===e.text);
+   if(candidates.length===1){
+    const t=candidates[0];await recordProfileExecutor(c,row.workspace_id,row.environment);
+    const updated=(await c.query(`UPDATE outbox SET status='SENT',provider_message_id=$2,result=result||jsonb_build_object('reconciled','GROUP_EVENT_EVIDENCE','evidence_receiver',$3::text,'evidence_observed_at',$4::text),updated_at=now() WHERE id=$1 AND provider_message_id IS NULL AND status IN('SENDING','UNKNOWN') RETURNING id`,[t.effect_id,e.providerMessageId,row.account_id,new Date(row.observed_at).toISOString()])).rowCount;
+    if(updated){
+     await c.query("UPDATE effect_attempts SET status='SENT',result=result||jsonb_build_object('reconciled','GROUP_EVENT_EVIDENCE','provider_message_id',$2::text),finished_at=COALESCE(finished_at,now()) WHERE effect_id=$1 AND status IN('SENDING','UNKNOWN')",[t.effect_id,e.providerMessageId]);
+     await appendEvent(c,{workspace_id:row.workspace_id,environment:row.environment,event_type:'warmup.effect_reconciled_from_group_event',aggregate_id:t.effect_id,payload:{effect_id:t.effect_id,evidence_receiver:row.account_id,evidence_event:row.id,external_effects:0}});
+     turns.push({...t,status:'SENT',provider_message_id:e.providerMessageId});
+    }
+   }
+  }
   if(turns.length!==1)continue;const turn=turns[0];
   let receiver=row.account_id;
   if(e.type==='ack'){
@@ -93,7 +116,7 @@ export async function correlateGroupEvents(c:QueryExecutor,groupId?:string){
   await c.query(`INSERT INTO warmup_group_receipts(effect_id,receiver_id,sender_id,group_id,membership_version,provider_message_id,delivery_source,envelope_id,observed_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`,[turn.effect_id,receiver,turn.sender_id,turn.group_id,turn.membership_version,e.providerMessageId,e.type==='message'?'authenticated_receive':'participant_ack',row.envelope_id,e.providerAt]);
   await c.query('UPDATE warmup_group_events SET correlated=true WHERE id=$1',[row.id]);
   const receipts=(await c.query('SELECT DISTINCT receiver_id FROM warmup_group_receipts WHERE effect_id=$1 AND group_id=$2 AND membership_version=$3',[turn.effect_id,turn.group_id,turn.membership_version])).rows;
-  if(turn.recipient_ids.every((id:string)=>receipts.some(r=>r.receiver_id===id)))await c.query("UPDATE outbox SET status='DELIVERED',result=result||jsonb_build_object('group_delivery_confirmed',true,'delivery_source','per_recipient_evidence'),updated_at=now() WHERE id=$1 AND status='SENT'",[turn.effect_id]);
+  if(turn.recipient_ids.every((id:string)=>receipts.some(r=>r.receiver_id===id))){await recordProfileExecutor(c,row.workspace_id,row.environment);await c.query("UPDATE outbox SET status='DELIVERED',result=result||jsonb_build_object('group_delivery_confirmed',true,'delivery_source','per_recipient_evidence'),updated_at=now() WHERE id=$1 AND status='SENT'",[turn.effect_id]);}
  }
  return events.length;
 }

@@ -1,5 +1,39 @@
 # Estado de publicación
 
+## 12-nov-2026 — V7.5.1: contexto de perfil en el despacho de grupos QR (Claude)
+
+V7.5 quedó instalada el 12-nov (16:42–16:52 UTC, `963638fd`, SUCCEEDED/OPERATING,
+121 migraciones). En el piloto, el primer turno real de un grupo QR (WA 6) quedó
+`SENDING` sin resultado y el despacho falló en bucle. Causa demostrada: los
+efectos de calentamiento de grupo llevan `continuous_authorization_id` y
+`guard_continuous_effect` (0076/0078) exige `app.workspace_id`; varias
+transacciones del worker los cambiaban sin el perfil del efecto
+(`CONTINUITY_PROFILE_CONTEXT_REQUIRED`): bloqueo tras observación fallida,
+reclamo, puerta final, liberación, registro del resultado,
+`recoverSending` y la correlación de entregas de grupo. Preexistente (V7.0/V7.4);
+ninguna prueba recorría el despacho completo de un grupo QR con autoridad
+continua. Ahora cada transacción que cambia un efecto vincula su propio perfil
+(patrón V7 F2 `recordProfileExecutor`), `recoverSending` selecciona sin escribir
+y cambia cada fila en su perfil, y la correlación de entregas corre por perfil.
+Prueba de integración nueva: falla en `main` con el mismo error de producción y
+pasa con el cambio. Sin migraciones.
+
+Conciliación con evidencia: un envío de grupo cuyo resultado no se registró
+(`SENDING`/`UNKNOWN`, sin ID del proveedor) se concilia sólo si una línea propia
+recibió en el mismo grupo un mensaje de la identidad del remitente con el texto
+exacto del turno dentro de la ventana del reclamo; debe coincidir un único turno.
+Queda `SENT` con ese ID y el evento `warmup.effect_reconciled_from_group_event`;
+las recepciones se acreditan por la ruta normal. Sin evidencia positiva no se
+acredita nada (el primer turno real del piloto, recibido por WA 4 y WA 5).
+
+R02 incorporado en este mismo release (antes PR #32): el publicador canónico lee
+el FULL con `gcloud builds describe`, que escribe los `bytes` de `fileHash` en
+base64 URL-safe, mientras el lector REST usa el alfabeto estándar; el validador
+comparaba cadenas y rechazó el FULL válido de `963638fd` con
+`NATIVE_ARCHIVE_HASH_MISMATCH` al registrar el GitHub Deployment. Ahora decodifica
+cualquiera de las dos grafías y compara los 32 bytes. Prueba en rojo sobre `main`
+y verde con el cambio (`tests/ci/test_cloudbuild_publish_status.py`).
+
 ## 12-nov-2026 — V7.5: release resiliente y Claude vendedor, candidato (Claude)
 
 Implementada en `claude/v7-5-release`, desde V7.4.0 `b2fa4df3` (instalada el

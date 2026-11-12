@@ -188,6 +188,8 @@ la guarda el Dueño en la web.
   datos.
 - R02: imagen confiable del publicador derivada del `main` vigente; lector del
   portal preservado en origen.
+  V7.5.1: el lector compara el digest nativo decodificado (base64 estándar o
+  URL-safe), no su grafía; `gcloud` y REST escriben los `bytes` distinto.
 - R03: limpieza de la llave efímera de OS Login atribuida por bytes exactos con
   reintento acotado de lectura/eliminación; si no puede confirmarse queda
   `CLEANUP_UNCONFIRMED`, nunca éxito.
@@ -196,3 +198,21 @@ la guarda el Dueño en la web.
 
 `0121_v75_resilience.sql`, aditiva. El instalador admite exactamente la cola
 120→121 sobre la base V7.
+
+## Adenda V7.5.1 (12-nov-2026): perfil del efecto en el despacho
+
+El piloto productivo mostró que el despacho de un grupo QR cambiaba efectos con
+autoridad continua desde transacciones sin perfil y `guard_continuous_effect`
+lo rechazaba. Regla: toda transacción del worker que cambie una fila de
+`outbox` vincula antes el perfil de esa fila (`recordProfileExecutor`; nunca
+cambia un contexto ya establecido). `recoverSending` lee las filas vencidas sin
+escribir y cambia cada una en su propio perfil; `reconcileGroupDeliveries`
+correlaciona por perfil. Un efecto `SENDING` sin resultado sigue siendo incierto:
+pasa a `UNKNOWN` y exige conciliación; nunca se reintenta ni se acredita solo.
+
+Conciliación por evidencia positiva (V7.5.1): `correlateGroupEvents` vincula un
+efecto de grupo `SENDING`/`UNKNOWN` sin `provider_message_id` sólo con un evento
+de mensaje recibido por una línea propia destinataria, del mismo grupo, con la
+identidad del remitente del turno, su texto exacto y dentro de [reclamo − 5 s,
+reclamo + 10 min]; exige un único turno candidato y registra el evento de
+conciliación. La ausencia de ACK nunca concilia.
