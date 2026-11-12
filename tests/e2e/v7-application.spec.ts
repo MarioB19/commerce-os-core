@@ -285,3 +285,65 @@ test('V7.4 calentamientos: consulta con causa distinguible, grupo mixto con exte
  // Changing who sends invalidates the confirmation (review again).
  await page.setViewportSize({width:390,height:844});await axe(page,'mixed group program mobile');expect(await page.evaluate(()=>document.documentElement.scrollWidth-window.innerWidth)).toBeLessThanOrEqual(1);
 });
+
+// V7.5 §2/§3/§5 (H02, H03, H09) in the mounted application with routed API answers.
+test('V7.5 calentamientos: protección visible, revisión y recuperación; el editor guarda una edición posterior a un fallo',async({page})=>{
+ const v75=(n:number)=>`00000000-0000-4000-8075-${String(n).padStart(12,'0')}`;
+ const lines=[1,2,3].map(n=>({id:v75(n),label:'•••• 750'+n,alias:'Inovaris WA '+(n+3),connected:true,status:'WARMING',reason:'PROTECTION_OPEN',group_required:false,effective_days:0,warmup_mode:'REQUIRED',line:'READY'}));
+ const group={id:v75(20),name:'Grupo Calientito 2',version:1,eligible:true,reason:null,audience:{participants:3,ownReady:0,external:2,total:5},
+  members:[...lines.map(n=>({accountId:n.id,resolved:true,admin:false,kind:'own'})),{accountId:null,resolved:false,admin:false,kind:'external'},{accountId:null,resolved:false,admin:false,kind:'external'}]};
+ const library={version:'operacion-interna-es/v1',name:'Coordinación',manifest:{scripts:500,messages:5000,topics:['Alcance']}};
+ let config:any={name:'Calentamiento Inovaris WA 4–6',groupId:group.id,senderIds:lines.map(n=>n.id),libraryVersion:library.version,timezone:'America/Mexico_City',startHour:9,endHour:18,groupDailyLimit:300,senderDailyLimit:100,maintenance:false};
+ let version=2,status='ACTIVE',protection:any={open:true,reason:'DISTINCT_ACCOUNT_FAILURE_THRESHOLD',openedAt:'2026-11-12T01:07:14.000Z',reviewedUntil:null},failResume=true;
+ const commands:any[]=[],previews:any[]=[];
+ const program=()=>({id:v75(40),name:config.name,version,status,config,audience:{external:2,ownReady:0,total:5},numbers:lines,history:[],protection,
+  effective:protection.open?{state:'PROTECTED',reasons:['DISTINCT_ACCOUNT_FAILURE_THRESHOLD'],observedAt:new Date().toISOString(),nextAction:'REVIEW_AND_RECOVER_PROTECTION',nextSend:null}
+   :status==='PAUSED'?{state:'PAUSED_BY_HUMAN',reasons:[],observedAt:new Date().toISOString(),nextAction:'REVIEW_AND_RESUME',nextSend:null}:{state:'WAITING_WINDOW',reasons:['QUIET_HOURS'],observedAt:new Date().toISOString(),nextAction:null,nextSend:null}});
+ await page.route('**/v2/warmup**',async route=>{
+  const request=route.request(),url=new URL(request.url()),body=request.method()==='POST'?request.postDataJSON():undefined;
+  if(url.pathname==='/v2/warmup')return json(route,{programs:[program()],numbers:lines,refresh:null,ai:false});
+  if(url.pathname===`/v2/warmup/programs/${v75(40)}`)return json(route,program());
+  if(url.pathname==='/v2/warmup/groups')return json(route,[group]);
+  if(url.pathname==='/v2/warmup/libraries')return json(route,[library]);
+  if(url.pathname===`/v2/warmup/programs/${v75(40)}/recovery-preview`)return json(route,{programVersion:version,programStatus:status,protection,failures:[{accountId:v75(2),kind:'FAILED',observedAt:'2026-11-12T01:14:21.000Z',source:'health'}],
+   lines:lines.map(n=>({accountId:n.id,health:'CURRENT',identity:'VERIFIED',ownership:'OPERATIONAL',freezeReason:null,restricted:false,paused:false})),blockers:[],ready:true,recoveryHash:'d'.repeat(64)});
+  if(url.pathname==='/v2/warmup/preview'){previews.push(body);return json(route,{ready:true,previewHash:(previews.length%2?'e':'f').repeat(64),members:lines.map(n=>n.id),groupName:group.name,blockers:[],audience:{participants:3,senders:3,receiveOnly:0,ownReady:0,external:2,total:5,consentRequired:true},coverage:{uniqueMessages:5000,requiredMessages:1680,maximumDaily:200,sufficient:true},outgoingBudget:{total:45,per_sender:15},transition:[]});}
+  if(url.pathname===`/v2/warmup/programs/${v75(40)}/commands`){commands.push(body);
+   if(body.expectedVersion!==version)return json(route,{code:'WARMUP_VERSION_CONFLICT',message:'conflict'},409);
+   if(body.action==='recover'){protection={...protection,open:false,reviewedUntil:new Date().toISOString()};version++;return json(route,{id:v75(40),version,status});}
+   if(body.action==='pause'){status='PAUSED';version++;return json(route,{id:v75(40),version,status});}
+   if(body.action==='configure'){config=body.config;version++;return json(route,{id:v75(40),version,status:'PAUSED'});}
+   if(body.action==='resume'){if(failResume){failResume=false;return json(route,{code:'MEMBER_HEALTH_STALE',message:'stale'},409);}status='ACTIVE';version++;return json(route,{id:v75(40),version,status});}
+  }
+  throw Error('Unexpected warmup route '+url.pathname);
+ });
+ await signIn(page,await owner());await page.goto('/numbers');await page.getByRole('button',{name:'Calentamientos',exact:true}).click();
+ // H03: an ACTIVE program whose protection is open never reads «Activo».
+ const card=page.getByRole('article').filter({hasText:'Calentamiento Inovaris WA 4–6'});
+ await expect(card.getByText('Protección activa',{exact:true})).toBeVisible();await expect(card.getByText('Activo',{exact:true})).toHaveCount(0);
+ await expect(card.getByText(/Se abrió la protección porque una o más líneas fallaron/)).toBeVisible();await axe(page,'protected program');
+ // Pause first (a person's decision), then review and recover: the pause stays.
+ await card.getByRole('button',{name:'Pausar'}).click();await expect(card.getByText(/pausado por una persona y seguirá pausado/)).toBeVisible();
+ await expect(card.getByText('Protección activa',{exact:true})).toBeVisible();await expect(card.getByRole('button',{name:'Revisar y reanudar'})).toBeVisible();
+ await card.getByRole('button',{name:'Revisar protección'}).click();const dialog=page.getByRole('dialog');
+ await expect(dialog.getByText(/Comprobación reciente y sana/).first()).toBeVisible();await expect(dialog.getByRole('button',{name:'Recuperar protección'})).toBeDisabled();await axe(page,'protection review');
+ await dialog.getByLabel('Motivo (queda en la auditoría)').fill('Las tres líneas están sanas; la falla fue una lectura pasajera');
+ await dialog.getByRole('button',{name:'Recuperar protección'}).click();
+ await expect(page.getByText(/Protección recuperada. Si el calentamiento estaba pausado, sigue pausado/)).toBeVisible();
+ expect(commands.map(c=>c.action)).toEqual(['pause','recover']);
+ expect(commands[1]).toMatchObject({action:'recover',expectedVersion:3,recoveryHash:'d'.repeat(64),reason:'Las tres líneas están sanas; la falla fue una lectura pasajera'});
+ expect(status).toBe('PAUSED');
+ // H09: save → the resume fails → edit again → review → save: the second edit is saved, then resumed.
+ await card.getByRole('button',{name:'Revisar y reanudar'}).click();const editor=page.getByRole('dialog');
+ await editor.getByLabel('Nombre').fill('Calentamiento WA 4–6 (primera edición)');await editor.getByRole('button',{name:'Revisar',exact:true}).click();
+ await editor.getByRole('checkbox',{name:/Confirmo que los 2 participantes externos/}).check();await editor.getByRole('button',{name:'Guardar e iniciar'}).click();
+ await expect(editor.getByText('Esperando una comprobación reciente de la conexión.')).toBeVisible();
+ await editor.getByLabel('Nombre').fill('Calentamiento WA 4–6 (segunda edición)');await editor.getByRole('button',{name:'Revisar',exact:true}).click();
+ await editor.getByRole('checkbox',{name:/Confirmo que los 2 participantes externos/}).check();await editor.getByRole('button',{name:'Guardar e iniciar'}).click();
+ await expect(editor).toHaveCount(0);
+ const after=commands.slice(2);
+ expect(after.map(c=>[c.action,c.expectedVersion])).toEqual([['configure',4],['resume',5],['configure',5],['resume',6]]);
+ expect(after[2].config.name).toBe('Calentamiento WA 4–6 (segunda edición)');expect(after[2].operationId).not.toBe(after[0].operationId);
+ expect(after[3]).toMatchObject({audienceConfirmed:true});expect(config.name).toBe('Calentamiento WA 4–6 (segunda edición)');
+ await page.setViewportSize({width:390,height:844});await axe(page,'recovered program mobile');expect(await page.evaluate(()=>document.documentElement.scrollWidth-window.innerWidth)).toBeLessThanOrEqual(1);
+});

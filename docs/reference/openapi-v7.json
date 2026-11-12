@@ -1010,6 +1010,34 @@
     }
    }
   },
+  "/v2/alerts/acknowledge-all": {
+   "post": {
+    "responses": {
+     "200": {
+      "description": "Default Response"
+     }
+    }
+   }
+  },
+  "/v2/alerts/{id}": {
+   "get": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "id",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Default Response"
+     }
+    }
+   }
+  },
   "/v2/alerts/{id}/acknowledge": {
    "post": {
     "parameters": [
@@ -1045,6 +1073,21 @@
       "description": "Default Response"
      }
     }
+   }
+  },
+  "/v2/build": {
+   "get": {
+    "description": "Public, non-sensitive. It grants no operational authority.",
+    "responses": {
+     "200": {
+      "description": "Default Response"
+     }
+    },
+    "security": [],
+    "summary": "Read the installed build and the MCP contract it serves",
+    "tags": [
+     "System"
+    ]
    }
   },
   "/v2/campaigns": {
@@ -3214,6 +3257,25 @@
    }
   },
   "/v2/warmup/programs/{id}/commands": {
+   "post": {
+    "parameters": [
+     {
+      "in": "path",
+      "name": "id",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Default Response"
+     }
+    }
+   }
+  },
+  "/v2/warmup/programs/{id}/recovery-preview": {
    "post": {
     "parameters": [
      {

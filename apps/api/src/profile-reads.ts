@@ -1,7 +1,7 @@
 import type {FastifyInstance,FastifyReply,FastifyRequest} from 'fastify';
 import {z} from 'zod';
 import {appendEvent} from '../../../packages/db/src/index.js';
-import {acknowledgeProfileAlert,auditCsv,listProfileAlerts,listProfileAudit,ProfileReadError,readProfileHome,readProfileOperation,readProfileUsage} from '../../../packages/db/src/profile-reads.js';
+import {acknowledgeProfileAlert,acknowledgeProfileAlerts,auditCsv,listProfileAlerts,readProfileAlert,listProfileAudit,ProfileReadError,readProfileHome,readProfileOperation,readProfileUsage} from '../../../packages/db/src/profile-reads.js';
 import {withProfileRequest,type ProfileRequestDependencies} from './profile-request.js';
 import {exportProfileData} from '../../../packages/db/src/profile-export.js';
 
@@ -45,8 +45,21 @@ export async function profileReadRoutes(app:FastifyInstance,deps?:ProfileRequest
    .header('X-Commerce-Export-Id',exported.id).header('X-Commerce-Export-SHA256',exported.sha256).header('X-Content-Type-Options','nosniff').send(exported.gzip);
  });
  app.get('/v2/alerts',async(req,reply)=>{headers(reply);
-  const q=z.object({include:z.enum(['open','all']).default('open')}).strict().safeParse(req.query??{});if(!q.success)fail('ALERTS_QUERY_INVALID');
-  return{data:await mapped(()=>withProfileRequest(req,'REAL',{scope:'alerts:read',mutation:false},({db,profile})=>listProfileAlerts(db,profile.authority,{includeResolved:q.data.include==='all'}),deps))};});
+  const q=z.object({include:z.enum(['open','all']).default('open'),cursor:z.string().min(8).max(200).optional(),limit:z.coerce.number().int().min(1).max(100).optional()}).strict().safeParse(req.query??{});if(!q.success)fail('ALERTS_QUERY_INVALID');
+  return{data:await mapped(()=>withProfileRequest(req,'REAL',{scope:'alerts:read',mutation:false},({db,profile})=>listProfileAlerts(db,profile.authority,{includeResolved:q.data.include==='all',cursor:q.data.cursor,limit:q.data.limit}),deps))};});
+ // V7.5 §6 (H10): direct read by ID, outside any page.
+ app.get('/v2/alerts/:id',async(req,reply)=>{headers(reply);noQuery(req);
+  const id=String((req.params as {id?:unknown}).id??'');
+  return{data:await mapped(()=>withProfileRequest(req,'REAL',{scope:'alerts:read',mutation:false},({db,profile})=>readProfileAlert(db,profile.authority,id),deps))};});
+ // V7.5 §6 (H10): «Marcar todos como vistos» with the cut taken at the start.
+ app.post('/v2/alerts/acknowledge-all',{bodyLimit:512},async(req,reply)=>{headers(reply);noQuery(req);
+  const body=z.object({before:z.iso.datetime({offset:true}).optional()}).strict().safeParse(req.body??{});if(!body.success)fail('ALERTS_ACK_INVALID');
+  return{data:await mapped(()=>withProfileRequest(req,'REAL',{scope:'alerts:write',mutation:true},async({db,profile})=>{
+   const result=await acknowledgeProfileAlerts(db,profile.authority,{before:body.data.before});
+   await appendEvent(db,{workspace_id:db.workspaceId,environment:'REAL',event_type:'profile.alerts.acknowledged_all',aggregate_id:db.workspaceId,correlation_id:req.id,
+    actor:{type:profile.authority.credential.kind==='session'?'human':'personal_api',id:profile.authority.membership.userId},payload:{status:'ACKNOWLEDGED',count:result.acknowledged,cutoff:result.cutoff}});
+   return result;
+  },deps))};});
  app.post('/v2/alerts/:id/acknowledge',{bodyLimit:256},async(req,reply)=>{headers(reply);noQuery(req);
   const id=String((req.params as {id?:unknown}).id??'');
   return{data:await mapped(()=>withProfileRequest(req,'REAL',{scope:'alerts:write',mutation:true},async({db,profile})=>{

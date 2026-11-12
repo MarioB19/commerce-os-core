@@ -8,7 +8,10 @@ import {Alert,Badge,Button,Card,Dialog,DialogActions,DialogContent,EmptyState,Er
 type NumberRow={id:string;label:string;alias?:string|null;connected:boolean;status:string|null;reason:string|null;group_required:boolean|null;effective_days:number|null;warmup_mode?:'REQUIRED'|'DECLARED_READY';line?:string};
 type Day={date:string;account_id:string;sent:number;delivered:number;pending:number;uncertain:number;next_send:string|null};
 type Audience={external:number;ownReady:number;total:number;consentConfirmedAt?:string};
-type Program={id:string;version:number;name:string;status:string;config:GroupWarmupConfig;numbers:NumberRow[];history:Day[];audience?:Audience|null};
+type Effective={state:string;reasons:string[];observedAt:string;nextAction:string|null;nextSend:{at:string;conditional:boolean}|null};
+type Program={id:string;version:number;name:string;status:string;config:GroupWarmupConfig;numbers:NumberRow[];history:Day[];audience?:Audience|null;effective?:Effective;protection?:{open:boolean;reason:string|null;openedAt:string|null;reviewedUntil:string|null}|null};
+type RecoveryLine={accountId:string;health:string;identity:string;ownership:string;freezeReason:string|null;restricted:boolean;paused:boolean};
+type RecoveryPreview={programVersion:number;programStatus:string;protection:{open:boolean;reason:string|null;openedAt:string|null};failures:{accountId:string;kind:string;observedAt:string;source:string}[];lines:RecoveryLine[];blockers:string[];ready:boolean;recoveryHash:string};
 type RefreshLine={state:'READ'|'FAILED';groups:number;reason?:string;skipped?:Record<string,number>};
 type Refresh={id:string;state:string;reason:string|null;accounts:Record<string,RefreshLine>|null;updated_at:string};
 type Overview={programs:Program[];numbers:NumberRow[];refresh?:Refresh|null;ai:false};
@@ -36,15 +39,23 @@ const reasons:Record<string,string>={
  QUIET_HOURS:'Fuera del horario elegido',DAILY_LIMIT_REACHED:'Límite de hoy alcanzado',DAILY_CAPACITY_RESERVED:'Envíos de hoy programados',WINDOW_TOO_SHORT:'La ventana de hoy ya no alcanza para otro intercambio',
  PREVIOUS_MODE_DAY_PRESERVED:'El modo anterior ya tiene actividad hoy; el grupo comenzará en el siguiente día disponible.',PREPARATION_EVALUATION_PENDING:'Evaluando la preparación con evidencia de entrega y conexión',
  PREPARATION_COMPLETED:'Preparación completada',GROUP_MAINTENANCE:'Mantenimiento',GROUP_PLANNED:'Envíos programados',PROGRAM_PAUSED:'Pausado',COMMERCIAL_PRIORITY:'Atendiendo primero las conversaciones de ventas',
- REAL_OPERATION_NOT_ENABLED:'La operación está pausada en la plataforma.',LIBRARY_DUPLICATE_MESSAGE:'La biblioteca contiene mensajes repetidos.',LIBRARY_DUPLICATE_SCRIPT:'La biblioteca repite títulos de guion.',LIBRARY_PERSONAL_DATA_OR_PLACEHOLDER:'Retira datos personales, enlaces y campos sin completar de la biblioteca.',
+ REAL_OPERATION_NOT_ENABLED:'La operación está pausada en la plataforma.',
+ PROTECTION_OPEN:'Protección activa: los envíos están detenidos hasta revisarla.',DISTINCT_ACCOUNT_FAILURE_THRESHOLD:'Se abrió la protección porque una o más líneas fallaron.',PROGRAM_DISABLED:'Calentamiento desactivado',
+ WARMUP_PROTECTION_NOT_OPEN:'La protección ya no está activa.',WARMUP_RECOVERY_CHANGED:'El estado de las líneas cambió desde la revisión. Vuelve a revisar.',LINE_HEALTH_NOT_CURRENT:'Falta una comprobación reciente y sana de alguna línea. Espera un minuto y vuelve a revisar.',
+ LINE_IDENTITY_NOT_VERIFIED:'Falta confirmar la identidad de alguna línea.',LINE_OWNERSHIP_NOT_OPERATIONAL:'Alguna línea está conectada pero sin control operativo vigente. Concíliala en Números antes de recuperar.',CONFIRMED_RESTRICTION:'WhatsApp restringió una línea. Esto no se recupera desde aquí.',MEMBER_PAUSED:'Hay una línea en pausa.',
+ LINE_NOT_CONNECTED:'Una línea emisora no está conectada.',ACK_PENDING:'Esperando la confirmación de entrega de mensajes enviados.',EFFECT_UNCERTAIN:'Hay un envío cuyo resultado se está confirmando.',LIBRARY_DUPLICATE_MESSAGE:'La biblioteca contiene mensajes repetidos.',LIBRARY_DUPLICATE_SCRIPT:'La biblioteca repite títulos de guion.',LIBRARY_PERSONAL_DATA_OR_PLACEHOLDER:'Retira datos personales, enlaces y campos sin completar de la biblioteca.',
 };
 const explain=(code:string)=>reasons[code]??'Revisa la conexión, los integrantes y la configuración del calentamiento.';
 const errorText=(e:unknown)=>e instanceof ApiError?reasons[e.code]??e.message:e instanceof Error?e.message:'No se pudo completar la operación.';
 const statusName:Record<string,string>={DRAFT:'Borrador',ACTIVE:'Activo',PAUSED:'Pausado',COMPLETED:'Completado',ARCHIVED:'Archivado'};
+// V7.5 §3 (H03): what the engine can do now, not only the requested status.
+const effectiveName:Record<string,{label:string;tone:'success'|'neutral'|'warn'|'error'}>={RUNNING:{label:'Enviando',tone:'success'},WAITING_WINDOW:{label:'Fuera de horario',tone:'neutral'},WAITING_ACK:{label:'Esperando entregas',tone:'neutral'},WAITING_PLAN:{label:'Sin envíos programados',tone:'warn'},
+ PROTECTED:{label:'Protección activa',tone:'error'},PAUSED_BY_HUMAN:{label:'Pausado',tone:'neutral'},NEEDS_CONNECTION:{label:'Falta conexión',tone:'warn'},NEEDS_OWNERSHIP:{label:'Falta control operativo',tone:'warn'},GROUP_READ_STALE:{label:'Actualiza los grupos',tone:'warn'},
+ COMPLETED:{label:'Completado',tone:'neutral'},DRAFT:{label:'Borrador',tone:'neutral'},ARCHIVED:{label:'Archivado',tone:'neutral'}};
 const baseConfig:GroupWarmupConfig={name:'Calentamiento del equipo',groupId:'',senderIds:[],libraryVersion:'operacion-interna-es/v1',timezone:'America/Mexico_City',startHour:9,endHour:18,groupDailyLimit:500,senderDailyLimit:100,maintenance:false};
 
 export function ProfileWarmups({selection,manage,onBack}:{selection:ProfileFence;manage:boolean;onBack:()=>void}){
- const [data,setData]=useState<Overview>(),[groups,setGroups]=useState<Group[]>([]),[libraries,setLibraries]=useState<Library[]>([]),[days,setDays]=useState(7),[error,setError]=useState(''),[busy,setBusy]=useState(false),[job,setJob]=useState<string>(),[editing,setEditing]=useState<Program|'new'>(),[browsing,setBrowsing]=useState(false),[importing,setImporting]=useState(false),[notice,setNotice]=useState('');
+ const [data,setData]=useState<Overview>(),[groups,setGroups]=useState<Group[]>([]),[libraries,setLibraries]=useState<Library[]>([]),[days,setDays]=useState(7),[error,setError]=useState(''),[busy,setBusy]=useState(false),[job,setJob]=useState<string>(),[editing,setEditing]=useState<Program|'new'>(),[browsing,setBrowsing]=useState(false),[importing,setImporting]=useState(false),[notice,setNotice]=useState(''),[recovering,setRecovering]=useState<Program>();
  const operations=useRef(new Map<string,string>());
  const request=useCallback(<T,>(method:'GET'|'POST',path:string,body?:unknown,signal?:AbortSignal)=>profileRequest<T>(selection,method,'/v2/warmup'+path,body,signal,512*1024),[selection]);
  const load=useCallback(async(signal?:AbortSignal)=>{try{const [overview,g,l]=await Promise.all([request<Overview>('GET',`?days=${days}`,undefined,signal),request<Group[]>('GET','/groups',undefined,signal),request<Library[]>('GET','/libraries',undefined,signal)]);if(!signal?.aborted){setData(overview);setGroups(g);setLibraries(l);setError('');}}catch(e){if(!signal?.aborted)setError(errorText(e));}},[request,days]);
@@ -76,13 +87,15 @@ export function ProfileWarmups({selection,manage,onBack}:{selection:ProfileFence
   {data?.programs.map(p=>{
    const today=new Intl.DateTimeFormat('en-CA',{timeZone:p.config.timezone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()),current=p.history.filter(h=>h.date===today);
    const sum=(field:'sent'|'delivered'|'pending'|'uncertain')=>current.reduce((n,h)=>n+h[field],0),next=p.history.map(h=>h.next_send).filter((n):n is string=>!!n).sort()[0];
-   return <Card key={p.id} as="article"><div className="card-head"><div><h2>{p.name}</h2><p className="muted">{groups.find(g=>g.id===p.config.groupId)?.name??'Grupo seleccionado'} · {p.config.startHour}:00–{p.config.endHour}:00 · {p.config.timezone}</p></div><Badge tone={p.status==='ACTIVE'?'success':'neutral'}>{statusName[p.status]}</Badge></div>
+   return <Card key={p.id} as="article"><div className="card-head"><div><h2>{p.name}</h2><p className="muted">{groups.find(g=>g.id===p.config.groupId)?.name??'Grupo seleccionado'} · {p.config.startHour}:00–{p.config.endHour}:00 · {p.config.timezone}</p></div><Badge tone={(p.effective&&effectiveName[p.effective.state]?.tone)??(p.status==='ACTIVE'?'success':'neutral')}>{p.effective?effectiveName[p.effective.state]?.label??statusName[p.status]:statusName[p.status]}</Badge></div>
+    {p.effective&&p.effective.reasons.length>0&&<p className="muted">{p.effective.reasons.map(explain).join(' ')}</p>}
     <p>Hoy: <strong>{sum('sent')} enviados</strong> · {sum('delivered')} entregados · {sum('pending')} pendientes · {sum('uncertain')} por confirmar.</p>
     <p className="muted">Máximo del grupo: {p.config.groupDailyLimit}/día. Máximo por emisor: {p.config.senderDailyLimit}/día. La preparación aumenta de forma gradual.</p>
-    {next&&<p>Próximo envío: {new Date(next).toLocaleString('es-MX',{timeZone:p.config.timezone})} ({p.config.timezone}).</p>}
+    {(p.effective?p.effective.nextSend?.at:next)&&<p>Próximo envío: {new Date((p.effective?p.effective.nextSend!.at:next)!).toLocaleString('es-MX',{timeZone:p.config.timezone})} ({p.config.timezone}).</p>}
     {p.audience&&(p.audience.external>0||p.audience.ownReady>0)&&<p>Audiencia revisada: {p.numbers.length} líneas tuyas en el calentamiento{p.audience.ownReady>0?`, ${p.audience.ownReady} tuya${p.audience.ownReady===1?'':'s'} que sólo recibe${p.audience.ownReady===1?'':'n'}`:''}{p.audience.external>0?` y ${p.audience.external} participante${p.audience.external===1?'':'s'} externo${p.audience.external===1?'':'s'} que sólo recibe${p.audience.external===1?'':'n'}`:''}. Si cambian los integrantes, el calentamiento se pausa hasta que lo revises.</p>}
     <ul className="stack-tight">{p.numbers.map(n=><li key={n.id}><strong>{n.alias??n.label}</strong> · {p.config.senderIds.includes(n.id)?'Emisor':'Sólo recibe'} · {!n.connected?'Sin conexión ahora':p.status!=='ACTIVE'?statusName[p.status]:n.reason?explain(n.reason):'Programado'}{p.config.senderIds.includes(n.id)&&<Progress value={n.effective_days??0} max={14} label={`${n.label}: días efectivos`} valueText={`${n.effective_days??0} de 14 días efectivos`}/>}</li>)}</ul>
     <p className="muted text-sm">Un día efectivo se acredita sólo con mensajes enviados cuya entrega observó otra de tus líneas, y con la conexión estable ese día. El paso del calendario no cuenta, y no hay evidencia de entrega para los participantes externos. No es una medida de reputación de WhatsApp.{p.config.maintenance?' Después continuará en mantenimiento.':''}</p>
+    {manage&&p.protection?.open&&p.status!=='ARCHIVED'&&<Alert tone="warn">La protección del grupo está activa{p.protection.openedAt?` desde ${new Date(p.protection.openedAt).toLocaleString('es-MX',{timeZone:p.config.timezone})}`:''}. {p.status==='PAUSED'?'El calentamiento está pausado por una persona y seguirá pausado al recuperarla. ':''}Revisa las líneas y recupérala; recuperar no reanuda un calentamiento pausado. <Button variant="secondary" disabled={busy} onClick={()=>setRecovering(p)}>Revisar protección</Button></Alert>}
     {manage&&<div className="cluster">{p.status==='ACTIVE'?<Button variant="secondary" disabled={busy} onClick={()=>void stop(p,'pause')}>Pausar</Button>:<Button variant="secondary" disabled={busy} onClick={()=>setEditing(p)}>{p.status==='PAUSED'?'Revisar y reanudar':p.status==='ARCHIVED'?'Restaurar y revisar':'Revisar e iniciar'}</Button>}{p.status!=='ARCHIVED'&&<Button variant="ghost" disabled={busy} onClick={()=>void stop(p,'archive')}>Archivar</Button>}</div>}
     <details><summary>Historial de {days} días</summary>{p.history.length?<div className="table-wrap"><table><caption>Envíos salientes por día y línea</caption><thead><tr><th>Día</th><th>Línea</th><th>Enviados</th><th>Entregados</th><th>Pendientes</th><th>Por confirmar</th></tr></thead><tbody>{p.history.map(h=><tr key={h.date+h.account_id}><td>{h.date}</td><td>{p.numbers.find(n=>n.id===h.account_id)?.label??'Línea propia'}</td><td>{h.sent}</td><td>{h.delivered}</td><td>{h.pending}</td><td>{h.uncertain}</td></tr>)}</tbody></table></div>:<p>Aún no hay actividad registrada.</p>}</details>
    </Card>;
@@ -90,28 +103,37 @@ export function ProfileWarmups({selection,manage,onBack}:{selection:ProfileFence
   {editing&&<WarmupEditor selection={selection} program={editing==='new'?undefined:editing} groups={groups} libraries={libraries} numbers={data?.numbers??[]} onRefresh={()=>void refresh()} refreshing={!!job||busy} onClose={()=>setEditing(undefined)} onSaved={()=>{setEditing(undefined);void load();}}/>}
   {browsing&&<LibraryBrowser selection={selection} libraries={libraries} onClose={()=>setBrowsing(false)}/>}
   {importing&&<LibraryImport selection={selection} onClose={()=>setImporting(false)} onSaved={()=>{setImporting(false);void load();}}/>}
+  {recovering&&<ProtectionRecovery selection={selection} program={recovering} numbers={data?.numbers??[]} onClose={()=>setRecovering(undefined)} onSaved={()=>{setRecovering(undefined);setNotice('Protección recuperada. Si el calentamiento estaba pausado, sigue pausado: usa «Revisar y reanudar».');void load();}}/>}
  </>;
 }
 
 function WarmupEditor({selection,program,groups,libraries,numbers,onRefresh,refreshing,onClose,onSaved}:{selection:ProfileFence;program?:Program;groups:Group[];libraries:Library[];numbers:NumberRow[];onRefresh:()=>void;refreshing:boolean;onClose:()=>void;onSaved:()=>void}){
- const [config,setConfig]=useState<GroupWarmupConfig>(()=>program?.config??{...baseConfig}),[preview,setPreview]=useState<Preview>(),[error,setError]=useState(''),[busy,setBusy]=useState(false),[saved,setSaved]=useState<{id:string;version:number;status:string}|undefined>(program),[consent,setConsent]=useState(false),operations=useRef(new Map<string,string>());
+ const [config,setConfig]=useState<GroupWarmupConfig>(()=>program?.config??{...baseConfig}),[preview,setPreview]=useState<Preview>(),[error,setError]=useState(''),[busy,setBusy]=useState(false),[saved,setSaved]=useState<{id:string;version:number;status:string}|undefined>(program),[persisted,setPersisted]=useState<GroupWarmupConfig|undefined>(program?.config),[consent,setConsent]=useState(false),operations=useRef(new Map<string,string>());
  const change=(patch:Partial<GroupWarmupConfig>)=>{setConfig(c=>({...c,...patch}));setPreview(undefined);setConsent(false);setError('');};
  const nameOf=(id:string|null)=>{const n=numbers.find(n=>n.id===id);return n?.alias??n?.label??'Línea propia';};
- const group=groups.find(g=>g.id===config.groupId),changed=!!program&&JSON.stringify(config)!==JSON.stringify(program.config);
+ // V7.5 §5 (H09): compare with what the server last confirmed, not with the
+ // configuration the dialog opened with; a retry after a failed start must
+ // still save a later edit.
+ const group=groups.find(g=>g.id===config.groupId),changed=!!persisted&&JSON.stringify(config)!==JSON.stringify(persisted);
  const request=<T,>(path:string,body:unknown)=>profileRequest<T>(selection,'POST','/v2/warmup'+path,body);
  const operation=(key:string)=>{let id=operations.current.get(key);if(!id){id=crypto.randomUUID();operations.current.set(key,id);}return id;};
  async function review(e?:FormEvent){e?.preventDefault();if(busy)return;setBusy(true);setError('');setConsent(false);try{const parsed=groupWarmupConfigSchema.parse(config);setPreview(await request<Preview>('/preview',{config:parsed,...(saved?{programId:saved.id}:{})}));}catch(e){setError(e instanceof z.ZodError?'Revisa el nombre, el horario y elige al menos dos emisores.':errorText(e));}finally{setBusy(false);}}
  const needsConsent=!!preview?.audience?.consentRequired;
  async function apply(){if(!preview?.ready||busy||(needsConsent&&!consent))return;setBusy(true);setError('');try{
    let current=saved;
-   if(!current){current=await request('/programs',{operationId:operation('create'),config});setSaved(current);}
+   if(!current){current=await request('/programs',{operationId:operation('create:'+JSON.stringify(config)),config});setSaved(current);setPersisted(config);}
    if(!current)throw Error('No se pudo confirmar el borrador.');
    let hash=preview.previewHash;
-   if(changed&&current.version===program?.version){const result=await request<{id:string;version:number;status:string}>(`/programs/${current.id}/commands`,{action:'configure',expectedVersion:current.version,operationId:operation('configure'),config,previewHash:hash});current=result;setSaved(result);
+   if(changed){const key='configure:'+current.version+':'+JSON.stringify(config);const result=await request<{id:string;version:number;status:string}>(`/programs/${current.id}/commands`,{action:'configure',expectedVersion:current.version,operationId:operation(key),config,previewHash:hash});current=result;setSaved(result);setPersisted(config);
     const checked=await request<Preview>('/preview',{config,programId:current.id});setPreview(checked);if(!checked.ready){setError(checked.blockers.map(explain).join(' '));return;}hash=checked.previewHash;
    }
-   await request(`/programs/${current.id}/commands`,{action:current.status==='PAUSED'?'resume':'start',expectedVersion:current.version,operationId:operation('start:'+current.version),previewHash:hash,...(needsConsent&&consent?{audienceConfirmed:true}:{})});onSaved();
-  }catch(e){setError(errorText(e));}finally{setBusy(false);}}
+   await request(`/programs/${current.id}/commands`,{action:current.status==='PAUSED'?'resume':'start',expectedVersion:current.version,operationId:operation('start:'+current.version+':'+hash),previewHash:hash,...(needsConsent&&consent?{audienceConfirmed:true}:{})});onSaved();
+  }catch(e){
+   // A version moved by another session or tab: keep the form, take the
+   // latest confirmed version and ask for a new review.
+   if(e instanceof ApiError&&e.code==='WARMUP_VERSION_CONFLICT'&&saved){try{const latest=await profileRequest<Program>(selection,'GET',`/v2/warmup/programs/${saved.id}`);setSaved({id:latest.id,version:latest.version,status:latest.status});setPersisted(latest.config);setPreview(undefined);setError('El calentamiento cambió en otra sesión. Tus cambios siguen aquí: vuelve a revisar y guarda.');}catch(inner){setError(errorText(inner));}}
+   else setError(errorText(e));
+  }finally{setBusy(false);}}
  return <Dialog open onOpenChange={v=>{if(!v&&!busy)onClose();}}><DialogContent title={program?'Revisa el calentamiento':'Nuevo calentamiento'} description="Elige un grupo que ya exista en WhatsApp y en el que estén tus líneas. Todos sus integrantes verán los mensajes; sólo las líneas tuyas que elijas los enviarán.">
   <form className="form" onSubmit={e=>void review(e)}>
    <Field label="Nombre"><Input value={config.name} onChange={e=>change({name:e.target.value})} maxLength={80} required/></Field>
@@ -160,4 +182,29 @@ function LibraryImport({selection,onClose,onSaved}:{selection:ProfileFence;onClo
  async function read(file?:File){setError('');setScripts(undefined);if(!file)return;try{if(file.size>16*1024*1024)throw Error('El archivo debe pesar menos de 16 MB.');setScripts(z.array(libraryScriptSchema).min(1).max(2000).parse(JSON.parse(await file.text())));operation.current=crypto.randomUUID();}catch{setError('Usa un JSON con guiones: label, topic, ownership_confirmed: true y turns con kind: text y text.');}}
  async function save(e:FormEvent){e.preventDefault();if(!scripts||!confirmed)return;setBusy(true);setError('');try{await profileRequest(selection,'POST','/v2/warmup/libraries/import',{operationId:operation.current,name,version,scripts,ownershipConfirmed:true});onSaved();}catch(e){setError(errorText(e));}finally{setBusy(false);}}
  return <Dialog open onOpenChange={v=>{if(!v&&!busy)onClose();}}><DialogContent title="Importar biblioteca" description="Cada versión queda conservada. Para corregirla, importa una nueva versión."><form className="form" onSubmit={e=>void save(e)}><Field label="Nombre"><Input value={name} onChange={e=>setName(e.target.value)} required minLength={3} maxLength={100}/></Field><Field label="Versión" help="Por ejemplo: equipo-es/v1"><Input value={version} onChange={e=>setVersion(e.target.value)} pattern="[a-z0-9][a-z0-9./_-]{2,99}" required/></Field><Field label="Archivo JSON"><Input type="file" accept="application/json,.json" onChange={e=>void read(e.target.files?.[0])}/></Field>{scripts&&<p>{scripts.length} guiones preparados para validar.</p>}<label className="cluster"><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/>Confirmo que puedo usar estos textos y que no contienen datos personales.</label>{error&&<Alert tone="error">{error}</Alert>}<DialogActions><Button type="button" variant="secondary" onClick={onClose} disabled={busy}>Cancelar</Button><Button type="submit" disabled={!confirmed||!scripts||busy} loading={busy}>Importar</Button></DialogActions></form></DialogContent></Dialog>;
+}
+
+/** V7.5 §2 (H02): the person reviews the protection and recovers it. The same
+ * review hash travels with the command; the server repeats the review. */
+function ProtectionRecovery({selection,program,numbers,onClose,onSaved}:{selection:ProfileFence;program:Program;numbers:NumberRow[];onClose:()=>void;onSaved:()=>void}){
+ const [review,setReview]=useState<RecoveryPreview>(),[reason,setReason]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false),operation=useRef(crypto.randomUUID());
+ const nameOf=(id:string)=>{const n=numbers.find(n=>n.id===id);return n?.alias??n?.label??'Línea';};
+ const load=useCallback(async()=>{setError('');try{setReview(await profileRequest<RecoveryPreview>(selection,'POST',`/v2/warmup/programs/${program.id}/recovery-preview`,{}));}catch(e){setError(errorText(e));}},[selection,program.id]);
+ useEffect(()=>{void load();},[load]);
+ async function recover(e:FormEvent){e.preventDefault();if(!review?.ready||busy||reason.trim().length<3)return;setBusy(true);setError('');try{
+   await profileRequest(selection,'POST',`/v2/warmup/programs/${program.id}/commands`,{action:'recover',operationId:operation.current,expectedVersion:review.programVersion,recoveryHash:review.recoveryHash,reason:reason.trim()});onSaved();
+  }catch(e){setError(errorText(e));if(e instanceof ApiError&&['WARMUP_RECOVERY_CHANGED','WARMUP_VERSION_CONFLICT'].includes(e.code)){operation.current=crypto.randomUUID();void load();}}finally{setBusy(false);}}
+ const health:Record<string,string>={CURRENT:'Comprobación reciente y sana',NOT_CURRENT:'Sin comprobación sana reciente'};
+ const ownership:Record<string,string>={OPERATIONAL:'Control operativo vigente',FROZEN:'Control detenido',EXPIRED:'Control vencido',NONE:'Sin control',NOT_APPLICABLE:'Simulación'};
+ return <Dialog open onOpenChange={v=>{if(!v&&!busy)onClose();}}><DialogContent title="Revisar la protección del grupo" description="Los envíos están detenidos porque alguna línea falló. Revisa el estado actual antes de recuperarla. Recuperar no reanuda un calentamiento pausado y no borra el historial.">
+  <form className="form" onSubmit={e=>void recover(e)}>
+   {!review&&!error&&<Skeleton block/>}
+   {review&&<><ul className="stack-tight">{review.lines.map(l=><li key={l.accountId}><strong>{nameOf(l.accountId)}</strong> · {health[l.health]??l.health} · {ownership[l.ownership]??l.ownership}{l.restricted?' · restringida':''}{l.paused?' · en pausa':''}</li>)}</ul>
+    <details><summary>Fallas revisadas ({review.failures.length})</summary><ul className="stack-tight">{review.failures.map(f=><li key={f.accountId+f.observedAt}>{nameOf(f.accountId)} · {new Date(f.observedAt).toLocaleString('es-MX',{timeZone:program.config.timezone})} · {f.kind==='CONFIRMED_BLOCK'?'restricción confirmada':f.source==='persistent-unknown'?'sin lectura del proveedor por 15 min':'falla de conexión'}</li>)}</ul></details>
+    {review.blockers.map(b=><Alert key={b} tone="warn">{explain(b)}</Alert>)}
+    {review.ready&&<Field label="Motivo (queda en la auditoría)"><Input value={reason} onChange={e=>setReason(e.target.value)} minLength={3} maxLength={300} required/></Field>}</>}
+   {error&&<Alert tone="error">{error}</Alert>}
+   <DialogActions><Button type="button" variant="secondary" onClick={onClose} disabled={busy}>Cerrar</Button><Button type="button" variant="secondary" onClick={()=>void load()} disabled={busy}>Revisar otra vez</Button>{review?.ready&&<Button type="submit" disabled={busy||reason.trim().length<3} loading={busy}>Recuperar protección</Button>}</DialogActions>
+  </form>
+ </DialogContent></Dialog>;
 }

@@ -1,4 +1,5 @@
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
+import {MCP_RELEASE} from '../../../packages/contracts/src/mcp-capabilities.js';
 import {personalContinuity} from '../../../packages/commerce-client/src/continuous-authorization.js';
 import {personalPayments} from '../../../packages/commerce-client/src/payments.js';
 import {personalReceiptPolicies} from '../../../packages/commerce-client/src/receipt-policies.js';
@@ -13,7 +14,7 @@ import {registerProfileRegistryTools} from './registry-tools.js';
 export function createProfileMcp(origin:string,token:string,fetcher:typeof fetch=fetch){
  if(!/^https?:\/\//.test(origin))throw Error('MCP_CONFIGURATION_REQUIRED');
  if(!/^cos_pat_[A-Za-z0-9_-]{20,}$/.test(token))throw Error('MCP_PROFILE_TOKEN_REQUIRED');
- const server=new McpServer({name:'commerce-os',version:'7.0.0'},{capabilities:{tools:{}}});
+ const server=new McpServer({name:'commerce-os',version:MCP_RELEASE},{capabilities:{tools:{}}});
  registerProfileRegistryTools(server,{v2:personalProfileV2(origin,token,fetcher),v1:personalProfileV1(origin,token,fetcher),variant:personalVariantClient(origin,token,fetcher),
   continuity:personalContinuity(origin,token,fetcher),payments:personalPayments(origin,token,fetcher),receiptPolicies:personalReceiptPolicies(origin,token,fetcher),results:personalResults(origin,token,fetcher),sales:personalProfileSales(origin,token,fetcher)});
  return server;

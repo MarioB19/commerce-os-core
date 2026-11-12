@@ -24,10 +24,13 @@ async function configureAlerts(scope:string){
   secrets:{token},reason:'Isolated notification test with injected fake transport',
  }),'synthetic-owner'));
 }
+// V7.5 §6: one open episode per global cause, so each synthetic delivery
+// fixture is a distinct cause; the delivery contract under test is unchanged.
 async function insertAlert(scope:string,options:{status?:string;created_at?:string;updated_at?:string}={}){
+ const kind='SYNTHETIC_INCIDENT_'+randomUUID().slice(0,8).toUpperCase();
  return (await pool.query(`INSERT INTO operational_alerts(workspace_id,environment,dedupe_key,kind,severity,summary_code,status,created_at,updated_at)
-  VALUES($1,'REAL',$2,'SYNTHETIC_INCIDENT','WARNING','SYNTHETIC_INCIDENT',$3,$4,$5) RETURNING *`,
- [scope,randomUUID(),options.status??'PENDING',options.created_at??'2001-01-01T00:00:00Z',options.updated_at??new Date().toISOString()])).rows[0];
+  VALUES($1,'REAL',$2,$6,'WARNING',$6,$3,$4,$5) RETURNING *`,
+ [scope,randomUUID(),options.status??'PENDING',options.created_at??'2001-01-01T00:00:00Z',options.updated_at??new Date().toISOString(),kind])).rows[0];
 }
 async function alertState(id:string){return(await pool.query('SELECT status FROM operational_alerts WHERE id=$1',[id])).rows[0].status;}
 function captureFetch(onRequest?:(body:Record<string,unknown>,init:RequestInit)=>Promise<Response>){
@@ -155,4 +158,67 @@ it('deduplicates a fresh but blocked worker incident and resolves only with vali
  await collectOperationalAlerts();expect(await incidents()).toEqual([{severity:'CRITICAL',resolved_at:null}]);
  await putRecord(pool,{id:heartbeat.id,version:heartbeat.version,workspaceId:scope,environment:'REAL',kind:'service_heartbeat',body:{...body,status:'OK'}});
  await collectOperationalAlerts();expect((await incidents())[0].resolved_at).not.toBeNull();
+});
+
+// V7.5 audit: desired behavior, deliberately red until the release fixes land.
+it('V7.5 audit: retains one open backup incident across hourly monitor ticks',async()=>{
+ const scope=await workspace();await putRecord(pool,{workspaceId:scope,environment:'REAL',kind:'channel_account',body:{provider:'simulator'}});
+ const kind='EXTERNAL_BACKUP_NOT_CURRENT';
+ await pool.query("INSERT INTO operational_alerts(workspace_id,environment,dedupe_key,kind,severity,summary_code) VALUES($1,'REAL',$2,$3,'CRITICAL',$3)",[scope,kind+':2001-01-01T00',kind]);
+ await collectOperationalAlerts();
+ expect((await pool.query('SELECT count(*)::int n FROM operational_alerts WHERE workspace_id=$1 AND kind=$2 AND resolved_at IS NULL',[scope,kind])).rows[0].n).toBe(1);
+});
+
+it('V7.5 audit: resolves the backup incident when current verified evidence arrives',async()=>{
+ const scope=await workspace();await putRecord(pool,{workspaceId:scope,environment:'REAL',kind:'channel_account',body:{provider:'simulator'}});
+ await collectOperationalAlerts();
+ await pool.query("INSERT INTO operational_evidence(workspace_id,environment,kind,status,source,evidence_ref,details,observed_at,expires_at,actor_id) VALUES($1,'REAL','backup_external','VERIFIED','SERVER_JOB','synthetic-local-backup','{}',now(),now()+interval '1 day','synthetic')",[scope]);
+ await collectOperationalAlerts();
+ expect((await pool.query("SELECT count(*)::int n FROM operational_alerts WHERE workspace_id=$1 AND kind='EXTERNAL_BACKUP_NOT_CURRENT' AND resolved_at IS NULL",[scope])).rows[0].n).toBe(0);
+});
+
+it('V7.5 audit: does not require legacy schedules from an empty QR pool',async()=>{
+ const scope=await workspace();await putRecord(pool,{workspaceId:scope,environment:'REAL',kind:'channel_account',body:{provider:'simulator'}});
+ const profile=(await pool.query("INSERT INTO warmup_profiles(workspace_id,environment,config) VALUES($1,'REAL',$2) RETURNING id",[scope,warmupProfileSchema.parse({name:'Synthetic unused QR pool',timezone:'UTC'})])).rows[0];
+ await pool.query("INSERT INTO warmup_pools(workspace_id,environment,profile_id,enabled,continuity_mode) VALUES($1,'REAL',$2,true,'QR_CONTINUOUS')",[scope,profile.id]);
+ await collectOperationalAlerts();
+ expect((await pool.query("SELECT kind FROM operational_alerts WHERE workspace_id=$1 AND kind IN('WARMUP_HEALTH_OVERDUE','WARMUP_RECONCILE_OVERDUE','WARMUP_DAILY_OVERDUE')",[scope])).rows).toEqual([]);
+});
+
+// V7.5 §6 (H11): episodes, recurrence, escalation and the installed backup producer.
+const open=async(scope:string,kind:string)=>(await pool.query('SELECT * FROM operational_alerts WHERE workspace_id=$1 AND kind=$2 AND resolved_at IS NULL AND superseded_by IS NULL',[scope,kind])).rows;
+it('V7.5: a repeated observation keeps one episode and its acknowledgement; recovery resolves it and a recurrence opens a new one',async()=>{
+ const scope=await workspace();await putRecord(pool,{workspaceId:scope,environment:'REAL',kind:'channel_account',body:{provider:'simulator',status:'FAILED'}});
+ await collectOperationalAlerts();await collectOperationalAlerts();
+ const [first]=await open(scope,'CHANNEL_PROVIDER_UNAVAILABLE');expect(first.observations).toBe(2);expect(await open(scope,'CHANNEL_PROVIDER_UNAVAILABLE')).toHaveLength(1);
+ await pool.query('UPDATE operational_alerts SET acknowledged_at=now(),acknowledged_by=$2 WHERE id=$1',[first.id,'synthetic-owner']);
+ await collectOperationalAlerts();expect((await open(scope,'CHANNEL_PROVIDER_UNAVAILABLE'))[0]).toMatchObject({id:first.id,observations:3,acknowledged_by:'synthetic-owner'});
+ await pool.query("UPDATE records SET body=body||'{\"status\":\"WORKING\"}'::jsonb,version=version+1 WHERE workspace_id=$1 AND kind='channel_account'",[scope]);
+ await collectOperationalAlerts();expect(await open(scope,'CHANNEL_PROVIDER_UNAVAILABLE')).toEqual([]);
+ expect((await pool.query('SELECT evidence->>$2 AS r FROM operational_alerts WHERE id=$1',[first.id,'resolution'])).rows[0].r).toBe('CONDITION_CLEARED');
+ await pool.query("UPDATE records SET body=body||'{\"status\":\"FAILED\"}'::jsonb,version=version+1 WHERE workspace_id=$1 AND kind='channel_account'",[scope]);
+ await collectOperationalAlerts();const [again]=await open(scope,'CHANNEL_PROVIDER_UNAVAILABLE');expect(again.id).not.toBe(first.id);expect(again.acknowledged_at).toBeNull();
+});
+it('V7.5: escalation to CRITICAL is a new notice for the person; the backup producer that runs resolves the backup episode',async()=>{
+ const scope=await workspace();await putRecord(pool,{workspaceId:scope,environment:'REAL',kind:'channel_account',body:{provider:'simulator'}});
+ const {episodeAlert}=await import('../../apps/automation-worker/src/operations-monitor.js');
+ await withTransaction(c=>episodeAlert(c,{workspace:scope,environment:'REAL',kind:'SYNTHETIC_ESCALATION',severity:'WARNING',active:true,now:new Date()}));
+ await pool.query("UPDATE operational_alerts SET acknowledged_at=now() WHERE workspace_id=$1 AND kind='SYNTHETIC_ESCALATION'",[scope]);
+ await withTransaction(c=>episodeAlert(c,{workspace:scope,environment:'REAL',kind:'SYNTHETIC_ESCALATION',severity:'CRITICAL',active:true,now:new Date()}));
+ expect((await open(scope,'SYNTHETIC_ESCALATION'))[0]).toMatchObject({severity:'CRITICAL',acknowledged_at:null,observations:2});
+ await collectOperationalAlerts();expect((await open(scope,'EXTERNAL_BACKUP_NOT_CURRENT'))[0].evidence.source).toBe('NO_VERIFIED_BACKUP_OBSERVED');
+ await pool.query("INSERT INTO platform_backup_runs(kind,status,label,started_at,finished_at,database_bytes,repository_bytes) VALUES('PITR_FULL','SUCCEEDED','20001111-000000F',now()-interval '20 minutes',now()-interval '10 minutes',1,1)");
+ try{
+  await collectOperationalAlerts();expect(await open(scope,'EXTERNAL_BACKUP_NOT_CURRENT')).toEqual([]);
+  await pool.query("INSERT INTO platform_backup_runs(kind,status,label,started_at,finished_at,database_bytes,repository_bytes,error) VALUES('PITR_INCR','FAILED',NULL,now()-interval '2 minutes',now()-interval '1 minute',NULL,NULL,'SYNTHETIC_FAILURE')");
+  await collectOperationalAlerts();expect((await open(scope,'EXTERNAL_BACKUP_NOT_CURRENT'))[0].evidence.source).toBe('LAST_BACKUP_RUN_FAILED');
+ }finally{await pool.query("DELETE FROM platform_backup_runs WHERE label='20001111-000000F' OR error='SYNTHETIC_FAILURE'");}
+});
+it('V7.5: an active LEGACY pool with members still alerts on overdue schedule windows',async()=>{
+ const scope=await workspace();const account=await putRecord(pool,{workspaceId:scope,environment:'REAL',kind:'channel_account',body:{provider:'simulator'}});
+ const profile=(await pool.query("INSERT INTO warmup_profiles(workspace_id,environment,config) VALUES($1,'REAL',$2) RETURNING id",[scope,warmupProfileSchema.parse({name:'Synthetic legacy pool',timezone:'UTC'})])).rows[0];
+ const created=(await pool.query("INSERT INTO warmup_pools(workspace_id,environment,profile_id,enabled,continuity_mode) VALUES($1,'REAL',$2,true,'LEGACY') RETURNING id",[scope,profile.id])).rows[0];
+ await pool.query("INSERT INTO warmup_states(account_id,workspace_id,environment,pool_id,profile_id) VALUES($1,$2,'REAL',$3,$4)",[account.id,scope,created.id,profile.id]);
+ await collectOperationalAlerts();
+ expect((await pool.query("SELECT kind FROM operational_alerts WHERE workspace_id=$1 AND kind LIKE 'WARMUP_%_OVERDUE' AND resolved_at IS NULL ORDER BY kind",[scope])).rows.map(r=>r.kind)).toEqual(['WARMUP_DAILY_OVERDUE','WARMUP_HEALTH_OVERDUE','WARMUP_RECONCILE_OVERDUE']);
 });

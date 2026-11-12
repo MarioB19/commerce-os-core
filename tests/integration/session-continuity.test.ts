@@ -6,7 +6,7 @@ import {provisionUser} from '../../apps/api/src/auth.js';
 import {pool,putRecord,withTransaction,getRecord,appendEvent,writeOperationalSettings,readOperationalSettings} from '../../packages/db/src/index.js';
 import {observeChannelSession,readChannelSession} from '../../packages/db/src/channel-sessions.js';
 import {readEffectiveHealth} from '../../packages/db/src/effective-health.js';
-import {recordHealth,collectHealth,processChannelCommands,acquireOwnership} from '../../apps/channel-worker/src/lifecycle.js';
+import {recordHealth,collectHealth,processChannelCommands,acquireOwnership,heartbeatOwnership} from '../../apps/channel-worker/src/lifecycle.js';
 import {superviseSessions} from '../../apps/channel-worker/src/session-supervisor.js';
 import {collectSessionAlerts} from '../../apps/automation-worker/src/session-alerts.js';
 import {SimulatorProvider,type HealthSignal} from '../../packages/messaging/src/index.js';
@@ -51,6 +51,41 @@ it('recovers only the owned health incident after a complete positive readback',
  expect((await pool.query("SELECT count(*)::int n FROM domain_events WHERE workspace_id=$1 AND aggregate_id=$2 AND event_type='channel.health_recovered'",[workspace,a.id])).rows[0].n).toBe(1);
  expect((await readEffectiveHealth(pool,{workspaceId:workspace,environment:'REAL',accountId:a.id})).by_dimension.ownership).toMatchObject({status:'OK',value:{frozen:false}});
  expect({healthCalls,lifecycleCalls}).toEqual({healthCalls:3,lifecycleCalls:0});
+});
+
+// V7.5 audit: desired behavior, deliberately red until the release fixes land.
+it('V7.5 audit: a complete STOPPED read reaches the authorized recovery supervisor',async()=>{
+ const a=await account(),owner='audit-stopped-owner',provider=new SimulatorProvider();
+ await enableRecoveryPolicy();await configureRecovery(a);await recoveryEvidence(a,owner);
+ // The premise is a line that was connected before it stopped (the provider
+ // read derives CONFIRMED_STOPPED_AFTER_CONNECTION from that history).
+ await pool.query("UPDATE channel_sessions SET last_connected_at=now()-interval '1 hour' WHERE account_id=$1",[a.id]);
+ provider.health=async()=>{const at=new Date();return[...signals('STOPPED','fixture-identity',at),{dimension:'restriction',status:'OK',value:{latest_read:{timelock:true,capping:true}},source:'provider_read',scope:'account',availability:'supported',observedAt:at.toISOString(),expiresAt:new Date(at.getTime()+60000).toISOString()}];};
+ await recordHealth(a,()=>provider);await superviseSessions();
+ // No provider lifecycle call: this assertion checks whether recovery is reachable.
+ expect(await session(a)).toMatchObject({observed_state:'STOPPED',retry_count:1,recovery_blocker:null});
+});
+
+it('V7.5 audit: healthy readback can recover the same process after a health freeze and expired lease',async()=>{
+ const a=await account(),owner='audit-expired-owner',provider=new SimulatorProvider();
+ await acquireOwnership(a,owner);await pool.query('UPDATE session_ownership SET frozen=false WHERE account_id=$1',[a.id]);
+ await pool.query("UPDATE channel_sessions SET desired_state='RUNNING',operational_pause=false WHERE account_id=$1",[a.id]);
+ const observed=(offset:number,status:'UNKNOWN'|'OK'):HealthSignal[]=>{const at=new Date(Date.now()+offset);return[...signals('WORKING','fixture-identity',at),{dimension:'restriction',status,value:{latest_read:{timelock:true,capping:status==='OK'}},source:'provider_read',scope:'account',availability:'supported',observedAt:at.toISOString(),expiresAt:new Date(at.getTime()+60000).toISOString()}];};
+ provider.health=async()=>observed(-2000,'UNKNOWN');await recordHealth(a,()=>provider);
+ await pool.query("UPDATE session_ownership SET lease_expires_at=now()-interval '1 second' WHERE account_id=$1",[a.id]);
+ provider.health=async()=>observed(-1000,'OK');await recordHealth(a,()=>provider);
+ await heartbeatOwnership(owner);await recordHealth(a,()=>provider);
+ expect((await pool.query('SELECT frozen,lease_expires_at>now() AS live FROM session_ownership WHERE account_id=$1',[a.id])).rows[0]).toEqual({frozen:false,live:true});
+});
+// V7.5 §7 (H05): the persisted signal keeps the class of a failed read.
+it('V7.5 H05: a timed-out health read records its class, phase and duration without claiming not_authorized',async()=>{
+ const a=await account(),provider=new SimulatorProvider();
+ provider.health=async()=>{throw Object.assign(new Error('The operation was aborted due to timeout'),{name:'TimeoutError'});};
+ await recordHealth(a,()=>provider);
+ const row=(await pool.query("SELECT body FROM records WHERE workspace_id=$1 AND kind='health_signal' AND body->>'account_id'=$2 AND body->>'dimension'='session' ORDER BY created_at DESC LIMIT 1",[workspace,a.id])).rows[0].body;
+ expect(row).toMatchObject({status:'UNKNOWN',value:'PROVIDER_READ_TIMEOUT',availability:'not_available',diagnostic:{code:'PROVIDER_READ_TIMEOUT',phase:'provider_health_read',retryable:true,availability:'not_available'}});
+ expect(typeof row.diagnostic.duration_ms).toBe('number');expect(JSON.stringify(row)).not.toMatch(/api_key|token|secret|password/i);
+ expect((await getRecord(pool,workspace,'channel_account',a.id))!.body.health_status).toBe('UNKNOWN');
 });
 it('restores only a release-frozen account with a current grant and healthy identity',async()=>{
  const current=await readOperationalSettings(pool,workspace,'REAL');

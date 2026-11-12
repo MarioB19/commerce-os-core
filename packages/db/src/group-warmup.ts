@@ -121,7 +121,16 @@ export async function commandGroupWarmup(db:ProfileExecutor,environment:Environm
  return replay(db,environment,input.operationId,actor,{id,...input},async()=>{
   const p=await readGroupProgram(db,environment,id,true);need(p.version===input.expectedVersion,'WARMUP_VERSION_CONFLICT');
   const config=input.config??programConfig(p);
-  if(input.action==='pause'||input.action==='archive'){
+  if(input.action==='recover'){
+   // V7.5 §2 (H02): the same review again, inside this locked transaction.
+   const review=await previewGroupRecovery(db,environment,id);
+   need(review.recoveryHash===input.recoveryHash,'WARMUP_RECOVERY_CHANGED');need(review.ready,review.blockers[0]??'WARMUP_RECOVERY_NOT_READY');
+   const recovered=(await db.query('UPDATE warmup_pools SET breaker_open=false,breaker_reason=NULL,breaker_reviewed_until=clock_timestamp(),version=version+1,updated_at=clock_timestamp() WHERE id=$1 AND workspace_id=$2 AND environment=$3 AND breaker_open RETURNING breaker_reviewed_until',[p.pool_id,db.workspaceId,environment])).rows[0];
+   need(recovered,'WARMUP_PROTECTION_NOT_OPEN');
+   await db.query('UPDATE warmup_programs SET version=version+1,updated_at=now() WHERE id=$1',[id]);
+   await appendEvent(db,{workspace_id:db.workspaceId,environment,event_type:'warmup.protection_recovered',aggregate_id:id,payload:{actor,operationId:input.operationId,reason:input.reason,poolId:p.pool_id,
+    reviewedUntil:new Date(recovered.breaker_reviewed_until).toISOString(),openedAt:review.protection.openedAt,reviewedFailures:review.failures,lines:review.lines,programStatus:p.status,resumed:false,external_effects:0}});
+  }else if(input.action==='pause'||input.action==='archive'){
    need(p.status!=='ARCHIVED'||input.action==='archive','WARMUP_ARCHIVED');
    await cancelGroupPending(db,environment,p.account_ids,input.action==='pause'?'PROGRAM_PAUSED':'PROGRAM_ARCHIVED');
    if(p.pool_id)await db.query('UPDATE warmup_pools SET paused=true,enabled=CASE WHEN $2 THEN false ELSE enabled END,archived_at=CASE WHEN $2 THEN now() ELSE archived_at END,version=version+1 WHERE id=$1',[p.pool_id,input.action==='archive']);
@@ -156,6 +165,70 @@ export async function commandGroupWarmup(db:ProfileExecutor,environment:Environm
   const result=await readGroupProgram(db,environment,id);await appendEvent(db,{workspace_id:db.workspaceId,environment,event_type:'warmup.program_'+input.action,aggregate_id:id,payload:{actor,version:result.version,status:result.status,operationId:input.operationId}});
   return{id,version:result.version,status:result.status};
  });
+}
+/** V7.5 §2 (H02): what a person reviews before recovering a protection.
+ * Per own line: current healthy read, verified identity, live and unfrozen
+ * ownership, no confirmed restriction; plus current QR authority, no
+ * uncertain warm-up effect and the failures being reviewed. The hash covers
+ * stable facts only (not the read timestamps), so a fresh read between the
+ * preview and the command does not invalidate it; a change of state does. */
+export async function previewGroupRecovery(db:ProfileExecutor,environment:Environment,id:string){
+ const p=await readGroupProgram(db,environment,id),blockers:string[]=[];
+ const pool=p.pool_id?(await db.query('SELECT * FROM warmup_pools WHERE id=$1 AND workspace_id=$2 AND environment=$3',[p.pool_id,db.workspaceId,environment])).rows[0]:null;
+ const now=(await db.query('SELECT clock_timestamp() AS now')).rows[0].now as Date;
+ if(!pool)blockers.push('WARMUP_POOL_NOT_FOUND');else if(!pool.breaker_open)blockers.push('WARMUP_PROTECTION_NOT_OPEN');
+ if(p.status==='ARCHIVED')blockers.push('WARMUP_ARCHIVED');
+ const members:string[]=p.account_ids;
+ const rows=(await db.query(`SELECT r.id,r.body,s.observed_state,s.auth_state,s.operational_pause,s.desired_state,o.frozen,o.freeze_reason,COALESCE(o.lease_expires_at>clock_timestamp(),false) AS live,ws.confirmed_block,ws.paused AS member_paused
+  FROM records r LEFT JOIN channel_sessions s ON s.account_id=r.id AND s.workspace_id=r.workspace_id AND s.environment=r.environment
+  LEFT JOIN session_ownership o ON o.account_id=r.id::text AND o.workspace_id=r.workspace_id LEFT JOIN warmup_states ws ON ws.account_id=r.id
+  WHERE r.workspace_id=$1 AND r.environment=$2 AND r.kind='channel_account' AND r.id=ANY($3::uuid[]) ORDER BY r.id`,[db.workspaceId,environment,members])).rows;
+ if(rows.length!==members.length)blockers.push('WARMUP_MEMBER_NOT_FOUND');
+ const lines=rows.map(row=>{const b=row.body as Body,checked=Date.parse(String(b.health_checked_at??''));
+  const health=Number.isFinite(checked)&&checked<=now.getTime()+1000&&now.getTime()-checked<90_000&&b.status==='WORKING'&&b.health_status==='OK'?'CURRENT':'NOT_CURRENT';
+  const identity=environment==='SIMULATION'&&b.provider==='simulator'?'VERIFIED':b.identity_verified===true&&!b.identity_conflict?'VERIFIED':'NOT_VERIFIED';
+  const ownership=environment==='SIMULATION'?'NOT_APPLICABLE':!row.frozen&&row.live?'OPERATIONAL':row.frozen?'FROZEN':'EXPIRED';
+  return{accountId:row.id as string,health,identity,ownership,freezeReason:(row.freeze_reason as string|null)??null,restricted:!!row.confirmed_block,paused:!!row.member_paused||!!row.operational_pause};});
+ if(lines.some(l=>l.health!=='CURRENT'))blockers.push('LINE_HEALTH_NOT_CURRENT');
+ if(lines.some(l=>l.identity!=='VERIFIED'))blockers.push('LINE_IDENTITY_NOT_VERIFIED');
+ if(lines.some(l=>!['OPERATIONAL','NOT_APPLICABLE'].includes(l.ownership)))blockers.push('LINE_OWNERSHIP_NOT_OPERATIONAL');
+ if(lines.some(l=>l.restricted))blockers.push('CONFIRMED_RESTRICTION');
+ if(lines.some(l=>l.paused))blockers.push('MEMBER_PAUSED');
+ const reviewedUntil=pool?.breaker_reviewed_until?new Date(pool.breaker_reviewed_until):null;
+ const failures=(await db.query(`SELECT account_id,kind,observed_at,evidence_ref FROM warmup_observations WHERE workspace_id=$1 AND environment=$2 AND account_id=ANY($3::uuid[]) AND kind IN('FAILED','CONFIRMED_BLOCK')
+  AND observed_at>$4 AND ($5::timestamptz IS NULL OR observed_at>$5) ORDER BY observed_at,account_id LIMIT 200`,[db.workspaceId,environment,members,new Date(now.getTime()-86400000),reviewedUntil])).rows
+  .map(r=>({accountId:r.account_id as string,kind:r.kind as string,observedAt:new Date(r.observed_at).toISOString(),source:String(r.evidence_ref).split(':')[0]}));
+ if(failures.some(f=>f.kind==='CONFIRMED_BLOCK'))blockers.push('CONFIRMED_RESTRICTION');
+ const uncertain=(await db.query("SELECT count(*)::int count FROM outbox o WHERE o.workspace_id=$1 AND o.environment=$2 AND o.kind='warmup' AND (o.account_id=ANY($3::text[]) OR o.contact_id=ANY($3::text[])) AND o.status IN('SENDING','UNKNOWN')",[db.workspaceId,environment,members])).rows[0].count;
+ if(uncertain)blockers.push('WARMUP_RECONCILIATION_REQUIRED');
+ try{await groupQrAuthorities(db,environment,members);}catch(e){blockers.push(e instanceof Error?e.message:'CURRENT_QR_AUTHORITY_REQUIRED');}
+ const protection={open:!!pool?.breaker_open,reason:(pool?.breaker_reason as string|null)??null,openedAt:pool?.breaker_opened_at?new Date(pool.breaker_opened_at).toISOString():null,reviewedUntil:reviewedUntil?.toISOString()??null};
+ const unique=[...new Set(blockers)];
+ return{programId:id,programVersion:p.version as number,programStatus:p.status as string,protection,failures,lines,uncertainEffects:uncertain as number,blockers:unique,ready:unique.length===0,
+  recoveryHash:hash(stableJson({program:p.id,version:p.version,pool:pool?.version??null,protection:{open:protection.open,openedAt:protection.openedAt,reviewedUntil:protection.reviewedUntil},failures,lines,uncertain,blockers:unique})),
+  resumes:false,externalEffects:0};
+}
+/** V7.5 §3 (H03): requested status vs what the engine can do now. */
+export function effectiveProgramState(input:{status:string;pool:Body|null;numbers:Body[];history:Body[];senderIds:string[];config:{timezone:string;startHour:number;endHour:number};now:Date}){
+ const {status,pool,numbers,history,now}=input,senders=numbers.filter(n=>input.senderIds.includes(n.id));
+ const local=Number(new Intl.DateTimeFormat('en-US',{timeZone:input.config.timezone,hour:'2-digit',hourCycle:'h23'}).format(now));
+ const inWindow=local>=input.config.startHour&&local<input.config.endHour;
+ const pending=history.reduce((n,h)=>n+Number(h.pending??0),0),uncertain=history.reduce((n,h)=>n+Number(h.uncertain??0),0),sentNoAck=history.reduce((n,h)=>n+Math.max(0,Number(h.sent??0)-Number(h.delivered??0)),0);
+ const next=history.map(h=>h.next_send).filter(Boolean).map(v=>new Date(v as string)).sort((a,b)=>a.getTime()-b.getTime())[0]??null;
+ const reasons:string[]=[];let state:string;let nextAction:string|null=null;
+ if(status==='DRAFT'){state='DRAFT';nextAction='CONFIGURE_AND_START';}
+ else if(status==='ARCHIVED'){state='ARCHIVED';}
+ else if(status==='COMPLETED'){state='COMPLETED';}
+ else if(pool?.breaker_open){state='PROTECTED';reasons.push(String(pool.breaker_reason??'PROTECTION_OPEN'));nextAction='REVIEW_AND_RECOVER_PROTECTION';}
+ else if(status==='PAUSED'){state='PAUSED_BY_HUMAN';nextAction='REVIEW_AND_RESUME';}
+ else if(senders.some(n=>!n.connected)){state='NEEDS_CONNECTION';reasons.push('LINE_NOT_CONNECTED');nextAction='CHECK_NUMBER_CONNECTION';}
+ else if(senders.some(n=>n.ownership&&!['OPERATIONAL','NOT_APPLICABLE'].includes(String(n.ownership)))){state='NEEDS_OWNERSHIP';reasons.push('LINE_OWNERSHIP_NOT_OPERATIONAL');nextAction='RECONCILE_NUMBER_OWNERSHIP';}
+ else if(senders.some(n=>['GROUP_MEMBERSHIP_STALE','GROUP_FRESH_READ_REQUIRED','GROUP_CAPABILITY_UNVERIFIED'].includes(String(n.reason)))){state='GROUP_READ_STALE';reasons.push('GROUP_MEMBERSHIP_STALE');nextAction='REFRESH_GROUPS';}
+ else if(!inWindow){state='WAITING_WINDOW';reasons.push('QUIET_HOURS');}
+ else if(uncertain>0||sentNoAck>0&&pending===0){state='WAITING_ACK';reasons.push(uncertain>0?'EFFECT_UNCERTAIN':'ACK_PENDING');}
+ else if(pending>0){state='RUNNING';}
+ else{state='WAITING_PLAN';reasons.push(...new Set(senders.map(n=>String(n.reason??'')).filter(r=>r&&r!=='GROUP_SELECTED')));}
+ return{state,reasons,observedAt:now.toISOString(),nextAction,nextSend:state==='RUNNING'&&next?{at:next.toISOString(),conditional:false}:null};
 }
 export type GroupLineState='READY'|'VERIFICATION_PENDING'|'HEALTH_PENDING'|'NOT_CONNECTED'|'PAUSED'|'IDENTITY_CONFLICT'|'UNSUPPORTED';
 /** V7.4 B: which managed lines can read their groups now. Reading groups is
@@ -212,15 +285,20 @@ export async function listWarmupGroups(db:ProfileExecutor,environment:Environmen
  return result;
 }
 export async function groupWarmupOverview(db:ProfileExecutor,environment:Environment,id?:string,days=7){
+ const clock=(await db.query('SELECT clock_timestamp() AS now')).rows[0].now as Date;
  const programs=(await db.query("SELECT id,version,name,status,scope,pool_id,account_ids,created_at FROM warmup_programs WHERE workspace_id=$1 AND environment=$2 AND scope->>'mode'='QR_GROUP' AND ($3::uuid IS NULL OR id=$3) ORDER BY created_at DESC LIMIT 100",[db.workspaceId,environment,id??null])).rows;
- const numbers=(await db.query(`SELECT r.id,COALESCE(r.body->>'masked_number','Número') AS label,r.body->>'name' AS alias,CASE WHEN r.body->>'warmup_mode'='DECLARED_READY' THEN 'DECLARED_READY' ELSE 'REQUIRED' END AS warmup_mode,s.status,s.reason,s.group_required,s.effective_days,s.graduated_at,s.pool_id,COALESCE(cs.observed_state='CONNECTED' AND cs.auth_state='VERIFIED' AND NOT cs.operational_pause AND cs.archived_at IS NULL AND cs.health_expires_at>clock_timestamp(),false) AS connected
-  FROM records r LEFT JOIN warmup_states s ON s.account_id=r.id LEFT JOIN channel_sessions cs ON cs.account_id=r.id WHERE r.workspace_id=$1 AND r.environment=$2 AND r.kind='channel_account' AND NOT(r.body?'deleted_at') ORDER BY r.id`,[db.workspaceId,environment])).rows;
+ const numbers=(await db.query(`SELECT r.id,COALESCE(r.body->>'masked_number','Número') AS label,r.body->>'name' AS alias,CASE WHEN r.body->>'warmup_mode'='DECLARED_READY' THEN 'DECLARED_READY' ELSE 'REQUIRED' END AS warmup_mode,s.status,s.reason,s.group_required,s.effective_days,s.graduated_at,s.pool_id,COALESCE(cs.observed_state='CONNECTED' AND cs.auth_state='VERIFIED' AND NOT cs.operational_pause AND cs.archived_at IS NULL AND cs.health_expires_at>clock_timestamp(),false) AS connected,
+   CASE WHEN r.environment='SIMULATION' THEN 'NOT_APPLICABLE' WHEN o.account_id IS NULL THEN 'NONE' WHEN NOT o.frozen AND o.lease_expires_at>clock_timestamp() THEN 'OPERATIONAL' WHEN o.frozen THEN 'FROZEN' ELSE 'EXPIRED' END AS ownership,o.freeze_reason
+  FROM records r LEFT JOIN warmup_states s ON s.account_id=r.id LEFT JOIN channel_sessions cs ON cs.account_id=r.id LEFT JOIN session_ownership o ON o.account_id=r.id::text AND o.workspace_id=r.workspace_id WHERE r.workspace_id=$1 AND r.environment=$2 AND r.kind='channel_account' AND NOT(r.body?'deleted_at') ORDER BY r.id`,[db.workspaceId,environment])).rows;
  for(const p of programs){const stats=(await db.query(`SELECT v.local_date::text date,o.account_id,
   count(*) FILTER(WHERE o.status IN('SENT','DELIVERED','READ'))::int sent,count(*) FILTER(WHERE o.status IN('DELIVERED','READ'))::int delivered,
   count(*) FILTER(WHERE o.status IN('READY','BLOCKED'))::int pending,count(*) FILTER(WHERE o.status='UNKNOWN')::int uncertain,
   min(o.not_before) FILTER(WHERE o.status IN('READY','BLOCKED')) next_send
   FROM warmup_conversations v JOIN outbox o ON o.conversation_id=v.id::text WHERE v.pool_id=$1 AND v.local_date>=((now() AT TIME ZONE $2)::date-($3::int-1)) GROUP BY v.local_date,o.account_id ORDER BY v.local_date DESC,o.account_id`,[p.pool_id,p.scope.timezone,days])).rows;
   p.history=stats;p.numbers=numbers.filter(n=>p.account_ids.includes(n.id));p.config=programConfig(p);p.audience=p.scope.audience??null;delete p.scope;
+  const pool=p.pool_id?(await db.query('SELECT breaker_open,breaker_reason,breaker_opened_at,breaker_reviewed_until,paused,enabled FROM warmup_pools WHERE id=$1',[p.pool_id])).rows[0]??null:null;
+  p.protection=pool?{open:pool.breaker_open,reason:pool.breaker_reason,openedAt:pool.breaker_opened_at?new Date(pool.breaker_opened_at).toISOString():null,reviewedUntil:pool.breaker_reviewed_until?new Date(pool.breaker_reviewed_until).toISOString():null}:null;
+  p.effective=effectiveProgramState({status:p.status,pool,numbers:p.numbers,history:stats,senderIds:p.config.senderIds,config:p.config,now:clock});
  }
  const lines=await groupReadableLines(db,environment),last=(await db.query("SELECT id,state,result->>'reason' AS reason,result->'accounts' AS accounts,created_at,updated_at FROM number_operations WHERE workspace_id=$1 AND environment=$2 AND action='GROUP_REFRESH' AND NOT(input?'group_id') ORDER BY created_at DESC LIMIT 1",[db.workspaceId,environment])).rows[0]??null;
  return{programs,numbers:numbers.map(n=>({...n,line:lines.find(l=>l.accountId===n.id)?.state??'NOT_CONNECTED'})),refresh:last,ai:false};

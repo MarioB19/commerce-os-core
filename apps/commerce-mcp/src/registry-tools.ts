@@ -1,3 +1,4 @@
+import {MCP_RELEASE,MCP_CAPABILITIES,mcpCompatibility} from '../../../packages/contracts/src/mcp-capabilities.js';
 import {campaignCsv} from '../../../packages/contracts/src/campaign-export.js';
 import {groupWarmupConfigSchema,libraryImportSchema} from '../../../packages/contracts/src/group-warmup.js';
 import {remarketingPolicySchema} from '../../../packages/contracts/src/sales-flow.js';
@@ -54,6 +55,9 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
   actual:v('GET',empty,()=>'/v2/profile')(c.v2),
   listar:{schema:empty,read:true,run:async()=>({profiles:[await c.v2('GET','/v2/profile')]})},
   cambiar:{schema:empty,read:false,run:humanAction('/home','Un token de perfil no cambia de perfil; crea un token en el otro perfil.')},
+  // V7.5 §8 (H04): which build answers and whether this installed client lacks capabilities.
+  version:{schema:empty,read:true,run:async()=>{const server=await c.v2('GET','/v2/build') as {sha:string|null;release:string;mcp:{version:string;capabilities:string[]}};
+   const client={version:MCP_RELEASE,capabilities:[...MCP_CAPABILITIES]};return{client,server:{sha:server.sha,release:server.release,mcp:server.mcp},...mcpCompatibility(client,server.mcp)};}},
  });
  tool('profile_settings_manage','Datos y configuración inicial del perfil','Consulta o edita nombre y zona horaria, y la guía inicial. Editar exige la versión vigente.',{
   leer:v('GET',empty,()=>'/v2/profile')(c.v2),
@@ -312,17 +316,22 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
   conectar:{schema:numberId,read:false,run:qr},vincular:{schema:numberId,read:false,run:qr},
   // V7.4 A: queue the same failed preparation again; nothing is duplicated.
   reintentar_preparacion:{schema:z.object({operationId:z.uuid(),numberId:z.uuid()}).strict(),read:false,run:i=>c.v1('POST','/v1/numbers/'+id(i.numberId)+'/link',{action:'retry_preparation'},i.operationId)},
+  // V7.5 §4 (H13): the current worker checks the line and takes its control only with a valid isolation receipt; nothing is forced.
+  conciliar_propiedad:{schema:z.object({operationId:z.uuid(),numberId:z.uuid()}).strict(),read:false,run:i=>c.v1('POST','/v1/numbers/'+id(i.numberId)+'/link',{action:'reconcile_ownership'},i.operationId)},
   // V7.4 E: what happened on the owner's phone is confirmed by the owner, in the application.
   confirmar_desvinculacion:{schema:numberId,read:false,run:humanAction('/numbers','La persona dueña confirma en la aplicación que ya quitó el dispositivo en WhatsApp → Dispositivos vinculados.')},
   desconectar:{schema:z.object({operationId:z.uuid(),numberId:z.uuid()}).strict(),read:false,destructive:true,run:i=>c.v1('POST','/v1/numbers/'+id(i.numberId)+'/link',{action:'unlink'},i.operationId)},
   pausar:{schema:z.object({operationId:z.uuid(),numberId:z.uuid()}).strict(),read:false,destructive:true,run:i=>c.v1('POST','/v1/numbers/'+id(i.numberId)+'/pause',{paused:true},i.operationId)},
   reanudar:{schema:z.object({operationId:z.uuid(),numberId:z.uuid()}).strict(),read:false,run:i=>c.v1('POST','/v1/numbers/'+id(i.numberId)+'/pause',{paused:false},i.operationId)},
  });
- tool('alerts_manage','Avisos del perfil','Avisos abiertos sobre números y envíos, en lenguaje de operación, con el enlace a resolverlos. Acusar recibo no resuelve la causa.',{
-  listar:v('GET',z.object({include:z.enum(['open','all']).optional()}).strict(),i=>'/v2/alerts'+query(i))(c.v2),
-  leer:{schema:z.object({alertId:z.uuid()}).strict(),read:true,run:async i=>{const r=await c.v2('GET','/v2/alerts?include=all') as {alerts:{id:string}[]};const found=r.alerts.find(a=>a.id===i.alertId.toLowerCase());if(!found)throw Object.assign(new Error('ALERT_NOT_FOUND'),{code:'ALERT_NOT_FOUND'});return found;}},
+ tool('alerts_manage','Avisos del perfil','Avisos sobre números y envíos, en lenguaje de operación, con el enlace a resolverlos. «listar» devuelve los pendientes de leer (o todo el historial con include=all) en páginas de hasta 100 con cursor. Acusar recibo (uno o todos hasta un corte) no resuelve la causa: un aviso se resuelve cuando la operación vuelve a estar sana.',{
+  listar:v('GET',z.object({include:z.enum(['open','all']).optional(),cursor:z.string().min(8).max(200).optional(),limit:z.number().int().min(1).max(100).optional()}).strict(),i=>'/v2/alerts'+query(i))(c.v2),
+  // V7.5 §6 (H10): direct read by ID, also outside the first page.
+  leer:v('GET',z.object({alertId:z.uuid()}).strict(),i=>'/v2/alerts/'+id(i.alertId))(c.v2),
   acusar:v('POST',z.object({alertId:z.uuid()}).strict(),i=>'/v2/alerts/'+id(i.alertId)+'/acknowledge',()=>({}))(c.v2),
+  acusar_todos:v('POST',z.object({before:z.iso.datetime({offset:true}).optional()}).strict(),()=>'/v2/alerts/acknowledge-all',i=>({...i}))(c.v2),
  });
+
  // D-17: connecting by QR authorizes same-profile warm-up permanently. Pausing
  // or resuming it is a human command on that grant; a pause is never lifted
  // automatically. Progress needs evidence of days, never elapsed time alone.
@@ -352,5 +361,10 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
    ...(['start','resume'].includes(command)?{audienceConfirmed:z.literal(true).optional()}:{}),
   }).strict(),i=>'/v2/warmup/programs/'+id(i.programId)+'/commands',i=>{const {programId:_program,...body}=i;return{...body,environment:'REAL',action:command};},{destructive:['pause','archive'].includes(command)})(c.v2)])),
   consultar_operacion:v('GET',z.object({operationId:z.uuid()}).strict(),i=>'/v2/warmup/operations/'+id(i.operationId)+'?environment=REAL')(c.v2),
+  // V7.5 §2 (H02): review, then recover the protection with the same review hash.
+  // Recovering never resumes a paused program: use reanudar_programa afterwards.
+  revisar_proteccion:v('POST',z.object({programId:z.uuid()}).strict(),i=>'/v2/warmup/programs/'+id(i.programId)+'/recovery-preview',()=>({environment:'REAL'}),{read:true})(c.v2),
+  recuperar_proteccion:v('POST',z.object({programId:z.uuid(),operationId:z.uuid(),expectedVersion:z.number().int().positive(),recoveryHash:z.string().regex(/^[a-f0-9]{64}$/),reason:z.string().trim().min(3).max(300)}).strict(),
+   i=>'/v2/warmup/programs/'+id(i.programId)+'/commands',i=>{const {programId:_program,...body}=i;return{...body,environment:'REAL',action:'recover'};})(c.v2),
  });
 }

@@ -12,8 +12,9 @@ const workspace='resilience-fault-'+randomUUID();
 const origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0]!;
 let app:FastifyInstance,cookie='';
 
-async function alert(){
- return(await pool.query("INSERT INTO operational_alerts(workspace_id,environment,dedupe_key,kind,severity,summary_code) VALUES($1,'REAL',$2,'SYNTHETIC_PROVIDER_FAULT','WARNING','SYNTHETIC_PROVIDER_FAULT') RETURNING id",[workspace,randomUUID()])).rows[0];
+// V7.5 (0121): one open episode per global cause; each injected fault is its own cause.
+async function alert(status:number){
+ return(await pool.query("INSERT INTO operational_alerts(workspace_id,environment,dedupe_key,kind,severity,summary_code) VALUES($1,'REAL',$2,$3,'WARNING','SYNTHETIC_PROVIDER_FAULT') RETURNING id",[workspace,randomUUID(),'SYNTHETIC_PROVIDER_FAULT_'+status])).rows[0];
 }
 const alertStatus=async(id:string)=>(await pool.query('SELECT status FROM operational_alerts WHERE id=$1',[id])).rows[0].status;
 
@@ -29,7 +30,7 @@ afterAll(async()=>{await app.close();await pool.end();});
 
 describe('deterministic resilience fault injection',()=>{
  it.each(providerHttpFaults)('$name is classified without blind retry',async fault=>{
-  const row=await alert();let calls=0;
+  const row=await alert(fault.status);let calls=0;
   const fetcher:typeof fetch=async()=>{calls++;return new Response(null,{status:fault.status});};
   await deliverOperationalAlerts(fetcher);
   expect(await alertStatus(row.id)).toBe(fault.expected);

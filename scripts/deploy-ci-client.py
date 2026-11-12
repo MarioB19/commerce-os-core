@@ -193,6 +193,10 @@ def main(*, native=None, environment=None):
     require(not cloud_admission or expected==admitted['archive_sha256'],'ADMITTED_ARCHIVE_CHANGED')
     key=Path(environment['RUNNER_TEMP'])/('commerce-ci-'+run_id)
     base=[f'--project={project}',f'--zone={zone}','--tunnel-through-iap','--quiet',f'--ssh-key-file={key}']
+    # R03 (V7.5): OS Login reads/removals run as the same identity and project
+    # as the SSH that registered the key; without them gcloud resolved another
+    # (or no) account and the cleanup failed with PROFILE_READ_FAILED.
+    os_login=[f'--project={project}']
     if cloud_admission:
         if native is None:
             from operator_identity import local_account
@@ -200,6 +204,7 @@ def main(*, native=None, environment=None):
         else:
             selected_account = native.account
         base.append('--account='+selected_account)
+        os_login.append('--account='+selected_account)
     def ssh(cmd,check=True):
         return executor(['gcloud','compute','ssh',instance,*base,'--ssh-key-expire-after=30m','--command='+cmd],check=check,capture=True)
     remote='commerce-ci-'+run_id
@@ -291,7 +296,7 @@ def main(*, native=None, environment=None):
             try:
                 if ssh_attempted:
                     public=key.with_suffix('.pub').read_text()
-                    remove_ephemeral_key(public, lambda args: executor(args,check=False,capture=True))
+                    remove_ephemeral_key(public, lambda args: executor(args+os_login,check=False,capture=True))
             finally:
                 key.unlink(missing_ok=True);key.with_suffix('.pub').unlink(missing_ok=True)
                 if portal_env is not None:portal_env.unlink(missing_ok=True)

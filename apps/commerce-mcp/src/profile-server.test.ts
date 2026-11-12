@@ -256,3 +256,33 @@ describe('V7.2 MCP group start parity',()=>{
   }finally{await client.close();await server.close();}
  });
 });
+// V7.5: the same routes as web and API for recovery, ownership, alerts and the build contract.
+describe('V7.5 MCP parity',()=>{
+ it('reviews and recovers a protection, reconciles ownership, pages and bulk-acknowledges alerts, and reports what a client lacks',async()=>{
+  const seen:{method:string;url:string;body:any;key:string|null}[]=[];
+  const {client,server}=await connect(async(input,init)=>{const url=String(input);seen.push({method:String(init?.method??'GET'),url,body:init?.body?JSON.parse(String(init.body)):undefined,key:new Headers(init?.headers).get('idempotency-key')});
+   if(url.endsWith('/v2/build'))return json(200,{data:{service:'commerce-api',release:'r',sha:'b'.repeat(40),configured:true,mcp:{version:'7.5.0',capabilities:['warmup_manage.recuperar_proteccion','future_tool.accion']}}});
+   return json(200,{data:{ok:true}});});
+  try{
+   const id=(n:number)=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`,hash='c'.repeat(64);
+   const calls=[
+    {name:'warmup_manage',arguments:{action:'revisar_proteccion',programId:id(1)}},
+    {name:'warmup_manage',arguments:{action:'recuperar_proteccion',programId:id(1),operationId:id(2),expectedVersion:4,recoveryHash:hash,reason:'Lecturas sanas'}},
+    {name:'number_connection_manage',arguments:{action:'conciliar_propiedad',operationId:id(3),numberId:id(4)}},
+    {name:'alerts_manage',arguments:{action:'listar',include:'all',limit:50,cursor:'eyJjIjoieCJ9'}},
+    {name:'alerts_manage',arguments:{action:'leer',alertId:id(5)}},
+    {name:'alerts_manage',arguments:{action:'acusar_todos',before:'2026-11-12T12:00:00Z'}},
+   ];
+   for(const call of calls){const r=await client.callTool(call);expect(r.isError,JSON.stringify(r)).not.toBe(true);}
+   expect(seen.map(s=>s.method+' '+s.url.replace('https://commerce.example.test',''))).toEqual([
+    `POST /v2/warmup/programs/${id(1)}/recovery-preview`,`POST /v2/warmup/programs/${id(1)}/commands`,`POST /v1/numbers/${id(4)}/link?environment=REAL`,
+    'GET /v2/alerts?include=all&cursor=eyJjIjoieCJ9&limit=50',`GET /v2/alerts/${id(5)}`,'POST /v2/alerts/acknowledge-all']);
+   expect(seen[1]!.body).toEqual({environment:'REAL',action:'recover',operationId:id(2),expectedVersion:4,recoveryHash:hash,reason:'Lecturas sanas'});
+   expect(seen[2]!.body).toEqual({action:'reconcile_ownership'});expect(seen[2]!.key).toBe('mcp:'+id(3));
+   const version=await client.callTool({name:'profile_context',arguments:{action:'version'}});
+   const text=JSON.stringify(version);expect(text).toContain('7.5.0');expect(text).toContain('future_tool.accion');expect(text).toContain('compatible');
+   const before=seen.length;expect((await client.callTool({name:'warmup_manage',arguments:{action:'recuperar_proteccion',programId:id(1),operationId:id(2),expectedVersion:4,recoveryHash:hash}})).isError).toBe(true);expect(seen).toHaveLength(before);
+   expect((await client.getServerVersion())?.version).toBe('7.5.0');
+  }finally{await client.close();await server.close();}
+ });
+});

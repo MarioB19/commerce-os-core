@@ -16,7 +16,9 @@ const action=z.object({code:z.string(),label:z.string()}).nullable();
 const warmupMode=z.enum(['REQUIRED','DECLARED_READY']);
 const linkSchema=z.object({id:z.string(),version:z.number(),alias:z.string(),masked_number:z.string().nullable(),state:z.string(),label:z.string(),qr_available:z.boolean(),next_action:action,confirmed_at:z.string().nullable(),
  detail:z.string().nullable().optional(),warmup_mode:warmupMode.optional(),preparation:z.object({since:z.string().nullable(),expected_seconds:z.number(),automatic_retry:z.boolean(),retryable:z.boolean()}).nullable().optional(),
- removal:z.object({phase:z.string(),detail:z.string()}).optional()});
+ removal:z.object({phase:z.string(),detail:z.string()}).optional(),
+ // V7.5 §4 (H13): whether the connected line can operate now.
+ operability:z.object({state:z.string(),reason:z.string().nullable(),next_action:z.string().nullable(),last_check:z.object({id:z.string(),status:z.string(),error:z.string().nullable(),at:z.string()}).nullable()}).optional()});
 /** V7.4 D/E: the warm-up of a number as it is, never a calendar day. */
 const warmupSchema=z.object({mode:warmupMode,state:z.string(),label:z.string(),effective_days:z.number(),target_days:z.number(),program:z.object({id:z.string(),name:z.string(),status:z.string(),role:z.enum(['sender','receiver'])}).nullable()});
 const rowSchema=linkSchema.extend({status:z.object({code:z.string(),label:z.string()}),products:z.array(z.string()),warmup:warmupSchema,last_test:z.object({at:z.string(),ok:z.boolean(),run_id:z.string().optional()}).nullable()});
@@ -25,6 +27,12 @@ const qrSchema=z.object({mimeType:z.literal('image/png'),data:z.string(),expires
 const impactSchema=z.object({products:z.array(z.string()),open_conversations:z.number(),pending_followups:z.number(),deliveries_to_confirm:z.number()});
 type Row=z.infer<typeof rowSchema>;type Link=z.infer<typeof linkSchema>;
 const message=(e:unknown,fallback:string)=>e instanceof ApiError||e instanceof Error?e.message:fallback;
+const checkErrors:Record<string,string>={VERIFIED_ISOLATION_PROOF_REQUIRED:'No hay una constancia vigente de que el proceso anterior quedó aislado; el control no se transfiere a ciegas. Se resolverá con la siguiente actualización de la plataforma o con soporte.',OLD_OWNER_ISOLATION_AND_RECONCILIATION_REQUIRED:'Hay operaciones por conciliar antes de transferir el control.'};
+function ownershipText(o:{state:string;reason:string|null;last_check:{status:string;error:string|null}|null}){
+ const base=o.state==='FROZEN'?(o.reason==='HEALTH_DISCONNECTED'?'Conectado, pero la última comprobación vio la sesión detenida; los envíos están detenidos.':o.reason==='HEALTH_UNKNOWN'?'Esperando una comprobación sana de la conexión; los envíos están detenidos.':'Conectado, pero sin control operativo vigente: los envíos están detenidos.'):'Conectado, pero el control operativo de esta línea venció: los envíos están detenidos.';
+ const last=o.last_check?.status==='PENDING'?' Comprobación en curso.':o.last_check?.status==='FAILED'&&o.last_check.error?' '+(checkErrors[o.last_check.error]??'La última comprobación no se completó.'):'';
+ return base+last;
+}
 
 export function ProfileNumbers({selection,role,state}:{selection:ProfileFence;role:ProfileRole;state:ProfileState}){
  const manage=role!=='viewer'&&state==='ACTIVE';
@@ -35,6 +43,8 @@ export function ProfileNumbers({selection,role,state}:{selection:ProfileFence;ro
  useEffect(()=>{const controller=new AbortController();void load(controller.signal);const timer=setInterval(()=>void load(controller.signal),15000);return()=>{controller.abort();clearInterval(timer);};},[load,tick]);
  const full=data?.limit!=null&&data.numbers.length>=data.limit;
  async function pause(n:Row,paused:boolean){try{await api(`/numbers/${n.id}/pause`,{method:'POST',body:JSON.stringify({paused})});await load();toast({tone:'success',title:paused?`${n.alias} en pausa.`:`${n.alias} reanudado.`});}catch(e){toast({tone:'error',title:'No se pudo cambiar la pausa.',description:message(e,'')});}}
+ // V7.5 §4 (H13): the current worker checks the line; control moves only with verified isolation.
+ async function reconcile(n:Row){try{await api(`/numbers/${n.id}/link`,{method:'POST',body:JSON.stringify({action:'reconcile_ownership'})});await load();toast({tone:'success',title:`Comprobando ${n.alias}.`,description:'No se envía ningún mensaje. El estado se actualiza en unos segundos.'});}catch(e){toast({tone:'error',title:'No se pudo iniciar la comprobación.',description:message(e,'')});}}
  const empty=data&&!data.numbers.length;
  if(warmups)return <ProfileWarmups selection={selection} manage={manage} onBack={()=>setWarmups(false)}/>;
  return <>
@@ -49,6 +59,7 @@ export function ProfileNumbers({selection,role,state}:{selection:ProfileFence;ro
    <div className="card-head"><div><h2 id={'n-'+n.id} className="number-title">{n.alias}{n.masked_number&&<span className="row-sub">{n.masked_number}</span>}</h2></div><Badge tone={toneOf(n.status.code)}>{n.status.label}</Badge></div>
    <p className="muted">{n.products.length?n.products.join(' · '):'Sin variantes asignadas'}</p>
    {(n.state==='PREPARING'||n.state==='PREPARATION_DELAYED'||n.state==='PREPARATION_FAILED'||n.removal)&&n.detail&&<Alert tone={n.state==='PREPARATION_FAILED'?'error':n.state==='PREPARATION_DELAYED'||n.removal?.phase==='UNLINK_CONFIRMATION_REQUIRED'?'warn':'info'}>{n.detail}</Alert>}
+   {n.state==='CONNECTED'&&n.operability&&!['OPERATIONAL','NOT_APPLICABLE','RELEASE_RECOVERY'].includes(n.operability.state)&&<Alert tone="warn">{ownershipText(n.operability)}</Alert>}
    {!n.removal&&<div className="stack-tight">
     <span className="text-sm"><strong>Calentamiento:</strong> {n.warmup.label}{manage&&<> · <button type="button" className="link-button" onClick={()=>setChoosing(n)} aria-label={`Cambiar el calentamiento de ${n.alias}`}>Cambiar</button></>}</span>
     {n.warmup.state==='ACTIVE'&&<Progress value={n.warmup.effective_days} max={n.warmup.target_days} label={`${n.alias}: días efectivos de calentamiento`} valueText={`${n.warmup.effective_days} de ${n.warmup.target_days} días efectivos`}/>}
@@ -60,6 +71,7 @@ export function ProfileNumbers({selection,role,state}:{selection:ProfileFence;ro
     {manage&&n.next_action&&['link','qr','unlink','retry_preparation'].includes(n.next_action.code)&&<Button size="sm" variant="secondary" onClick={()=>setLinking(n.id)}><QrCode aria-hidden="true"/>{n.next_action.label}</Button>}
     {manage&&(n.state==='PREPARING'||n.state==='PREPARATION_DELAYED')&&<Button size="sm" variant="ghost" onClick={()=>setLinking(n.id)}>Ver avance</Button>}
     {manage&&n.next_action?.code==='confirm_unlinked'&&<Button size="sm" variant="secondary" onClick={()=>setUnlinking(n)}>{n.next_action.label}</Button>}
+    {manage&&n.state==='CONNECTED'&&n.operability?.next_action==='RECONCILE_OWNERSHIP'&&<Button size="sm" variant="secondary" onClick={()=>void reconcile(n)}>Verificar y retomar control</Button>}
     {manage&&n.state==='CONNECTED'&&<Button size="sm" variant="ghost" onClick={()=>void pause(n,n.status.code!=='PAUSED_BY_YOU')}>{n.status.code==='PAUSED_BY_YOU'?<><Play aria-hidden="true"/>Reanudar</>:<><Pause aria-hidden="true"/>Pausar</>}</Button>}
     {manage&&!['REMOVING','REMOVED'].includes(n.state)&&<Button size="sm" variant="ghost" onClick={()=>setRemoving(n)}><Trash2 aria-hidden="true"/>Eliminar</Button>}
    </div>

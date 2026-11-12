@@ -3,6 +3,12 @@ import base64
 import binascii
 import json
 import re
+import time
+
+# R03 (V7.5): a profile read can fail transiently. Only the read is retried, a
+# bounded number of times; a cleanup that cannot be confirmed stays an error.
+READ_ATTEMPTS = 3
+_pause = time.sleep
 
 
 def need(value, code):
@@ -24,10 +30,15 @@ def key_material(public):
 
 
 def read_profile(runner):
-    response = runner(['gcloud', 'compute', 'os-login', 'describe-profile', '--format=json'])
-    need(response.returncode == 0 and isinstance(response.stdout, str)
-         and 0 < len(response.stdout.encode()) <= 1024 * 1024,
-         'EPHEMERAL_OS_LOGIN_PROFILE_READ_FAILED')
+    for attempt in range(READ_ATTEMPTS):
+        response = runner(['gcloud', 'compute', 'os-login', 'describe-profile', '--format=json'])
+        readable = (response.returncode == 0 and isinstance(response.stdout, str)
+                    and 0 < len(response.stdout.encode()) <= 1024 * 1024)
+        if readable:
+            break
+        if attempt + 1 < READ_ATTEMPTS:
+            _pause(2 * (attempt + 1))
+    need(readable, 'EPHEMERAL_OS_LOGIN_PROFILE_READ_FAILED')
     def unique(pairs):
         result = {}
         for key, value in pairs:

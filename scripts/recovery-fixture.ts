@@ -50,7 +50,8 @@ try{
  const identity=(await pool.query("INSERT INTO warmup_identities(workspace_id,environment,account_id,address_fingerprint,address_ciphertext,profile_ciphertext,ownership_evidence,profile_operation_status,profile_attempt_at,profile_review_requested_at) VALUES($1,$2,$3,$4,$5,$6,'Synthetic recovery','APPLYING',now(),now()) RETURNING id",[workspace,environment,account.id,hash('opaque:recovery-owned'),encrypt('opaque:recovery-owned'),encrypt({name:'Own fixture',about:'Restore fixture'})])).rows[0];
  await pool.query("INSERT INTO warmup_states(account_id,workspace_id,environment,pool_id,profile_id,identity_id,status,enrolled_at) VALUES($1,$2,$3,$4,$5,$6,'WARMING',now())",[account.id,workspace,environment,group.id,warmupProfile.id,identity.id]);
  await pool.query("INSERT INTO service_tokens(workspace_id,actor_id,name,token_hash,scopes,expires_at) VALUES($1,'restore-fixture','Synthetic API token',$2,'[\"catalog:read\"]',now()+interval '1 day')",[workspace,hash(uuid())]);
- for(const status of ['PENDING','SENDING'])await pool.query("INSERT INTO operational_alerts(workspace_id,environment,dedupe_key,kind,severity,summary_code,status) VALUES($1,$2,$3,'RECOVERY_FIXTURE','WARNING','RECOVERY_FIXTURE',$3)",[workspace,environment,status]);
+ // V7.5 (0121): one open episode per global cause; each notification state is its own synthetic cause.
+ for(const status of ['PENDING','SENDING'])await pool.query("INSERT INTO operational_alerts(workspace_id,environment,dedupe_key,kind,severity,summary_code,status) VALUES($1,$2,$3,$4,'WARNING','RECOVERY_FIXTURE',$3)",[workspace,environment,status,'RECOVERY_FIXTURE_'+status]);
  // V7 F8-E: the creative, Inteligencia and diagnostic tables were exported and
  // dropped (0109); a backup of a V7 database no longer carries them.
  const assignment=uuid();

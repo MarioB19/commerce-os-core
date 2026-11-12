@@ -90,6 +90,31 @@ export async function reconcileWarmupPool(c:QueryExecutor,pool:Body,now=new Date
  return{members:members.length,ready:ready.length};
 }
 
+/** V7.5 §1 (H01): classify a fresh, not-healthy provider read. */
+export function healthSample(body:Body):'FAILED'|'UNKNOWN'{
+ if(body.health_status==='BLOCKED')return 'FAILED';
+ if(['STOPPED','FAILED','SCAN_QR_CODE','PASSKEY_REQUIRED','PASSKEY_CONFIRMATION_REQUIRED'].includes(String(body.status)))return 'FAILED';
+ return 'UNKNOWN';
+}
+/** An unknown streak with no healthy read for 15 minutes becomes one failure
+ * sample for that streak (idempotent by its first unknown observation). */
+export const PERSISTENT_UNKNOWN_MS=15*60_000;
+async function escalatePersistentUnknown(c:QueryExecutor,pool:Body,accountId:string,now:Date){
+ const row=(await c.query(`SELECT (SELECT max(observed_at) FROM warmup_observations WHERE account_id=$1 AND kind='HEALTHY') AS healthy,
+  (SELECT min(observed_at) FROM warmup_observations WHERE account_id=$1 AND kind='UNKNOWN' AND observed_at>COALESCE((SELECT max(observed_at) FROM warmup_observations WHERE account_id=$1 AND kind='HEALTHY'),'-infinity'::timestamptz)) AS first_unknown`,[accountId])).rows[0];
+ if(!row?.first_unknown||now.getTime()-new Date(row.first_unknown).getTime()<PERSISTENT_UNKNOWN_MS)return;
+ await c.query("INSERT INTO warmup_observations(workspace_id,environment,account_id,kind,evidence_ref,observed_at) VALUES($1,$2,$3,'FAILED',$4,$5) ON CONFLICT DO NOTHING",[pool.workspace_id,pool.environment,accountId,`persistent-unknown:${accountId}:${new Date(row.first_unknown).toISOString()}`,now]);
+}
+/** V7.5 §5 (H08): bounded late-evidence window of a prior local day. */
+export const LATE_EVIDENCE_HOURS=24;
+async function dayClosure(c:QueryExecutor,input:{accountId:string;poolId:string;localDay:string;timezone:string;now:Date}){
+ const row=(await c.query(`SELECT ($1::date::timestamp AT TIME ZONE $2) AS day_start,(($1::date+1)::timestamp AT TIME ZONE $2) AS day_end,
+  (SELECT count(*)::int FROM warmup_turns t JOIN warmup_conversations v ON v.id=t.conversation_id JOIN outbox o ON o.id=t.effect_id
+   WHERE v.local_date=$1::date AND v.pool_id=$3 AND (t.sender_id=$4 OR t.recipient_id=$4 OR $4=ANY(t.recipient_ids))
+    AND o.status IN('READY','BLOCKED','SENDING','UNKNOWN','SENT')) AS open_effects`,[input.localDay,input.timezone,input.poolId,input.accountId])).rows[0];
+ const dayEnd=new Date(row.day_end);
+ return{dayStart:new Date(row.day_start),dayEnd,openEffects:Number(row.open_effects),final:input.now.getTime()>=dayEnd.getTime()+LATE_EVIDENCE_HOURS*3600_000};
+}
 export async function evaluateWarmupPool(c:QueryExecutor,pool:Body,now=new Date()){
  await bindRecordEnvironment(c,pool.workspace_id,pool.environment);
  await correlateGroupEvents(c,pool.group_id??undefined);
@@ -103,7 +128,12 @@ export async function evaluateWarmupPool(c:QueryExecutor,pool:Body,now=new Date(
   const observedAt=account.body.health_checked_at;
   const fresh=!!observedAt&&Date.parse(observedAt)<=now.getTime()&&now.getTime()-Date.parse(observedAt)<90000;
   const healthy=fresh&&account.body.status==='WORKING'&&account.body.health_status==='OK';
-  if(fresh)await c.query("INSERT INTO warmup_observations(workspace_id,environment,account_id,kind,evidence_ref,observed_at) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING",[pool.workspace_id,pool.environment,state.account_id,healthy?'HEALTHY':'FAILED',`health:${state.account_id}:${observedAt}`,observedAt]);
+  // V7.5 §5 (H01): an unreadable provider is not a failed account. Only a
+  // confirmed down session or a blocking signal is a breaker sample; an
+  // unknown read counts only after it persists without any healthy read.
+  const sample=healthy?'HEALTHY':healthSample(account.body);
+  if(fresh)await c.query("INSERT INTO warmup_observations(workspace_id,environment,account_id,kind,evidence_ref,observed_at) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING",[pool.workspace_id,pool.environment,state.account_id,sample,`health:${state.account_id}:${observedAt}`,observedAt]);
+  if(fresh&&sample==='UNKNOWN')await escalatePersistentUnknown(c,pool,state.account_id,now);
   const observationGap=state.last_observed_at?now.getTime()-new Date(state.last_observed_at).getTime():null;
   const stableSince=healthy?(observationGap!==null&&observationGap>=0&&observationGap<3600000?state.stable_since??observedAt:observedAt):null;
   const observation=(await c.query('UPDATE warmup_states SET stable_since=$2,last_observed_at=COALESCE($3,last_observed_at) WHERE account_id=$1 RETURNING stable_since,last_observed_at',[state.account_id,stableSince,fresh?observedAt:null])).rows[0];
@@ -116,7 +146,15 @@ export async function evaluateWarmupPool(c:QueryExecutor,pool:Body,now=new Date(
   const prior=(await c.query("SELECT *,local_date::text AS local_day FROM warmup_plans WHERE account_id=$1 AND local_date<$2 AND status IN('PLANNED','PARTIAL') AND profile_id=$3 AND local_date>=$4::date AND ($5::boolean=false OR episode_id=$6) ORDER BY local_date FOR UPDATE",[state.account_id,today,state.profile_id,localWindow(profile,new Date(evidenceStart)).date,profile.policy_version===STANDARD_V2_POLICY,state.episode_id])).rows;
   for(const plan of prior){
    const actual=(await c.query(`SELECT COALESCE(sum(messages),0)::int messages,count(*)::int conversations FROM (SELECT t.conversation_id,count(*) FILTER(WHERE NOT $5::boolean OR t.sender_id=$1)::int messages FROM warmup_turns t JOIN warmup_conversations v ON v.id=t.conversation_id LEFT JOIN outbox o ON o.id=t.effect_id WHERE (t.sender_id=$1 OR t.recipient_id=$1 OR $1=ANY(t.recipient_ids)) AND v.local_date=$2 AND v.pool_id=$4 GROUP BY t.conversation_id HAVING bool_and(COALESCE(o.status=ANY($3::text[]),false)) AND bool_or(t.sender_id=$1)) confirmed`,[state.account_id,plan.local_day,accepted,pool.id,plan.budget.policy_version==='group-outgoing/v1'])).rows[0];
-   const complete=healthy&&plan.budget.min_messages>0&&actual.messages>=plan.budget.min_messages&&actual.conversations>=plan.budget.min_conversations;
+   const evidenceComplete=plan.budget.min_messages>0&&actual.messages>=plan.budget.min_messages&&actual.conversations>=plan.budget.min_conversations;
+   // V7.5 §5 (H08): the day closes with its own evidence. While the line has
+   // no healthy read or that day still has effects without a terminal result
+   // (a late ACK may arrive), the plan stays pending for a bounded window
+   // after the local day ends; then it is decided with whatever evidence exists.
+   const closing=await dayClosure(c,{accountId:state.account_id,poolId:pool.id,localDay:plan.local_day,timezone:profile.timezone,now});
+   if(!closing.final&&(!healthy||closing.openEffects>0))continue;
+   const blocked=(await c.query("SELECT 1 FROM warmup_observations WHERE account_id=$1 AND kind='CONFIRMED_BLOCK' AND observed_at>=$2 LIMIT 1",[state.account_id,closing.dayStart])).rowCount!>0;
+   const complete=evidenceComplete&&!blocked&&(healthy||closing.final);
    await c.query('UPDATE warmup_plans SET status=$2 WHERE id=$1',[plan.id,complete?'COMPLETED':'MISSED']);
    if(complete){
     const credited=profile.policy_version===STANDARD_V2_POLICY?Number((await c.query("INSERT INTO warmup_day_credits(workspace_id,environment,episode_id,account_id,source_plan_id,local_date,policy_version,source,evidence,credited_at) VALUES($1,$2,$3,$4,$5,$6,$7,'automatic_pipeline',$8,$9) ON CONFLICT DO NOTHING RETURNING id",[pool.workspace_id,pool.environment,state.episode_id,state.account_id,plan.id,plan.local_day,profile.policy_version,{messages:actual.messages,conversations:actual.conversations,pool_id:pool.id},now])).rowCount)>0:true;
@@ -130,9 +168,17 @@ export async function evaluateWarmupPool(c:QueryExecutor,pool:Body,now=new Date(
   else if(['GRADUATED','QUARANTINED'].includes(decision.status)){await stateUpdate(c,state,decision.status,decision.reason,now);if(decision.status==='GRADUATED'){await c.query('UPDATE warmup_states SET graduated_at=$2 WHERE account_id=$1',[state.account_id,now]);await c.query('UPDATE warmup_episodes SET completed_at=COALESCE(completed_at,$2) WHERE id=$1',[state.episode_id,now]);}}
  }
  if(!groupConfig?.maintenance&&pool.program_id&&pool.purpose==='preparation'&&states.length>=2&&states.every(s=>s.status==='GRADUATED')){await c.query("UPDATE warmup_programs SET status='COMPLETED',version=version+1,updated_at=now() WHERE id=$1 AND status='ACTIVE'",[pool.program_id]);await c.query('UPDATE warmup_pools SET enabled=false,version=version+1 WHERE id=$1',[pool.id]);await c.query('DELETE FROM warmup_account_reservations WHERE program_id=$1',[pool.program_id]);pool.enabled=false;}
- const failures=(await c.query("SELECT account_id,observed_at FROM warmup_observations WHERE workspace_id=$1 AND environment=$2 AND kind IN('FAILED','CONFIRMED_BLOCK') AND observed_at>$3",[pool.workspace_id,pool.environment,new Date(now.getTime()-86400000)])).rows.map(r=>({...r,observed_at:new Date(r.observed_at).toISOString()}));
+ // V7.5 §2: failures up to a human-reviewed recovery cut were already
+ // reviewed; a later failure protects again. History is never deleted.
+ const reviewedUntil=pool.breaker_reviewed_until?new Date(pool.breaker_reviewed_until):null;
+ const failures=(await c.query("SELECT account_id,observed_at FROM warmup_observations WHERE workspace_id=$1 AND environment=$2 AND kind IN('FAILED','CONFIRMED_BLOCK') AND observed_at>$3 AND ($4::timestamptz IS NULL OR observed_at>$4)",[pool.workspace_id,pool.environment,new Date(now.getTime()-86400000),reviewedUntil])).rows.map(r=>({...r,observed_at:new Date(r.observed_at).toISOString()}));
  const breaker=breakerDecision(states.map(s=>s.account_id),failures,now);
- if(breaker.open&&!pool.breaker_open){await c.query("UPDATE warmup_pools SET breaker_open=true,breaker_reason='DISTINCT_ACCOUNT_FAILURE_THRESHOLD',version=version+1,updated_at=$2 WHERE id=$1",[pool.id,now]);await appendEvent(c,{workspace_id:pool.workspace_id,environment:pool.environment,event_type:'warmup.breaker_opened',aggregate_id:pool.id,payload:breaker,occurred_at:now.toISOString()});}
+ if(breaker.open&&!pool.breaker_open){
+  await c.query("UPDATE warmup_pools SET breaker_open=true,breaker_reason='DISTINCT_ACCOUNT_FAILURE_THRESHOLD',breaker_opened_at=$2,version=version+1,updated_at=$2 WHERE id=$1",[pool.id,now]);
+  await appendEvent(c,{workspace_id:pool.workspace_id,environment:pool.environment,event_type:'warmup.breaker_opened',aggregate_id:pool.id,payload:{...breaker,failures:failures.filter(f=>states.some(s=>s.account_id===f.account_id))},occurred_at:now.toISOString()});
+  // V7.5 §5 (H06): the planner of this same pass sees the protection.
+  pool.breaker_open=true;pool.breaker_reason='DISTINCT_ACCOUNT_FAILURE_THRESHOLD';pool.breaker_opened_at=now;
+ }
  return{evaluated:states.length,breaker};
 }
 

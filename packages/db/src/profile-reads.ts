@@ -32,8 +32,8 @@ export async function readProfileHome(db:ProfileExecutor,authority:ProfileAuthor
   SELECT (SELECT count(*) FROM records r,day WHERE r.workspace_id=$1 AND r.environment='REAL' AND r.kind='conversation' AND r.created_at>=day.start) AS conversations,
    (SELECT count(*) FROM records r,day WHERE r.workspace_id=$1 AND r.environment='REAL' AND r.kind='order' AND r.created_at>=day.start) AS orders,
    (SELECT count(*) FROM records r,day WHERE r.workspace_id=$1 AND r.environment='REAL' AND r.kind='receipt' AND r.body->>'status'='APPROVED' AND r.updated_at>=day.start) AS approved,
-   (SELECT count(*) FROM operational_alerts o WHERE o.workspace_id=$1 AND o.environment='REAL' AND o.status<>'RESOLVED') AS alerts,
-   (SELECT count(*) FROM operational_alerts o WHERE o.workspace_id=$1 AND o.environment='REAL' AND o.status<>'RESOLVED' AND o.severity='CRITICAL') AS critical`,[db.workspaceId,tz])).rows[0];
+   (SELECT count(*) FROM operational_alerts o WHERE o.workspace_id=$1 AND o.environment='REAL' AND ${pendingAlertPredicate('o')}) AS alerts,
+   (SELECT count(*) FROM operational_alerts o WHERE o.workspace_id=$1 AND o.environment='REAL' AND ${pendingAlertPredicate('o')} AND o.severity='CRITICAL') AS critical`,[db.workspaceId,tz])).rows[0];
  // RF-04.b: the same count the receipt queue shows (tests and false receipts are not pending).
  today.to_review=await pendingReceiptCount(db,'REAL');
  const onboarding=await readOnboarding(db,authority).catch(()=>null);
@@ -138,14 +138,49 @@ export const alertLabels:Record<string,{label:string;href:string}>={
  CHANNEL_WORKER_UNAVAILABLE:{label:'Servicio de envío no disponible',href:'/home'},
  AI_UNAVAILABLE:{label:'La IA no está respondiendo: las conversaciones pasan a una persona',href:'/account/integrations'},
 };
-export async function listProfileAlerts(db:ProfileExecutor,authority:ProfileAuthority,input:{includeResolved?:boolean}={}){
- await authorize(db,authority,'alerts:read');
- const rows=(await db.query(`SELECT a.id,a.kind,a.severity,a.status,a.account_id,a.created_at,a.resolved_at,a.acknowledged_at,r.body->>'name' AS alias
-  FROM operational_alerts a LEFT JOIN records r ON r.id=a.account_id AND r.workspace_id=a.workspace_id AND r.kind='channel_account'
-  WHERE a.workspace_id=$1 AND a.environment='REAL' AND ($2::boolean OR a.resolved_at IS NULL) ORDER BY a.resolved_at IS NULL DESC,a.severity='CRITICAL' DESC,a.created_at DESC LIMIT 100`,[db.workspaceId,input.includeResolved===true])).rows;
- return{alerts:rows.map(row=>{const known=alertLabels[row.kind];return{id:row.id as string,kind:row.kind as string,label:known?.label??'Aviso del sistema',href:known?.href??'/home',
+/** V7.5 §6 (H10): the single predicate of «pendiente de leer». An incident is
+ * open while resolved_at is null and it was not merged into an earlier episode;
+ * it is pending until a person acknowledges it. `status` is only the
+ * notification state; the historical value RESOLVED is normalised by 0121. */
+export function pendingAlertPredicate(alias:string){return `${alias}.resolved_at IS NULL AND ${alias}.superseded_by IS NULL AND ${alias}.acknowledged_at IS NULL AND ${alias}.status<>'RESOLVED'`;}
+const alertColumns=`a.id,a.kind,a.severity,a.status,a.account_id,a.created_at,a.resolved_at,a.acknowledged_at,a.superseded_by,a.first_observed_at,a.last_observed_at,a.observations,a.evidence->>'resolution' AS resolution,r.body->>'name' AS alias`;
+function alertView(row:Record<string,unknown>){
+ const known=alertLabels[row.kind as string];
+ return{id:row.id as string,kind:row.kind as string,label:known?.label??'Aviso del sistema',href:known?.href??'/home',
   severity:row.severity as 'WARNING'|'CRITICAL',number:row.account_id?{id:row.account_id as string,alias:String(row.alias??'Número').replace(/\+?\d[\d ()-]{8,}\d/g,v=>'•••• '+v.replace(/\D/g,'').slice(-4))}:null,
-  createdAt:iso(row.created_at),resolvedAt:iso(row.resolved_at),acknowledgedAt:iso(row.acknowledged_at),notification:row.status==='RESOLVED'?'RESOLVED':['ACCEPTED','RECEIVED'].includes(row.status)?'SENT':row.status==='PENDING'?'PENDING':'UNCONFIRMED'};})};
+  createdAt:iso(row.created_at),resolvedAt:iso(row.resolved_at),acknowledgedAt:iso(row.acknowledged_at),
+  incident:row.resolved_at?'RESOLVED':row.superseded_by?'MERGED':'OPEN',mergedInto:(row.superseded_by as string|null)??null,resolution:(row.resolution as string|null)??null,
+  firstObservedAt:iso(row.first_observed_at),lastObservedAt:iso(row.last_observed_at),observations:Number(row.observations??1),
+  notification:row.status==='RESOLVED'?'RESOLVED':['ACCEPTED','RECEIVED'].includes(row.status as string)?'SENT':row.status==='PENDING'?'PENDING':'UNCONFIRMED'};
+}
+type AlertCursor={c:string;i:string};
+function decodeAlertCursor(raw?:string):AlertCursor|null{
+ if(!raw)return null;
+ try{const v=JSON.parse(Buffer.from(raw,'base64url').toString('utf8'));if(typeof v?.c==='string'&&Number.isFinite(Date.parse(v.c))&&/^[0-9a-f-]{36}$/i.test(v.i))return{c:v.c,i:v.i.toLowerCase()};}catch{/* invalid below */}
+ throw new ProfileReadError('ALERT_CURSOR_INVALID',400);
+}
+/** Pending notices (default) or full history, newest first, filtered before
+ * the page limit and paginated with a stable (created_at,id) cursor. */
+export async function listProfileAlerts(db:ProfileExecutor,authority:ProfileAuthority,input:{includeResolved?:boolean;cursor?:string;limit?:number}={}){
+ await authorize(db,authority,'alerts:read');
+ const limit=Math.min(100,Math.max(1,Math.trunc(input.limit??100))),cursor=decodeAlertCursor(input.cursor);
+ const rows=(await db.query(`SELECT ${alertColumns}
+  FROM operational_alerts a LEFT JOIN records r ON r.id=a.account_id AND r.workspace_id=a.workspace_id AND r.kind='channel_account'
+  WHERE a.workspace_id=$1 AND a.environment='REAL' AND ($2::boolean OR (${pendingAlertPredicate('a')}))
+   AND ($3::timestamptz IS NULL OR (a.created_at,a.id)<($3::timestamptz,$4::uuid))
+  ORDER BY a.created_at DESC,a.id DESC LIMIT $5`,[db.workspaceId,input.includeResolved===true,cursor?.c??null,cursor?.i??null,limit+1])).rows;
+ const page=rows.slice(0,limit),last=page.at(-1);
+ // Pending notices first within the page; criticals first among them.
+ const alerts=page.map(alertView).sort((x,y)=>Number(!!y.acknowledgedAt===false&&y.incident==='OPEN')-Number(!!x.acknowledgedAt===false&&x.incident==='OPEN')||Number(y.severity==='CRITICAL')-Number(x.severity==='CRITICAL'));
+ return{alerts,nextCursor:rows.length>limit&&last?Buffer.from(JSON.stringify({c:new Date(last.created_at).toISOString(),i:last.id}),'utf8').toString('base64url'):null};
+}
+export async function readProfileAlert(db:ProfileExecutor,authority:ProfileAuthority,alertId:string){
+ await authorize(db,authority,'alerts:read');
+ if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(alertId))throw new ProfileReadError('ALERT_NOT_FOUND',404);
+ const row=(await db.query(`SELECT ${alertColumns} FROM operational_alerts a LEFT JOIN records r ON r.id=a.account_id AND r.workspace_id=a.workspace_id AND r.kind='channel_account'
+  WHERE a.id=$1 AND a.workspace_id=$2 AND a.environment='REAL'`,[alertId.toLowerCase(),db.workspaceId])).rows[0];
+ if(!row)throw new ProfileReadError('ALERT_NOT_FOUND',404);
+ return alertView(row);
 }
 export async function acknowledgeProfileAlert(db:ProfileExecutor,authority:ProfileAuthority,alertId:string){
  const now=new Date((await db.query('SELECT clock_timestamp() AS now')).rows[0].now);
@@ -154,4 +189,17 @@ export async function acknowledgeProfileAlert(db:ProfileExecutor,authority:Profi
  const row=(await db.query("UPDATE operational_alerts SET acknowledged_at=COALESCE(acknowledged_at,clock_timestamp()),acknowledged_by=COALESCE(acknowledged_by,$3) WHERE id=$1 AND workspace_id=$2 AND environment='REAL' RETURNING id,acknowledged_at",[alertId.toLowerCase(),db.workspaceId,authority.membership.userId])).rows[0];
  if(!row)throw new ProfileReadError('ALERT_NOT_FOUND',404);
  return{id:row.id as string,acknowledgedAt:iso(row.acknowledged_at)};
+}
+/** V7.5 §6 (H10): «Marcar todos como vistos». The cut is taken when the
+ * request starts (or an earlier instant given by the caller); notices created
+ * after it stay pending. Profile and REAL only, idempotent, audited by caller. */
+export async function acknowledgeProfileAlerts(db:ProfileExecutor,authority:ProfileAuthority,input:{before?:string}={}){
+ const now=new Date((await db.query('SELECT clock_timestamp() AS now')).rows[0].now);
+ authorizeProfileAction(authority,{scope:'alerts:write',workspaceId:db.workspaceId,mutation:true},now);
+ const before=input.before?new Date(input.before):now;
+ if(!Number.isFinite(before.getTime())||before>now)throw new ProfileReadError('ALERT_CUTOFF_INVALID',400);
+ const row=(await db.query(`WITH acked AS (UPDATE operational_alerts a SET acknowledged_at=clock_timestamp(),acknowledged_by=$3
+  WHERE a.workspace_id=$1 AND a.environment='REAL' AND ${pendingAlertPredicate('a')} AND a.created_at<=$2 RETURNING a.id)
+  SELECT count(*)::int AS n FROM acked`,[db.workspaceId,before,authority.membership.userId])).rows[0];
+ return{acknowledged:Number(row?.n??0),cutoff:before.toISOString()};
 }
