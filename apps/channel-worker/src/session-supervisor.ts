@@ -10,10 +10,15 @@ export async function sessionRecoveryBlocker(c:QueryExecutor,a:DomainRecord,s:Bo
  if(!s.primary_device_id||!s.responsible_user_id||s.inventory?.primary_availability!=='AVAILABLE'||['UNKNOWN','OVERDUE'].includes(primaryMaintenance(s.primary_last_used_at).status))return 'PRIMARY_MAINTENANCE_REQUIRED';
  const policy=await readOperationalSettings(c,a.workspace_id,a.environment,{lock:'share'});
  if(a.environment==='REAL'&&(!onboardingEnabled(policy.body)||policy.body.dispatch_frozen))return 'POLICY_PAUSED';
- const ownership=(await c.query('SELECT frozen,lease_expires_at FROM session_ownership WHERE workspace_id=$1 AND account_id=$2',[a.workspace_id,a.id])).rows[0];
+ const ownership=(await c.query('SELECT frozen,freeze_reason,lease_expires_at FROM session_ownership WHERE workspace_id=$1 AND account_id=$2',[a.workspace_id,a.id])).rows[0];
  if(!ownership||new Date(ownership.lease_expires_at)<=new Date())return 'OWNERSHIP_UNAVAILABLE';
- if(ownership.frozen)return 'OWNERSHIP_FROZEN';
- if((await c.query("SELECT 1 FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='incident' AND body->>'account_id'=$3 AND body->>'reason'='CHANNEL_HEALTH_BLOCKED' AND body->>'status'='OPEN' LIMIT 1",[a.workspace_id,a.environment,a.id])).rowCount)return 'CHANNEL_HEALTH_INCIDENT_OPEN';
+ // V7.5 §4 (H12): the health reader froze this ownership because the session
+ // was confirmed stopped; that freeze and its own incident are exactly what
+ // the bounded recovery addresses. Any other freeze or incident cause blocks.
+ const disconnected=ownership.frozen&&ownership.freeze_reason==='HEALTH_DISCONNECTED';
+ if(ownership.frozen&&!disconnected)return 'OWNERSHIP_FROZEN';
+ const incidents=(await c.query("SELECT body->>'cause' AS cause FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='incident' AND body->>'account_id'=$3 AND body->>'reason'='CHANNEL_HEALTH_BLOCKED' AND body->>'status'='OPEN'",[a.workspace_id,a.environment,a.id])).rows;
+ if(incidents.some(i=>!disconnected||i.cause!=='SESSION_DISCONNECTED'))return 'CHANNEL_HEALTH_INCIDENT_OPEN';
  const health=await readEffectiveHealth(c,{workspaceId:a.workspace_id,environment:a.environment,accountId:a.id}),session=currentEffectiveSignal(health,'session');
  if(session?.status!=='BLOCKED'||session.value!=='STOPPED')return 'HEALTH_NOT_RECOVERABLE';
  if(a.body.provider==='waha'&&!currentRestrictionClear(health))return 'RESTRICTION_CLEAR_READ_REQUIRED';

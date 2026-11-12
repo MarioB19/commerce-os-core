@@ -11,7 +11,13 @@ export async function planQrGroupPool(db:ProfileExecutor,pool:Body,now:Date){
  const stop=(reason:string)=>({planned:0,messages:0,reason});
  await lockWarmupProfile(db,pool.environment);
  const p=await readGroupProgram(db,pool.environment,pool.program_id,true),config=programConfig(p);
- if(p.status!=='ACTIVE'||!pool.enabled||pool.paused||pool.breaker_open||pool.archived_at)return stop('PROGRAM_PAUSED');
+ // V7.5 §5 (H06): reservations follow the pool row of this transaction, not
+ // the object read before the evaluator of the same pass changed it.
+ const current=(await db.query('SELECT * FROM warmup_pools WHERE id=$1 AND workspace_id=$2 AND environment=$3 FOR UPDATE',[pool.id,db.workspaceId,pool.environment])).rows[0];
+ if(!current)return stop('PROGRAM_DISABLED');
+ if(p.status!=='ACTIVE'||current.paused)return stop('PROGRAM_PAUSED');
+ if(current.breaker_open)return stop('PROTECTION_OPEN');
+ if(!current.enabled||current.archived_at)return stop('PROGRAM_DISABLED');
  const profile=groupProfile(config),window=localWindow(profile,now);if(!window.open)return stop('QUIET_HOURS');
  const policy=await readOperationalSettings(db,db.workspaceId,pool.environment,{lock:'share'});
  if(pool.environment==='REAL'&&(policy.body.dispatch_frozen||!policy.body.real_sends_enabled||!policy.body.allow_real_operations))return stop('REAL_OPERATION_NOT_ENABLED');

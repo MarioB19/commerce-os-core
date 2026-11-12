@@ -57,6 +57,9 @@ it('recovers only the owned health incident after a complete positive readback',
 it('V7.5 audit: a complete STOPPED read reaches the authorized recovery supervisor',async()=>{
  const a=await account(),owner='audit-stopped-owner',provider=new SimulatorProvider();
  await enableRecoveryPolicy();await configureRecovery(a);await recoveryEvidence(a,owner);
+ // The premise is a line that was connected before it stopped (the provider
+ // read derives CONFIRMED_STOPPED_AFTER_CONNECTION from that history).
+ await pool.query("UPDATE channel_sessions SET last_connected_at=now()-interval '1 hour' WHERE account_id=$1",[a.id]);
  provider.health=async()=>{const at=new Date();return[...signals('STOPPED','fixture-identity',at),{dimension:'restriction',status:'OK',value:{latest_read:{timelock:true,capping:true}},source:'provider_read',scope:'account',availability:'supported',observedAt:at.toISOString(),expiresAt:new Date(at.getTime()+60000).toISOString()}];};
  await recordHealth(a,()=>provider);await superviseSessions();
  // No provider lifecycle call: this assertion checks whether recovery is reachable.

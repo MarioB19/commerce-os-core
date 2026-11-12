@@ -17,10 +17,11 @@ export async function collectSessionAlerts(now=new Date()){
   if(!s.health_expires_at||new Date(s.health_expires_at)<=now)kinds.push('SESSION_HEALTH_STALE');
   if(!s.lease_expires_at||new Date(s.lease_expires_at)<=now)kinds.push('SESSION_OWNER_UNAVAILABLE');
   if(s.backup_status!=='VERIFIED_COLD_BACKUP'||!s.backup_verified_at||now.getTime()-new Date(s.backup_verified_at).getTime()>86400000)kinds.push('WAHA_BACKUP_OVERDUE');
-  await c.query("UPDATE operational_alerts SET resolved_at=$3,updated_at=now() WHERE account_id=$1 AND resolved_at IS NULL AND (kind LIKE 'PRIMARY_%' OR kind LIKE 'SESSION_%' OR kind='WAHA_BACKUP_OVERDUE') AND NOT(kind=ANY($2::text[]))",[s.account_id,kinds,now]);
+  await c.query("UPDATE operational_alerts SET resolved_at=$3,updated_at=now(),evidence=evidence||'{\"resolution\":\"CONDITION_CLEARED\"}'::jsonb WHERE account_id=$1 AND resolved_at IS NULL AND (kind LIKE 'PRIMARY_%' OR kind LIKE 'SESSION_%' OR kind='WAHA_BACKUP_OVERDUE') AND NOT(kind=ANY($2::text[]))",[s.account_id,kinds,now]);
   for(const kind of kinds){
    const episode=kind.startsWith('PRIMARY_')?'usage:'+s.primary_usage_revision:'observation:'+String(s.disconnected_at??s.created_at);
-   const exists=(await c.query('SELECT 1 FROM operational_alerts WHERE account_id=$1 AND kind=$2 AND resolved_at IS NULL',[s.account_id,kind])).rowCount;if(exists)continue;
+   // V7.5 §6: the open episode records the repeated observation, keeping its acknowledgement.
+   const exists=(await c.query('UPDATE operational_alerts SET last_observed_at=GREATEST(last_observed_at,$3),observations=observations+1,updated_at=now() WHERE account_id=$1 AND kind=$2 AND resolved_at IS NULL AND superseded_by IS NULL RETURNING id',[s.account_id,kind,now])).rowCount;if(exists)continue;
    // Unique transition key: subsequent polls reuse the open incident, a later recurrence gets a new episode.
    const key=`session:${s.id}:${kind}:${now.toISOString()}`;
    await c.query('INSERT INTO operational_alerts(workspace_id,environment,dedupe_key,kind,severity,summary_code,account_id,episode,evidence) VALUES($1,$2,$3,$4,$5,$4,$6,$7,$8) ON CONFLICT DO NOTHING',[s.workspace_id,s.environment,key,kind,kind.includes('CONFLICT')||kind.includes('REVOKED')||kind.includes('EXHAUSTED')?'CRITICAL':'WARNING',s.account_id,episode,{source:kind.startsWith('PRIMARY_')?s.primary_usage_source??'UNKNOWN':'session_supervisor',primary_days:maintenance.days,health_observed_at:s.last_health_at,backup_verified_at:s.backup_verified_at,recipient_receipt:'NOT_OBSERVED'}]);

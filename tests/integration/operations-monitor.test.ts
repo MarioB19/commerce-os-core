@@ -24,10 +24,13 @@ async function configureAlerts(scope:string){
   secrets:{token},reason:'Isolated notification test with injected fake transport',
  }),'synthetic-owner'));
 }
+// V7.5 §6: one open episode per global cause, so each synthetic delivery
+// fixture is a distinct cause; the delivery contract under test is unchanged.
 async function insertAlert(scope:string,options:{status?:string;created_at?:string;updated_at?:string}={}){
+ const kind='SYNTHETIC_INCIDENT_'+randomUUID().slice(0,8).toUpperCase();
  return (await pool.query(`INSERT INTO operational_alerts(workspace_id,environment,dedupe_key,kind,severity,summary_code,status,created_at,updated_at)
-  VALUES($1,'REAL',$2,'SYNTHETIC_INCIDENT','WARNING','SYNTHETIC_INCIDENT',$3,$4,$5) RETURNING *`,
- [scope,randomUUID(),options.status??'PENDING',options.created_at??'2001-01-01T00:00:00Z',options.updated_at??new Date().toISOString()])).rows[0];
+  VALUES($1,'REAL',$2,$6,'WARNING',$6,$3,$4,$5) RETURNING *`,
+ [scope,randomUUID(),options.status??'PENDING',options.created_at??'2001-01-01T00:00:00Z',options.updated_at??new Date().toISOString(),kind])).rows[0];
 }
 async function alertState(id:string){return(await pool.query('SELECT status FROM operational_alerts WHERE id=$1',[id])).rows[0].status;}
 function captureFetch(onRequest?:(body:Record<string,unknown>,init:RequestInit)=>Promise<Response>){

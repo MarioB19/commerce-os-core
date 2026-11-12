@@ -108,10 +108,11 @@ describe('V7 profile reads: home, usage, audit and operations',()=>{
   expect((await get('/v2/alerts?include=bad',users.owner,one)).statusCode).toBe(400);
  });
  it('filters seen and resolved notices before the limit, keeping new notices and profile/environment isolation',async()=>{
+  // V7.5 §6: one open episode per global cause; the 105 seen notices are distinct causes.
   await admin.query(`INSERT INTO operational_alerts(workspace_id,environment,dedupe_key,kind,severity,summary_code,acknowledged_at)
-   SELECT $1,'REAL','seen-'||n,'NUMBER_DOWN','CRITICAL','NUMBER_DOWN',clock_timestamp() FROM generate_series(1,105) n`,[one]);
+   SELECT $1,'REAL','seen-'||n,'NUMBER_DOWN_SEEN_'||n,'CRITICAL','NUMBER_DOWN',clock_timestamp() FROM generate_series(1,105) n`,[one]);
   const pending=(await admin.query(`INSERT INTO operational_alerts(workspace_id,environment,dedupe_key,kind,severity,summary_code,created_at)
-   VALUES($1,'REAL','unread-old','NUMBER_DOWN','WARNING','NUMBER_DOWN',clock_timestamp()-interval '2 days') RETURNING id`,[one])).rows[0].id;
+   VALUES($1,'REAL','unread-old','NUMBER_DOWN_UNREAD','WARNING','NUMBER_DOWN',clock_timestamp()-interval '2 days') RETURNING id`,[one])).rows[0].id;
   await admin.query(`INSERT INTO operational_alerts(workspace_id,environment,dedupe_key,kind,severity,summary_code,resolved_at)
    VALUES($1,'REAL','resolved-date','NUMBER_DOWN','CRITICAL','NUMBER_DOWN',clock_timestamp()),
     ($1,'SIMULATION','simulation-only','NUMBER_DOWN','CRITICAL','NUMBER_DOWN',null),

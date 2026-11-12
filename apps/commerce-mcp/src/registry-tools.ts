@@ -318,11 +318,14 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
   pausar:{schema:z.object({operationId:z.uuid(),numberId:z.uuid()}).strict(),read:false,destructive:true,run:i=>c.v1('POST','/v1/numbers/'+id(i.numberId)+'/pause',{paused:true},i.operationId)},
   reanudar:{schema:z.object({operationId:z.uuid(),numberId:z.uuid()}).strict(),read:false,run:i=>c.v1('POST','/v1/numbers/'+id(i.numberId)+'/pause',{paused:false},i.operationId)},
  });
- tool('alerts_manage','Avisos del perfil','Avisos abiertos sobre números y envíos, en lenguaje de operación, con el enlace a resolverlos. Acusar recibo no resuelve la causa.',{
-  listar:v('GET',z.object({include:z.enum(['open','all']).optional()}).strict(),i=>'/v2/alerts'+query(i))(c.v2),
-  leer:{schema:z.object({alertId:z.uuid()}).strict(),read:true,run:async i=>{const r=await c.v2('GET','/v2/alerts?include=all') as {alerts:{id:string}[]};const found=r.alerts.find(a=>a.id===i.alertId.toLowerCase());if(!found)throw Object.assign(new Error('ALERT_NOT_FOUND'),{code:'ALERT_NOT_FOUND'});return found;}},
+ tool('alerts_manage','Avisos del perfil','Avisos sobre números y envíos, en lenguaje de operación, con el enlace a resolverlos. «listar» devuelve los pendientes de leer (o todo el historial con include=all) en páginas de hasta 100 con cursor. Acusar recibo (uno o todos hasta un corte) no resuelve la causa: un aviso se resuelve cuando la operación vuelve a estar sana.',{
+  listar:v('GET',z.object({include:z.enum(['open','all']).optional(),cursor:z.string().min(8).max(200).optional(),limit:z.number().int().min(1).max(100).optional()}).strict(),i=>'/v2/alerts'+query(i))(c.v2),
+  // V7.5 §6 (H10): direct read by ID, also outside the first page.
+  leer:v('GET',z.object({alertId:z.uuid()}).strict(),i=>'/v2/alerts/'+id(i.alertId))(c.v2),
   acusar:v('POST',z.object({alertId:z.uuid()}).strict(),i=>'/v2/alerts/'+id(i.alertId)+'/acknowledge',()=>({}))(c.v2),
+  acusar_todos:v('POST',z.object({before:z.iso.datetime({offset:true}).optional()}).strict(),()=>'/v2/alerts/acknowledge-all',i=>({...i}))(c.v2),
  });
+
  // D-17: connecting by QR authorizes same-profile warm-up permanently. Pausing
  // or resuming it is a human command on that grant; a pause is never lifted
  // automatically. Progress needs evidence of days, never elapsed time alone.

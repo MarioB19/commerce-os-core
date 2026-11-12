@@ -6,17 +6,55 @@ import {publicEndpointFetch} from '../../../packages/fulfillment/src/public-fetc
 import type {Environment} from '@commerce/contracts';
 import {warmupProfileSchema,localWindow} from '../../../packages/domain/src/warmup/policy.js';
 
-async function alert(c:QueryExecutor,workspace:string,environment:Environment,kind:string,severity:'WARNING'|'CRITICAL',date:string){
- return c.query(`INSERT INTO operational_alerts(workspace_id,environment,dedupe_key,kind,severity,summary_code) VALUES($1,$2,$3,$4,$5,$4) ON CONFLICT(workspace_id,environment,dedupe_key) DO NOTHING`,[workspace,environment,kind+':'+date,kind,severity]);
+/** V7.5 §6 (H11): one open episode per profile, environment, cause and
+ * resource. A repeated observation updates the open row (last observation and
+ * count) without touching its acknowledgement or creating another notice; the
+ * cleared condition resolves it; a later recurrence opens a new row. A rise
+ * from WARNING to CRITICAL is a new notice for the person (acknowledgement
+ * cleared). `resolution` documents why a cleared episode closed. */
+export async function episodeAlert(c:QueryExecutor,input:{workspace:string;environment:Environment;kind:string;severity:'WARNING'|'CRITICAL';active:boolean;now:Date;accountId?:string|null;episode?:string;evidence?:Record<string,unknown>;resolution?:string}){
+ const {workspace,environment,kind,severity,active,now}=input,account=input.accountId??null;
+ if(!active){
+  await c.query(`UPDATE operational_alerts SET resolved_at=$5,updated_at=now(),evidence=evidence||jsonb_build_object('resolution',$6::text)
+   WHERE workspace_id=$1 AND environment=$2 AND kind=$3 AND account_id IS NOT DISTINCT FROM $4::uuid AND resolved_at IS NULL AND superseded_by IS NULL`,[workspace,environment,kind,account,now,input.resolution??'CONDITION_CLEARED']);
+  return null;
+ }
+ const updated=(await c.query(`UPDATE operational_alerts SET last_observed_at=GREATEST(last_observed_at,$5),observations=observations+1,updated_at=now(),
+   severity=CASE WHEN $6='CRITICAL' THEN 'CRITICAL' ELSE severity END,
+   acknowledged_at=CASE WHEN $6='CRITICAL' AND severity='WARNING' THEN NULL ELSE acknowledged_at END,
+   acknowledged_by=CASE WHEN $6='CRITICAL' AND severity='WARNING' THEN NULL ELSE acknowledged_by END
+  WHERE workspace_id=$1 AND environment=$2 AND kind=$3 AND account_id IS NOT DISTINCT FROM $4::uuid AND resolved_at IS NULL AND superseded_by IS NULL RETURNING id`,[workspace,environment,kind,account,now,severity])).rows[0];
+ if(updated)return updated.id as string;
+ const inserted=(await c.query(`INSERT INTO operational_alerts(workspace_id,environment,dedupe_key,kind,severity,summary_code,account_id,episode,evidence,first_observed_at,last_observed_at)
+  VALUES($1,$2,$3,$4,$5,$4,$6,$7,$8,$9,$9) ON CONFLICT DO NOTHING RETURNING id`,[workspace,environment,`${kind}:${account??'profile'}:${now.toISOString()}`,kind,severity,account,input.episode??`observation:${now.toISOString()}`,{...input.evidence,recipient_receipt:'NOT_OBSERVED'},now])).rows[0];
+ return inserted?.id as string|undefined??null;
 }
 async function accountAlert(c:QueryExecutor,workspace:string,environment:Environment,accountId:string,kind:string,active:boolean,now:Date,evidence:Record<string,unknown>={}){
- if(!active){await c.query('UPDATE operational_alerts SET resolved_at=$5,updated_at=now() WHERE workspace_id=$1 AND environment=$2 AND account_id=$3 AND kind=$4 AND resolved_at IS NULL',[workspace,environment,accountId,kind,now]);return;}
- await c.query('INSERT INTO operational_alerts(workspace_id,environment,dedupe_key,kind,severity,summary_code,account_id,episode,evidence) VALUES($1,$2,$3,$4,$5,$4,$6,$7,$8) ON CONFLICT DO NOTHING',[workspace,environment,`${kind}:${accountId}:${now.toISOString()}`,kind,kind==='EFFECT_UNKNOWN'||kind==='RELEASE_RECOVERY_PENDING'?'CRITICAL':'WARNING',accountId,`observation:${now.toISOString()}`,{...evidence,recipient_receipt:'NOT_OBSERVED'}]);
+ await episodeAlert(c,{workspace,environment,kind,severity:kind==='EFFECT_UNKNOWN'||kind==='RELEASE_RECOVERY_PENDING'?'CRITICAL':'WARNING',active,now,accountId,evidence});
 }
 async function workspaceAlert(c:QueryExecutor,workspace:string,kind:string,active:boolean,episode:string,now:Date){
- if(!active){await c.query("UPDATE operational_alerts SET resolved_at=$3,updated_at=now() WHERE workspace_id=$1 AND environment='REAL' AND account_id IS NULL AND kind=$2 AND resolved_at IS NULL",[workspace,kind,now]);return;}
- if((await c.query("SELECT 1 FROM operational_alerts WHERE workspace_id=$1 AND environment='REAL' AND account_id IS NULL AND kind=$2 AND resolved_at IS NULL",[workspace,kind])).rowCount)return;
- await c.query("INSERT INTO operational_alerts(workspace_id,environment,dedupe_key,kind,severity,summary_code,episode,evidence) VALUES($1,'REAL',$2,$3,$4,$3,$5,$6) ON CONFLICT DO NOTHING",[workspace,`${kind}:${episode}`,kind,['RELEASE_HOLD_OVERDUE','CHANNEL_WORKER_UNAVAILABLE'].includes(kind)?'CRITICAL':'WARNING',episode,{recipient_receipt:'NOT_OBSERVED'}]);
+ await episodeAlert(c,{workspace,environment:'REAL',kind,severity:['RELEASE_HOLD_OVERDUE','CHANNEL_WORKER_UNAVAILABLE'].includes(kind)?'CRITICAL':'WARNING',active,now,episode});
+}
+/** R01: early disk warning with hysteresis, before the critical floor. */
+export const diskThresholds=Object.freeze({warnFreeRatio:0.2,warnFreeBytes:25*1024**3,clearFreeRatio:0.22,clearFreeBytes:27*1024**3,criticalFreeRatio:0.05,criticalFreeBytes:1024**3});
+export function diskCondition(disk:{available_bytes:number;total_bytes:number}|null,warningOpen:boolean){
+ if(!disk||!(disk.total_bytes>0))return{critical:false,warning:warningOpen};
+ const ratio=disk.available_bytes/disk.total_bytes;
+ const critical=disk.available_bytes<Math.max(diskThresholds.criticalFreeBytes,disk.total_bytes*diskThresholds.criticalFreeRatio);
+ const warning=warningOpen?ratio<diskThresholds.clearFreeRatio||disk.available_bytes<diskThresholds.clearFreeBytes:ratio<diskThresholds.warnFreeRatio||disk.available_bytes<diskThresholds.warnFreeBytes;
+ return{critical,warning:warning||critical};
+}
+/** §6: backup currency from the producer the installation runs (PITR runs,
+ * same limits as /healthz/platform) or a verified, unexpired external record. */
+export function backupCurrent(input:{evidence?:{status:string;expires_at:Date|string}|null;runs?:{last_success_at:string|null;last_full_at:string|null;last_failure_at:string|null}|null;now:Date}){
+ const {evidence,runs,now}=input;
+ if(evidence&&evidence.status==='VERIFIED'&&new Date(evidence.expires_at)>now)return{current:true,source:'VERIFIED_EXTERNAL_EVIDENCE'};
+ if(!runs?.last_success_at)return{current:false,source:'NO_VERIFIED_BACKUP_OBSERVED'};
+ const age=(at:string|null)=>at?now.getTime()-Date.parse(at):Infinity;
+ if(runs.last_failure_at&&Date.parse(runs.last_failure_at)>Date.parse(runs.last_success_at))return{current:false,source:'LAST_BACKUP_RUN_FAILED'};
+ if(age(runs.last_success_at)>36*3600_000)return{current:false,source:'BACKUP_STALE'};
+ if(age(runs.last_full_at)>8*86400_000)return{current:false,source:'FULL_BACKUP_STALE'};
+ return{current:true,source:'PITR_RUNS'};
 }
 /** Durable incident dedupe; presence of an incident never claims notification receipt. */
 export async function collectOperationalAlerts(){
@@ -24,8 +62,10 @@ export async function collectOperationalAlerts(){
  const storage=process.env.PRIVATE_STORAGE_DIR??process.env.ASSET_STORAGE_DIR;
  const disk=storage?await statfs(storage).then(s=>({available_bytes:Number(s.bavail)*Number(s.bsize),total_bytes:Number(s.blocks)*Number(s.bsize)})).catch(()=>null):null;
  const scopes=(await pool.query("SELECT DISTINCT workspace_id,environment FROM records WHERE kind='channel_account'")).rows;
+ // Platform-wide, content-free; an unreadable producer keeps the alert open.
+ const backupRuns=await pool.query('SELECT public.platform_backup_currency() AS s').then(r=>r.rows[0]?.s??null).catch(()=>null);
  for(const {workspace_id:workspace,environment}of scopes)await withTransaction(async c=>{
-  const now=(await c.query('SELECT now() now')).rows[0].now as Date,date=now.toISOString().slice(0,13);
+  const now=(await c.query('SELECT now() now')).rows[0].now as Date;
   await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`operations-monitor:${workspace}:${environment}`]);
   if(environment==='REAL'){
    const policy=await readOperationalSettings(c,workspace,'REAL');
@@ -55,20 +95,32 @@ export async function collectOperationalAlerts(){
   }
   const prior=(await c.query("SELECT id,version FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='operational_metric' AND body->>'key'='private_storage_disk' ORDER BY updated_at DESC LIMIT 1",[workspace,environment])).rows[0];
   await putRecord(c,{id:prior?.id,version:prior?.version,workspaceId:workspace,environment,kind:'operational_metric',body:{key:'private_storage_disk',status:disk?'OBSERVED':'UNAVAILABLE',source:'MOUNTED_PRIVATE_STORAGE_STATFS',observed_at:now.toISOString(),expires_at:new Date(now.getTime()+180000).toISOString(),...(disk??{})}});
-  if(disk&&disk.available_bytes<Math.max(1024**3,disk.total_bytes*0.05))await alert(c,workspace,environment,'PRIVATE_STORAGE_DISK_LOW','CRITICAL',date);
+  const global=(kind:string,severity:'WARNING'|'CRITICAL',active:boolean,evidence:Record<string,unknown>={},resolution?:string)=>episodeAlert(c,{workspace,environment,kind,severity,active,now,evidence,resolution});
+  const warningOpen=!!(await c.query("SELECT 1 FROM operational_alerts WHERE workspace_id=$1 AND environment=$2 AND kind='PRIVATE_STORAGE_DISK_WARNING' AND account_id IS NULL AND resolved_at IS NULL AND superseded_by IS NULL",[workspace,environment])).rowCount;
+  const diskState=diskCondition(disk,warningOpen),diskEvidence=disk?{available_bytes:disk.available_bytes,total_bytes:disk.total_bytes}:{};
+  if(disk){await global('PRIVATE_STORAGE_DISK_LOW','CRITICAL',diskState.critical,diskEvidence);await global('PRIVATE_STORAGE_DISK_WARNING','WARNING',diskState.warning,diskEvidence);}
   const old=(await c.query("SELECT count(*)::int n FROM outbox WHERE workspace_id=$1 AND environment=$2 AND status IN('READY','BLOCKED','UNKNOWN') AND not_before<now()-interval '30 minutes'",[workspace,environment])).rows[0].n;
-  if(old)await alert(c,workspace,environment,'QUEUE_OLDER_THAN_30_MINUTES','CRITICAL',date);
-  const pools=(await c.query('SELECT id,breaker_open FROM warmup_pools WHERE workspace_id=$1 AND environment=$2 AND enabled',[workspace,environment])).rows;
-  for(const p of pools){
-   if(p.breaker_open)await alert(c,workspace,environment,'WARMUP_BREAKER_OPEN','CRITICAL',date);
-   for(const [kind,minutes]of [['health',30],['reconcile',120],['daily',1500]]as const){const fresh=(await c.query("SELECT 1 FROM warmup_schedule_runs WHERE pool_id=$1 AND kind=$2 AND status='COMPLETED' AND finished_at>now()-($3*interval '1 minute')",[p.id,kind,minutes])).rowCount;if(!fresh)await alert(c,workspace,environment,'WARMUP_'+kind.toUpperCase()+'_OVERDUE','CRITICAL',date);}
+  await global('QUEUE_OLDER_THAN_30_MINUTES','CRITICAL',old>0,{count:old});
+  const pools=(await c.query(`SELECT p.id,p.breaker_open,p.continuity_mode,p.paused,p.archived_at,
+   (SELECT count(*)::int FROM warmup_states s WHERE s.pool_id=p.id) AS members FROM warmup_pools p WHERE p.workspace_id=$1 AND p.environment=$2 AND p.enabled`,[workspace,environment])).rows;
+  await global('WARMUP_BREAKER_OPEN','CRITICAL',pools.some(p=>p.breaker_open),{pools:pools.filter(p=>p.breaker_open).length},'PROTECTION_RECOVERED_OR_POOL_DISABLED');
+  // V7.5 §6 (H11): schedule windows are produced only by the LEGACY
+  // coordinator. QR pools run inside the worker profile pass and never write
+  // them; empty, paused or archived pools have no scheduled activity.
+  const overdue:Record<string,boolean>={health:false,reconcile:false,daily:false};
+  for(const p of pools.filter(p=>p.continuity_mode==='LEGACY'&&!p.paused&&!p.archived_at&&p.members>0)){
+   for(const [kind,minutes]of [['health',30],['reconcile',120],['daily',1500]]as const){const fresh=(await c.query("SELECT 1 FROM warmup_schedule_runs WHERE pool_id=$1 AND kind=$2 AND status='COMPLETED' AND finished_at>now()-($3*interval '1 minute')",[p.id,kind,minutes])).rowCount;if(!fresh)overdue[kind]=true;}
   }
-  if((await c.query('SELECT 1 FROM warmup_states WHERE workspace_id=$1 AND environment=$2 AND confirmed_block',[workspace,environment])).rowCount)await alert(c,workspace,environment,'CONFIRMED_ACCOUNT_RESTRICTION','CRITICAL',date);
-  const failed=(await c.query("SELECT 1 FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='channel_account' AND body->>'status'='FAILED' AND NOT(body?'deleted_at')",[workspace,environment])).rowCount;if(failed)await alert(c,workspace,environment,'CHANNEL_PROVIDER_UNAVAILABLE','WARNING',date);
+  for(const kind of ['health','reconcile','daily'])await global('WARMUP_'+kind.toUpperCase()+'_OVERDUE','CRITICAL',overdue[kind]!,{},'NO_ACTIVE_LEGACY_SCHEDULE_OVERDUE');
+  await global('CONFIRMED_ACCOUNT_RESTRICTION','CRITICAL',!!(await c.query('SELECT 1 FROM warmup_states WHERE workspace_id=$1 AND environment=$2 AND confirmed_block',[workspace,environment])).rowCount);
+  const failed=(await c.query("SELECT count(*)::int n FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='channel_account' AND body->>'status'='FAILED' AND NOT(body?'deleted_at')",[workspace,environment])).rows[0].n;
+  await global('CHANNEL_PROVIDER_UNAVAILABLE','WARNING',failed>0,{count:failed});
   const plans=(await c.query(`SELECT p.planned_messages,p.local_date::text local_date,v.config,(SELECT count(*)::int FROM warmup_turns t JOIN warmup_conversations cv ON cv.id=t.conversation_id JOIN outbox o ON o.id=t.effect_id WHERE (t.sender_id=p.account_id OR t.recipient_id=p.account_id) AND cv.local_date=p.local_date AND o.status IN('DELIVERED','READ')) delivered FROM warmup_plans p JOIN warmup_profiles v ON v.id=p.profile_id WHERE p.workspace_id=$1 AND p.environment=$2 AND p.local_date>=CURRENT_DATE-3`,[workspace,environment])).rows;
   const daily={planned:0,delivered:0};for(const plan of plans){const today=localWindow(warmupProfileSchema.parse(plan.config),now).date,yesterday=new Date(Date.parse(today+'T00:00:00Z')-86400000).toISOString().slice(0,10);if(plan.local_date===yesterday){daily.planned+=plan.planned_messages;daily.delivered+=plan.delivered;}}
-  if(daily.planned>0&&Math.abs(daily.planned-daily.delivered)/daily.planned>0.3)await alert(c,workspace,environment,'WARMUP_PLAN_DEVIATION','WARNING',date);
-  const backup=(await c.query("SELECT status,expires_at FROM operational_evidence WHERE workspace_id=$1 AND environment=$2 AND kind='backup_external' ORDER BY observed_at DESC LIMIT 1",[workspace,environment])).rows[0];if(!backup||backup.status!=='VERIFIED'||new Date(backup.expires_at)<=now)await alert(c,workspace,environment,'EXTERNAL_BACKUP_NOT_CURRENT','CRITICAL',date);
+  await global('WARMUP_PLAN_DEVIATION','WARNING',daily.planned>0&&Math.abs(daily.planned-daily.delivered)/daily.planned>0.3,daily);
+  const evidence=(await c.query("SELECT status,expires_at FROM operational_evidence WHERE workspace_id=$1 AND environment=$2 AND kind='backup_external' ORDER BY observed_at DESC LIMIT 1",[workspace,environment])).rows[0];
+  const backup=backupCurrent({evidence,runs:backupRuns,now});
+  await global('EXTERNAL_BACKUP_NOT_CURRENT','CRITICAL',!backup.current,{source:backup.source},'VERIFIED_BACKUP_CURRENT');
  });return scopes.length;
 }
 
