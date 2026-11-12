@@ -18,6 +18,14 @@ y cambia cada fila en su perfil, y la correlación de entregas corre por perfil.
 Prueba de integración nueva: falla en `main` con el mismo error de producción y
 pasa con el cambio. Sin migraciones.
 
+Conciliación con evidencia: un envío de grupo cuyo resultado no se registró
+(`SENDING`/`UNKNOWN`, sin ID del proveedor) se concilia sólo si una línea propia
+recibió en el mismo grupo un mensaje de la identidad del remitente con el texto
+exacto del turno dentro de la ventana del reclamo; debe coincidir un único turno.
+Queda `SENT` con ese ID y el evento `warmup.effect_reconciled_from_group_event`;
+las recepciones se acreditan por la ruta normal. Sin evidencia positiva no se
+acredita nada (el primer turno real del piloto, recibido por WA 4 y WA 5).
+
 ## 12-nov-2026 — V7.5: release resiliente y Claude vendedor, candidato (Claude)
 
 Implementada en `claude/v7-5-release`, desde V7.4.0 `b2fa4df3` (instalada el

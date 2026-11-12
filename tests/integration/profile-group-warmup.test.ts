@@ -12,6 +12,7 @@ import {getRecord} from '../../packages/db/src/index.js';
 import {requestGroupRefresh,groupReadableLines} from '../../packages/db/src/group-warmup.js';
 import {processNumberOperations} from '../../apps/channel-worker/src/number-operations.js';
 import {dispatchOutbox,recoverSending} from '../../apps/channel-worker/src/runtime.js';
+import {reconcileGroupDeliveries} from '../../apps/channel-worker/src/warmup-group-dispatch.js';
 import {WahaProvider} from '../../packages/messaging/src/providers.js';
 import {applyWarmupMode} from '../../packages/db/src/number-warmup-mode.js';
 /** Restricted real PostgreSQL over explicitly synthetic connection observations.
@@ -381,6 +382,27 @@ describe('V7.2 own group programs under restricted PostgreSQL',()=>{
   const effect=(await admin.query('SELECT * FROM outbox WHERE workspace_id=$1 ORDER BY not_before LIMIT 1',[f.w])).rows[0];
   await asProfileOwner(admin,f.w,async db=>{const at=new Date(Date.now()-1000);await db.query('UPDATE warmup_turns SET not_before=$2 WHERE effect_id=$1',[effect.id,at]);await db.query('UPDATE outbox SET not_before=$2 WHERE id=$1',[effect.id,at]);effect.not_before=at;});
   await f.refresh();expect(await tx(f.w,'commerce_channel',db=>withProfileQueryRouting(db,()=>gateWarmupDispatch(db,effect,'qr-gate')))).toMatchObject({allowed:true});
+ });
+ // V7.5.1 (production pilot 12-nov): the send left the provider but its answer
+ // was never recorded. Only positive evidence from an own receiving line (same
+ // group, sender identity, exact text, claim window) reconciles it, once.
+ it('V7.5.1: reconciles an unrecorded group send from an own line\'s receipt of the exact text, and nothing else',async()=>{
+  const f=await groupFixture(2,{external:2}),p=await f.start();await f.schedule(p.id);
+  const effect=(await admin.query('SELECT * FROM outbox WHERE workspace_id=$1 ORDER BY not_before LIMIT 1',[f.w])).rows[0],sender=f.lines.find(q=>q.account===effect.account_id)!,receiver=f.lines.find(q=>q.account!==effect.account_id)!;
+  expect(effect.continuous_authorization_id).not.toBeNull();expect(typeof effect.payload.text).toBe('string');
+  await asProfileOwner(admin,f.w,async db=>{const claim=(await db.query("UPDATE outbox SET status='SENDING',claim_id=gen_random_uuid(),claimed_at=now()-interval '10 seconds',attempts=1 WHERE id=$1 RETURNING claim_id",[effect.id])).rows[0].claim_id;
+   await db.query("INSERT INTO effect_attempts(effect_id,claim_id,status) VALUES($1,$2,'SENDING')",[effect.id,claim]);});
+  const group='synthetic-'+f.w+'@g.us',senderIdentity=sender.raw.replace('@c.us','').replace(/^/,'wa:');
+  const message=(text:string,id:string)=>({key:randomUUID(),type:'message',providerMessageId:id,groupId:group,identity:group,fromMe:false,providerAt:new Date().toISOString(),senderIdentity,text}) as any;
+  const consume=(account:string,e:any)=>tx(f.w,'commerce_channel',async db=>classifyGroupEvent(db,(await getRecord(db,f.w,'channel_account',account))!,e,randomUUID()));
+  const state=async()=>(await admin.query('SELECT status,provider_message_id,result FROM outbox WHERE id=$1',[effect.id])).rows[0];
+  await consume(receiver.account,message(effect.payload.text+' (otro)','wamid-other'));await reconcileGroupDeliveries();
+  expect(await state()).toMatchObject({status:'SENDING',provider_message_id:null});
+  await consume(receiver.account,message(effect.payload.text,'wamid-v751'));await reconcileGroupDeliveries();
+  expect(await state()).toMatchObject({status:'DELIVERED',provider_message_id:'wamid-v751',result:{reconciled:'GROUP_EVENT_EVIDENCE',evidence_receiver:receiver.account}});
+  expect((await admin.query('SELECT receiver_id FROM warmup_group_receipts WHERE effect_id=$1',[effect.id])).rows).toEqual([{receiver_id:receiver.account}]);
+  expect((await admin.query("SELECT count(*)::int n FROM domain_events WHERE aggregate_id=$1 AND event_type='warmup.effect_reconciled_from_group_event'",[effect.id])).rows[0].n).toBe(1);
+  expect((await admin.query("SELECT status FROM effect_attempts WHERE effect_id=$1",[effect.id])).rows.map((r:any)=>r.status)).toEqual(['SENT']);
  });
  it('credits no delivery from an external participant or a global ACK (V7.4)',async()=>{
   const f=await groupFixture(2,{external:2}),p=await f.start();await f.schedule(p.id);

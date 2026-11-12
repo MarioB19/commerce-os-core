@@ -207,3 +207,10 @@ cambia un contexto ya establecido). `recoverSending` lee las filas vencidas sin
 escribir y cambia cada una en su propio perfil; `reconcileGroupDeliveries`
 correlaciona por perfil. Un efecto `SENDING` sin resultado sigue siendo incierto:
 pasa a `UNKNOWN` y exige conciliación; nunca se reintenta ni se acredita solo.
+
+Conciliación por evidencia positiva (V7.5.1): `correlateGroupEvents` vincula un
+efecto de grupo `SENDING`/`UNKNOWN` sin `provider_message_id` sólo con un evento
+de mensaje recibido por una línea propia destinataria, del mismo grupo, con la
+identidad del remitente del turno, su texto exacto y dentro de [reclamo − 5 s,
+reclamo + 10 min]; exige un único turno candidato y registra el evento de
+conciliación. La ausencia de ACK nunca concilia.
