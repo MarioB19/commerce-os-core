@@ -4,7 +4,7 @@ import {migrate} from '../../packages/db/src/migrate.js';
 import {gateWarmupDispatch} from '../../apps/channel-worker/src/warmup.js';
 import {withProfileQueryRouting} from '../../packages/db/src/profile-query-routing.js';
 import {bindProfileEnvironment} from '../../packages/db/src/profile-environment.js';
-import {lockWarmupProfile,createGroupWarmup,previewGroupWarmup,commandGroupWarmup,readGroupProgram,groupWarmupOverview,listWarmupGroups,listWarmupLibraries,importWarmupLibrary,libraryScripts} from '../../packages/db/src/group-warmup.js';
+import {lockWarmupProfile,createGroupWarmup,previewGroupWarmup,previewGroupRecovery,commandGroupWarmup,readGroupProgram,groupWarmupOverview,listWarmupGroups,listWarmupLibraries,importWarmupLibrary,libraryScripts} from '../../packages/db/src/group-warmup.js';
 import {planQrGroupPool} from '../../apps/automation-worker/src/group-qr-planner.js';
 import {observeGroup,classifyGroupEvent} from '../../packages/db/src/warmup-groups.js';
 import {groupWarmupConfigSchema,type GroupWarmupConfig} from '../../packages/contracts/src/group-warmup.js';
@@ -116,6 +116,62 @@ describe('V7.2 own group programs under restricted PostgreSQL',()=>{
   const effects=(await admin.query('SELECT * FROM outbox WHERE workspace_id=$1',[f.w])).rows;
   expect.soft(effects).toHaveLength(0);
   if(effects[0])expect(await tx(f.w,'commerce_channel',db=>gateWarmupDispatch(db,effects[0],'synthetic-audit'))).toMatchObject({allowed:false,reason:'WARMUP_POOL_PAUSED'});
+ });
+ // V7.5 §2/§3 (H02/H03): recovery reviewed by a person, through the same service as web/API/MCP.
+ async function protectedProgram(){
+  const f=await groupFixture(3),p=await f.start();for(const q of f.lines)await live(f.w,q.account);
+  const settings=await readOperationalSettings(admin as any,f.w,'REAL');await writeOperationalSettings(admin as any,f.w,'REAL',settings.version,{...settings.body,dispatch_frozen:false,allow_real_operations:true,real_sends_enabled:true},'synthetic-v75');
+  await admin.query("INSERT INTO warmup_observations(workspace_id,environment,account_id,kind,evidence_ref,observed_at) VALUES($1,'REAL',$2,'FAILED',$3,clock_timestamp()-interval '1 second')",[f.w,f.lines[0]!.account,randomUUID()]);
+  await tx(f.w,'commerce_automation',db=>processQrWarmupProfile(db,'REAL'));
+  for(const q of f.lines)await admin.query("UPDATE records SET body=body||jsonb_build_object('health_checked_at',clock_timestamp()::text,'health_status','OK','status','WORKING'),version=version+1 WHERE id=$1",[q.account]);
+  return{f,p};
+ }
+ const recover=(w:string,id:string,input:{operationId:string;expectedVersion:number;recoveryHash:string;reason?:string})=>tx(w,'commerce_api',db=>commandGroupWarmup(db,'REAL',id,{environment:'REAL',action:'recover',reason:input.reason??'Lecturas sanas revisadas',operationId:input.operationId,expectedVersion:input.expectedVersion,recoveryHash:input.recoveryHash},actor));
+ it('V7.5 H02/H03: shows PROTECTED, recovers once with the reviewed hash, keeps the human pause and reopens only on a later failure',async()=>{
+  const {f,p}=await protectedProgram();
+  const before=(await tx(f.w,'commerce_api',db=>groupWarmupOverview(db,'REAL',p.id))).programs[0];
+  expect(before.status).toBe('ACTIVE');expect(before.effective).toMatchObject({state:'PROTECTED',nextAction:'REVIEW_AND_RECOVER_PROTECTION'});expect(before.protection.open).toBe(true);
+  expect((await admin.query('SELECT count(*)::int n FROM outbox WHERE workspace_id=$1',[f.w])).rows[0].n).toBe(0);
+  const current=await tx(f.w,'commerce_api',db=>readGroupProgram(db,'REAL',p.id));
+  const paused=await tx(f.w,'commerce_api',db=>commandGroupWarmup(db,'REAL',p.id,{environment:'REAL',action:'pause',operationId:randomUUID(),expectedVersion:current.version},actor));
+  const review=await tx(f.w,'commerce_api',db=>previewGroupRecovery(db,'REAL',p.id));
+  expect(review).toMatchObject({ready:true,blockers:[],programStatus:'PAUSED',protection:{open:true},resumes:false});expect(review.failures).toHaveLength(1);
+  await expect(recover(f.w,p.id,{operationId:randomUUID(),expectedVersion:paused.version,recoveryHash:'0'.repeat(64)})).rejects.toMatchObject({code:'WARMUP_RECOVERY_CHANGED'});
+  const operationId=randomUUID(),done=await recover(f.w,p.id,{operationId,expectedVersion:paused.version,recoveryHash:review.recoveryHash});
+  expect(done).toMatchObject({status:'PAUSED',version:paused.version+1});
+  expect(await recover(f.w,p.id,{operationId,expectedVersion:paused.version,recoveryHash:review.recoveryHash})).toEqual(done);
+  await expect(recover(f.w,p.id,{operationId,expectedVersion:paused.version,recoveryHash:review.recoveryHash,reason:'Otro motivo distinto'})).rejects.toMatchObject({code:'OPERATION_ID_CONFLICT'});
+  const poolRow=(await admin.query('SELECT breaker_open,breaker_reviewed_until,paused FROM warmup_pools WHERE program_id=$1',[p.id])).rows[0];
+  expect(poolRow).toMatchObject({breaker_open:false,paused:true});expect(poolRow.breaker_reviewed_until).toBeInstanceOf(Date);
+  const event=(await admin.query("SELECT payload FROM domain_events WHERE aggregate_id=$1 AND event_type='warmup.protection_recovered'",[p.id])).rows;
+  expect(event).toHaveLength(1);expect(event[0].payload).toMatchObject({actor,resumed:false,programStatus:'PAUSED',external_effects:0});expect(event[0].payload.reviewedFailures).toHaveLength(1);
+  expect((await admin.query('SELECT count(*)::int n FROM warmup_observations WHERE account_id=$1',[f.lines[0]!.account])).rows[0].n).toBeGreaterThan(0);
+  // The reviewed failure does not reopen it; a later one does.
+  await tx(f.w,'commerce_automation',db=>processQrWarmupProfile(db,'REAL'));expect((await admin.query('SELECT breaker_open FROM warmup_pools WHERE program_id=$1',[p.id])).rows[0].breaker_open).toBe(false);
+  expect((await tx(f.w,'commerce_api',db=>readGroupProgram(db,'REAL',p.id))).status).toBe('PAUSED');
+  await admin.query("INSERT INTO warmup_observations(workspace_id,environment,account_id,kind,evidence_ref,observed_at) VALUES($1,'REAL',$2,'FAILED',$3,clock_timestamp())",[f.w,f.lines[1]!.account,randomUUID()]);
+  await tx(f.w,'commerce_automation',db=>processQrWarmupProfile(db,'REAL'));expect((await admin.query('SELECT breaker_open FROM warmup_pools WHERE program_id=$1',[p.id])).rows[0].breaker_open).toBe(true);
+ });
+ it('V7.5 H02: denies recovery without current health, operational ownership or with a confirmed restriction or uncertain effect',async()=>{
+  const {f,p}=await protectedProgram(),version=(await tx(f.w,'commerce_api',db=>readGroupProgram(db,'REAL',p.id))).version;
+  await admin.query('UPDATE session_ownership SET frozen=true WHERE account_id=$1',[f.lines[1]!.account]);
+  let review=await tx(f.w,'commerce_api',db=>previewGroupRecovery(db,'REAL',p.id));expect(review.ready).toBe(false);expect(review.blockers).toContain('LINE_OWNERSHIP_NOT_OPERATIONAL');
+  await expect(recover(f.w,p.id,{operationId:randomUUID(),expectedVersion:version,recoveryHash:review.recoveryHash})).rejects.toMatchObject({code:'LINE_OWNERSHIP_NOT_OPERATIONAL'});
+  await admin.query('UPDATE session_ownership SET frozen=false WHERE account_id=$1',[f.lines[1]!.account]);
+  await admin.query("UPDATE records SET body=body||jsonb_build_object('health_checked_at',(clock_timestamp()-interval '5 minutes')::text),version=version+1 WHERE id=$1",[f.lines[2]!.account]);
+  review=await tx(f.w,'commerce_api',db=>previewGroupRecovery(db,'REAL',p.id));expect(review.blockers).toContain('LINE_HEALTH_NOT_CURRENT');
+  await admin.query("UPDATE records SET body=body||jsonb_build_object('health_checked_at',clock_timestamp()::text),version=version+1 WHERE id=$1",[f.lines[2]!.account]);
+  await admin.query("INSERT INTO warmup_observations(workspace_id,environment,account_id,kind,evidence_ref,observed_at) VALUES($1,'REAL',$2,'CONFIRMED_BLOCK',$3,clock_timestamp()-interval '1 second')",[f.w,f.lines[2]!.account,randomUUID()]);
+  review=await tx(f.w,'commerce_api',db=>previewGroupRecovery(db,'REAL',p.id));expect(review.blockers).toEqual(['CONFIRMED_RESTRICTION']);
+  expect((await admin.query('SELECT breaker_open FROM warmup_pools WHERE program_id=$1',[p.id])).rows[0].breaker_open).toBe(true);
+ });
+ it('V7.5 H02: two concurrent recoveries of the same review apply once',async()=>{
+  const {f,p}=await protectedProgram(),version=(await tx(f.w,'commerce_api',db=>readGroupProgram(db,'REAL',p.id))).version;
+  const review=await tx(f.w,'commerce_api',db=>previewGroupRecovery(db,'REAL',p.id));expect(review.ready).toBe(true);
+  const results=await Promise.allSettled([recover(f.w,p.id,{operationId:randomUUID(),expectedVersion:version,recoveryHash:review.recoveryHash}),recover(f.w,p.id,{operationId:randomUUID(),expectedVersion:version,recoveryHash:review.recoveryHash})]);
+  expect(results.filter(r=>r.status==='fulfilled')).toHaveLength(1);
+  expect((results.find(r=>r.status==='rejected') as PromiseRejectedResult).reason).toMatchObject({code:'WARMUP_VERSION_CONFLICT'});
+  expect((await admin.query("SELECT count(*)::int n FROM domain_events WHERE aggregate_id=$1 AND event_type='warmup.protection_recovered'",[p.id])).rows[0].n).toBe(1);
  });
  it('reserves all recipients while sending only from the selected subset',async()=>{
   const f=await groupFixture(3),selected={...f.config,senderIds:f.config.senderIds.slice(0,2)},p=await f.start(selected);await f.schedule(p.id);

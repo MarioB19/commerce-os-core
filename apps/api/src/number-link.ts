@@ -177,7 +177,7 @@ async function overviewRow(c:QueryExecutor,account:DomainRecord){
  let status={code:base.state as string,label:base.label};
  if(base.state==='CONNECTED'){
   if(paused||humanPaused)status={code:'PAUSED_BY_YOU',label:'Pausado por ti'};
-  else if(!['OPERATIONAL','NOT_APPLICABLE','RELEASE_RECOVERY'].includes(base.operability.state))status={code:'NEEDS_ATTENTION',label:'Conectado · sin control operativo vigente'};
+  else if(['FROZEN','EXPIRED'].includes(base.operability.state))status={code:'NEEDS_ATTENTION',label:'Conectado · sin control operativo vigente'};
   else if(selling.length)status={code:'SELLING',label:'Vendiendo'};
   // V7.4 E: «Calentando» only while a program is active and this line sends.
   else if(warmup.state==='ACTIVE')status={code:'WARMING',label:'Calentando'};

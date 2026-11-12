@@ -48,7 +48,7 @@ export function registerVersionRoute(app:FastifyInstance):void{
  * profile envelope, so an installed MCP client can say what it lacks. Public,
  * content-free, no authority. */
 export function registerBuildRoute(app:FastifyInstance):void{
- app.get('/v2/build',async(_request,reply:FastifyReply)=>{
+ app.get('/v2/build',{schema:{summary:'Read the installed build and the MCP contract it serves',description:'Public, non-sensitive. It grants no operational authority.',tags:['System'],security:[]}},async(_request,reply:FastifyReply)=>{
   reply.header('Cache-Control','no-store').header('X-Content-Type-Options','nosniff');
   return{data:{...runtimeVersion(),mcp:{version:MCP_RELEASE,capabilities:[...MCP_CAPABILITIES]}}};
  });

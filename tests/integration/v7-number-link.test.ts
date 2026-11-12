@@ -126,3 +126,35 @@ it('removes a number after showing its impact; history stays and nothing is sent
  expect((await inProfile(workspace,c=>c.query("SELECT count(*)::int n FROM domain_events WHERE aggregate_id=$1 AND event_type IN('number.removal_requested','channel.deleted')",[live.id]))).rows[0].n).toBe(2);
  expect((await inProfile(workspace,c=>c.query('SELECT count(*)::int n FROM outbox WHERE workspace_id=$1',[workspace]))).rows[0].n).toBe(0);
 });
+
+// V7.5 §4 (H13): «Conectado» is the provider; operating also needs a live,
+// unfrozen ownership. The owner asks the current worker to check the line; the
+// API never moves or unfreezes the ownership itself.
+it('V7.5: shows a connected line without operational control and queues one fenced check to reconcile it',async()=>{
+ const created=data(await call('POST','/v1/numbers/quick',{alias:'Control vencido',country:'MX',phone:'+52 1 55 2222 3333'}),202);
+ // The gateway slot may be one an earlier case released: provision at its current version.
+ {const a=await account(created.id),key='waha:'+a.body.gateway_ref,version=(await inProfile(workspace,c=>c.query('SELECT version FROM integration_settings WHERE workspace_id=$1 AND environment=$2 AND key=$3',[workspace,'REAL',key]))).rows[0]?.version??0;
+  await inProfile(workspace,c=>saveIntegrationSetting(c,workspace,'REAL',key,{expected_version:version,label:'Gateway sintético',enabled:true,config:{base_url:'http://'+a.body.gateway_ref+':3000'},secrets:{api_key:'synthetic-key',webhook_secret:'synthetic-hook'},clear_secrets:[],reason:'Synthetic provisioning'},'fixture'));}
+ data(await call('POST',`/v1/numbers/${created.id}/link`,{action:'link'}),202);
+ const raw='5215522223333@c.us';await scanned(created.id,raw);await identityRead(created.id,raw);
+ expect(data(await call('GET',`/v1/numbers/${created.id}/link`))).toMatchObject({state:'CONNECTED',operability:{state:'NO_OWNERSHIP',next_action:'RECONCILE_OWNERSHIP'}});
+ // A line no worker has adopted yet keeps its usual status; a stale control does not.
+ expect(data(await call('GET','/v1/numbers/overview')).numbers.find((n:any)=>n.id===created.id).status.code).not.toBe('NEEDS_ATTENTION');
+ await inProfile(workspace,c=>c.query("INSERT INTO session_ownership(account_id,workspace_id,owner_id,frozen,lease_expires_at) VALUES($1,$2,'previous-worker',true,now()-interval '1 hour')",[created.id,workspace]));
+ const link=data(await call('GET',`/v1/numbers/${created.id}/link`));
+ expect(link.operability).toMatchObject({state:'FROZEN',reason:'UNSPECIFIED',next_action:'RECONCILE_OWNERSHIP',last_check:null});
+ const row=data(await call('GET','/v1/numbers/overview')).numbers.find((n:any)=>n.id===created.id);
+ expect(row.status).toEqual({code:'NEEDS_ATTENTION',label:'Conectado · sin control operativo vigente'});
+ const first=data(await call('POST',`/v1/numbers/${created.id}/link`,{action:'reconcile_ownership'}),202);
+ expect(first).toMatchObject({joined:false,operability:{state:'FROZEN',last_check:{status:'PENDING'}}});
+ const second=data(await call('POST',`/v1/numbers/${created.id}/link`,{action:'reconcile_ownership'}),202);
+ expect(second).toMatchObject({joined:true,command_id:first.command_id});
+ const commands=(await inProfile(workspace,c=>c.query("SELECT payload FROM commands WHERE resource_id=$1 AND payload->>'type'='check_health'",[created.id]))).rows;
+ expect(commands).toHaveLength(1);
+ expect((await inProfile(workspace,c=>c.query('SELECT owner_id,frozen FROM session_ownership WHERE account_id=$1',[created.id]))).rows[0]).toEqual({owner_id:'previous-worker',frozen:true});
+ expect((await inProfile(workspace,c=>c.query("SELECT count(*)::int n FROM domain_events WHERE aggregate_id=$1 AND event_type='number.ownership_reconcile_requested'",[created.id]))).rows[0].n).toBe(1);
+ expect((await inProfile(workspace,c=>c.query('SELECT count(*)::int n FROM outbox WHERE account_id=$1',[created.id]))).rows[0].n).toBe(0);
+ await inProfile(workspace,c=>c.query("UPDATE session_ownership SET frozen=false,lease_expires_at=now()+interval '1 minute' WHERE account_id=$1",[created.id]));
+ expect(data(await call('GET',`/v1/numbers/${created.id}/link`)).operability.state).toBe('OPERATIONAL');
+ expect(data(await call('POST',`/v1/numbers/${created.id}/link`,{action:'reconcile_ownership'}))).toMatchObject({operability:{state:'OPERATIONAL'}});
+});

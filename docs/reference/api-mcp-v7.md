@@ -2,13 +2,13 @@
 
 > Generada por `scripts/api-reference.ts` desde el código (OpenAPI de la app y registro MCP tipado). No se edita a mano: CI falla si difiere del código.
 
-Contenido: `f5f95e86abde0903` · 219 operaciones HTTP en 195 rutas · 40 herramientas MCP (presupuesto 40).
+Contenido: `44f4b362b2445beb` · 223 operaciones HTTP en 199 rutas · 40 herramientas MCP (presupuesto 40).
 
 ## Herramientas MCP
 
 | Herramienta | Audiencia | Rutas | Permisos | Acciones | Pendientes |
 |---|---|---|---|---|---|
-| `profile_context` | perfil | `/v2/profile` | `profiles:read` | actual, listar, cambiar | — |
+| `profile_context` | perfil | `/v2/profile` | `profiles:read` | actual, listar, cambiar, version | — |
 | `home_get` | perfil | `/v2/home` | `home:read` | resumen | — |
 | `employees_manage` | perfil | `/v2/employees` | `employees:read`, `employees:write` | listar, invitaciones, invitar, cancelar_invitacion, cambiar_rol, desactivar, consultar_operacion | reenviar_invitacion |
 | `integrations_manage` | perfil | `/v2/integrations` | `integrations:read`, `integrations:write` | listar, guardar, validar, rotar, preferencias, activar, desactivar, eliminar, conexiones_meta, seleccionar_portafolio, estado_conexion_meta, descubrir_cuentas_meta | — |
@@ -22,9 +22,9 @@ Contenido: `f5f95e86abde0903` · 219 operaciones HTTP en 195 rutas · 40 herrami
 | `collections_manage` | perfil | `/v2/variants/{id}/collection` | `collections:read`, `collections:write` | leer, guardar, validar, historial | — |
 | `receipt_rules_manage` | perfil | `/v2/payments/policies` | `receipt-rules:read`, `receipt-rules:write` | leer_perfil, leer_variante, guardar_perfil, guardar_variante, consultar_operacion | — |
 | `numbers_manage` | perfil | `/v1/numbers` | `numbers:read`, `numbers:write` | listar, leer, crear, cambiar_calentamiento, impacto_eliminar, eliminar | editar |
-| `number_connection_manage` | perfil | `/v1/numbers/{id}/link` | `numbers:read`, `numbers:connect` | estado, conectar, vincular, reintentar_preparacion, confirmar_desvinculacion, desconectar, pausar, reanudar | — |
+| `number_connection_manage` | perfil | `/v1/numbers/{id}/link` | `numbers:read`, `numbers:connect` | estado, conectar, vincular, reintentar_preparacion, confirmar_desvinculacion, conciliar_propiedad, desconectar, pausar, reanudar | — |
 | `number_assignments_manage` | perfil | `/v2/continuity` | `assignments:read`, `assignments:write` | autorizaciones, autorizacion, autorizar, pausar, reanudar, revocar, consultar_operacion, asignar, retirar, impacto, historial, vista_inversa | — |
-| `warmup_manage` | perfil | `/v2/warmup` | `warmup:read`, `warmup:write` | progreso, pausar, reanudar, evidencia, listar_programas, leer_programa, grupos, actualizar_grupos, bibliotecas, ver_biblioteca, importar_biblioteca, previsualizar, crear, iniciar, pausar_programa, reanudar_programa, archivar, configurar, consultar_operacion | — |
+| `warmup_manage` | perfil | `/v2/warmup` | `warmup:read`, `warmup:write` | progreso, pausar, reanudar, evidencia, listar_programas, leer_programa, grupos, actualizar_grupos, bibliotecas, ver_biblioteca, importar_biblioteca, previsualizar, crear, iniciar, pausar_programa, reanudar_programa, archivar, configurar, consultar_operacion, revisar_proteccion, recuperar_proteccion | — |
 | `conversations_manage` | perfil | `/v1/conversations` | `conversations:read`, `conversations:write` | listar, leer, responder, registrar_acuerdo, cerrar, registrar_baja, tomar_control, liberar_control, pausar, reanudar | asignar_persona, elegir_variante |
 | `orders_manage` | perfil | `/v1/orders` | `orders:read`, `orders:write` | listar, leer | corregir_clasificacion, historial |
 | `receipts_manage` | perfil | `/v2/receipts` | `receipts:read`, `receipts:review` | listar, leer, archivo, revisar | — |
@@ -35,7 +35,7 @@ Contenido: `f5f95e86abde0903` · 219 operaciones HTTP en 195 rutas · 40 herrami
 | `goals_manage` | perfil | `/v2/goals` | `goals:read`, `goals:write` | listar, leer, avance, crear, editar, consultar_operacion | eliminar |
 | `number_test_manage` | perfil | `/v2/number-tests` | `tests:read`, `tests:run` | diagnosticar, estimar, crear, leer, ultima, mensaje, seleccionar, avanzar_reloj, continuar, reiniciar, adjuntar, revisar_comprobante, exportar, estimar_suite, ejecutar_suite, informe | — |
 | `operations_get` | perfil | `/v2/operations` | `operations:read` | leer_resultado | efectos |
-| `alerts_manage` | perfil | `/v2/alerts` | `alerts:read`, `alerts:write` | listar, leer, acusar | configurar_preferencias |
+| `alerts_manage` | perfil | `/v2/alerts` | `alerts:read`, `alerts:write` | listar, leer, acusar, acusar_todos | configurar_preferencias |
 | `help_read` | perfil | `/v2/help` | `help:read` | guia, descargar | receta, referencia |
 | `audit_read` | perfil | `/v2/audit` | `audit:read`, `audit:export` | listar, exportar | — |
 | `privacy_manage` | perfil | `/v2/privacy` | `privacy:read`, `privacy:write` | — | retencion, guardar_retencion, exportar_contacto, borrar_contacto, leer_resultado |
@@ -233,7 +233,9 @@ Contenido: `f5f95e86abde0903` · 219 operaciones HTTP en 195 rutas · 40 herrami
 | Método | Ruta | Acceso |
 |---|---|---|
 | GET | `/v2/alerts` | autenticado |
+| GET | `/v2/alerts/{id}` | autenticado |
 | POST | `/v2/alerts/{id}/acknowledge` | autenticado |
+| POST | `/v2/alerts/acknowledge-all` | autenticado |
 
 ### `/v2/audit`
 
@@ -241,6 +243,12 @@ Contenido: `f5f95e86abde0903` · 219 operaciones HTTP en 195 rutas · 40 herrami
 |---|---|---|
 | GET | `/v2/audit` | autenticado |
 | GET | `/v2/audit/export` | autenticado |
+
+### `/v2/build`
+
+| Método | Ruta | Acceso |
+|---|---|---|
+| GET | `/v2/build` | público |
 
 ### `/v2/campaigns`
 
@@ -539,4 +547,5 @@ Contenido: `f5f95e86abde0903` · 219 operaciones HTTP en 195 rutas · 40 herrami
 | POST | `/v2/warmup/programs` | autenticado |
 | GET | `/v2/warmup/programs/{id}` | autenticado |
 | POST | `/v2/warmup/programs/{id}/commands` | autenticado |
+| POST | `/v2/warmup/programs/{id}/recovery-preview` | autenticado |
 

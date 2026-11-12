@@ -5,7 +5,8 @@
    "actions": [
     "actual",
     "listar",
-    "cambiar"
+    "cambiar",
+    "version"
    ],
    "audience": "profile",
    "family": "/v2/profile",
@@ -262,6 +263,7 @@
     "vincular",
     "reintentar_preparacion",
     "confirmar_desvinculacion",
+    "conciliar_propiedad",
     "desconectar",
     "pausar",
     "reanudar"
@@ -319,7 +321,9 @@
     "reanudar_programa",
     "archivar",
     "configurar",
-    "consultar_operacion"
+    "consultar_operacion",
+    "revisar_proteccion",
+    "recuperar_proteccion"
    ],
    "audience": "profile",
    "family": "/v2/warmup",
@@ -536,7 +540,8 @@
    "actions": [
     "listar",
     "leer",
-    "acusar"
+    "acusar",
+    "acusar_todos"
    ],
    "audience": "profile",
    "family": "/v2/alerts",

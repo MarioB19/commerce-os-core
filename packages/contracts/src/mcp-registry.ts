@@ -8,7 +8,7 @@ export const MCP_TOOL_BUDGET=40;
 export interface McpRegistryEntry {name:string;audience:'profile'|'platform';actions:readonly string[];pending:readonly string[];scopes:readonly string[];family:string}
 const tool=(name:string,audience:'profile'|'platform',family:string,scopes:readonly string[],actions:readonly string[],pending:readonly string[]=[]):McpRegistryEntry=>({name,audience,family,scopes,actions,pending});
 export const mcpRegistry:readonly McpRegistryEntry[]=Object.freeze([
- tool('profile_context','profile','/v2/profile',['profiles:read'],['actual','listar','cambiar']),
+ tool('profile_context','profile','/v2/profile',['profiles:read'],['actual','listar','cambiar','version']),
  tool('home_get','profile','/v2/home',['home:read'],['resumen']),
  tool('employees_manage','profile','/v2/employees',['employees:read','employees:write'],['listar','invitaciones','invitar','cancelar_invitacion','cambiar_rol','desactivar','consultar_operacion'],['reenviar_invitacion']),
  tool('integrations_manage','profile','/v2/integrations',['integrations:read','integrations:write'],['listar','guardar','validar','rotar','preferencias','activar','desactivar','eliminar','conexiones_meta','seleccionar_portafolio','estado_conexion_meta','descubrir_cuentas_meta']),
@@ -22,9 +22,9 @@ export const mcpRegistry:readonly McpRegistryEntry[]=Object.freeze([
  tool('collections_manage','profile','/v2/variants/{id}/collection',['collections:read','collections:write'],['leer','guardar','validar','historial']),
  tool('receipt_rules_manage','profile','/v2/payments/policies',['receipt-rules:read','receipt-rules:write'],['leer_perfil','leer_variante','guardar_perfil','guardar_variante','consultar_operacion']),
  tool('numbers_manage','profile','/v1/numbers',['numbers:read','numbers:write'],['listar','leer','crear','cambiar_calentamiento','impacto_eliminar','eliminar'],['editar']),
- tool('number_connection_manage','profile','/v1/numbers/{id}/link',['numbers:read','numbers:connect'],['estado','conectar','vincular','reintentar_preparacion','confirmar_desvinculacion','desconectar','pausar','reanudar']),
+ tool('number_connection_manage','profile','/v1/numbers/{id}/link',['numbers:read','numbers:connect'],['estado','conectar','vincular','reintentar_preparacion','confirmar_desvinculacion','conciliar_propiedad','desconectar','pausar','reanudar']),
  tool('number_assignments_manage','profile','/v2/continuity',['assignments:read','assignments:write'],['autorizaciones','autorizacion','autorizar','pausar','reanudar','revocar','consultar_operacion','asignar','retirar','impacto','historial','vista_inversa']),
- tool('warmup_manage','profile','/v2/warmup',['warmup:read','warmup:write'],['progreso','pausar','reanudar','evidencia','listar_programas','leer_programa','grupos','actualizar_grupos','bibliotecas','ver_biblioteca','importar_biblioteca','previsualizar','crear','iniciar','pausar_programa','reanudar_programa','archivar','configurar','consultar_operacion']),
+ tool('warmup_manage','profile','/v2/warmup',['warmup:read','warmup:write'],['progreso','pausar','reanudar','evidencia','listar_programas','leer_programa','grupos','actualizar_grupos','bibliotecas','ver_biblioteca','importar_biblioteca','previsualizar','crear','iniciar','pausar_programa','reanudar_programa','archivar','configurar','consultar_operacion','revisar_proteccion','recuperar_proteccion']),
  tool('conversations_manage','profile','/v1/conversations',['conversations:read','conversations:write'],['listar','leer','responder','registrar_acuerdo','cerrar','registrar_baja','tomar_control','liberar_control','pausar','reanudar'],['asignar_persona','elegir_variante']),
  tool('orders_manage','profile','/v1/orders',['orders:read','orders:write'],['listar','leer'],['corregir_clasificacion','historial']),
  tool('receipts_manage','profile','/v2/receipts',['receipts:read','receipts:review'],['listar','leer','archivo','revisar']),
@@ -35,7 +35,7 @@ export const mcpRegistry:readonly McpRegistryEntry[]=Object.freeze([
  tool('goals_manage','profile','/v2/goals',['goals:read','goals:write'],['listar','leer','avance','crear','editar','consultar_operacion'],['eliminar']),
  tool('number_test_manage','profile','/v2/number-tests',['tests:read','tests:run'],['diagnosticar','estimar','crear','leer','ultima','mensaje','seleccionar','avanzar_reloj','continuar','reiniciar','adjuntar','revisar_comprobante','exportar','estimar_suite','ejecutar_suite','informe'],[]),
  tool('operations_get','profile','/v2/operations',['operations:read'],['leer_resultado'],['efectos']),
- tool('alerts_manage','profile','/v2/alerts',['alerts:read','alerts:write'],['listar','leer','acusar'],['configurar_preferencias']),
+ tool('alerts_manage','profile','/v2/alerts',['alerts:read','alerts:write'],['listar','leer','acusar','acusar_todos'],['configurar_preferencias']),
  tool('help_read','profile','/v2/help',['help:read'],['guia','descargar'],['receta','referencia']),
  tool('audit_read','profile','/v2/audit',['audit:read','audit:export'],['listar','exportar']),
  tool('privacy_manage','profile','/v2/privacy',['privacy:read','privacy:write'],[],['retencion','guardar_retencion','exportar_contacto','borrar_contacto','leer_resultado']),

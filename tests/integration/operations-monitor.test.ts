@@ -184,3 +184,41 @@ it('V7.5 audit: does not require legacy schedules from an empty QR pool',async()
  await collectOperationalAlerts();
  expect((await pool.query("SELECT kind FROM operational_alerts WHERE workspace_id=$1 AND kind IN('WARMUP_HEALTH_OVERDUE','WARMUP_RECONCILE_OVERDUE','WARMUP_DAILY_OVERDUE')",[scope])).rows).toEqual([]);
 });
+
+// V7.5 §6 (H11): episodes, recurrence, escalation and the installed backup producer.
+const open=async(scope:string,kind:string)=>(await pool.query('SELECT * FROM operational_alerts WHERE workspace_id=$1 AND kind=$2 AND resolved_at IS NULL AND superseded_by IS NULL',[scope,kind])).rows;
+it('V7.5: a repeated observation keeps one episode and its acknowledgement; recovery resolves it and a recurrence opens a new one',async()=>{
+ const scope=await workspace();await putRecord(pool,{workspaceId:scope,environment:'REAL',kind:'channel_account',body:{provider:'simulator',status:'FAILED'}});
+ await collectOperationalAlerts();await collectOperationalAlerts();
+ const [first]=await open(scope,'CHANNEL_PROVIDER_UNAVAILABLE');expect(first.observations).toBe(2);expect(await open(scope,'CHANNEL_PROVIDER_UNAVAILABLE')).toHaveLength(1);
+ await pool.query('UPDATE operational_alerts SET acknowledged_at=now(),acknowledged_by=$2 WHERE id=$1',[first.id,'synthetic-owner']);
+ await collectOperationalAlerts();expect((await open(scope,'CHANNEL_PROVIDER_UNAVAILABLE'))[0]).toMatchObject({id:first.id,observations:3,acknowledged_by:'synthetic-owner'});
+ await pool.query("UPDATE records SET body=body||'{\"status\":\"WORKING\"}'::jsonb,version=version+1 WHERE workspace_id=$1 AND kind='channel_account'",[scope]);
+ await collectOperationalAlerts();expect(await open(scope,'CHANNEL_PROVIDER_UNAVAILABLE')).toEqual([]);
+ expect((await pool.query('SELECT evidence->>$2 AS r FROM operational_alerts WHERE id=$1',[first.id,'resolution'])).rows[0].r).toBe('CONDITION_CLEARED');
+ await pool.query("UPDATE records SET body=body||'{\"status\":\"FAILED\"}'::jsonb,version=version+1 WHERE workspace_id=$1 AND kind='channel_account'",[scope]);
+ await collectOperationalAlerts();const [again]=await open(scope,'CHANNEL_PROVIDER_UNAVAILABLE');expect(again.id).not.toBe(first.id);expect(again.acknowledged_at).toBeNull();
+});
+it('V7.5: escalation to CRITICAL is a new notice for the person; the backup producer that runs resolves the backup episode',async()=>{
+ const scope=await workspace();await putRecord(pool,{workspaceId:scope,environment:'REAL',kind:'channel_account',body:{provider:'simulator'}});
+ const {episodeAlert}=await import('../../apps/automation-worker/src/operations-monitor.js');
+ await withTransaction(c=>episodeAlert(c,{workspace:scope,environment:'REAL',kind:'SYNTHETIC_ESCALATION',severity:'WARNING',active:true,now:new Date()}));
+ await pool.query("UPDATE operational_alerts SET acknowledged_at=now() WHERE workspace_id=$1 AND kind='SYNTHETIC_ESCALATION'",[scope]);
+ await withTransaction(c=>episodeAlert(c,{workspace:scope,environment:'REAL',kind:'SYNTHETIC_ESCALATION',severity:'CRITICAL',active:true,now:new Date()}));
+ expect((await open(scope,'SYNTHETIC_ESCALATION'))[0]).toMatchObject({severity:'CRITICAL',acknowledged_at:null,observations:2});
+ await collectOperationalAlerts();expect((await open(scope,'EXTERNAL_BACKUP_NOT_CURRENT'))[0].evidence.source).toBe('NO_VERIFIED_BACKUP_OBSERVED');
+ await pool.query("INSERT INTO platform_backup_runs(kind,status,label,started_at,finished_at,database_bytes,repository_bytes) VALUES('PITR_FULL','SUCCEEDED','20001111-000000F',now()-interval '20 minutes',now()-interval '10 minutes',1,1)");
+ try{
+  await collectOperationalAlerts();expect(await open(scope,'EXTERNAL_BACKUP_NOT_CURRENT')).toEqual([]);
+  await pool.query("INSERT INTO platform_backup_runs(kind,status,label,started_at,finished_at,database_bytes,repository_bytes,error) VALUES('PITR_INCR','FAILED',NULL,now()-interval '2 minutes',now()-interval '1 minute',NULL,NULL,'SYNTHETIC_FAILURE')");
+  await collectOperationalAlerts();expect((await open(scope,'EXTERNAL_BACKUP_NOT_CURRENT'))[0].evidence.source).toBe('LAST_BACKUP_RUN_FAILED');
+ }finally{await pool.query("DELETE FROM platform_backup_runs WHERE label='20001111-000000F' OR error='SYNTHETIC_FAILURE'");}
+});
+it('V7.5: an active LEGACY pool with members still alerts on overdue schedule windows',async()=>{
+ const scope=await workspace();const account=await putRecord(pool,{workspaceId:scope,environment:'REAL',kind:'channel_account',body:{provider:'simulator'}});
+ const profile=(await pool.query("INSERT INTO warmup_profiles(workspace_id,environment,config) VALUES($1,'REAL',$2) RETURNING id",[scope,warmupProfileSchema.parse({name:'Synthetic legacy pool',timezone:'UTC'})])).rows[0];
+ const created=(await pool.query("INSERT INTO warmup_pools(workspace_id,environment,profile_id,enabled,continuity_mode) VALUES($1,'REAL',$2,true,'LEGACY') RETURNING id",[scope,profile.id])).rows[0];
+ await pool.query("INSERT INTO warmup_states(account_id,workspace_id,environment,pool_id,profile_id) VALUES($1,$2,'REAL',$3,$4)",[account.id,scope,created.id,profile.id]);
+ await collectOperationalAlerts();
+ expect((await pool.query("SELECT kind FROM operational_alerts WHERE workspace_id=$1 AND kind LIKE 'WARMUP_%_OVERDUE' AND resolved_at IS NULL ORDER BY kind",[scope])).rows.map(r=>r.kind)).toEqual(['WARMUP_DAILY_OVERDUE','WARMUP_HEALTH_OVERDUE','WARMUP_RECONCILE_OVERDUE']);
+});

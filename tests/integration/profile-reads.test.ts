@@ -123,5 +123,30 @@ describe('V7 profile reads: home, usage, audit and operations',()=>{
   expect((await get('/v2/home',users.other,two)).json().data.pending).toMatchObject({alerts:1,criticalAlerts:1});
   const history=(await get('/v2/alerts?include=all',users.owner,one)).json().data.alerts;
   expect(history.some((a:any)=>a.acknowledgedAt)).toBe(true);
+
+ });
+ // V7.5 §6 (H10): stable pages, direct read outside the first page, and
+ // «marcar todos como vistos» with a cut that keeps later notices pending.
+ it('V7.5 H10: paginates the history with a stable cursor, reads by ID outside page one and acknowledges all up to a cut',async()=>{
+  const w=two,headers=(user:string)=>({origin,'x-user':user,'x-commerce-profile-id':w,'x-commerce-profile-version':'1'});
+  await admin.query(`INSERT INTO operational_alerts(workspace_id,environment,dedupe_key,kind,severity,summary_code,created_at)
+   SELECT $1,'REAL','page-'||n,'PAGE_KIND_'||n,'WARNING','PAGE_KIND',clock_timestamp()-(n||' minutes')::interval FROM generate_series(1,130) n`,[w]);
+  const seen=new Set<string>();let cursor:string|null=null,pages=0;
+  do{const r=await get('/v2/alerts?include=all&limit=50'+(cursor?'&cursor='+cursor:''),users.other,w);expect(r.statusCode).toBe(200);const d=r.json().data;for(const a of d.alerts){expect(seen.has(a.id)).toBe(false);seen.add(a.id);}cursor=d.nextCursor;pages++;}while(cursor&&pages<10);
+  expect(pages).toBe(3);expect(seen.size).toBeGreaterThanOrEqual(130);
+  const oldest=(await admin.query("SELECT id FROM operational_alerts WHERE workspace_id=$1 AND dedupe_key='page-130'",[w])).rows[0].id;
+  expect((await get('/v2/alerts?limit=100',users.other,w)).json().data.alerts.map((a:any)=>a.id)).not.toContain(oldest);
+  expect((await get('/v2/alerts/'+oldest,users.other,w)).json().data).toMatchObject({id:oldest,incident:'OPEN',acknowledgedAt:null,observations:1});
+  expect((await get('/v2/alerts/'+oldest,users.owner,one)).statusCode).toBe(404);
+  expect((await get('/v2/alerts?cursor=not-a-cursor!!',users.other,w)).statusCode).toBe(400);
+  const cut=new Date(Date.now()-30*60_000).toISOString();
+  const ack=await app.inject({method:'POST',url:'/v2/alerts/acknowledge-all',payload:{before:cut},headers:headers(users.other)});expect(ack.statusCode).toBe(200);
+  const {acknowledged,cutoff}=ack.json().data;expect(cutoff).toBe(cut);expect(acknowledged).toBeGreaterThanOrEqual(100);
+  const after=(await get('/v2/alerts?limit=100',users.other,w)).json().data.alerts as any[];
+  expect(after.length).toBeGreaterThan(0);expect(after.every((a:any)=>Date.parse(a.createdAt)>Date.parse(cut))).toBe(true);
+  const again=await app.inject({method:'POST',url:'/v2/alerts/acknowledge-all',payload:{before:cut},headers:headers(users.other)});expect(again.json().data.acknowledged).toBe(0);
+  expect((await app.inject({method:'POST',url:'/v2/alerts/acknowledge-all',payload:{before:new Date(Date.now()+3600_000).toISOString()},headers:headers(users.other)})).statusCode).toBe(400);
+  expect((await admin.query("SELECT count(*)::int n FROM operational_alerts WHERE workspace_id=$1 AND resolved_at IS NOT NULL AND dedupe_key LIKE 'page-%'",[w])).rows[0].n).toBe(0);
+  expect((await admin.query("SELECT count(*)::int n FROM domain_events WHERE workspace_id=$1 AND event_type='profile.alerts.acknowledged_all'",[w])).rows[0].n).toBe(2);
  });
 });
