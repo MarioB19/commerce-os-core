@@ -9,14 +9,14 @@ import {ProviderError} from '../../packages/messaging/src/types.js';
 /** V7.5 pure decisions (docs/adr-v7-5-resilience.md); no database or network. */
 describe('V7.5 H05: provider read failures keep their class',()=>{
  it.each([
-  [Object.assign(new Error('The operation was aborted due to timeout'),{name:'TimeoutError'}),'PROVIDER_READ_TIMEOUT','unavailable',true],
+  [Object.assign(new Error('The operation was aborted due to timeout'),{name:'TimeoutError'}),'PROVIDER_READ_TIMEOUT','not_available',true],
   [new ProviderError('PROVIDER_HTTP_401',401),'PROVIDER_AUTHENTICATION_REJECTED','not_authorized',false],
-  [new ProviderError('PROVIDER_HTTP_503',503),'PROVIDER_SERVER_ERROR','unavailable',true],
-  [new ProviderError('PROVIDER_HTTP_429',429),'PROVIDER_RATE_LIMITED','unavailable',true],
-  [new ProviderError('GROUP_LIST_RESPONSE_UNSUPPORTED'),'PROVIDER_RESPONSE_INVALID','unavailable',true],
-  [new TypeError('fetch failed'),'PROVIDER_TRANSPORT_UNAVAILABLE','unavailable',true],
-  [new Error('GATEWAY_ISOLATION_UNVERIFIED'),'GATEWAY_ISOLATION_UNVERIFIED','unavailable',false],
-  [new Error('something else'),'PROVIDER_CONFIGURATION_OR_CONNECTION_UNAVAILABLE','unavailable',true],
+  [new ProviderError('PROVIDER_HTTP_503',503),'PROVIDER_SERVER_ERROR','not_available',true],
+  [new ProviderError('PROVIDER_HTTP_429',429),'PROVIDER_RATE_LIMITED','not_available',true],
+  [new ProviderError('GROUP_LIST_RESPONSE_UNSUPPORTED'),'PROVIDER_RESPONSE_INVALID','not_available',true],
+  [new TypeError('fetch failed'),'PROVIDER_TRANSPORT_UNAVAILABLE','not_available',true],
+  [new Error('GATEWAY_ISOLATION_UNVERIFIED'),'GATEWAY_ISOLATION_UNVERIFIED','not_available',false],
+  [new Error('something else'),'PROVIDER_CONFIGURATION_OR_CONNECTION_UNAVAILABLE','not_available',true],
  ] as const)('%s → %s',(error,code,availability,retryable)=>{
   const r=classifyHealthReadFailure(error,1234.4);
   expect(r).toMatchObject({code,availability,retryable,phase:'provider_health_read',duration_ms:1234});
@@ -24,7 +24,7 @@ describe('V7.5 H05: provider read failures keep their class',()=>{
  });
  it('only 401/403 is a not-authorized availability',()=>{
   expect(classifyHealthReadFailure(new ProviderError('PROVIDER_HTTP_403',403),1).availability).toBe('not_authorized');
-  expect(classifyHealthReadFailure(new ProviderError('PROVIDER_HTTP_500',500),1).availability).toBe('unavailable');
+  expect(classifyHealthReadFailure(new ProviderError('PROVIDER_HTTP_500',500),1).availability).toBe('not_available');
  });
 });
 describe('V7.5 H12: freeze causes',()=>{

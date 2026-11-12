@@ -151,11 +151,16 @@ siguen pendientes), auditado e idempotente.
 
 ## 7. Errores del proveedor (H05)
 
-`recordHealth` clasifica el fallo de lectura: `TIMEOUT`, `TRANSPORT`,
-`AUTHENTICATION`, `PROVIDER_ERROR` (5xx), `INVALID_RESPONSE`, `ISOLATION`,
-`UNCLASSIFIED`, con fase y duración. `availability` deja de decir
-`not_authorized` salvo 401/403. Nada de credenciales ni contenido en el
-diagnóstico.
+`recordHealth` clasifica el fallo de lectura: `PROVIDER_READ_TIMEOUT`,
+`PROVIDER_TRANSPORT_UNAVAILABLE`, `PROVIDER_AUTHENTICATION_REJECTED` (401/403),
+`PROVIDER_SERVER_ERROR` (5xx), `PROVIDER_RATE_LIMITED` (429),
+`PROVIDER_RESPONSE_INVALID`, `GATEWAY_ISOLATION_UNVERIFIED` y
+`PROVIDER_CONFIGURATION_OR_CONNECTION_UNAVAILABLE`, con fase, duración y si es
+reintentable. `availability` deja de decir `not_authorized` salvo 401/403; los
+demás fallos son `not_available` (vocabulario declarado de `HealthSignal`). El
+diagnóstico se guarda en la señal. Un alta nunca aprovisionada (NEW, sin
+propiedad, identidad ni ciclo) sigue en NEW ante cualquier lectura fallida,
+como en V7.4. Nada de credenciales ni contenido en el diagnóstico.
 
 ## 8. MCP (H04)
 

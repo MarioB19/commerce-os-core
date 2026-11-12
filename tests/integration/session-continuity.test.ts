@@ -77,6 +77,16 @@ it('V7.5 audit: healthy readback can recover the same process after a health fre
  await heartbeatOwnership(owner);await recordHealth(a,()=>provider);
  expect((await pool.query('SELECT frozen,lease_expires_at>now() AS live FROM session_ownership WHERE account_id=$1',[a.id])).rows[0]).toEqual({frozen:false,live:true});
 });
+// V7.5 §7 (H05): the persisted signal keeps the class of a failed read.
+it('V7.5 H05: a timed-out health read records its class, phase and duration without claiming not_authorized',async()=>{
+ const a=await account(),provider=new SimulatorProvider();
+ provider.health=async()=>{throw Object.assign(new Error('The operation was aborted due to timeout'),{name:'TimeoutError'});};
+ await recordHealth(a,()=>provider);
+ const row=(await pool.query("SELECT body FROM records WHERE workspace_id=$1 AND kind='health_signal' AND body->>'account_id'=$2 AND body->>'dimension'='session' ORDER BY created_at DESC LIMIT 1",[workspace,a.id])).rows[0].body;
+ expect(row).toMatchObject({status:'UNKNOWN',value:'PROVIDER_READ_TIMEOUT',availability:'not_available',diagnostic:{code:'PROVIDER_READ_TIMEOUT',phase:'provider_health_read',retryable:true,availability:'not_available'}});
+ expect(typeof row.diagnostic.duration_ms).toBe('number');expect(JSON.stringify(row)).not.toMatch(/api_key|token|secret|password/i);
+ expect((await getRecord(pool,workspace,'channel_account',a.id))!.body.health_status).toBe('UNKNOWN');
+});
 it('restores only a release-frozen account with a current grant and healthy identity',async()=>{
  const current=await readOperationalSettings(pool,workspace,'REAL');
  const policy=await withTransaction(c=>writeOperationalSettings(c,workspace,'REAL',current.version,{...current.body,dispatch_frozen:false,real_sends_enabled:true,allow_real_operations:true},'synthetic-release'));
