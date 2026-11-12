@@ -11,6 +11,7 @@ import {groupWarmupConfigSchema,type GroupWarmupConfig} from '../../packages/con
 import {getRecord} from '../../packages/db/src/index.js';
 import {requestGroupRefresh,groupReadableLines} from '../../packages/db/src/group-warmup.js';
 import {processNumberOperations} from '../../apps/channel-worker/src/number-operations.js';
+import {dispatchOutbox,recoverSending} from '../../apps/channel-worker/src/runtime.js';
 import {WahaProvider} from '../../packages/messaging/src/providers.js';
 import {applyWarmupMode} from '../../packages/db/src/number-warmup-mode.js';
 /** Restricted real PostgreSQL over explicitly synthetic connection observations.
@@ -233,6 +234,20 @@ describe('V7.2 own group programs under restricted PostgreSQL',()=>{
   await asProfileOwner(admin,f.w,async db=>{const at=new Date(Date.now()-1000);await db.query('UPDATE warmup_turns SET not_before=$2 WHERE effect_id=$1',[effect.id,at]);await db.query('UPDATE outbox SET not_before=$2 WHERE id=$1',[effect.id,at]);effect.not_before=at;});
   const gate=async()=>{await f.refresh();return tx(f.w,'commerce_channel',db=>withProfileQueryRouting(db,()=>gateWarmupDispatch(db,effect,'qr-gate')));};return{...f,p,effect,gate};
  }
+ // V7.5.1 (production pilot 12-nov): group effects carry a continuous authority,
+ // whose guard requires the effect's own profile in the transaction. Worker
+ // paths that changed them from a global transaction failed on every pass.
+ it('V7.5.1: dispatch records a failed group observation and maintenance recovers a stale send, both under a continuous authority',async()=>{
+  const f=await readyGroup();
+  expect((await admin.query('SELECT continuous_authorization_id FROM outbox WHERE id=$1',[f.effect.id])).rows[0].continuous_authorization_id).not.toBeNull();
+  const down=gowsFactory(f.w,f.lines,2,Object.fromEntries(f.lines.map(q=>[q.account,'unavailable' as const])));
+  await expect(dispatchOutbox(20,down.factory,'qr-gate')).resolves.toBeTypeOf('number');
+  expect((await admin.query('SELECT status,result FROM outbox WHERE id=$1',[f.effect.id])).rows[0]).toMatchObject({status:'BLOCKED',result:{reason:'GROUP_OBSERVATION_FAILED'}});
+  expect(down.calls.some(c=>/sendText|send/.test(c))).toBe(false);
+  await asProfileOwner(admin,f.w,db=>db.query("UPDATE outbox SET status='SENDING',claim_id=gen_random_uuid(),claimed_at=now()-interval '2 minutes',attempts=1 WHERE id=$1",[f.effect.id]));
+  await expect(recoverSending(60)).resolves.toBeDefined();
+  expect((await admin.query('SELECT status,attempts,result FROM outbox WHERE id=$1',[f.effect.id])).rows[0]).toMatchObject({status:'UNKNOWN',attempts:1,result:{reason:'ABANDONED_SENDING_REQUIRES_RECONCILIATION'}});
+ });
  it('passes the final group gate with QR authority and individual recipient scope',async()=>{const f=await readyGroup();expect(await f.gate()).toMatchObject({allowed:true});});
  it('defers a locked group without waiting while the sender owns an outbox row',async()=>{
   const f=await readyGroup(),held=deferred<void>(),release=deferred<void>();

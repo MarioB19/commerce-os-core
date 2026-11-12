@@ -76,8 +76,9 @@ export async function classifyGroupEvent(c:QueryExecutor,account:DomainRecord,e:
  if(group&&classification==='GROUP_EVENT')await correlateGroupEvents(c,group.id);
  return true;
 }
-export async function correlateGroupEvents(c:QueryExecutor,groupId?:string){
- const events=(await c.query(`SELECT e.*,g.id group_id FROM warmup_group_events e JOIN warmup_groups g ON g.workspace_id=e.workspace_id AND g.environment=e.environment AND g.group_fingerprint=e.group_fingerprint WHERE NOT e.correlated AND e.classification='GROUP_EVENT' AND ($1::uuid IS NULL OR g.id=$1) ORDER BY e.last_reconciled_at NULLS FIRST,e.observed_at LIMIT 200 FOR UPDATE OF e SKIP LOCKED`,[groupId??null])).rows;
+/** V7.5.1: `workspaceId` limits correlation to the profile the caller's transaction is bound to. */
+export async function correlateGroupEvents(c:QueryExecutor,groupId?:string,workspaceId?:string){
+ const events=(await c.query(`SELECT e.*,g.id group_id FROM warmup_group_events e JOIN warmup_groups g ON g.workspace_id=e.workspace_id AND g.environment=e.environment AND g.group_fingerprint=e.group_fingerprint WHERE NOT e.correlated AND e.classification='GROUP_EVENT' AND ($1::uuid IS NULL OR g.id=$1) AND ($2::text IS NULL OR e.workspace_id=$2) ORDER BY e.last_reconciled_at NULLS FIRST,e.observed_at LIMIT 200 FOR UPDATE OF e SKIP LOCKED`,[groupId??null,workspaceId??null])).rows;
  for(const row of events){
   await c.query('UPDATE warmup_group_events SET last_reconciled_at=now() WHERE id=$1',[row.id]);
   const e=JSON.parse(decrypt(row.event_ciphertext))as CanonicalEvent;if(!e.providerMessageId||e.fromMe)continue;

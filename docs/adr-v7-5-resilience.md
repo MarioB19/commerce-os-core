@@ -196,3 +196,14 @@ la guarda el Dueño en la web.
 
 `0121_v75_resilience.sql`, aditiva. El instalador admite exactamente la cola
 120→121 sobre la base V7.
+
+## Adenda V7.5.1 (12-nov-2026): perfil del efecto en el despacho
+
+El piloto productivo mostró que el despacho de un grupo QR cambiaba efectos con
+autoridad continua desde transacciones sin perfil y `guard_continuous_effect`
+lo rechazaba. Regla: toda transacción del worker que cambie una fila de
+`outbox` vincula antes el perfil de esa fila (`recordProfileExecutor`; nunca
+cambia un contexto ya establecido). `recoverSending` lee las filas vencidas sin
+escribir y cambia cada una en su propio perfil; `reconcileGroupDeliveries`
+correlaciona por perfil. Un efecto `SENDING` sin resultado sigue siendo incierto:
+pasa a `UNKNOWN` y exige conciliación; nunca se reintenta ni se acredita solo.

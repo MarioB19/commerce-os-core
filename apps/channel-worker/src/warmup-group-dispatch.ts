@@ -116,4 +116,10 @@ export async function gateGroupDispatch(c:QueryExecutor,effect:Body,owner:string
  const account=accounts.find(a=>a.id===effect.account_id)!;
  return{allowed:true,account,contact:{...account,id:effect.contact_id,kind:'contact',body:{identity:decrypt(group.group_ciphertext)}},leaseMs:Number(senderOwner.lease_ms)};
 }
-export async function reconcileGroupDeliveries(){return withTransaction(c=>correlateGroupEvents(c));}
+/** V7.5.1: delivery evidence changes effects under a continuous authority, so
+ * each profile is correlated in its own transaction bound to that profile. */
+export async function reconcileGroupDeliveries(){
+ const scopes=(await pool.query("SELECT DISTINCT workspace_id,environment FROM warmup_group_events WHERE NOT correlated AND classification='GROUP_EVENT'")).rows as Array<{workspace_id:string;environment:'REAL'|'SIMULATION'}>;
+ let total=0;for(const scope of scopes)total+=await withTransaction(async c=>{await recordProfileExecutor(c,scope.workspace_id,scope.environment);return correlateGroupEvents(c,undefined,scope.workspace_id);});
+ return total;
+}

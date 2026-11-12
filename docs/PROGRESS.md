@@ -1,5 +1,23 @@
 # Estado de publicación
 
+## 12-nov-2026 — V7.5.1: contexto de perfil en el despacho de grupos QR (Claude)
+
+V7.5 quedó instalada el 12-nov (16:42–16:52 UTC, `963638fd`, SUCCEEDED/OPERATING,
+121 migraciones). En el piloto, el primer turno real de un grupo QR (WA 6) quedó
+`SENDING` sin resultado y el despacho falló en bucle. Causa demostrada: los
+efectos de calentamiento de grupo llevan `continuous_authorization_id` y
+`guard_continuous_effect` (0076/0078) exige `app.workspace_id`; varias
+transacciones del worker los cambiaban sin el perfil del efecto
+(`CONTINUITY_PROFILE_CONTEXT_REQUIRED`): bloqueo tras observación fallida,
+reclamo, puerta final, liberación, registro del resultado,
+`recoverSending` y la correlación de entregas de grupo. Preexistente (V7.0/V7.4);
+ninguna prueba recorría el despacho completo de un grupo QR con autoridad
+continua. Ahora cada transacción que cambia un efecto vincula su propio perfil
+(patrón V7 F2 `recordProfileExecutor`), `recoverSending` selecciona sin escribir
+y cambia cada fila en su perfil, y la correlación de entregas corre por perfil.
+Prueba de integración nueva: falla en `main` con el mismo error de producción y
+pasa con el cambio. Sin migraciones.
+
 ## 12-nov-2026 — V7.5: release resiliente y Claude vendedor, candidato (Claude)
 
 Implementada en `claude/v7-5-release`, desde V7.4.0 `b2fa4df3` (instalada el
