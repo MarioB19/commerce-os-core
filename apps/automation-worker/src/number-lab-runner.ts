@@ -74,10 +74,21 @@ export async function processNumberLabOperations(runtime:NumberLabRuntime|null,l
     receipts:{custody:createNumberLabReceiptCustody({laboratoryRoot:runtime.laboratoryRoot,laboratoryKey:runtime.keys.files})}});
    const input={workspaceId:q.workspace_id,runId:q.run_id,operationId:q.operation_id};
    if(q.stage==='EXECUTE')await driver.execute(input);
-   // A stale INTENT settles only from its engine receipt; without one it stays uncertain.
+   // A stale INTENT settles only from its engine receipt. Without a receipt it
+   // stays uncertain, unless the engine never admitted it (no execution row):
+   // then it closes as not executed (V7.5.2 L01/T01), never re-executed.
    else if((await driver.observe(input)).receipt)await driver.reconcile(input);
+   else await driver.settleNotAdmitted(input,NOT_ADMITTED_AFTER_SECONDS);
   }catch(error){process.stderr.write(`number_lab_operation_failed ${code(error)}\n`);if(process.env.LAB_DEBUG)console.error(error);}
  }
  return queued.length;
 }
-const code=(error:unknown)=>error instanceof Error&&/^[A-Z0-9_]+$/.test(error.message)?error.message:'UNEXPECTED';
+/** Longer than any material preparation of one claim (≤128 MiB local copy). */
+export const NOT_ADMITTED_AFTER_SECONDS=600;
+/** V7.5.2 L01: a stable code plus the OS code when there is one (EROFS,
+ * ENOENT…). Never a message, path, key or content. */
+export const code=(error:unknown)=>{
+ const errno=(error as NodeJS.ErrnoException|undefined)?.code,os=typeof errno==='string'&&/^E[A-Z0-9]{1,15}$/.test(errno)?errno:undefined;
+ if(error instanceof Error&&/^[A-Z0-9_]+$/.test(error.message))return os&&os!==error.message?error.message+' '+os:error.message;
+ return os?'FS_'+os:'UNEXPECTED';
+};

@@ -3,6 +3,8 @@ import type {ProfileExecutor} from './profile-context.js';
 import {authorizeProfileAction,type ProfileAuthority} from '../../domain/src/core/profile-authorization.js';
 import type {ProfileScope} from '../../contracts/src/profiles.js';
 import {readOnboarding} from './profile-integrations.js';
+import {readNumberSelling} from './number-selling.js';
+import type {DomainRecord} from '../../contracts/src/index.js';
 
 /** V7 F2 profile reads for Inicio (RF-04), usage (RF-01.8), audit (RNF-04.b)
  * and operation lookup (RF-15). Aggregates only; no message text, contact
@@ -16,17 +18,20 @@ const n=(v:unknown)=>Number(v??0);
 const iso=(v:unknown)=>v===null||v===undefined?null:new Date(v as string).toISOString();
 async function timezone(db:ProfileExecutor){return(await db.query('SELECT timezone FROM profiles WHERE id=$1',[db.workspaceId])).rows[0]?.timezone as string??'UTC';}
 
-export type NumberCause='DISCONNECTED'|'PAUSED'|'NOT_AUTHORIZED';
+/** V7.5.2 N01: causes use the shared selling projection (number-selling.ts),
+ * the same meaning Números shows. `ready` = apto para atender; `attending` =
+ * apto y con una conversación de cliente en las últimas 24 h. */
+export type NumberCause='DISCONNECTED'|'PAUSED'|'NOT_AUTHORIZED'|'NOT_ASSIGNED'|'WARMING'|'NOT_OPERATIONAL';
 export async function readProfileHome(db:ProfileExecutor,authority:ProfileAuthority){
  await authorize(db,authority,'home:read');const tz=await timezone(db);
- const numbers=(await db.query(`SELECT a.id,COALESCE(a.body->>'status','NEW') AS status,COALESCE((a.body->>'sending_enabled')::boolean,false) AS sending,COALESCE(s.operational_pause,false) AS paused
-  FROM records a LEFT JOIN channel_sessions s ON s.account_id=a.id AND s.workspace_id=a.workspace_id AND s.environment=a.environment
-  WHERE a.workspace_id=$1 AND a.environment='REAL' AND a.kind='channel_account' AND NOT(a.body?'deleted_at')`,[db.workspaceId])).rows;
- const causes:Record<NumberCause,number>={DISCONNECTED:0,PAUSED:0,NOT_AUTHORIZED:0};let attending=0,connected=0;
- for(const row of numbers){
-  if(row.status!=='WORKING'){causes.DISCONNECTED++;continue;}
+ const numbers=(await db.query(`SELECT * FROM records a WHERE a.workspace_id=$1 AND a.environment='REAL' AND a.kind='channel_account' AND NOT(a.body?'deleted_at') ORDER BY a.created_at,a.id LIMIT 200`,[db.workspaceId])).rows as DomainRecord[];
+ const causes:Record<NumberCause,number>={DISCONNECTED:0,PAUSED:0,NOT_AUTHORIZED:0,NOT_ASSIGNED:0,WARMING:0,NOT_OPERATIONAL:0};let attending=0,ready=0,connected=0;
+ for(const account of numbers){
+  const selling=await readNumberSelling(db,account);
+  if(selling.stage==='DISCONNECTED'){causes.DISCONNECTED++;continue;}
   connected++;
-  if(row.paused)causes.PAUSED++;else if(!row.sending)causes.NOT_AUTHORIZED++;else attending++;
+  if(selling.ready){ready++;if(selling.attending)attending++;}
+  else causes[selling.stage as NumberCause]++;
  }
  const today=(await db.query(`WITH day AS (SELECT (date_trunc('day',clock_timestamp() AT TIME ZONE $2) AT TIME ZONE $2) AS start)
   SELECT (SELECT count(*) FROM records r,day WHERE r.workspace_id=$1 AND r.environment='REAL' AND r.kind='conversation' AND r.created_at>=day.start) AS conversations,
@@ -41,7 +46,7 @@ export async function readProfileHome(db:ProfileExecutor,authority:ProfileAuthor
   :n(today.to_review)>0?{kind:'REVIEW_RECEIPTS' as const,count:n(today.to_review)}
   :causes.DISCONNECTED>0?{kind:'RECONNECT_NUMBERS' as const,count:causes.DISCONNECTED}
   :n(today.alerts)>0?{kind:'REVIEW_ALERTS' as const,count:n(today.alerts)}:null;
- return{timezone:tz,numbers:{registered:numbers.length,connected,attending,causes},
+ return{timezone:tz,numbers:{registered:numbers.length,connected,ready,attending,causes},
   today:{conversations:n(today.conversations),orders:n(today.orders),approvedReceipts:n(today.approved)},
   pending:{receiptsToReview:n(today.to_review),alerts:n(today.alerts),criticalAlerts:n(today.critical)},
   onboarding:onboarding?{complete:onboarding.complete,dismissed:onboarding.dismissed,next:onboarding.next}:null,next};

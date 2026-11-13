@@ -8,7 +8,7 @@ import {variantRequest} from '../lib/variants.js';
 /** RF-04.a: Inicio separates connection, aptitude to attend and sales done,
  * with operator-language causes and one next step. */
 const homeSchema=z.object({timezone:z.string(),
- numbers:z.object({registered:z.number(),connected:z.number(),attending:z.number(),causes:z.object({DISCONNECTED:z.number(),PAUSED:z.number(),NOT_AUTHORIZED:z.number()})}),
+ numbers:z.object({registered:z.number(),connected:z.number(),ready:z.number().default(0),attending:z.number(),causes:z.object({DISCONNECTED:z.number(),PAUSED:z.number(),NOT_AUTHORIZED:z.number(),NOT_ASSIGNED:z.number().default(0),WARMING:z.number().default(0),NOT_OPERATIONAL:z.number().default(0)})}),
  today:z.object({conversations:z.number(),orders:z.number(),approvedReceipts:z.number()}),
  pending:z.object({receiptsToReview:z.number(),alerts:z.number(),criticalAlerts:z.number()}),
  onboarding:z.object({complete:z.boolean(),dismissed:z.boolean(),next:z.string().nullable()}).nullable(),
@@ -26,7 +26,7 @@ export function ProfileHome({selection}:{selection:ProfileFence}){
   return()=>controller.abort();},[selection.workspaceId,selection.version]);
  if(error)return <p role="alert">{error}</p>;
  if(!home)return <p role="status">Consultando el resumen…</p>;
- const causes=[home.numbers.causes.DISCONNECTED&&`${home.numbers.causes.DISCONNECTED} desconectado${home.numbers.causes.DISCONNECTED===1?'':'s'}`,home.numbers.causes.PAUSED&&`${home.numbers.causes.PAUSED} en pausa`,home.numbers.causes.NOT_AUTHORIZED&&`${home.numbers.causes.NOT_AUTHORIZED} sin autorización para vender`].filter(Boolean);
+ const causes=[home.numbers.causes.DISCONNECTED&&`${home.numbers.causes.DISCONNECTED} desconectado${home.numbers.causes.DISCONNECTED===1?'':'s'}`,home.numbers.causes.PAUSED&&`${home.numbers.causes.PAUSED} en pausa`,home.numbers.causes.WARMING&&`${home.numbers.causes.WARMING} calentando`,home.numbers.causes.NOT_OPERATIONAL&&`${home.numbers.causes.NOT_OPERATIONAL} sin control operativo`,home.numbers.causes.NOT_AUTHORIZED&&`${home.numbers.causes.NOT_AUTHORIZED} sin permiso para atender`,home.numbers.causes.NOT_ASSIGNED&&`${home.numbers.causes.NOT_ASSIGNED} sin variante asignada`].filter(Boolean);
  const action=home.next&&home.next.kind!=='ONBOARDING'?nextAction[home.next.kind]:undefined;
  return <div className="profile-home">
   {action&&<a className="button-primary" href={action.href}>{action.text(home)}</a>}
@@ -35,7 +35,8 @@ export function ProfileHome({selection}:{selection:ProfileFence}){
   <HomeSales selection={selection} timezone={home.timezone}/>
   <dl className="profile-home-stats">
    <div><dt>Números conectados</dt><dd>{home.numbers.connected} de {home.numbers.registered}</dd></div>
-   <div><dt>Atendiendo</dt><dd>{home.numbers.attending}</dd>{causes.length>0&&<dd className="cause">{causes.join(' · ')}</dd>}</div>
+   <div><dt>Aptos para atender</dt><dd>{home.numbers.ready}</dd>{causes.length>0&&<dd className="cause">{causes.join(' · ')}</dd>}</div>
+   <div><dt>Atendiendo</dt><dd>{home.numbers.attending}</dd></div>
    <div><dt>Conversaciones hoy</dt><dd>{home.today.conversations}</dd></div>
    <div><dt>Pedidos hoy</dt><dd>{home.today.orders}</dd></div>
    <div><dt>Pagos aprobados hoy</dt><dd>{home.today.approvedReceipts}</dd></div>

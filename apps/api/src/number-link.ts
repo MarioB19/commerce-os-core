@@ -1,4 +1,6 @@
 import type {FastifyInstance,FastifyRequest} from 'fastify';
+import {latestNumberTestStatus} from '../../../packages/db/src/number-lab-status.js';
+import {readNumberSelling} from '../../../packages/db/src/number-selling.js';
 import {z} from 'zod';
 import {pool,putRecord,readIntegrationSettings,readOperationalSettings,type QueryExecutor} from '@commerce/db';
 import type {DomainRecord} from '@commerce/contracts';
@@ -174,11 +176,17 @@ async function overviewRow(c:QueryExecutor,account:DomainRecord){
  const selling=grants.filter(g=>g.kind==='COMMERCIAL_ASSIGNMENT'&&g.product&&!g.paused),humanPaused=grants.some(g=>g.paused);
  const products=(await c.query("SELECT p.body->>'name' AS name FROM commercial_assignments a JOIN records p ON p.id=a.product_id AND p.workspace_id=a.workspace_id WHERE a.workspace_id=$1 AND a.environment=$2 AND a.account_id=$3 AND a.state='ACTIVE' ORDER BY 1",[account.workspace_id,account.environment,account.id])).rows.map(r=>maskedAlias(String(r.name??'Producto')));
  const warmup=await warmupSummary(c,account,base.state==='CONNECTED');
+ // V7.5.2 N01: the shared projection (also used by Inicio): assigned, warming,
+ // apt to attend and attending keep one meaning; «Atendiendo» needs activity.
+ const sale=account.environment==='REAL'?await readNumberSelling(c,account):null;
  let status={code:base.state as string,label:base.label};
  if(base.state==='CONNECTED'){
   if(paused||humanPaused)status={code:'PAUSED_BY_YOU',label:'Pausado por ti'};
   else if(['FROZEN','EXPIRED'].includes(base.operability.state))status={code:'NEEDS_ATTENTION',label:'Conectado · sin control operativo vigente'};
-  else if(selling.length)status={code:'SELLING',label:'Vendiendo'};
+  else if(sale?.assigned)status=sale.stage==='ATTENDING'?{code:'SELLING',label:sale.label}:sale.stage==='READY'?{code:'READY_TO_ATTEND',label:sale.label}
+   :sale.stage==='WARMING'?{code:'ASSIGNED_WARMING',label:sale.label}:sale.stage==='PAUSED'?{code:'PAUSED_BY_YOU',label:'Pausado por ti'}
+   :sale.stage==='NOT_OPERATIONAL'?{code:'NEEDS_ATTENTION',label:sale.label}:{code:'ASSIGNED_NOT_AUTHORIZED',label:sale.label};
+  else if(!sale&&selling.length)status={code:'SELLING',label:'Vendiendo'};
   // V7.4 E: «Calentando» only while a program is active and this line sends.
   else if(warmup.state==='ACTIVE')status={code:'WARMING',label:'Calentando'};
   else if(warmup.state==='GROUP_REQUIRED'||warmup.state==='REGISTERING'||warmup.state==='PROGRAM_PENDING'||warmup.state==='PROGRAM_PAUSED')status={code:'WARMUP_PENDING',label:'Conectado · calentamiento por configurar'};
@@ -186,11 +194,10 @@ async function overviewRow(c:QueryExecutor,account:DomainRecord){
   else status={code:'READY_TO_ASSIGN',label:'Listo para asignar'};
  }
  // RF-19.n: the latest «Probar número» of this number, informative only (it never gates selling).
- const lab=account.environment==='REAL'?(await c.query(`SELECT r.id::text AS run_id,r.created_at,count(o.id)::int AS actions,count(o.id) FILTER(WHERE o.state IN('FAILED','UNKNOWN'))::int AS problems
-  FROM commerce_number_lab.runs r LEFT JOIN commerce_number_lab.operations o ON o.workspace_id=r.workspace_id AND o.run_id=r.id
-  WHERE r.workspace_id=$1 AND r.source_account_id=$2 GROUP BY r.id,r.created_at ORDER BY r.created_at DESC,r.id LIMIT 1`,[account.workspace_id,account.id])).rows[0]:undefined;
- return{...base,status,products,warmup,
-  last_test:lab&&lab.actions>0?{at:new Date(lab.created_at).toISOString(),ok:lab.problems===0,run_id:String(lab.run_id)}:null};
+ // V7.5.2 T01: `ok` is true only for a finished, fully covered pass; pending or
+ // uncertain steps are never reported as success nor as failure.
+ const last_test=account.environment==='REAL'?await latestNumberTestStatus(c,account.workspace_id,account.id):null;
+ return{...base,status,products,warmup,selling:sale,last_test};
 }
 
 export async function numberLinkRoutes(app:FastifyInstance){

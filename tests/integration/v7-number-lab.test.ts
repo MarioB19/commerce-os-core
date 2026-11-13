@@ -1,6 +1,8 @@
 import {afterAll,beforeAll,expect,it} from 'vitest';
 import {randomUUID,randomBytes,createHash} from 'node:crypto';
-import {mkdtemp,mkdir,rm,realpath,rename} from 'node:fs/promises';
+import {mkdtemp,mkdir,rm,realpath,rename,lstat,writeFile,stat} from 'node:fs/promises';
+import {spawnSync} from 'node:child_process';
+import {mkdtempSync,mkdirSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import pg from 'pg';
@@ -441,6 +443,58 @@ it('runs the automatic buyer over every variant of a number and reports one verd
  expect((await call('owner','POST',`/v2/number-tests/${purchase.run_id}/actions`,{expected_version:1,action:{type:'continue'}})).statusCode).toBe(409);
  expect(data(await call('owner','GET',`/v2/number-tests/suites/latest?account_id=${number}`)).suite.suite_id).toBe(started.suite_id);
  expect(await footprint()).toEqual(before);
+},240000);
+
+// V7.5.2 L01/T01 on a real Linux read-only bind (production: /data/private:ro).
+// Runs where the bench may mount (root with CAP_SYS_ADMIN); evidence of the
+// local run is kept with the release. Elsewhere the mock-based unit tests apply.
+const readOnlyMount=(()=>{if(process.platform!=='linux'||process.getuid?.()!==0)return false;
+ const dir=mkdtempSync(join(tmpdir(),'ro-probe-'));try{mkdirSync(join(dir,'a'));mkdirSync(join(dir,'b'));
+  const ok=spawnSync('mount',['--bind',join(dir,'a'),join(dir,'b')]).status===0;if(!ok)return false;
+  const ro=spawnSync('mount',['-o','remount,bind,ro',join(dir,'b')]).status===0;spawnSync('umount',[join(dir,'b')]);return ro;}
+ catch{return false;}finally{rmSync(dir,{recursive:true,force:true});}})();
+it.runIf(readOnlyMount)('V7.5.2 L01/T01: on a read-only source without its prepared lock the suite stops before the engine, reads «Incompleta» and calls no AI; once prepared it runs',async()=>{
+ const source=join(root,'ro-source'),mounted=join(root,'ro-mount');await mkdir(join(source,'assets'),{recursive:true,mode:0o700});await mkdir(mounted,{mode:0o700});
+ expect(spawnSync('mount',['--bind',source,mounted]).status).toBe(0);
+ try{
+  expect(spawnSync('mount',['-o','remount,bind,ro',mounted]).status).toBe(0);
+  const ro={...runtime!,sourceRoot:mounted};
+  const link=data(await call('owner','POST','/v2/materials?environment=REAL',{name:'Acceso readonly',kind:'link',url:'https://example.com/readonly'}),201).id as string;
+  let v=data(await call('owner','POST','/v2/products',{name:'Readonly',variant:{name:'México',locale:MX}}),201).variant;
+  v=data(await call('owner','PUT',`/v2/variants/${v.id}/offer`,{expected_version:v.version,value:{...v.document.offer,price_minor:9700,fulfillment:[{asset_id:link,release_on:'receipt_approved'}]}}));
+  v=data(await call('owner','PUT',`/v2/variants/${v.id}/collection`,{expected_version:v.version,value:{spei:{bank:'Banco sintético',holder:'Titular sintético',clabe:clabe('01218000011835971')},links:[],instructions:''}}));
+  data(await call('owner','POST',`/v2/variants/${v.id}/publish`,{expected_version:v.version,document_sha256:v.document_sha256}));
+  const number=await withTransaction(async c=>{await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','REAL',true)",[P]);
+   return(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','channel_account',$2) RETURNING id",[P,{name:'Ventas readonly',provider:'waha',gateway_ref:'lab-'+randomUUID(),status:'WORKING',sending_enabled:false,identity_verified:true}])).rows[0].id as string;});
+  data(await call('owner','POST',`/v2/variants/${v.id}/numbers`,{account_id:number,sell:true}));
+  const before=await footprint(),calls=[sellerCalls,visionCalls];
+  const estimate=data(await call('owner','POST','/v2/number-tests/suites/estimate',{account_id:number}));
+  const started=data(await call('owner','POST','/v2/number-tests/suites',{account_id:number,accepted_maximum_microusd:estimate.maximum_microusd}),201);
+  // A second automatic test of the same number is refused while this one has not concluded.
+  expect((await call('owner','POST','/v2/number-tests/suites',{account_id:number,accepted_maximum_microusd:estimate.maximum_microusd})).json().error).toMatchObject({code:'LAB_SUITE_IN_PROGRESS'});
+  let report:any;
+  for(let i=0;i<20;i++){await processNumberLabOperations(ro);report=data(await call('owner','GET',`/v2/number-tests/suites/${started.suite_id}`));if(report.suite.state==='COMPLETED')break;}
+  expect(report.suite.state,JSON.stringify(report.variants)).toBe('COMPLETED');
+  expect(report.variants).toEqual([expect.objectContaining({variant_id:v.id,verdict:'INCOMPLETO'})]);
+  for(const c of report.variants[0].cases){expect(c.state).toBe('PARTIAL');expect(c.checks).toEqual([expect.objectContaining({state:'UNKNOWN',detail:'PRIVATE_NAMESPACE_LOCK_UNINITIALIZED'})]);
+   const run=data(await call('owner','GET',`/v2/number-tests/${c.run_id}`));expect(run.pending).toBe(false);
+   expect(run.operations).toEqual([expect.objectContaining({state:'FAILED',result:expect.objectContaining({state:'DEPENDENCY_REQUIRED',reason:'PRIVATE_NAMESPACE_LOCK_UNINITIALIZED',reason_label:expect.stringContaining('no se ejecutó')})})]);}
+  // Nothing ran: no engine execution, no AI call, no REAL change, and the mount was never written.
+  expect([sellerCalls,visionCalls]).toEqual(calls);expect(await footprint()).toEqual(before);
+  await expect(lstat(join(mounted,'.private-namespace.lock'))).rejects.toMatchObject({code:'ENOENT'});
+  const row=data(await call('owner','GET','/v1/numbers/overview?environment=REAL')).numbers.find((n:{id:string})=>n.id===number);
+  expect(row.last_test).toMatchObject({state:'INCOMPLETE',ok:null,suite_id:started.suite_id,coverage:{cases:2,passed:0,failed:0,incomplete:2,running:0}});
+  // The canonical preparation (copy-runtime ensure_namespace_lock) creates the
+  // empty 0600 lock on the writable side; readers then use it as it is.
+  await writeFile(join(source,'.private-namespace.lock'),'',{mode:0o600,flag:'wx'});const prepared=await stat(join(mounted,'.private-namespace.lock'));
+  const again=data(await call('owner','POST','/v2/number-tests/suites',{account_id:number,accepted_maximum_microusd:estimate.maximum_microusd}),201);
+  for(let i=0;i<3;i++)await processNumberLabOperations(ro);
+  const next=data(await call('owner','GET',`/v2/number-tests/suites/${again.suite_id}`));
+  for(const c of next.variants[0].cases){const run=data(await call('owner','GET',`/v2/number-tests/${c.run_id}`));
+   expect(run.operations[0]).toMatchObject({state:'APPLIED'});}
+  const after=await stat(join(mounted,'.private-namespace.lock'));expect([after.ino,after.size,after.mode&0o777,after.mtimeMs]).toEqual([prepared.ino,0,0o600,prepared.mtimeMs]);
+  expect(data(await call('owner','GET','/v1/numbers/overview?environment=REAL')).numbers.find((n:{id:string})=>n.id===number).last_test).toMatchObject({suite_id:again.suite_id,ok:null});
+ }finally{spawnSync('umount',[mounted]);}
 },240000);
 
 // EMU-LANGUAGE (RF-05.c, RF-19.b): a pt-BR variant converses in Portuguese with

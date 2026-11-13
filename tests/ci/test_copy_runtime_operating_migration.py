@@ -70,7 +70,8 @@ class OperatingMigration(unittest.TestCase):
             review = {'migration_hashes':{n:expected[n] for n in c.V7_PROFILE_MIGRATION_NAMES}}
             with patch.object(c.native, 'protected_bytes', side_effect=lambda path: path.read_bytes()):
                 result = c.apply_reviewed_migrations(server, root, root, metadata, review, stage='OPERATING')
-            self.assertEqual(result, {'status':'ALREADY_APPLIED','migration_count':c.V7_PROFILE_MIGRATION_TOTAL,'lab_storage':'READY'})
+            self.assertEqual(result, {'status':'ALREADY_APPLIED','migration_count':c.V7_PROFILE_MIGRATION_TOTAL,'lab_storage':'READY',
+                                      'namespace_locks':{'source':'CREATED','laboratory':'CREATED'}})
             # V7 RF-19: the laboratory directory exists once, 0700, owned like the assets directory.
             lab = assets/'number-lab'
             self.assertEqual((lab.stat().st_mode & 0o777, lab.stat().st_uid), (0o700, assets.stat().st_uid))

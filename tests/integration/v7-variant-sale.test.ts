@@ -106,8 +106,11 @@ it('sells a variant from the first message to the delivered material',async()=>{
  v=data(await call('operator','PUT',`/v2/variants/${v.id}/offer`,{expected_version:v.version,value:{...v.document.offer,price_minor:9700,fulfillment:[{asset_id:material,release_on:'receipt_approved'}]}}));
  v=data(await call('operator','PUT',`/v2/variants/${v.id}/collection`,{expected_version:v.version,value:{spei:{bank:'Banco sintético',holder:HOLDER,clabe:ACCOUNT},links:[],instructions:''}}));
  data(await call('operator','POST',`/v2/variants/${v.id}/publish`,{expected_version:v.version,document_sha256:v.document_sha256}));
- const number=await inProfile(async c=>(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','channel_account',$2) RETURNING *",[P,{name:'Ventas',provider:'waha',gateway_ref:'sale-'+randomUUID(),status:'WORKING',sending_enabled:true,identity_verified:true}])).rows[0]);
- data(await call('owner','POST',`/v2/variants/${v.id}/numbers`,{account_id:number.id,sell:true}));
+ // V7.5.2 N01: a number registered like /v1/numbers/quick (permit off); the
+ // owner's assignment in the application is what establishes the permit.
+ const number=await inProfile(async c=>(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','channel_account',$2) RETURNING *",[P,{name:'Ventas',provider:'waha',gateway_ref:'sale-'+randomUUID(),status:'WORKING',sending_enabled:false,identity_verified:true}])).rows[0]);
+ expect(data(await call('owner','POST',`/v2/variants/${v.id}/numbers`,{account_id:number.id,sell:true}))).toMatchObject({sells:true,sending_permit:'ESTABLISHED'});
+ expect((await record(number.id)).body).toMatchObject({sending_enabled:true,sending_permit:{source:'HUMAN_ASSIGNMENT',established_by:ownerId}});
  const paid=async()=>{const at=new Date().toISOString();return{is_receipt:true,amount_minor:9700,currency:'MXN',destination_suffix:ACCOUNT.slice(-4),bank:'Banco sintético',reference:'REF-'+randomUUID().slice(0,8),status:'completed',confidence:0.97,contradictions:[],destination:ACCOUNT,beneficiary:HOLDER,paid_at:at,concept:null};};
 
  // 1. Published by an operator: no owner grant, so a person reviews the receipt.
@@ -188,4 +191,47 @@ it('sells a variant from the first message to the delivered material',async()=>{
  const snapshots=await inProfile(async c=>(await c.query('SELECT order_id,body FROM receipt_order_policy_snapshots WHERE workspace_id=$1 ORDER BY created_at',[P])).rows);
  expect(snapshots.find(s=>s.order_id===second.order.id)!.body.policy.automaticApproval).toBe(false);
  expect(snapshots.find(s=>s.order_id===third.order.id)!.body.policy.automaticApproval).toBe(true);
+},180000);
+
+// V7.5.2 (Mi Ciclo Listo): price 97 with an EXACT amount rule and a support
+// payment of 107 that also unlocks an extra. The receipt for 107 is not
+// approved automatically; a person approves it for the amount actually paid and
+// the extra is delivered once — never twice, and never for a 97 payment.
+it('reviews a 107 support payment under an EXACT 97 rule and grants the extra once for the real amount',async()=>{
+ const guide=await inProfile(async c=>(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','asset',$2) RETURNING id",[P,{name:'Calendario',kind:'link',url:'https://example.com/calendario',status:'READY'}])).rows[0].id);
+ const kit=await inProfile(async c=>(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','asset',$2) RETURNING id",[P,{name:'Kit del Grupo',kind:'link',url:'https://example.com/kit',status:'READY'}])).rows[0].id);
+ let v=data(await call('owner','POST','/v2/products',{name:'Ciclo',variant:{name:'México',locale:{market:'México',country:'MX',currency:'MXN',language:'es-MX',timezone:'America/Mexico_City'}}}),201).variant;
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/offer`,{expected_version:v.version,value:{...v.document.offer,price_minor:9700,
+  fulfillment:[{asset_id:guide,release_on:'receipt_approved'},{asset_id:kit,release_on:'receipt_approved',min_amount_minor:10700}]}}));
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/collection`,{expected_version:v.version,value:{spei:{bank:'Banco sintético',holder:HOLDER,clabe:ACCOUNT},links:[],instructions:''}}));
+ data(await call('owner','POST',`/v2/variants/${v.id}/publish`,{expected_version:v.version,document_sha256:v.document_sha256}));
+ const number=await inProfile(async c=>(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','channel_account',$2) RETURNING *",[P,{name:'Ventas ciclo',provider:'waha',gateway_ref:'sale-'+randomUUID(),status:'WORKING',sending_enabled:false,identity_verified:true}])).rows[0]);
+ data(await call('owner','POST',`/v2/variants/${v.id}/numbers`,{account_id:number.id,sell:true}));
+ data(await call('owner','POST',`/v2/variants/${v.id}/ai-authorization`,{}));
+ const delivered=async(conversation:string,asset:string)=>inProfile(async c=>(await c.query("SELECT payload FROM outbox WHERE workspace_id=$1 AND conversation_id=$2 AND payload->>'asset_id'=$3",[P,conversation,asset])).rows.length);
+ const at=()=>new Date().toISOString();
+ extraction={is_receipt:true,amount_minor:10700,currency:'MXN',destination_suffix:ACCOUNT.slice(-4),bank:'Banco sintético',reference:'REF-'+randomUUID().slice(0,8),status:'completed',confidence:0.97,contradictions:[],destination:ACCOUNT,beneficiary:HOLDER,paid_at:at(),concept:null};
+ const support=await customerPays(number,'opaque:apoyo-107',randomBytes(64));await analyze();
+ const review=await record(support.receipt);
+ expect(review.body.status).toBe('HUMAN_REVIEW');expect(JSON.stringify(review.body.assessment.reasons)).toContain('AMOUNT');
+ expect([await delivered(support.conversation.id,guide),await delivered(support.conversation.id,kit)]).toEqual([0,0]);
+ // The person approves for the amount actually observed in the receipt.
+ const detail=data(await call('owner','GET',`/v2/receipts/${support.receipt}`)),key=randomUUID();
+ expect(data(await call('owner','POST',`/v2/receipts/${support.receipt}/decision`,{decision:'APPROVED',expected_version:detail.version,amount_minor:10700},key),202).status).toBe('PENDING');
+ await withRole('commerce_automation',()=>processCommands(10));
+ expect((await record(support.receipt)).body).toMatchObject({status:'APPROVED',extraction:{amount_minor:10700}});
+ expect((await record(support.order.id)).body).toMatchObject({receipt_status:'APPROVED',sale_amount_minor:10700});
+ expect([await delivered(support.conversation.id,guide),await delivered(support.conversation.id,kit)]).toEqual([1,1]);
+ // Replaying the same decision, a second command pass or another decision never duplicates the extra.
+ data(await call('owner','POST',`/v2/receipts/${support.receipt}/decision`,{decision:'APPROVED',expected_version:detail.version,amount_minor:10700},key),202);
+ await withRole('commerce_automation',()=>processCommands(10));
+ expect((await call('owner','POST',`/v2/receipts/${support.receipt}/decision`,{decision:'APPROVED',expected_version:(await record(support.receipt)).version,amount_minor:10700})).json().error.code).toBe('RECEIPT_ALREADY_DECIDED');
+ expect([await delivered(support.conversation.id,guide),await delivered(support.conversation.id,kit)]).toEqual([1,1]);
+ // A 97 payment gets the calendars and no extra.
+ extraction={...extraction,amount_minor:9700,reference:'REF-'+randomUUID().slice(0,8),paid_at:at()};
+ const base=await customerPays(number,'opaque:base-97',randomBytes(64));await analyze();
+ const baseDetail=data(await call('owner','GET',`/v2/receipts/${base.receipt}`));
+ data(await call('owner','POST',`/v2/receipts/${base.receipt}/decision`,{decision:'APPROVED',expected_version:baseDetail.version,amount_minor:9700}),202);
+ await withRole('commerce_automation',()=>processCommands(10));
+ expect([await delivered(base.conversation.id,guide),await delivered(base.conversation.id,kit)]).toEqual([1,0]);
 },180000);

@@ -11,6 +11,18 @@ import type {NumberLabEngineIdentity} from './number-lab-engine-runtime.js';
 import {putRecord} from './index.js';
 
 function need(value:unknown,code:string):asserts value{if(!value)throw Error(code);}
+/** V7.5.2 L01/T01: the claimed operation stopped before the engine admitted it
+ * (no engine execution row was written, so no seed, engine phase or AI call
+ * ran). `reason` is a stable, path-free code; `code` the OS code when one exists. */
+export class NumberLabNotAdmittedError extends Error{
+ readonly notAdmitted=true;
+ constructor(readonly reason:string,readonly code?:string){super(reason);this.name='NumberLabNotAdmittedError';}
+}
+export function numberLabFailureCode(error:unknown){
+ const errno=(error as NodeJS.ErrnoException|undefined)?.code,os=typeof errno==='string'&&/^E[A-Z0-9]{1,15}$/.test(errno)?errno:undefined;
+ const reason=error instanceof Error&&/^[A-Z0-9_]+$/.test(error.message)?error.message:os?'LAB_STORAGE_'+os:'LAB_PREPARATION_FAILED';
+ return{reason,...(os?{errno:os}:{})};
+}
 const uuid=z.uuid(),sha=z.string().regex(/^[a-f0-9]{64}$/);
 const identitySchema=z.object({database:z.string().regex(/^commerce_lab_engine_[a-z0-9_]+$/).max(63),installationId:uuid,engineSha256:sha}).strict();
 const inputSchema=z.object({workspaceId:z.string().min(1).max(256),runId:uuid,operationId:uuid}).strict();
@@ -75,12 +87,17 @@ export function createNumberLabMaterializer(options:{controlPool:ProfilePool;see
   async prepare(raw:unknown){
    outside();const input=inputSchema.parse(raw),claim=await store.claim(input.workspaceId,input.runId,input.operationId);
    if(claim.effect!=='EXECUTE_ONCE')return{state:'ALREADY_ATTEMPTED' as const,operation_state:claim.state,read_only:true as const};
-   const plan=compileNumberLabConfiguration({snapshot:claim.snapshot,records:claim.records},input.runId);
-   need(plan.engine_sha256===installed.engineSha256&&plan.snapshot_sha256===claim.run.snapshot_sha256&&claim.snapshot.workspace_id===input.workspaceId,'LAB_SEED_CAPTURE_BINDING');
-   // No transaction is open while the private material broker copies content.
-   const materials=plan.variants.flatMap(v=>v.materials);
-   need(materials.every(m=>['file','link','access'].includes(m.kind)),'LAB_MATERIAL_ADAPTER_REQUIRED');
-   const copies=validateCopies(plan,await options.materials.copy(Object.freeze({workspaceId:input.workspaceId,runId:input.runId,snapshotSha256:plan.snapshot_sha256,materials:structuredClone(materials)})));
+   // Everything up to the seed transaction happens before the engine can
+   // admit this operation: a failure here is reported as not admitted.
+   let plan:NumberLabConfigurationPlan,copies:ReturnType<typeof validateCopies>;
+   try{
+    plan=compileNumberLabConfiguration({snapshot:claim.snapshot,records:claim.records},input.runId);
+    need(plan.engine_sha256===installed.engineSha256&&plan.snapshot_sha256===claim.run.snapshot_sha256&&claim.snapshot.workspace_id===input.workspaceId,'LAB_SEED_CAPTURE_BINDING');
+    // No transaction is open while the private material broker copies content.
+    const materials=plan.variants.flatMap(v=>v.materials);
+    need(materials.every(m=>['file','link','access'].includes(m.kind)),'LAB_MATERIAL_ADAPTER_REQUIRED');
+    copies=validateCopies(plan,await options.materials.copy(Object.freeze({workspaceId:input.workspaceId,runId:input.runId,snapshotSha256:plan.snapshot_sha256,materials:structuredClone(materials)})));
+   }catch(error){const failure=numberLabFailureCode(error);throw new NumberLabNotAdmittedError(failure.reason,failure.errno);}
    const result=await withProfileTransaction(options.seedPool,plan.workspace_id,async db=>{
     await db.query("SELECT pg_catalog.set_config('app.environment','SIMULATION',true)");await identity(db,installed,claim.run.expires_at);
     await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['commerce.number-lab.materialization:'+input.runId]);

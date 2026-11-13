@@ -1490,7 +1490,97 @@ def ensure_lab_storage(server):
     info = lab.lstat()
     require(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700
             and (info.st_uid, info.st_gid) == (owner.st_uid, owner.st_gid), 'COPY_RUNTIME_LAB_STORAGE_UNSAFE')
-    return str(lab)
+    # V7.5.2 L01: readers of both namespaces run on mounts that may be read-only
+    # (automation-worker: /data/private:ro), so the shared lock must already
+    # exist before they start. Created here, from the writable host side, both
+    # for a new installation and for an update with no pending migration.
+    locks = {'source': ensure_namespace_lock(assets, owner), 'laboratory': ensure_namespace_lock(lab, owner)}
+    return {'path': str(lab), 'namespace_locks': locks}
+
+
+NAMESPACE_LOCK = '.private-namespace.lock'
+NAMESPACE_LOCK_CREATE_EXISTS = 3
+
+
+def _create_namespace_lock(directory_fd, uid, gid):
+    """Exclusive creation of the empty lock, never a replacement: O_EXCL and
+    O_NOFOLLOW, relative to the already-open directory. Running as root for
+    another owner, a forked child drops to that owner first, so the file is
+    born with its final owner and mode (no window with a root-owned lock)."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+
+    def create():
+        os.umask(0o077)
+        descriptor = os.open(NAMESPACE_LOCK, flags, 0o600, dir_fd=directory_fd)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    if os.geteuid() == uid:
+        try:
+            create()
+        except FileExistsError:
+            return False
+        return True
+    require(os.geteuid() == 0, 'COPY_RUNTIME_PRIVATE_NAMESPACE_LOCK_OWNER')
+    pid = os.fork()
+    if pid == 0:  # pragma: no cover - child process
+        code = 1
+        try:
+            os.setgroups([])
+            os.setgid(gid)
+            os.setuid(uid)
+            create()
+            code = 0
+        except FileExistsError:
+            code = NAMESPACE_LOCK_CREATE_EXISTS
+        except BaseException:
+            code = 1
+        finally:
+            os._exit(code)
+    _, status = os.waitpid(pid, 0)
+    code = os.waitstatus_to_exitcode(status)
+    if code == NAMESPACE_LOCK_CREATE_EXISTS:
+        return False
+    require(code == 0, 'COPY_RUNTIME_PRIVATE_NAMESPACE_LOCK_CREATE_FAILED')
+    return True
+
+
+def ensure_namespace_lock(directory, owner):
+    """V7.5.2 L01: the `.private-namespace.lock` of one private namespace
+    (packages/db/src/private-namespace-lock.ts). Absent: created empty, 0600
+    and owned like the directory. Present: verified as it is — regular file,
+    not a link, one link, empty, 0600, same owner and the same inode when
+    opened — and never truncated, replaced or re-permissioned. Returns
+    CREATED or VERIFIED; anything else stops the publication before the
+    readers start."""
+    descriptor = os.open(str(directory), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        info = os.fstat(descriptor)
+        require(stat.S_ISDIR(info.st_mode) and (info.st_uid, info.st_gid) == (owner.st_uid, owner.st_gid),
+                'COPY_RUNTIME_PRIVATE_NAMESPACE_ROOT_UNSAFE')
+        created = False
+        try:
+            current = os.stat(NAMESPACE_LOCK, dir_fd=descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            created = _create_namespace_lock(descriptor, owner.st_uid, owner.st_gid)
+            current = os.stat(NAMESPACE_LOCK, dir_fd=descriptor, follow_symlinks=False)
+        require(stat.S_ISREG(current.st_mode) and current.st_nlink == 1 and current.st_size == 0
+                and stat.S_IMODE(current.st_mode) == 0o600 and current.st_uid == owner.st_uid,
+                'COPY_RUNTIME_PRIVATE_NAMESPACE_LOCK_UNSAFE')
+        lock = os.open(NAMESPACE_LOCK, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=descriptor)
+        try:
+            opened = os.fstat(lock)
+        finally:
+            os.close(lock)
+        require((opened.st_dev, opened.st_ino) == (current.st_dev, current.st_ino)
+                and opened.st_nlink == 1 and opened.st_size == 0, 'COPY_RUNTIME_PRIVATE_NAMESPACE_LOCK_UNSAFE')
+        if created:
+            os.fsync(descriptor)
+        return 'CREATED' if created else 'VERIFIED'
+    finally:
+        os.close(descriptor)
 
 
 def apply_reviewed_migrations(server, root, report_dir, metadata, review, timeout=300, *, stage='INITIAL'):
@@ -1502,8 +1592,9 @@ def apply_reviewed_migrations(server, root, report_dir, metadata, review, timeou
     require(review.get('migration_hashes') == {name: expected[name] for name in names},
             'COPY_RUNTIME_REVIEWED_MIGRATION_HASH_CHANGED')
     lab_storage = ensure_lab_storage(server) if names == V7_PROFILE_MIGRATION_NAMES else None
+    storage = {'lab_storage': 'READY', 'namespace_locks': lab_storage['namespace_locks']} if lab_storage else {}
     if applied == expected:
-        return {'status': 'ALREADY_APPLIED', 'migration_count': len(expected), **({'lab_storage': 'READY'} if lab_storage else {})}
+        return {'status': 'ALREADY_APPLIED', 'migration_count': len(expected), **storage}
     incremental = names == V7_PROFILE_MIGRATION_NAMES and v7_incremental_baseline(applied, expected)
     require(not incremental or stage == 'OPERATING', 'COPY_RUNTIME_68_MIGRATION_BASELINE_REQUIRED')
     retirement = None
@@ -1531,8 +1622,7 @@ def apply_reviewed_migrations(server, root, report_dir, metadata, review, timeou
         result['applied_migrations'] = sorted(V7_INCREMENTAL_MIGRATION_NAMES)
     if retirement:
         result['retirement_export'] = retirement
-    if lab_storage:
-        result['lab_storage'] = 'READY'
+    result.update(storage)
     return result
 
 
