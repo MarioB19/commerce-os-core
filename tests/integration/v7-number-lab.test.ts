@@ -462,8 +462,8 @@ it('V7.5.3: a matrix runs 97 on one number and 107 on another within one ceiling
   fulfillment:[{asset_id:links[0],release_on:'commitment_accepted'},{asset_id:links[1],release_on:'commitment_accepted'},{asset_id:links[2],release_on:'receipt_approved'},{asset_id:links[3],release_on:'receipt_approved',min_amount_minor:10700}]}}));
  v=data(await call('owner','PUT',`/v2/variants/${v.id}/collection`,{expected_version:v.version,value:{spei:{bank:'Banco sintético',holder:'Titular sintético',clabe:clabe('01218000011835971')},links:[],instructions:''}}));
  data(await call('owner','POST',`/v2/variants/${v.id}/publish`,{expected_version:v.version,document_sha256:v.document_sha256}));
- await withProfileTransaction(pool as never,P,async db=>{await db.query('SET LOCAL ROLE commerce_api');await db.query("SELECT set_config('app.environment','REAL',true)");
-  return writeReceiptPolicy(db,'REAL',v.id,{expectedRevision:0,override:{automaticApproval:true}},ownerId,randomUUID());});
+ // As Mi Ciclo Listo: automatic approval stays off; the receipt goes to human
+ // review and the test approves it there (the amount read is the one approved).
  const numbers:string[]=[];
  for(const name of ['Matriz A','Matriz B']){numbers.push(await withTransaction(async c=>{await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','REAL',true)",[P]);
   return(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','channel_account',$2) RETURNING id",[P,{name,provider:'waha',gateway_ref:'lab-'+randomUUID(),status:'WORKING',sending_enabled:true,identity_verified:true}])).rows[0].id as string;}));
@@ -478,8 +478,11 @@ it('V7.5.3: a matrix runs 97 on one number and 107 on another within one ceiling
   const today=new Intl.DateTimeFormat('en-CA',{timeZone:MX.timezone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
   visionDocument={is_receipt:true,amount_minor:amount,currency:'MXN',destination_suffix:'0000',bank:'Banco de prueba',reference:'LAB-0001',status:'completed',confidence:0.97,contradictions:[],destination:'012180000000000000',beneficiary:'Negocio de prueba',paid_on:today,concept:'Compra de prueba'};
   let report:any;for(let i=0;i<40;i++){await processNumberLabOperations(runtime);report=data(await call('owner','GET',`/v2/number-tests/suites/${started.suite_id}`));if(report.suite.state==='COMPLETED')break;}
-  expect(report.suite,JSON.stringify(report.variants)).toMatchObject({state:'COMPLETED',matrix_id:matrix.id,maximum_ai_calls:8});
-  return report.variants[0].cases[0];};
+  const detail=report.suite.state==='COMPLETED'?'':(await call('owner','GET',`/v2/number-tests/${report.variants[0].cases[0].run_id}`)).body.slice(0,3000);
+  expect(report.suite,JSON.stringify(report.variants)+detail).toMatchObject({state:'COMPLETED',matrix_id:matrix.id,maximum_ai_calls:8});
+  const c=report.variants[0].cases[0];
+  expect(c.checks.find((x:{name:string})=>x.name==='receipt').detail).toContain('revisión');
+  return c;};
  const c97=await run(numbers[0],'acuerdo_97',9700,e97);
  expect(c97.plan).toEqual({receipt_amount_minor:9700,tier_id:'acuerdo_97'});
  expect(c97.checks.map((c:{name:string;state:string})=>[c.name,c.state]).sort(),JSON.stringify(c97.checks)).toEqual([['agreement','PASSED'],['collection','PASSED'],['delivery','PASSED'],['exclusion','PASSED'],['initial_delivery','PASSED'],['offer','PASSED'],['receipt','PASSED'],['route','PASSED']]);

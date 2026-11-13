@@ -1,5 +1,29 @@
 # Estado de publicación
 
+## 13-nov-2026 — V7.5.3: acuerdo contextual, recepciones de grupo, laboratorio por tier y remarketing MCL, candidato (Claude)
+
+Desde V7.5.2 `13461428` (instalada el 13-nov, 121 migraciones). Decisiones:
+[ADR V7.5.3](adr-v7-5-3-agreement-group-receipts.md). Una migración incremental
+(`0122`, sólo esquema del laboratorio).
+
+- **F1/F2.** Opción 2: la IA propone el compromiso y una regla determinista lo
+  confirma por la transición canónica única (`commitAgreement`). Un sí claro al
+  acuerdo explicado acepta; preguntas, condiciones, negativas u otro tema reciben
+  una aclaración determinista sin entrega. Ninguna respuesta afirma registro o
+  envío que la base no muestre. La venta guiada no expone espera de cobro.
+- **F3.** Las recepciones de grupo WAHA se correlacionan por identidad canónica
+  (chat + mensaje) con autor y receptor verificados; idempotente y auditada. La
+  reconciliación revisa eventos guardados sin reenviar ni acreditar a mano. Los
+  turnos liberados tarde conservan su espaciado; el estado efectivo distingue
+  esperando recepción, incierto, bloqueado y enviando.
+- **Laboratorio.** A01–A05; inventario por ID y etapa con importe aprobado;
+  planes por tier (97/107) y matriz con tope persistente compartido.
+- **Remarketing MCL.** Pruebas con reloj controlado de la política exacta (un
+  mensaje por ciclo, 2 h, 09–18 CDMX, cancelaciones). Se publica sólo en MCL
+  después de instalar.
+
+Validación local: ver el cierre del release.
+
 ## 13-nov-2026 — V7.5.2: laboratorio, permiso operativo y estado de prueba, candidato (Claude)
 
 Desde V7.5.1 `76901884` (instalada el 13-nov, 121 migraciones). Incorpora el

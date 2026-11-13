@@ -633,7 +633,7 @@ describe('V7.5.3 contextual agreement: AI proposal + deterministic rule',()=>{
   expect((await sellerReplies(journey)).map((p:Body)=>p.agreement_clarification)).toEqual(['AGREEMENT_REGISTERED_CLAIM']);
  });
  it('a human takeover before the model call leaves the reply to the person; one during the call holds the proposal, which is re-validated and applied once after release',async()=>{
-  const started=await start(),identity=started.identity;let journey=started.journey;await transport(journey);
+  let {identity,journey}=await start();await transport(journey);
   const takeover=async(on:boolean,conversation:DomainRecord)=>{if(on)await pool.query("INSERT INTO manual_controls(workspace_id,scope_type,scope_id,takeover,reason,actor_id) VALUES($1,'conversation',$2,true,'FIXTURE_TAKEOVER','fixture') ON CONFLICT(workspace_id,scope_type,scope_id) DO UPDATE SET takeover=true,version=manual_controls.version+1",[conversation.workspace_id,conversation.id]);
    else await pool.query("UPDATE manual_controls SET takeover=false,version=version+1 WHERE workspace_id=$1 AND scope_type='conversation' AND scope_id=$2",[conversation.workspace_id,conversation.id]);};
   await takeover(true,journey);

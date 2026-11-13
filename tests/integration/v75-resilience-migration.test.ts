@@ -20,7 +20,7 @@ describe('V7.5 migration 0121',()=>{
   const dated=await insert('dated-resolution','CHANNEL_PROVIDER_UNAVAILABLE',{status:'ACCEPTED',resolved:'2026-11-10T05:00:00Z'});
   const unread=await insert('unread','QUEUE_OLDER_THAN_30_MINUTES');
   await migrate({pool:db.pool,log:()=>undefined});await migrate({pool:db.pool,log:()=>undefined});
-  expect((await db.pool.query('SELECT count(*)::int n FROM schema_migrations')).rows[0].n).toBe(121);
+  expect((await db.pool.query('SELECT count(*)::int n FROM schema_migrations')).rows[0].n).toBe(122);
   const rows=new Map((await db.pool.query('SELECT * FROM operational_alerts WHERE workspace_id=$1',[w])).rows.map(r=>[r.id,r]));
   expect(rows.size).toBe(8);
   const episode=rows.get(backup[0]!)!;
