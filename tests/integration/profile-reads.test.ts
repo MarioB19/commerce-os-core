@@ -58,7 +58,8 @@ describe('V7 profile reads: home, usage, audit and operations',()=>{
  afterAll(async()=>{await app?.close();await api?.end();if(admin){try{await admin.query(`DROP ROLE IF EXISTS "${apiLogin}"`);}finally{await admin.end();}}});
  it('summarizes Inicio with connection, aptitude to attend and sales kept apart',async()=>{
   const r=await get('/v2/home',users.viewer,one);expect(r.statusCode).toBe(200);const data=r.json().data;
-  expect(data.numbers).toEqual({registered:2,connected:1,attending:1,causes:{DISCONNECTED:1,PAUSED:0,NOT_AUTHORIZED:0}});
+  // V7.5.2 N01: a connected number with the legacy permit but no human assignment is not «attending».
+  expect(data.numbers).toEqual({registered:2,connected:1,ready:0,attending:0,causes:{DISCONNECTED:1,PAUSED:0,NOT_AUTHORIZED:0,NOT_ASSIGNED:1,WARMING:0,NOT_OPERATIONAL:0}});
   expect(data.today).toEqual({conversations:1,orders:1,approvedReceipts:1});expect(data.pending).toEqual({receiptsToReview:1,alerts:1,criticalAlerts:1});
   expect(data.next).toEqual({kind:'ONBOARDING',step:'ai'});expect(r.body).not.toContain('PRIVATE_SENTINEL');
   const empty=(await get('/v2/home',users.other,two)).json().data;expect(empty.numbers.registered).toBe(0);expect(empty.today.conversations).toBe(0);

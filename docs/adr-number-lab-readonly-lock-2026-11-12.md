@@ -1,6 +1,8 @@
 # Lectura del laboratorio en el almacén privado de solo lectura
 
-Estado: decisión y parche parcial de lectura probados localmente; no instalada.
+Estado: decisión y parche parcial de lectura probados localmente; completado en
+V7.5.2 por Claude (inicialización canónica del lock, diagnóstico y cierre sin
+reintento): ver [V7.5.2](adr-v7-5-2-lab-numbers.md).
 
 ## Evidencia y alcance
 

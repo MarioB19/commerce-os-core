@@ -1,4 +1,5 @@
 import {ensureDefaultReceiptPolicy} from './receipt-policies.js';
+import {establishSendingPermit} from './sending-permit.js';
 import {randomUUID,createHash} from 'node:crypto';
 import {z} from 'zod';
 import {putRecord,encrypt,decrypt,stableJson,appendEvent} from './index.js';
@@ -450,7 +451,12 @@ export async function setVariantNumber(db:ProfileExecutor,environment:Environmen
  }
  need(row.current_release_id&&!row.archived_at,'VARIANT_NOT_PUBLISHED');
  const product=await productRecord(db,environment,row.family_id);need(!archivedProduct(product.body),'PRODUCT_ARCHIVED');
- if(existing?.state==='ACTIVE'&&existing.variant_id===row.id)return{account_id:account.id,sells:true,assignment_id:existing.id,unchanged:true};
+ if(existing?.state==='ACTIVE'&&existing.variant_id===row.id){
+  // V7.5.2 N01: confirming the same assignment is still the human act that
+  // establishes the operational permit if it is missing (e.g. after an unlink).
+  const permit=await establishSendingPermit(db,environment,db.workspaceId,account.id,{source:'HUMAN_ASSIGNMENT',actorId:actor.id});
+  return{account_id:account.id,sells:true,assignment_id:existing.id,unchanged:true,sending_permit:permit.state};
+ }
  need(!(existing?.state==='ACTIVE'&&existing.variant_id),'NUMBER_SELLS_OTHER_VARIANT',409);
  const release=(await currentVariantRelease(db,environment,row.id))!;const c=release.configuration;
  let assignmentId:string,revision:number;
@@ -469,8 +475,11 @@ export async function setVariantNumber(db:ProfileExecutor,environment:Environmen
   await db.query(`INSERT INTO commercial_assignment_history(assignment_id,revision,binding_id,state,actor_id,reason) VALUES($1,$2,$3,'ACTIVE',$4,$5)`,[assignmentId,revision,binding.id,actor.id,'Variante asignada al número desde Productos']);
  }
  const continuity=await issueCommercialContinuity(db,environment,{operationId:grant.operationId,assignmentId,expectedRevision:revision},grant.authority);
- await audit(db,environment,actor,'variant.number_assigned',row.id,{account_id:account.id,assignment_id:assignmentId,revision,continuity_id:continuity.id,adopted:existing?.state==='ACTIVE'});
- return{account_id:account.id,sells:true,assignment_id:assignmentId,continuity_id:continuity.id,paused:continuity.humanPaused};
+ // V7.5.2 N01 (D-01): this human act is also the canonical transition of the
+ // number's operational permit. Warm-up, pause and protections keep gating.
+ const permit=await establishSendingPermit(db,environment,db.workspaceId,account.id,{source:'HUMAN_ASSIGNMENT',actorId:actor.id});
+ await audit(db,environment,actor,'variant.number_assigned',row.id,{account_id:account.id,assignment_id:assignmentId,revision,continuity_id:continuity.id,adopted:existing?.state==='ACTIVE',sending_permit:permit.state});
+ return{account_id:account.id,sells:true,assignment_id:assignmentId,continuity_id:continuity.id,paused:continuity.humanPaused,sending_permit:permit.state};
 }
 /** Assignment history of one number: which product/variant it sold and when. */
 export async function numberAssignmentHistory(db:ProfileExecutor,environment:Environment,accountId:string){

@@ -9,7 +9,7 @@ import {variantRequest} from './variants.js';
  * profile is shared for a few seconds so the sidebar and the page never
  * double-count or double-request. */
 export const homeSchema=z.object({timezone:z.string(),
- numbers:z.object({registered:z.number(),connected:z.number(),attending:z.number(),causes:z.object({DISCONNECTED:z.number(),PAUSED:z.number(),NOT_AUTHORIZED:z.number()})}),
+ numbers:z.object({registered:z.number(),connected:z.number(),ready:z.number().default(0),attending:z.number(),causes:z.object({DISCONNECTED:z.number(),PAUSED:z.number(),NOT_AUTHORIZED:z.number(),NOT_ASSIGNED:z.number().default(0),WARMING:z.number().default(0),NOT_OPERATIONAL:z.number().default(0)})}),
  today:z.object({conversations:z.number(),orders:z.number(),approvedReceipts:z.number()}),
  pending:z.object({receiptsToReview:z.number(),alerts:z.number(),criticalAlerts:z.number()}),
  onboarding:z.object({complete:z.boolean(),dismissed:z.boolean(),next:z.string().nullable()}).nullable(),

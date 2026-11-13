@@ -1,5 +1,28 @@
 # Estado de publicación
 
+## 13-nov-2026 — V7.5.2: laboratorio, permiso operativo y estado de prueba, candidato (Claude)
+
+Desde V7.5.1 `76901884` (instalada el 13-nov, 121 migraciones). Incorpora el
+parche de lectura de Codex (`08798f88`, autoría conservada). Decisiones y
+vocabulario: [ADR V7.5.2](adr-v7-5-2-lab-numbers.md). Sin migraciones.
+
+- **L01.** `copy-runtime` crea y verifica `.private-namespace.lock` (fuente y
+  laboratorio) antes de arrancar lectores, también sin migraciones pendientes;
+  nunca lo reemplaza ni trunca. Errores del lock con código estable y errno, sin
+  rutas. Un paso que falla antes del motor se cierra `FAILED`
+  (`DEPENDENCY_REQUIRED`, sin ejecución ni costo); un `INTENT` antiguo sin
+  ejecución del motor, igual (`LAB_OPERATION_NOT_ADMITTED`). Nada se reintenta.
+- **N01.** La asignación humana establece el permiso operativo
+  (`sending_enabled`, `sending_permit`); las asignaciones humanas vigentes se
+  adoptan una vez en el mantenimiento por perfil. Pausa, protección, revocación,
+  calentamiento, control operativo y política REAL conservan su compuerta.
+  Inicio y Números comparten asignado / calentando / apto / atendiendo.
+- **T01.** `last_test` sólo es `ok:true` con la suite terminada y cubierta;
+  pendiente, incierta o incompleta es `ok:null` con su estado. Una suite sin
+  concluir impide otra del mismo número.
+
+Validación local: ver el cierre del release.
+
 ## 12-nov-2026 — Laboratorio sobre almacén de solo lectura: preparación para Claude
 
 Desde V7.5.1 `76901884`, la suite de Mi Ciclo Listo queda en INTENT antes de

@@ -13,16 +13,25 @@ const states=new WeakMap<object,State>();
 const lockName='.private-namespace.lock';
 function need(v:unknown,code:string):asserts v{if(!v)throw Error(code);}
 const same=(a:Identity,b:Identity)=>a.dev===b.dev&&a.ino===b.ino;
+const errnoOf=(error:unknown)=>{const value=(error as NodeJS.ErrnoException|undefined)?.code;return typeof value==='string'&&/^E[A-Z0-9]{1,15}$/.test(value)?value:undefined;};
+/** V7.5.2 L01: a stable, path-free reason. The operating-system code stays in
+ * `code` (EROFS, ENOENT…) so a log can say why without naming private paths. */
+function lockFailure(reason:string,cause:unknown){const errno=errnoOf(cause);return Object.assign(Error(reason),errno?{code:errno}:{});}
+function openFailure(cause:unknown){const errno=errnoOf(cause);
+ return lockFailure(errno==='ELOOP'?'PRIVATE_NAMESPACE_LOCK_FILE':errno==='EROFS'?'PRIVATE_NAMESPACE_READ_ONLY':'PRIVATE_NAMESPACE_LOCK_UNAVAILABLE',cause);}
 async function openLock(root:string,mode:PrivateNamespaceMode){
  const path=join(root,lockName);
- if(mode==='EXCLUSIVE')return open(path,constants.O_RDWR|constants.O_CREAT|constants.O_NOFOLLOW,0o600);
+ if(mode==='EXCLUSIVE')try{return await open(path,constants.O_RDWR|constants.O_CREAT|constants.O_NOFOLLOW,0o600);}catch(error){throw openFailure(error);}
  // Readers also run on a read-only source bind. Reuse its existing lock
  // without requesting write access; initialization still requires a writable root.
  const readFlags=constants.O_RDONLY|constants.O_NOFOLLOW;
- try{return await open(path,readFlags);}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+ try{return await open(path,readFlags);}catch(error){if(errnoOf(error)!=='ENOENT')throw openFailure(error);}
  try{return await open(path,readFlags|constants.O_CREAT|constants.O_EXCL,0o600);}catch(error){
-  if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;
-  return open(path,readFlags);
+  if(errnoOf(error)==='EEXIST')try{return await open(path,readFlags);}catch(again){throw openFailure(again);}
+  // A read-only mount cannot create its own lock: the canonical writable
+  // preparation (copy-runtime ensure_lab_storage) must have created it first.
+  if(['EROFS','EACCES','EPERM'].includes(errnoOf(error)??''))throw lockFailure('PRIVATE_NAMESPACE_LOCK_UNINITIALIZED',error);
+  throw openFailure(error);
  }
 }
 async function directory(root:string){

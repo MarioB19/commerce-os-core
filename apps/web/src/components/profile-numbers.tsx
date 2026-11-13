@@ -21,7 +21,7 @@ const linkSchema=z.object({id:z.string(),version:z.number(),alias:z.string(),mas
  operability:z.object({state:z.string(),reason:z.string().nullable(),next_action:z.string().nullable(),last_check:z.object({id:z.string(),status:z.string(),error:z.string().nullable(),at:z.string()}).nullable()}).optional()});
 /** V7.4 D/E: the warm-up of a number as it is, never a calendar day. */
 const warmupSchema=z.object({mode:warmupMode,state:z.string(),label:z.string(),effective_days:z.number(),target_days:z.number(),program:z.object({id:z.string(),name:z.string(),status:z.string(),role:z.enum(['sender','receiver'])}).nullable()});
-const rowSchema=linkSchema.extend({status:z.object({code:z.string(),label:z.string()}),products:z.array(z.string()),warmup:warmupSchema,last_test:z.object({at:z.string(),ok:z.boolean(),run_id:z.string().optional()}).nullable()});
+const rowSchema=linkSchema.extend({status:z.object({code:z.string(),label:z.string()}),products:z.array(z.string()),warmup:warmupSchema,last_test:z.object({at:z.string(),ok:z.boolean().nullable(),run_id:z.string().optional(),state:z.string().optional(),label:z.string().optional()}).nullable()});
 const overviewSchema=z.object({numbers:z.array(rowSchema),limit:z.number().nullable()});
 const qrSchema=z.object({mimeType:z.literal('image/png'),data:z.string(),expiresAt:z.string()});
 const impactSchema=z.object({products:z.array(z.string()),open_conversations:z.number(),pending_followups:z.number(),deliveries_to_confirm:z.number()});
@@ -33,6 +33,9 @@ function ownershipText(o:{state:string;reason:string|null;last_check:{status:str
  const last=o.last_check?.status==='PENDING'?' Comprobación en curso.':o.last_check?.status==='FAILED'&&o.last_check.error?' '+(checkErrors[o.last_check.error]??'La última comprobación no se completó.'):'';
  return base+last;
 }
+
+/** V7.5.2 T01: the server's own state of the test; pending is never «con problemas». */
+function testLabel(t:NonNullable<Row['last_test']>){const label=t.label??(t.ok===true?'Aprobada':t.ok===false?'Con fallas':'En curso');return label.charAt(0).toLowerCase()+label.slice(1);}
 
 export function ProfileNumbers({selection,role,state}:{selection:ProfileFence;role:ProfileRole;state:ProfileState}){
  const manage=role!=='viewer'&&state==='ACTIVE';
@@ -65,7 +68,7 @@ export function ProfileNumbers({selection,role,state}:{selection:ProfileFence;ro
     {n.warmup.state==='ACTIVE'&&<Progress value={n.warmup.effective_days} max={n.warmup.target_days} label={`${n.alias}: días efectivos de calentamiento`} valueText={`${n.warmup.effective_days} de ${n.warmup.target_days} días efectivos`}/>}
     {n.warmup.state==='GROUP_REQUIRED'&&manage&&<Button size="sm" variant="secondary" onClick={()=>setWarmups(true)}>Elegir grupo</Button>}
    </div>}
-   <p className="muted text-sm"><FlaskConical aria-hidden="true" size={14} style={{verticalAlign:'-2px'}}/> Última prueba: {n.last_test?`${new Date(n.last_test.at).toLocaleDateString('es-MX',{day:'numeric',month:'short'})}, ${n.last_test.ok?'sin problemas':'con problemas'}`:'sin probar'}</p>
+   <p className="muted text-sm"><FlaskConical aria-hidden="true" size={14} style={{verticalAlign:'-2px'}}/> Última prueba: {n.last_test?`${new Date(n.last_test.at).toLocaleDateString('es-MX',{day:'numeric',month:'short'})}, ${testLabel(n.last_test)}`:'sin probar'}</p>
    <div className="cluster">
     <a className="btn" data-variant="secondary" data-size="sm" href={`/numbers/${n.id}/test`}><FlaskConical aria-hidden="true"/>{n.last_test?'Ver o probar de nuevo':'Probar número'}</a>
     {manage&&n.next_action&&['link','qr','unlink','retry_preparation'].includes(n.next_action.code)&&<Button size="sm" variant="secondary" onClick={()=>setLinking(n.id)}><QrCode aria-hidden="true"/>{n.next_action.label}</Button>}

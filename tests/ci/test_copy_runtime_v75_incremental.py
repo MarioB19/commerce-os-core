@@ -75,7 +75,8 @@ class V75IncrementalMigration(unittest.TestCase):
                  patch.object(c, 'export_retired_modules', side_effect=AssertionError('cutover-only export ran')):
                 result = c.apply_reviewed_migrations(server, root, root, metadata, review, 600, stage='OPERATING')
         self.assertEqual(result, {'status': 'APPLIED_BOUNDED_INCREMENTAL', 'migration_count': 121, 'bootstrap_or_import': False,
-                                  'applied_migrations': [TAIL], 'lab_storage': 'READY'})
+                                  'applied_migrations': [TAIL], 'lab_storage': 'READY',
+                                  'namespace_locks': {'source': 'CREATED', 'laboratory': 'CREATED'}})
         self.assertEqual(calls['plan'], {'stage': 'OPERATING', 'baseline': v7_base(), 'additions': {TAIL: expected[TAIL]}})
         (name, args, timeout), = calls['tasks']
         mounts = [args[i+1] for i, part in enumerate(args) if part == '-v' and '/copy-sql/' in args[i+1]]

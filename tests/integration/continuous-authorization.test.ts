@@ -37,6 +37,11 @@ import {channelIdentityHash} from '../../packages/db/src/commercial-assignments.
 import {defaultOperationalSettings,type Body} from '../../packages/contracts/src/index.js';
 import type {ContinuousAuthorization} from '../../packages/contracts/src/continuous-authorization.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
+import {establishSendingPermit} from '../../packages/db/src/sending-permit.js';
+import {adoptAssignmentSendingPermits} from '../../apps/channel-worker/src/sending-permits.js';
+import {readNumberSelling} from '../../packages/db/src/number-selling.js';
+import {readProfileHome} from '../../packages/db/src/profile-reads.js';
+import {STANDARD_POLICY} from '../../packages/domain/src/warmup/preparation.js';
 
 const suffix=randomBytes(8).toString('hex'),workspace='continuous_'+suffix,foreign=workspace+'_foreign',actor='f3_owner_'+suffix;
 const roles=['commerce_api','commerce_channel','commerce_automation'] as const;
@@ -153,6 +158,38 @@ async function commercialReady(input:{workflow?:Body;offer?:Body}={}){
  const gate=(value:Body)=>tx('commerce_channel',db=>withProfileQueryRouting(db,()=>gateDispatch(db,value,'f3-gate')));
  return{...f,offer,workflow,contact,conversation,propose,gate};
 }
+
+/** V7.5.2 N01: a number exactly as /v1/numbers/quick registers it — permit off,
+ * standard preparation, warm-up REQUIRED — with a human assignment and its
+ * continuity. Cloud transport keeps the bench offline; no fixture enables the
+ * permit: only establishSendingPermit (the canonical transition) may. */
+async function newNumberAssigned(){
+ const f=await issue(true);
+ await admin.query("UPDATE records SET version=version+1,body=$2::jsonb WHERE id=$1",[f.origin.account,{name:'Synthetic new number',provider:'cloud',status:'WORKING',sending_enabled:false,identity_verified:false,
+  number_policy_version:STANDARD_POLICY,warmup_mode:'REQUIRED',warmup_mode_source:'owner_choice',registered_by:'v7_quick'}]);
+ const offer=await record('offer',{status:'PUBLISHED',name:'Synthetic offer',base_amount_minor:9700,currency:'MXN',product_id:f.origin.product}),workflow=await record('workflow',{status:'PUBLISHED'}),contact=await record('contact',{status:'LEAD'});
+ const now=(await admin.query('SELECT clock_timestamp() AS now')).rows[0].now as Date;
+ // A consented inbound from a customer one minute ago (service window open).
+ const conversationId=await record('conversation',{sequence:1,stage:'NEW',status:'OPEN',account_id:f.origin.account,contact_id:contact,assignment_id:f.origin.assignment,assignment_revision:1,binding_id:f.origin.binding,product_id:f.origin.product,offer_version_id:offer,workflow_version_id:workflow,
+  started_at:new Date(now.getTime()-3600000).toISOString(),last_inbound_at:new Date(now.getTime()-60000).toISOString()});
+ await admin.query("INSERT INTO operational_settings(workspace_id,environment,version,body,updated_by) VALUES($1,'REAL',1,$2,$3) ON CONFLICT(workspace_id,environment) DO UPDATE SET body=EXCLUDED.body",[workspace,{...defaultOperationalSettings,dispatch_frozen:false,real_sends_enabled:true,allow_real_operations:true},actor]);
+ await admin.query("INSERT INTO session_ownership(account_id,workspace_id,owner_id,frozen,lease_expires_at) VALUES($1,$2,'f3-gate',false,clock_timestamp()+interval '10 minutes')",[f.origin.account,workspace]);
+ // A connected session the supervisor keeps running (no system pause).
+ await admin.query("UPDATE channel_sessions SET operational_pause=false,desired_state='RUNNING' WHERE account_id=$1",[f.origin.account]);
+ for(const dimension of ['transport','quality'])await record('health_signal',{account_id:f.origin.account,dimension,status:'OK',availability:'supported',source:'provider_read',scope:'account',observed_at:new Date(now.getTime()-1000).toISOString(),expires_at:new Date(now.getTime()+600000).toISOString()});
+ const conversation=(await getRecord(admin,workspace,'conversation',conversationId))!;
+ const propose=(key=randomUUID())=>tx('commerce_automation',db=>withProfileQueryRouting(db,()=>proposeEffect(db,conversation,{kind:'text',text:'Synthetic consented reply'},key,{})));
+ const gate=(value:Body)=>tx('commerce_channel',db=>withProfileQueryRouting(db,()=>gateDispatch(db,value,'f3-gate')));
+ const selling=()=>tx('commerce_api',async db=>readNumberSelling(db,(await getRecord(db,workspace,'channel_account',f.origin.account))!));
+ return{...f,conversation,propose,gate,selling};
+}
+async function startWarmup(account:string){
+ const profile=randomUUID(),pool=randomUUID();
+ await admin.query("INSERT INTO warmup_profiles(id,workspace_id,environment,config) VALUES($1,$2,'REAL','{}')",[profile,workspace]);
+ await admin.query("INSERT INTO warmup_pools(id,workspace_id,environment,profile_id,enabled) VALUES($1,$2,'REAL',$3,true)",[pool,workspace,profile]);
+ await admin.query("INSERT INTO warmup_states(account_id,workspace_id,environment,pool_id,profile_id,status,enrolled_at) VALUES($1,$2,'REAL',$3,$4,'WARMING',clock_timestamp())",[account,workspace,pool,profile]);
+}
+const permitOf=async(account:string)=>(await getRecord(admin,workspace,'channel_account',account))!.body;
 
 const messageFlow={name:'Durable proposal fixture',entry_node_id:'message',max_steps:10,nodes:[{id:'message',type:'message',config:{text:'Synthetic durable message'},next:'end'},{id:'end',type:'end',config:{}}]};
 async function awaitGrant(f:Awaited<ReturnType<typeof commercialReady>>){
@@ -658,6 +695,80 @@ describe('F3 continuity persistence, real restricted PostgreSQL and synthetic so
    // transaction. This proves the reread, not external concurrent DB access.
    const result=await p.provider.propose(config,context);await db.query("UPDATE records SET body=body||'{\"assignment_revision\":2}'::jsonb,version=version+1 WHERE id=$1",[f.conversation.id]);return result;
   }}));expect(p.calls()).toBe(1);expect((await runFor(f.conversation.id))[0].body.status).toBe('DISCARDED');expect(await effects(f.conversation.id)).toHaveLength(0);
+ });
+
+
+ it('V7.5.2 N01: new number → human assignment → warm-up → graduation → a consented inbound reply passes the real dispatcher',async()=>{
+  const outcome=(f:Awaited<ReturnType<typeof newNumberAssigned>>)=>tx('commerce_automation',db=>withProfileQueryRouting(db,()=>proposeEffectOutcome(db,f.conversation,{kind:'text',text:'Synthetic consented reply'},randomUUID(),{})));
+  // Regression (V7.5.1): without a transition the legacy permit stays off, so a
+  // graduated number with a live human assignment can never answer.
+  const legacy=await newNumberAssigned();await startWarmup(legacy.origin.account);
+  expect(await outcome(legacy)).toMatchObject({state:'BLOCKED',reason:'COMMERCIAL_WARMUP_BLOCKED'});
+  await admin.query("UPDATE warmup_states SET status='GRADUATED' WHERE account_id=$1",[legacy.origin.account]);
+  expect(await outcome(legacy)).toMatchObject({state:'BLOCKED',reason:'CONTINUITY_ASSIGNMENT_UNAVAILABLE'});
+  expect(await legacy.selling()).toMatchObject({stage:'NOT_AUTHORIZED',permit:false,ready:false,reasons:['ACCOUNT_SENDING_NOT_ENABLED']});
+  // V7.5.2: the human act (D-01) establishes the permit; repeating it changes nothing.
+  const f=await newNumberAssigned();
+  expect(await human(db=>establishSendingPermit(db,'REAL',workspace,f.origin.account,{source:'HUMAN_ASSIGNMENT',actorId:actor}))).toMatchObject({state:'ESTABLISHED',assignment_id:f.origin.assignment,continuity_id:f.state.id});
+  expect(await human(db=>establishSendingPermit(db,'REAL',workspace,f.origin.account,{source:'HUMAN_ASSIGNMENT',actorId:actor}))).toEqual({state:'UNCHANGED'});
+  expect(await permitOf(f.origin.account)).toMatchObject({sending_enabled:true,sending_permit:{source:'HUMAN_ASSIGNMENT',assignment_id:f.origin.assignment,continuity_id:f.state.id,established_by:actor}});
+  expect(Number((await admin.query("SELECT count(*)::int n FROM domain_events WHERE aggregate_id=$1 AND event_type='channel.sending_permit_established'",[f.origin.account])).rows[0].n)).toBe(1);
+  // The permit never skips preparation: unregistered → required; warming → blocked at proposal and at dispatch.
+  expect(await outcome(f)).toMatchObject({state:'BLOCKED',reason:'COMMERCIAL_WARMUP_BLOCKED'});
+  await startWarmup(f.origin.account);
+  expect(await outcome(f)).toMatchObject({state:'BLOCKED',reason:'COMMERCIAL_WARMUP_BLOCKED'});
+  expect(await f.selling()).toMatchObject({stage:'WARMING',warming:true,permit:true,ready:false});
+  // Graduation (the warm-up worker's verdict) is the only remaining condition: no hidden switch.
+  await admin.query("UPDATE warmup_states SET status='GRADUATED' WHERE account_id=$1",[f.origin.account]);
+  const value=await f.propose();expect(value).toMatchObject({continuous_authorization_id:f.state.id});
+  expect((await f.gate(value)).allowed).toBe(true);
+  expect(await f.selling()).toMatchObject({stage:'ATTENDING',ready:true,attending:true,reasons:[]});
+  // A warm-up that stops counting again blocks the same effect at the real dispatcher.
+  await admin.query("UPDATE warmup_states SET status='WARMING' WHERE account_id=$1",[f.origin.account]);
+  expect(await f.gate(value)).toMatchObject({allowed:false,reason:'ACCOUNT_WARMING'});
+  await admin.query("UPDATE warmup_states SET status='GRADUATED' WHERE account_id=$1",[f.origin.account]);
+  // Deliberate pause, protection and revocation keep their own gates over the permit.
+  const paused=await humanCommand(f.state,'pause');expect(await f.gate(value)).toMatchObject({allowed:false,reason:'CONTINUITY_HUMAN_PAUSED'});expect((await f.selling()).stage).toBe('PAUSED');
+  const resumed=await humanCommand(paused,'resume');expect((await f.gate(value)).allowed).toBe(true);
+  const now=(await admin.query('SELECT clock_timestamp() AS now')).rows[0].now.toISOString();
+  const protectedState=await tx('commerce_channel',db=>store.applyContinuousProtection(db,'REAL',resumed.id,'assert',{operationId:randomUUID(),expectedVersion:resumed.version,reason:'SEND_UNCERTAIN',incidentId:randomUUID(),observedAt:now,evidenceSha256:'e'.repeat(64)}));
+  expect(await f.gate(value)).toMatchObject({allowed:false,reason:'CONTINUITY_PROTECTED'});expect(await f.selling()).toMatchObject({stage:'NOT_AUTHORIZED',reasons:['CONTINUITY_PROTECTED']});
+  await humanCommand(protectedState,'revoke');expect(await f.gate(value)).toMatchObject({allowed:false,reason:'CONTINUITY_REVOKED'});
+  expect(await f.selling()).toMatchObject({stage:'NOT_ASSIGNED',assigned:false});
+ });
+ it('V7.5.2 N01: Inicio counts assigned/warming/apt/attending with the same meaning as Números',async()=>{
+  const home=async()=>(await withProfileSessionTransaction(scoped.get('commerce_api')!,session,{workspaceId:workspace,version:1},{scope:'home:read',mutation:false},async(db,p)=>{await bindProfileEnvironment(db,'REAL');return readProfileHome(db,p.authority);})).numbers;
+  const before=await home();
+  const f=await newNumberAssigned();await human(db=>establishSendingPermit(db,'REAL',workspace,f.origin.account,{source:'HUMAN_ASSIGNMENT',actorId:actor}));await startWarmup(f.origin.account);
+  const reserve=await record('channel_account',{name:'Reserve',provider:'cloud',status:'WORKING',sending_enabled:false,number_policy_version:STANDARD_POLICY,warmup_mode:'REQUIRED'});
+  const warming=await home();
+  expect([warming.ready-before.ready,warming.attending-before.attending,warming.causes.WARMING-before.causes.WARMING,warming.causes.NOT_ASSIGNED-before.causes.NOT_ASSIGNED,warming.causes.NOT_AUTHORIZED-before.causes.NOT_AUTHORIZED]).toEqual([0,0,1,1,0]);
+  await admin.query("UPDATE warmup_states SET status='GRADUATED' WHERE account_id=$1",[f.origin.account]);
+  const graduated=await home();
+  expect([graduated.ready-before.ready,graduated.attending-before.attending,graduated.causes.WARMING-before.causes.WARMING,graduated.causes.NOT_ASSIGNED-before.causes.NOT_ASSIGNED]).toEqual([1,1,0,1]);
+  expect(await tx('commerce_api',async db=>readNumberSelling(db,(await getRecord(db,workspace,'channel_account',reserve))!))).toMatchObject({stage:'NOT_ASSIGNED',permit:false,ready:false});
+ });
+ it('V7.5.2 N01: adoption establishes the permit once for human assignments in force, never for a reserve, a revoked grant or a permit turned off',async()=>{
+  const live=await issue(true),revoked=await issue(true),off=await issue(true);
+  const reserve=await record('channel_account',{name:'Reserve',provider:'waha',status:'WORKING',sending_enabled:false});
+  for(const id of [live.origin.account,revoked.origin.account])await admin.query("UPDATE records SET version=version+1,body=$2::jsonb WHERE id=$1",[id,{provider:'waha',status:'WORKING',sending_enabled:false,registered_by:'v7_quick'}]);
+  await admin.query("UPDATE records SET version=version+1,body=$2::jsonb WHERE id=$1",[off.origin.account,{provider:'waha',status:'WORKING',sending_enabled:false,sending_permit:{source:'HUMAN_ASSIGNMENT'},unlinked_at:null}]);
+  await humanCommand(revoked.state,'revoke');
+  await expect(adoptAssignmentSendingPermits(scoped.get('commerce_api')!,workspace)).rejects.toThrow('SENDING_PERMIT_INTERNAL_ROLE_REQUIRED');
+  // Bounded passes (limit 2 here, 20 in production) converge: every observed
+  // candidate is adoptable, so numbers adoption refuses never starve the rest.
+  let adopted=0;
+  for(let pass=0;pass<50;pass++){const result=await adoptAssignmentSendingPermits(scoped.get('commerce_channel')!,workspace,2);
+   expect(result).toMatchObject({deferred:0,failures:[],externalEffects:0});expect(result.adopted).toBe(result.observed);
+   adopted+=result.adopted;if(!result.observed)break;}
+  expect(adopted).toBeGreaterThanOrEqual(1);
+  expect(await permitOf(live.origin.account)).toMatchObject({sending_enabled:true,sending_permit:{source:'ASSIGNMENT_ADOPTION',established_by:null,assignment_id:live.origin.assignment}});
+  for(const id of [revoked.origin.account,off.origin.account,reserve])expect((await permitOf(id)).sending_enabled).toBe(false);
+  expect(await adoptAssignmentSendingPermits(scoped.get('commerce_channel')!,workspace)).toMatchObject({adopted:0,observed:0});
+  // Only a new human act re-establishes a permit that was turned off.
+  expect(await human(db=>establishSendingPermit(db,'REAL',workspace,off.origin.account,{source:'HUMAN_ASSIGNMENT',actorId:actor}))).toMatchObject({state:'ESTABLISHED'});
+  expect(await human(db=>establishSendingPermit(db,'REAL',workspace,reserve,{source:'HUMAN_ASSIGNMENT',actorId:actor}))).toEqual({state:'NOT_ELIGIBLE',reason:'HUMAN_ASSIGNMENT_REQUIRED'});
+  expect(await human(db=>establishSendingPermit(db,'REAL',workspace,revoked.origin.account,{source:'HUMAN_ASSIGNMENT',actorId:actor}))).toEqual({state:'NOT_ELIGIBLE',reason:'HUMAN_ASSIGNMENT_REQUIRED'});
  });
 
 });

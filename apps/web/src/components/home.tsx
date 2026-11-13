@@ -38,8 +38,9 @@ export function Home({selection,role,state,businessName,userName,timezone}:{sele
   return()=>c.abort();},[selection.workspaceId,selection.version,timezone,tick]);
  const today=new Intl.DateTimeFormat('es-MX',{weekday:'long',day:'numeric',month:'long',timeZone:timezone}).format(new Date());
  const action=home?.next&&home.next.kind!=='ONBOARDING'?nextAction[home.next.kind]:undefined;
- const causes=home?[home.numbers.causes.DISCONNECTED&&`${home.numbers.causes.DISCONNECTED} desconectado${home.numbers.causes.DISCONNECTED===1?'':'s'}`,home.numbers.causes.PAUSED&&`${home.numbers.causes.PAUSED} en pausa`,home.numbers.causes.NOT_AUTHORIZED&&`${home.numbers.causes.NOT_AUTHORIZED} sin autorización para vender`].filter(Boolean):[];
- const context=home?`${home.numbers.attending} de ${home.numbers.registered} número${home.numbers.registered===1?'':'s'} atendiendo${causes.length?` · ${causes.join(' · ')}`:''}`:'';
+ const causes=home?[home.numbers.causes.DISCONNECTED&&`${home.numbers.causes.DISCONNECTED} desconectado${home.numbers.causes.DISCONNECTED===1?'':'s'}`,home.numbers.causes.PAUSED&&`${home.numbers.causes.PAUSED} en pausa`,home.numbers.causes.WARMING&&`${home.numbers.causes.WARMING} calentando`,home.numbers.causes.NOT_OPERATIONAL&&`${home.numbers.causes.NOT_OPERATIONAL} sin control operativo`,home.numbers.causes.NOT_AUTHORIZED&&`${home.numbers.causes.NOT_AUTHORIZED} sin permiso para atender`,home.numbers.causes.NOT_ASSIGNED&&`${home.numbers.causes.NOT_ASSIGNED} sin variante asignada`].filter(Boolean):[];
+ // V7.5.2 N01: «apto para atender» and «atendiendo» (with a customer conversation) are distinct.
+ const context=home?`${home.numbers.ready} de ${home.numbers.registered} número${home.numbers.registered===1?'':'s'} apto${home.numbers.ready===1?'':'s'} para atender · ${home.numbers.attending} atendiendo${causes.length?` · ${causes.join(' · ')}`:''}`:'';
  const pending:{label:string;href:string;count:number;icon:typeof Bell}[]=home?[
   {label:'Comprobantes por revisar',href:'/sales/receipts',count:home.pending.receiptsToReview,icon:ReceiptText},
   {label:'Avisos de números',href:'/numbers',count:home.pending.alerts,icon:Bell},

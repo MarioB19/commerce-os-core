@@ -47,7 +47,8 @@ const messages:Record<string,string>={
  LAB_ATTACHMENT_TYPE:'Adjunta una imagen (PNG, JPG o WEBP) o un PDF de comprobante.',LAB_ATTACHMENT_SIZE:'El comprobante debe pesar máximo 4 MB.',
  LAB_ATTACHMENT_LIMIT:'Esta prueba ya tiene 20 comprobantes. Inicia otra.',LAB_ATTACHMENT_NOT_FOUND:'No encontramos ese comprobante en esta prueba.',
  LAB_RUN_EXPIRED:'Esta prueba venció: las pruebas se guardan 30 días. Inicia otra.',
- LAB_SUITE_NOT_FOUND:'No encontramos esa prueba automática en este perfil.',LAB_AUTOMATIC_RUN:'Esta conversación la maneja la prueba automática.',
+ LAB_SUITE_NOT_FOUND:'No encontramos esa prueba automática en este perfil.',
+ LAB_SUITE_IN_PROGRESS:'Este número ya tiene una prueba automática sin terminar. Espera su resultado (o a que se concilie) antes de iniciar otra.',LAB_AUTOMATIC_RUN:'Esta conversación la maneja la prueba automática.',
  LAB_CATALOG_AMBIGUOUS:'El número tiene asignaciones ambiguas. Revisa sus variantes.',LAB_SOURCE_LIMIT:'La configuración del número es demasiado grande para una prueba.',
 };
 const status:Record<string,number>={LAB_SUITE_NOT_FOUND:404,LAB_RUN_EXPIRED:410,LAB_NOT_INSTALLED:503,LAB_ACCOUNT_NOT_FOUND:404,LAB_RUN_NOT_FOUND:404,LAB_MATERIAL_NOT_FOUND:404,LAB_ATTACHMENT_NOT_FOUND:404,LAB_ATTACHMENT_TYPE:400,LAB_ATTACHMENT_SIZE:400};
@@ -104,7 +105,11 @@ function presentEstimate(p:Awaited<ReturnType<typeof prepare>>){
   captured_at:p.captured.snapshot.captured_at,variants:byVariant,paid_by:'PROFILE_KEY' as const,
   note:'Es un máximo: cada respuesta de la IA se cobra a la clave de tu perfil y cuenta en tu presupuesto mensual. Nada se envía por WhatsApp.'};
 }
-const reasonLabels:Record<string,string>={LAB_CONVERSATION_REQUIRED:'Primero escribe un mensaje como cliente.',LAB_ATTACHMENT_DRIVER_REQUIRED:'Este servidor no tiene habilitados los comprobantes de prueba.',LAB_ATTACHMENT_NOT_FOUND:'No encontramos ese comprobante en esta prueba.',LAB_RECEIPT_NOT_FOUND:'Ese comprobante no es de esta conversación.',
+const reasonLabels:Record<string,string>={
+ // V7.5.2 L01/T01: steps closed before the engine ran (nothing executed, nothing charged).
+ LAB_OPERATION_NOT_ADMITTED:'Este paso no llegó a ejecutarse (sin motor ni IA, sin costo); quedó cerrado sin resultado.',
+ PRIVATE_NAMESPACE_LOCK_UNINITIALIZED:'El almacenamiento del laboratorio no estaba preparado; el paso no se ejecutó ni se cobró.',
+ PRIVATE_NAMESPACE_BUSY:'El almacenamiento del laboratorio estaba ocupado; el paso no se ejecutó ni se cobró.',LAB_CONVERSATION_REQUIRED:'Primero escribe un mensaje como cliente.',LAB_ATTACHMENT_DRIVER_REQUIRED:'Este servidor no tiene habilitados los comprobantes de prueba.',LAB_ATTACHMENT_NOT_FOUND:'No encontramos ese comprobante en esta prueba.',LAB_RECEIPT_NOT_FOUND:'Ese comprobante no es de esta conversación.',
  AUTOMATIC_DRIVER_REQUIRED:'El comprador automático aún no está disponible.',CANONICAL_MESSAGE_LIMIT:'El mensaje es demasiado largo.',LAB_SELLER_GRANT_REQUIRED:'Falta confirmar la IA de la prueba.'};
 const stateLabels:Record<string,string>={QUEUED:'En cola',INTENT:'Ejecutando',APPLIED:'Aplicada',FAILED:'No se pudo aplicar',UNKNOWN:'Resultado incierto'};
 /** «Producto · Variante», so several variants of one market stay distinguishable. */
@@ -202,6 +207,11 @@ export async function numberTestRoutes(app:FastifyInstance,deps?:ProfileRequestD
   const data=await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:run',mutation:true},async({db,profile})=>{
    const a=profile.authority as ProfileAuthority,key=numberLabKeys().control;
    const prior=await readSuiteByStart(db,a,operationId);if(prior)return{suite_id:prior,created:false};
+   // V7.5.2 T01: one automatic test per number at a time. A suite still running
+   // (or with a step left without result) is concluded first, never duplicated.
+   if((await db.query(`SELECT 1 FROM commerce_number_lab.suites s WHERE s.workspace_id=$1 AND s.account_id=$2 AND s.state='RUNNING'
+     AND EXISTS(SELECT 1 FROM commerce_number_lab.suite_cases c JOIN commerce_number_lab.runs r ON r.workspace_id=c.workspace_id AND r.id=c.run_id
+      WHERE c.workspace_id=s.workspace_id AND c.suite_id=s.id AND c.state='RUNNING' AND r.expires_at>clock_timestamp()) LIMIT 1`,[db.workspaceId,q.account_id])).rowCount)fail('LAB_SUITE_IN_PROGRESS');
    const p=await prepareSuite(db,a,q.account_id);
    if(p.maximum_microusd>q.accepted_maximum_microusd)fail('LAB_ESTIMATE_INCREASED');
    const {missing}=await laboratoryGrants(db,a,p.cases.flatMap(c=>c.prepared.estimate.cases),p.selections);if(missing.length)fail('LAB_AI_GRANT_REQUIRED');

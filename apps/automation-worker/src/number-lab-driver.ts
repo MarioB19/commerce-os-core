@@ -17,7 +17,7 @@ import {numberLabActionSchema,type NumberLabAction} from '../../../packages/cont
 import {compileNumberLabConfiguration} from '../../../packages/domain/src/laboratory/configuration-plan.js';
 import {labHash,validateLabSnapshot,resolveNumberLab} from '../../../packages/domain/src/laboratory/number-lab.js';
 import {NumberLabWorkerStore,openLabValue,sealLabValue,readNumberLabAttachment} from '../../../packages/db/src/number-laboratory.js';
-import {createNumberLabMaterializer,type NumberLabMaterialPort} from '../../../packages/db/src/number-lab-materialization.js';
+import {createNumberLabMaterializer,NumberLabNotAdmittedError,type NumberLabMaterialPort} from '../../../packages/db/src/number-lab-materialization.js';
 import {createNumberLabEngineRuntime,withNumberLabEngine,type NumberLabEngineIdentity,type NumberLabPhaseAuthority} from '../../../packages/db/src/number-lab-engine-runtime.js';
 import {withProfileTransaction,type ProfilePool,type ProfileExecutor} from '../../../packages/db/src/profile-context.js';
 import {currentProfileExecutor} from '../../../packages/db/src/profile-query-routing.js';
@@ -271,8 +271,29 @@ export function createNumberLabDriver(options:{controlPool:ProfilePool;seedPool:
  return Object.freeze({
   async observe(raw:unknown){const i=input(raw),c=await readControl(options.controlPool,key,installed,i,false);return{operation_state:c.operationState,receipt:await inspect(i,c,false),read_only:true as const};},
   async reconcile(raw:unknown){const i=input(raw),c=await readControl(options.controlPool,key,installed,i,false);return settle(i,c);},
+  /** V7.5.2 L01/T01: a stale INTENT whose engine execution does not exist was
+   * never admitted (the seed writes that row in the same transaction that lets
+   * the engine run); it closes as FAILED with its reason, never re-executed. */
+  async settleNotAdmitted(raw:unknown,minimumIntentAgeSeconds:number){
+   const i=input(raw);
+   const admitted=await withProfileTransaction(options.seedPool,'number-lab:'+i.runId,async db=>{
+    await db.query("SELECT pg_catalog.set_config('app.environment','SIMULATION',true)");await seedIdentity(db,installed);
+    const row=(await db.query('SELECT 1 FROM commerce_number_lab_engine.executions WHERE run_id=$1 AND operation_id=$2',[i.runId,i.operationId])).rows[0];
+    await seedIdentity(db,installed);return !!row;
+   });
+   if(admitted)return null;
+   return store.settleNotAdmitted(i.workspaceId,i.runId,i.operationId,'LAB_OPERATION_NOT_ADMITTED',minimumIntentAgeSeconds);
+  },
   async execute(raw:unknown){
-   const i=input(raw),prepared=await materializer.prepare(i);
+   const i=input(raw);let prepared:Awaited<ReturnType<typeof materializer.prepare>>;
+   try{prepared=await materializer.prepare(i);}
+   catch(error){
+    // Proven before the engine: no execution row exists, so close it now with
+    // its reason (diagnosable, never retried) and still report the failure.
+    // A failed settlement leaves INTENT for the stale reconciliation below.
+    if(error instanceof NumberLabNotAdmittedError)await store.settleNotAdmitted(i.workspaceId,i.runId,i.operationId,error.reason,0).catch(()=>null);
+    throw error;
+   }
    if(prepared.state!=='READY'){const c=await readControl(options.controlPool,key,installed,i,false);return{state:'ALREADY_ATTEMPTED' as const,receipt:await inspect(i,c,false),read_only:true as const};}
    const c=await readControl(options.controlPool,key,installed,i,true);
    need(prepared.plan_sha256===c.plan.sha256&&prepared.account_id===c.plan.account_id,'LAB_DRIVER_CAPTURE_CHANGED');

@@ -22,7 +22,7 @@ import {createNumberLabMaterialCustody,createNumberLabMaterialReader} from '../.
 import {marketRecordVersionHash} from '../../packages/db/src/market-variants.js';
 import {withProfileTransaction,type ProfilePool} from '../../packages/db/src/profile-context.js';
 import {putRecord} from '../../packages/db/src/index.js';
-import {openLabValue,startNumberLab,enqueueNumberLab} from '../../packages/db/src/number-laboratory.js';
+import {openLabValue,startNumberLab,enqueueNumberLab,NumberLabWorkerStore} from '../../packages/db/src/number-laboratory.js';
 import {compileNumberLabConfiguration,type LabPlanSource} from '../../packages/domain/src/laboratory/configuration-plan.js';
 import {estimateNumberLab,labHash} from '../../packages/domain/src/laboratory/number-lab.js';
 import type {NumberLabSnapshot} from '../../packages/contracts/src/number-laboratory.js';
@@ -204,6 +204,29 @@ describe('native number laboratory driver',()=>{
   expect(result).toMatchObject({result:{pending:expect.arrayContaining(['TRANSPORT'])}});
   expect((await admin.query('SELECT attempts,result FROM outbox WHERE workspace_id=$1',[f.plan.workspace_id])).rows[0]).toMatchObject({attempts:0,result:{reason:'LAB_DELIVERY_CUSTODY_REQUIRED'}});
   expect((await admin.query("SELECT a.status FROM effect_attempts a JOIN outbox o ON o.id=a.effect_id WHERE o.workspace_id=$1",[f.plan.workspace_id])).rows).toEqual([{status:'NOT_SENT'}]);
+ });
+ it('V7.5.2 L01/T01: a preparation that fails before the engine closes the step with its reason and is never retried',async()=>{
+  const f=await fixture(),failing:NumberLabMaterialPort={async copy(){throw Object.assign(Error('PRIVATE_NAMESPACE_LOCK_UNINITIALIZED'),{code:'EROFS'});}};
+  await expect(f.driver({materials:failing}).execute(f.input)).rejects.toMatchObject({message:'PRIVATE_NAMESPACE_LOCK_UNINITIALIZED',code:'EROFS',notAdmitted:true});
+  const op=(await parent.query('SELECT state,result_ciphertext,workspace_id,run_id,id FROM commerce_number_lab.operations WHERE id=$1',[f.input.operationId])).rows[0];
+  expect(op.state).toBe('FAILED');
+  expect(openLabValue({workspaceId:op.workspace_id,runId:op.run_id,purpose:'result',operationId:op.id},op.result_ciphertext,key)).toEqual({schema_version:1,run_state:'RUNNING',
+   result:{state:'DEPENDENCY_REQUIRED',reason:'PRIVATE_NAMESPACE_LOCK_UNINITIALIZED',engine_admitted:false,external_effects:0}});
+  expect((await admin.query('SELECT count(*)::int n FROM commerce_number_lab_engine.executions WHERE run_id=$1',[f.input.runId])).rows[0].n).toBe(0);
+  // A second pass is a read-only observation of the closed step: no copy, no engine, no AI.
+  expect(await f.driver().execute(f.input)).toMatchObject({state:'ALREADY_ATTEMPTED',read_only:true});expect(f.copies).toBe(0);
+ });
+ it('V7.5.2 T01: a stale INTENT the engine never admitted closes only after its bound; an admitted one stays uncertain',async()=>{
+  const f=await fixture(),store=new NumberLabWorkerStore(control,key);
+  expect(await store.claim(f.input.workspaceId,f.input.runId,f.input.operationId)).toMatchObject({effect:'EXECUTE_ONCE'});
+  expect(await f.driver().settleNotAdmitted(f.input,600)).toBeNull();
+  expect((await parent.query('SELECT state FROM commerce_number_lab.operations WHERE id=$1',[f.input.operationId])).rows[0].state).toBe('INTENT');
+  expect(await f.driver().settleNotAdmitted(f.input,0)).toMatchObject({state:'FAILED',result:{state:'DEPENDENCY_REQUIRED',reason:'LAB_OPERATION_NOT_ADMITTED',engine_admitted:false}});
+  expect(await f.driver().settleNotAdmitted(f.input,0)).toBeNull();expect(f.copies).toBe(0);
+  const g=await fixture();await g.factory().prepare(g.input);
+  expect((await admin.query('SELECT count(*)::int n FROM commerce_number_lab_engine.executions WHERE run_id=$1',[g.input.runId])).rows[0].n).toBe(1);
+  expect(await g.driver().settleNotAdmitted(g.input,0)).toBeNull();
+  expect((await parent.query('SELECT state FROM commerce_number_lab.operations WHERE id=$1',[g.input.operationId])).rows[0].state).toBe('INTENT');
  });
  it('applies the canonical pause gate after claim and before a simulator ACK',async()=>{
   const f=await fixture({type:'message',text:'Pause me'},false,false,'text');let paused=false;

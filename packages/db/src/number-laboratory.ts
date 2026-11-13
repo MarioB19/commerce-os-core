@@ -146,6 +146,25 @@ export class NumberLabWorkerStore {
   const saved=(await db.query('UPDATE commerce_number_lab.operations SET state=$4,result_ciphertext=$5 WHERE workspace_id=$1 AND run_id=$2 AND id=$3 RETURNING *',[workspaceId,runId,operationId,outcome.state,result])).rows[0];
   await db.query("UPDATE commerce_number_lab.runs SET state=$3,version=version+1,virtual_now=virtual_now+($4::int*interval '1 hour') WHERE workspace_id=$1 AND id=$2",[workspaceId,runId,outcome.runState,advanceHours]);return presentOperation(saved,this.key);
  });}
+ /** V7.5.2 L01/T01: closes an INTENT operation the engine never admitted (the
+  * caller proved no engine execution exists for it), as FAILED with its
+  * dependency reason. Nothing ran, so nothing is repeated or charged; the
+  * person reads why instead of an endless «Ejecutando». `minimumIntentAgeSeconds`
+  * protects a claim that may still be preparing in another process. */
+ async settleNotAdmitted(workspaceId:string,runId:string,operationId:string,reason:string,minimumIntentAgeSeconds:number){
+  need(uuid.test(runId)&&uuid.test(operationId)&&/^[A-Z0-9_]{1,80}$/.test(reason)&&Number.isInteger(minimumIntentAgeSeconds)&&minimumIntentAgeSeconds>=0,'LAB_OUTCOME');
+  return this.tx(workspaceId,async db=>{
+   const o=(await db.query("SELECT *,intent_at<=clock_timestamp()-make_interval(secs=>$4) AS stale FROM commerce_number_lab.operations WHERE workspace_id=$1 AND run_id=$2 AND id=$3 FOR UPDATE",[workspaceId,runId,operationId,minimumIntentAgeSeconds])).rows[0];need(o,'LAB_OPERATION_MISSING');
+   if(o.state!=='INTENT'||!o.stale)return null;
+   const r=(await db.query('SELECT * FROM commerce_number_lab.runs WHERE workspace_id=$1 AND id=$2 FOR UPDATE',[workspaceId,runId])).rows[0];
+   if(!r||amount(r.version)!==amount(o.expected_version)||!['READY','RUNNING','PARTIAL'].includes(r.state))return null;
+   const runState=r.state==='READY'?'RUNNING':String(r.state);
+   const result=sealLabValue({workspaceId,runId,purpose:'result',operationId},{schema_version:1,run_state:runState,result:{state:'DEPENDENCY_REQUIRED',reason,engine_admitted:false,external_effects:0}},this.key);
+   const saved=(await db.query("UPDATE commerce_number_lab.operations SET state='FAILED',result_ciphertext=$4 WHERE workspace_id=$1 AND run_id=$2 AND id=$3 RETURNING *",[workspaceId,runId,operationId,result])).rows[0];
+   await db.query('UPDATE commerce_number_lab.runs SET state=$3,version=version+1 WHERE workspace_id=$1 AND id=$2',[workspaceId,runId,runState]);
+   return presentOperation(saved,this.key);
+  });
+ }
 }
 export type {NumberLabOperation,NumberLabAction};
 /** Lost start response is queried by its original operation UUID, even after
