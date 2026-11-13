@@ -665,4 +665,3 @@ describe('V7.5.3 contextual agreement: AI proposal + deterministic rule',()=>{
   expect((await pool.query("SELECT body->>'status' status FROM records WHERE workspace_id=$1 AND kind='ai_run' AND body->>'conversation_id'=$2 ORDER BY created_at",[journey.workspace_id,journey.id])).rows.map((r:any)=>r.status)).toContain('DISCARDED');
  });
 });
-
