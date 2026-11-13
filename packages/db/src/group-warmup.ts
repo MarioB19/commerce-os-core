@@ -209,7 +209,13 @@ export async function previewGroupRecovery(db:ProfileExecutor,environment:Enviro
   resumes:false,externalEffects:0};
 }
 /** V7.5 §3 (H03): requested status vs what the engine can do now. */
-export function effectiveProgramState(input:{status:string;pool:Body|null;numbers:Body[];history:Body[];senderIds:string[];config:{timezone:string;startHour:number;endHour:number};now:Date}){
+/** Gate answers that clear by themselves within seconds (fresh group read,
+ * rate window, planned spacing, a busy lock); they do not mean «blocked». */
+const transientGateReasons=new Set(['GROUP_FRESH_READ_REQUIRED','WARMUP_RATE_LIMIT','WARMUP_CAUSAL_SPACING','GROUP_WARMUP_BUSY','CHAT_LOCK_BUSY','DISPATCH_CAPACITY_BUSY','OWNERSHIP_NOT_CONFIRMED','GROUP_OBSERVATION_FAILED','RELEASE_HOLD_ACTIVE']);
+/** V7.5.3 (F3/A05): the next turn the engine would send, with its causal
+ * dependency. `predecessor` is the status of the turn it waits for. */
+export type GroupProgramHead={not_before:string;status:string;reason:string|null;predecessor:string|null};
+export function effectiveProgramState(input:{status:string;pool:Body|null;numbers:Body[];history:Body[];senderIds:string[];config:{timezone:string;startHour:number;endHour:number};now:Date;head?:GroupProgramHead|null}){
  const {status,pool,numbers,history,now}=input,senders=numbers.filter(n=>input.senderIds.includes(n.id));
  const local=Number(new Intl.DateTimeFormat('en-US',{timeZone:input.config.timezone,hour:'2-digit',hourCycle:'h23'}).format(now));
  const inWindow=local>=input.config.startHour&&local<input.config.endHour;
@@ -225,10 +231,24 @@ export function effectiveProgramState(input:{status:string;pool:Body|null;number
  else if(senders.some(n=>n.ownership&&!['OPERATIONAL','NOT_APPLICABLE'].includes(String(n.ownership)))){state='NEEDS_OWNERSHIP';reasons.push('LINE_OWNERSHIP_NOT_OPERATIONAL');nextAction='RECONCILE_NUMBER_OWNERSHIP';}
  else if(senders.some(n=>['GROUP_MEMBERSHIP_STALE','GROUP_FRESH_READ_REQUIRED','GROUP_CAPABILITY_UNVERIFIED'].includes(String(n.reason)))){state='GROUP_READ_STALE';reasons.push('GROUP_MEMBERSHIP_STALE');nextAction='REFRESH_GROUPS';}
  else if(!inWindow){state='WAITING_WINDOW';reasons.push('QUIET_HOURS');}
- else if(uncertain>0||sentNoAck>0&&pending===0){state='WAITING_ACK';reasons.push(uncertain>0?'EFFECT_UNCERTAIN':'ACK_PENDING');}
- else if(pending>0){state='RUNNING';}
+ else if(uncertain>0){state='UNCERTAIN';reasons.push('EFFECT_UNCERTAIN');}
+ else if(sentNoAck>0&&pending===0){state='WAITING_ACK';reasons.push('ACK_PENDING');}
+ else if(pending>0){
+  // V7.5.3 (A05): a due turn that cannot leave is not «sending». A turn
+  // waiting for its predecessor's receipts says so; a gate refusal says
+  // which one. Only a future, unblocked turn is shown as the next send.
+  const head=input.head,due=head?Date.parse(head.not_before)<=now.getTime():false;
+  // Callers without the head (older read models) infer the same wait from
+  // the aggregates: something left but is unconfirmed while due turns wait.
+  const inferred=input.head===undefined&&sentNoAck>0&&!!next&&next.getTime()<=now.getTime();
+  if(head?.predecessor==='SENT'||inferred){state='WAITING_RECEIPT';reasons.push('PEER_RECEIPT_PENDING');}
+  else if(head?.predecessor&&['SENDING','UNKNOWN'].includes(head.predecessor)){state='UNCERTAIN';reasons.push('EFFECT_UNCERTAIN');}
+  else if(head&&due&&head.status==='BLOCKED'&&head.reason&&!transientGateReasons.has(head.reason)){state='BLOCKED';reasons.push(head.reason);}
+  else state='RUNNING';
+ }
  else{state='WAITING_PLAN';reasons.push(...new Set(senders.map(n=>String(n.reason??'')).filter(r=>r&&r!=='GROUP_SELECTED')));}
- return{state,reasons,observedAt:now.toISOString(),nextAction,nextSend:state==='RUNNING'&&next?{at:next.toISOString(),conditional:false}:null};
+ const upcoming=input.head?new Date(input.head.not_before):next;
+ return{state,reasons,observedAt:now.toISOString(),nextAction,nextSend:state==='RUNNING'&&upcoming&&upcoming.getTime()>now.getTime()?{at:upcoming.toISOString(),conditional:false}:null};
 }
 export type GroupLineState='READY'|'VERIFICATION_PENDING'|'HEALTH_PENDING'|'NOT_CONNECTED'|'PAUSED'|'IDENTITY_CONFLICT'|'UNSUPPORTED';
 /** V7.4 B: which managed lines can read their groups now. Reading groups is
@@ -292,13 +312,19 @@ export async function groupWarmupOverview(db:ProfileExecutor,environment:Environ
   FROM records r LEFT JOIN warmup_states s ON s.account_id=r.id LEFT JOIN channel_sessions cs ON cs.account_id=r.id LEFT JOIN session_ownership o ON o.account_id=r.id::text AND o.workspace_id=r.workspace_id WHERE r.workspace_id=$1 AND r.environment=$2 AND r.kind='channel_account' AND NOT(r.body?'deleted_at') ORDER BY r.id`,[db.workspaceId,environment])).rows;
  for(const p of programs){const stats=(await db.query(`SELECT v.local_date::text date,o.account_id,
   count(*) FILTER(WHERE o.status IN('SENT','DELIVERED','READ'))::int sent,count(*) FILTER(WHERE o.status IN('DELIVERED','READ'))::int delivered,
-  count(*) FILTER(WHERE o.status IN('READY','BLOCKED'))::int pending,count(*) FILTER(WHERE o.status='UNKNOWN')::int uncertain,
-  min(o.not_before) FILTER(WHERE o.status IN('READY','BLOCKED')) next_send
+  count(*) FILTER(WHERE o.status IN('READY','BLOCKED') AND o.expires_at>clock_timestamp())::int pending,count(*) FILTER(WHERE o.status IN('UNKNOWN','SENDING'))::int uncertain,
+  count(*) FILTER(WHERE o.status IN('READY','BLOCKED') AND o.expires_at<=clock_timestamp())::int expired,
+  min(o.not_before) FILTER(WHERE o.status IN('READY','BLOCKED') AND o.expires_at>clock_timestamp()) next_send
   FROM warmup_conversations v JOIN outbox o ON o.conversation_id=v.id::text WHERE v.pool_id=$1 AND v.local_date>=((now() AT TIME ZONE $2)::date-($3::int-1)) GROUP BY v.local_date,o.account_id ORDER BY v.local_date DESC,o.account_id`,[p.pool_id,p.scope.timezone,days])).rows;
   p.history=stats;p.numbers=numbers.filter(n=>p.account_ids.includes(n.id));p.config=programConfig(p);p.audience=p.scope.audience??null;delete p.scope;
   const pool=p.pool_id?(await db.query('SELECT breaker_open,breaker_reason,breaker_opened_at,breaker_reviewed_until,paused,enabled FROM warmup_pools WHERE id=$1',[p.pool_id])).rows[0]??null:null;
   p.protection=pool?{open:pool.breaker_open,reason:pool.breaker_reason,openedAt:pool.breaker_opened_at?new Date(pool.breaker_opened_at).toISOString():null,reviewedUntil:pool.breaker_reviewed_until?new Date(pool.breaker_reviewed_until).toISOString():null}:null;
-  p.effective=effectiveProgramState({status:p.status,pool,numbers:p.numbers,history:stats,senderIds:p.config.senderIds,config:p.config,now:clock});
+  const head=p.pool_id?(await db.query(`SELECT o.not_before,o.status,o.result->>'reason' AS reason,pr.status AS predecessor FROM warmup_conversations v JOIN outbox o ON o.conversation_id=v.id::text
+   LEFT JOIN outbox pr ON pr.id=o.predecessor_id AND pr.workspace_id=o.workspace_id
+   WHERE v.pool_id=$1 AND o.workspace_id=$2 AND o.environment=$3 AND o.kind='warmup' AND o.status IN('READY','BLOCKED') AND o.expires_at>clock_timestamp()
+   ORDER BY o.not_before,o.dispatch_sequence LIMIT 1`,[p.pool_id,db.workspaceId,environment])).rows[0]??null:null;
+  p.effective=effectiveProgramState({status:p.status,pool,numbers:p.numbers,history:stats,senderIds:p.config.senderIds,config:p.config,now:clock,
+   head:head?{not_before:new Date(head.not_before).toISOString(),status:String(head.status),reason:head.reason??null,predecessor:head.predecessor??null}:null});
  }
  const lines=await groupReadableLines(db,environment),last=(await db.query("SELECT id,state,result->>'reason' AS reason,result->'accounts' AS accounts,created_at,updated_at FROM number_operations WHERE workspace_id=$1 AND environment=$2 AND action='GROUP_REFRESH' AND NOT(input?'group_id') ORDER BY created_at DESC LIMIT 1",[db.workspaceId,environment])).rows[0]??null;
  return{programs,numbers:numbers.map(n=>({...n,line:lines.find(l=>l.accountId===n.id)?.state??'NOT_CONNECTED'})),refresh:last,ai:false};

@@ -1,3 +1,4 @@
+import { unverifiedAgreementClaim } from "./agreement.js";
 import type { Body, DomainRecord } from "../../../contracts/src/index.js";
 import type { AgentProposal } from "./ai.js";
 import { canonicalSalesVariables } from "./variables.js";
@@ -119,7 +120,11 @@ export function buildSellerSnapshot(input: {
     ),
     currency: offer?.body.currency,
     base_amount_minor: offer?.body.base_amount_minor,
-    billing_delay_seconds: offer?.body.billing_delay_seconds,
+    // V7.5.3: a guided sale (its content compiled into sales_flow) runs the
+    // ten-step recipe, which has no timed wait before collection: payment data
+    // follows the confirmed initial delivery. The seller reads no delay even
+    // when the variant still stores one (only the default flow applies it).
+    billing_delay_seconds: offer?.body.sales_flow?.content ? 0 : offer?.body.billing_delay_seconds,
     positive_payment_unlocks_all: offer?.body.positive_payment_unlocks_all === true,
     madrina: offer?.body.madrina?.enabled ? {enabled:true,threshold_exclusive_minor:10700,policy_version:'mcl-receipt-total-v5',third_party_effects:false} : undefined,
     delivery_rules: (offer?.body.fulfillment ?? []).map(
@@ -272,6 +277,10 @@ export function proposalGroundingIssue(
     )
   )
     return "UNVERIFIED_COMMERCIAL_CLAIM";
+  // V7.5.3 (F1): before the agreement is committed, no reply may say it was
+  // registered, that material or access was sent, or that a payment passed.
+  if ((context.order.status ?? "OFFERED") === "OFFERED" && unverifiedAgreementClaim(p.reply))
+    return "UNVERIFIED_AGREEMENT_CLAIM";
   const amounts = [
     ...p.reply.matchAll(
       /\$\s*(\d+(?:[.,]\d+)?)|(\d+(?:[.,]\d+)?)\s*(MXN|USD|EUR|pesos|d[oó]lares|euros)\b/gi,

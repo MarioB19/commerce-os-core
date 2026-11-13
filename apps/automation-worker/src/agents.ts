@@ -17,7 +17,8 @@ import {readIntegrationSettings,validateIntegrationConfig} from '../../../packag
 import type {Body,DomainRecord} from '@commerce/contracts';
 import {DeterministicSalesAi,OpenAiSalesProvider,parseProposal,type SalesAiProvider,type AgentConfig} from '../../../packages/domain/src/sales/ai.js';
 import {event,save,create,gated,controls,proposeEffect,proposeEffectOutcome,cancelPending,receiptReviewPending} from './shared.js';
-import {advanceWorkflow} from './workflows.js';
+import {advanceWorkflow,agreementEvidence,commitAgreement} from './workflows.js';
+import {agreementClarification,decideAgreementProposal,type AgreementProposalDecision} from '../../../packages/domain/src/sales/agreement.js';
 import {reviewAcknowledgement} from '../../../packages/domain/src/catalog/variant-document.js';
 import {profileAiPool} from './ai-runtime.js';
 import {applyReceiptAnalysis} from './commands.js';
@@ -124,17 +125,36 @@ async function processAgentsImpl(store:AgentStore,limit:number,override?:SalesAi
    const supportQuestion=/pdf|portal|abr[ei]|pago|comprobante/i.test(String(snapshot.context.customer_text).normalize('NFD').replace(/[\u0300-\u036f]/g,''));
    const safeSupport=['COMMITTED','AWAITING_RECEIPT'].includes(String(snapshot.context.stage))&&(support.reason==='POST_AGREEMENT_CHECK_IN'||support.reason==='APPROVED_SOURCE'&&supportQuestion)&&!proposalGroundingIssue(support.proposal,snapshot.context)?support.proposal:undefined;
    if((failure||!output)&&!safeSupport&&!snapshot.cachedProposal){await save(c,run,{...run.body,...nativeFields,status:'FAILED',reason:failure??'AI_NO_OUTPUT'});if(!controlsBlocked)await acknowledgeReview(c,current,run.id);await save(c,current,reviewBody(current));await event(c,current,'ai.failed',{ai_run_id:run.id,reason:failure});return;}
-   const p=snapshot.cachedProposal??safeSupport??output!.proposal;const groundingIssue=proposalGroundingIssue(p,snapshot.context);const resultBody={...run.body,...nativeFields,proposal:p,usage:snapshot.cachedProposal?run.body.usage:output?.usage,...(safeSupport?{fallback_reason:support.reason}:{})};
+   const p=snapshot.cachedProposal??safeSupport??output!.proposal;const groundingIssue=proposalGroundingIssue(p,snapshot.context);const resultBody:Body={...run.body,...nativeFields,proposal:p,usage:snapshot.cachedProposal?run.body.usage:output?.usage,...(safeSupport?{fallback_reason:support.reason}:{})};
    if(controlsBlocked&&p.intent!=='opt_out'){await save(c,run,{...resultBody,status:'AWAITING_EFFECT',effect_proposal_block:'CONTROLS_BLOCKED'});await save(c,current,{...current.body,ai_pending:true,ai_status:'AWAITING_EFFECT',active_ai_run_id:run.id});return;}
+	   // V7.5.3 (F1, opción 2): while the pinned agreement is pending, the model
+	   // only proposes. The deterministic rule confirms the canonical transition
+	   // (same as a literal phrase) or replaces the reply with a clarification;
+	   // a model reply never claims a registration or a delivery by itself.
+	   let agreement:AgreementProposalDecision|undefined,agreementReply:string|undefined;
+	   if(current.body.flow_state?.status==='WAITING'&&current.body.flow_state?.waiting_for==='commitment'&&p.intent!=='opt_out'){
+	    const evidence=await agreementEvidence(c,current);
+	    agreement=decideAgreementProposal({intent:p.intent,confidence:p.confidence,tool:p.tool,reply:p.reply,customerText:String(current.body.last_customer_text??''),language:evidence.language,
+	     contextual:evidence.contextual,agreementDelivered:evidence.delivered,orderCommitted:evidence.committed,controlsClear:!controlsBlocked});
+	    resultBody.agreement={...agreement,agreement_effect_id:evidence.agreementEffectId};
+	    if(agreement.decision==='ACCEPT'){
+	     await save(c,run,{...resultBody,status:'COMPLETED',reply_suppressed:'AGREEMENT_TRANSITION_APPLIED',effect_proposal_block:null,completed_at:new Date().toISOString()});
+	     const cleared=await save(c,current,{...current.body,ai_pending:false,ai_status:'COMPLETED',active_ai_run_id:null});
+	     await event(c,cleared,'ai.agreement_confirmed',{ai_run_id:run.id,reason:agreement.reason,agreement_effect_id:evidence.agreementEffectId},run.id);
+	     await commitAgreement(c,cleared,{source:'ai_proposal_rule_confirmed',cause:run.id,aiRunId:run.id,alreadyCommitted:'return',clearAiPending:true});
+	     return;
+	    }
+	    if(agreement.decision==='CLARIFY')agreementReply=agreementClarification(evidence.language,evidence.contextual?undefined:evidence.literalPhrase);
+	   }
 	   let acceptedEffect:Body|undefined;
 	   if(p.intent==='opt_out'){await c.query(`INSERT INTO manual_controls(workspace_id,scope_type,scope_id,suppressed,reason,actor_id) VALUES($1,'contact',$2,true,'AI_CLASSIFIED_OPT_OUT','automation') ON CONFLICT(workspace_id,scope_type,scope_id) DO UPDATE SET suppressed=true,version=manual_controls.version+1,updated_at=now()`,[current.workspace_id,current.body.contact_id]);await cancelPending(c,current,'OPT_OUT',true);}
-	   else if(p.confidence<0.8||p.tool==='request_human'||p.intent==='unknown'||!!groundingIssue){await save(c,run,{...resultBody,status:'COMPLETED',completed_at:new Date().toISOString()});await acknowledgeReview(c,current,run.id);await save(c,current,reviewBody(current));await event(c,current,'ai.handoff_requested',{ai_run_id:run.id,reason:groundingIssue??'HUMAN_REQUEST'});return;}
-	   else{const proposed=await proposeEffectOutcome(c,current,{kind:'text',purpose:'seller_reply',text:p.reply,ai_run_id:run.id,agent_version_id:snapshot.agent?.id},`ai:${run.id}`);
+	   else if(!agreementReply&&(p.confidence<0.8||p.tool==='request_human'||p.intent==='unknown'||!!groundingIssue)){await save(c,run,{...resultBody,status:'COMPLETED',completed_at:new Date().toISOString()});await acknowledgeReview(c,current,run.id);await save(c,current,reviewBody(current));await event(c,current,'ai.handoff_requested',{ai_run_id:run.id,reason:groundingIssue??'HUMAN_REQUEST'});return;}
+	   else{const proposed=await proposeEffectOutcome(c,current,{kind:'text',purpose:'seller_reply',text:agreementReply??p.reply,ai_run_id:run.id,agent_version_id:snapshot.agent?.id,...(agreementReply?{agreement_clarification:agreement!.reason}:{})},`ai:${run.id}`);
      if(proposed.state==='BLOCKED'){
       await save(c,run,{...resultBody,status:'AWAITING_EFFECT',effect_proposal_block:proposed.reason});
       await save(c,current,{...current.body,ai_pending:true,ai_status:'AWAITING_EFFECT',active_ai_run_id:run.id});return;
      }
-     acceptedEffect=proposed.effect;await event(c,current,'ai.proposal_accepted',{ai_run_id:run.id,intent:p.intent,effect_id:acceptedEffect.id});}
+     acceptedEffect=proposed.effect;await event(c,current,'ai.proposal_accepted',{ai_run_id:run.id,intent:p.intent,effect_id:acceptedEffect.id,...(agreementReply?{agreement_clarification:agreement!.reason}:{})});}
     await save(c,run,{...resultBody,status:'COMPLETED',effect_proposal_block:null,completed_at:new Date().toISOString()});
 	   const body:Body={...current.body,ai_pending:false,ai_status:'COMPLETED',active_ai_run_id:null};
 	   const interruption=current.body.recipe_interruption;

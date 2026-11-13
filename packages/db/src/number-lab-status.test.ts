@@ -30,4 +30,12 @@ describe('number test status',()=>{
   expect(classifyNumberTest({suite:null,runExpired:false,operations:ops({uncertain:1})})).toBe('UNCERTAIN');
   expect(Object.keys(numberTestStateLabels).sort()).toEqual(['FAILED','INCOMPLETE','IN_PROGRESS','MANUAL','PASSED','UNCERTAIN']);
  });
+ it('V7.5.3 A04: PASSED cases inside a RUNNING suite are not a result',()=>{
+  const ops={total:8,queued:0,executing:0,uncertain:0,failed:0,applied:8};
+  expect(classifyNumberTest({suite:{state:'RUNNING',cases:[{state:'PASSED'},{state:'PASSED'}]},runExpired:false,operations:ops})).toBe('IN_PROGRESS');
+  expect(classifyNumberTest({suite:{state:'RUNNING',cases:[{state:'PASSED'},{state:'PASSED'}]},runExpired:true,operations:ops})).toBe('INCOMPLETE');
+  expect(classifyNumberTest({suite:{state:'STOPPED',cases:[{state:'PASSED'},{state:'PASSED'}]},runExpired:false,operations:ops})).toBe('INCOMPLETE');
+  expect(classifyNumberTest({suite:{state:'COMPLETED',cases:[{state:'PASSED'},{state:'PASSED'}]},runExpired:false,operations:ops})).toBe('PASSED');
+  expect(classifyNumberTest({suite:{state:'COMPLETED',cases:[{state:'PASSED'},{state:'PASSED'}]},runExpired:false,operations:{...ops,uncertain:1}})).toBe('INCOMPLETE');
+ });
 });

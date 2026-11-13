@@ -317,6 +317,46 @@ export async function processNumberLabWorkflows(lease:NumberLabEngineLease,limit
  });
 }
 
+/**
+ * V7.5.3 (F1): the single commercial transition for an accepted agreement.
+ * A configured literal phrase, a human command and an AI proposal confirmed
+ * by the deterministic rule all pass through here, so commitment, remarketing
+ * cancellation, fulfillment and workflow progress cannot diverge.
+ */
+export type AgreementSource='configured_customer_phrase'|'ai_proposal_rule_confirmed'|'human_command';
+export async function commitAgreement(client:QueryExecutor,conversation:DomainRecord,input:{source:AgreementSource;cause:string;aiRunId?:string;alreadyCommitted:'return'|'redeliver';clearAiPending:boolean}):Promise<DomainRecord|undefined>{
+ let order=await ensureOrder(client,conversation);if(!order){if(input.source==='human_command')throw new Error('OFFER_REQUIRED');return;}
+ if(order.body.committed_at&&input.alreadyCommitted==='return')return order;
+ if(!order.body.committed_at&&(conversation.body.flow_state?.status!=='WAITING'||conversation.body.flow_state?.waiting_for!=='commitment'))throw new Error('WORKFLOW_NOT_AWAITING_COMMITMENT');
+ if(!order.body.committed_at){
+  order=await save(client,order,{...order.body,status:'COMMITTED',committed_at:(await nowFor(client,conversation)).toISOString(),commitment_evidence:input.cause,commitment_source:input.source,...(input.aiRunId?{commitment_ai_run_id:input.aiRunId}:{})});
+  await event(client,conversation,'order.committed',{order_id:order.id,source:input.source,...(input.aiRunId?{ai_run_id:input.aiRunId}:{})},input.cause);
+ }
+ await cancelPendingRemarketingForContact(client,conversation,'AGREEMENT_ACCEPTED');
+ const nextBody:Body={...conversation.body,stage:'COMMITTED',...(input.clearAiPending?{ai_pending:false}:{})};delete nextBody.followup_plan;delete nextBody.followup_stop_reason;
+ conversation=await save(client,conversation,nextBody);
+ await deliver(client,conversation,'commitment_accepted',input.cause);
+ await advanceWorkflow(client,conversation,'commitment');
+ return order;
+}
+/** Evidence the deterministic agreement rule needs from durable state: the
+ * pinned commitment node and policy, and whether the explained agreement
+ * message reached transport before the customer's latest message. */
+export async function agreementEvidence(client:QueryExecutor,conversation:DomainRecord){
+ const def=await definition(client,conversation),state=conversation.body.flow_state;
+ const node=state?waitingCommitmentNode(def.flow,state):undefined;
+ const offer=conversation.body.offer_version_id?await getRecord(client,conversation.workspace_id,'offer',conversation.body.offer_version_id):undefined;
+ const order=(await client.query(`SELECT body FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='order' AND body->>'conversation_id'=$3 LIMIT 1`,[conversation.workspace_id,conversation.environment,conversation.id])).rows[0]?.body;
+ const prompt=node?def.flow.nodes.find(n=>n.next===node.id&&n.type==='message'):undefined;
+ const effect=prompt?(await client.query(`SELECT o.id,o.status,o.provider_message_id,(SELECT max(a.finished_at) FROM effect_attempts a WHERE a.effect_id=o.id AND a.status IN('SENT','DELIVERED','READ')) AS left_at
+  FROM outbox o WHERE o.workspace_id=$1 AND o.environment=$2 AND o.conversation_id=$3 AND o.payload->>'workflow_node_id'=$4 AND o.payload->>'workflow_runtime_version'=$5 ORDER BY o.dispatch_sequence DESC LIMIT 1`,
+  [conversation.workspace_id,conversation.environment,conversation.id,prompt.id,def.versionId])).rows[0]:undefined;
+ const message=conversation.body.last_message_id?await getRecord(client,conversation.workspace_id,'message',conversation.body.last_message_id):undefined;
+ const delivered=!!effect&&transportConfirmedStatuses.has(String(effect.status))&&!!effect.provider_message_id&&effect.left_at instanceof Date&&!!message&&message.body.direction==='INBOUND'&&new Date(message.created_at).getTime()>=effect.left_at.getTime();
+ const phrases:string[]=node?.config.accepted_phrases??['acepto','me comprometo','confirmo mi compromiso'];
+ return{node,contextual:node?.config.classifier==='contextual_agreement',language:String(offer?.body.language??'es'),literalPhrase:phrases[0],delivered,committed:!!order?.committed_at||order?.status==='COMMITTED',agreementEffectId:effect?.id??null};
+}
+
 export async function acceptCustomerResponse(client:QueryExecutor,conversation:DomainRecord,cause:string){
  if(conversation.body.sponsorship_id||conversation.body.launch_test_role==='beneficiary')return;
  const stop=collectionStopReason(String(conversation.body.last_customer_text??''));
@@ -333,4 +373,4 @@ export async function acceptCustomerResponse(client:QueryExecutor,conversation:D
   else if(node.config.variable)state.variables[canonicalSalesVariable(node.config.variable)]=text;delete state.waiting_node_id;
   conversation=await save(client,conversation,{...conversation.body,ai_pending:false,flow_state:state});await event(client,conversation,'workflow.customer_reply_received',{node_id:node.id,evidence_ref:cause},cause);await advanceWorkflow(client,conversation,'customer_reply');return;
  }
- if(conversation.body.flow_state?.waiting_for!=='commitment'){await interruptPendingRecipeEffects(client,conversation,cause);return;}const def=await definition(client,conversation);const node=waitingCommitmentNode(def.flow,conversation.body.flow_state);if(!node)return;const phrases:string[]=node.config.accepted_phrases??['acepto','me comprometo','confirmo mi compromiso'];const message=String(conversation.body.last_customer_text??'').trim().toLowerCase();if(!acceptsAgreement(message,phrases,node.config.classifier==='contextual_agreement')){await interruptPendingRecipeEffects(client,conversation,cause);return;}const order=await ensureOrder(client,conversation);if(!order||order.body.committed_at)return;await save(client,order,{...order.body,status:'COMMITTED',committed_at:(await nowFor(client,conversation)).toISOString(),commitment_evidence:cause});await cancelPendingRemarketingForContact(client,conversation,'AGREEMENT_ACCEPTED');const nextBody:Body={...conversation.body,stage:'COMMITTED',ai_pending:false};delete nextBody.followup_plan;delete nextBody.followup_stop_reason;conversation=await save(client,conversation,nextBody);await event(client,conversation,'order.committed',{order_id:order.id,source:'configured_customer_phrase'},cause);await deliver(client,conversation,'commitment_accepted',cause);await advanceWorkflow(client,conversation,'commitment');}
+ if(conversation.body.flow_state?.waiting_for!=='commitment'){await interruptPendingRecipeEffects(client,conversation,cause);return;}const def=await definition(client,conversation);const node=waitingCommitmentNode(def.flow,conversation.body.flow_state);if(!node)return;const phrases:string[]=node.config.accepted_phrases??['acepto','me comprometo','confirmo mi compromiso'];const message=String(conversation.body.last_customer_text??'').trim().toLowerCase();if(!acceptsAgreement(message,phrases,node.config.classifier==='contextual_agreement')){await interruptPendingRecipeEffects(client,conversation,cause);return;}await commitAgreement(client,conversation,{source:'configured_customer_phrase',cause,alreadyCommitted:'return',clearAiPending:true});}

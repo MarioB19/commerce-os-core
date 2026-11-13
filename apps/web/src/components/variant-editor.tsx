@@ -266,7 +266,10 @@ function OfferSection({variant,fence,manage,materials,reloadMaterials,save,busy,
        {manage&&<Button type="button" size="sm" variant="ghost" onClick={()=>setOffer(o=>({...o,tiers:o.tiers.filter((_,j)=>j!==i)}))}>Quitar</Button>}</li>)}</ul>}
       {manage&&offer.tiers.length<20&&<Button type="button" size="sm" variant="secondary" onClick={()=>setOffer(o=>({...o,tiers:[...o.tiers,{id:'tier-'+(o.tiers.length+1),name:'Nuevo tier',minimum_total_minor:0}]}))}>Agregar tier</Button>}
       {offer.legacy.madrina&&<p className="muted text-sm">Esta oferta conserva la opción Madrina configurada anteriormente.</p>}
-      <Field label="Espera antes de cobrar (minutos)"><Input type="number" min={0} max={10080} value={Math.round(offer.billing_delay_seconds/60)} disabled={!manage} onChange={e=>setOffer(o=>({...o,billing_delay_seconds:Math.max(0,Math.min(604800,Number(e.target.value)*60))}))}/></Field>
+      {/* V7.5.3: the guided ten-step recipe has no timed wait; collection follows the confirmed initial delivery. */}
+      {variant.document.sale.base==='guided'
+       ?<p className="muted text-sm">En la venta guiada, los datos de pago llegan en cuanto se confirma la entrega inicial completa; esta variante no aplica una espera fija antes de cobrar.</p>
+       :<Field label="Espera antes de cobrar (minutos)"><Input type="number" min={0} max={10080} value={Math.round(offer.billing_delay_seconds/60)} disabled={!manage} onChange={e=>setOffer(o=>({...o,billing_delay_seconds:Math.max(0,Math.min(604800,Number(e.target.value)*60))}))}/></Field>}
      </div>
     </details>
    </Card>

@@ -11,7 +11,7 @@ import {diagnoseNumberTest,duringFix} from './number-test-diagnosis.js';
 import {createHash} from 'node:crypto';
 import {estimateNumberLab,labHash,type LabScenario} from '../../../packages/domain/src/laboratory/number-lab.js';
 import {syntheticReceiptPdf} from '../../../packages/domain/src/laboratory/synthetic-receipt.js';
-import {readSuiteByStart,insertSuite,insertSuiteCase,latestSuiteId,readSuiteReport,suiteDerivedId} from '../../../packages/db/src/number-lab-suites.js';
+import {readSuiteByStart,insertSuite,insertSuiteCase,latestSuiteId,readSuiteReport,suiteDerivedId,admitSuiteMatrix} from '../../../packages/db/src/number-lab-suites.js';
 import type {SuiteJourney} from '../../../packages/domain/src/laboratory/automatic-buyer.js';
 import {numberLabActionSchema} from '../../../packages/contracts/src/number-laboratory.js';
 import {laboratoryAiConfiguration,laboratoryGrants,type VariantAiSelection} from '../../../packages/ai-providers/src/variant-ai.js';
@@ -48,6 +48,9 @@ const messages:Record<string,string>={
  LAB_ATTACHMENT_LIMIT:'Esta prueba ya tiene 20 comprobantes. Inicia otra.',LAB_ATTACHMENT_NOT_FOUND:'No encontramos ese comprobante en esta prueba.',
  LAB_RUN_EXPIRED:'Esta prueba venció: las pruebas se guardan 30 días. Inicia otra.',
  LAB_SUITE_NOT_FOUND:'No encontramos esa prueba automática en este perfil.',
+ LAB_MATRIX_LIMIT:'La matriz de pruebas ya reservó su límite total de llamadas o costo; esta prueba no cabe.',LAB_MATRIX_LIMIT_CHANGED:'El límite de la matriz no puede cambiar después de su primera prueba.',
+ LAB_MATRIX_ID:'Identificador de matriz inválido.',LAB_MATRIX_LIMIT_INVALID:'El límite de la matriz es inválido.',LAB_TIERS:'El importe elegido no existe en la variante.',
+ LAB_SUITE_SELECTION_DUPLICATE:'La selección repite un caso.',LAB_SUITE_SELECTION_ONE_PURCHASE_TIER:'Cada compra de prueba usa un solo importe.',LAB_SUITE_SELECTION_NOT_IN_NUMBER:'Algún caso elegido no corresponde a una variante del número.',LAB_SUITE_TIER_NOT_FOUND:'El importe elegido no existe en la oferta publicada.',
  LAB_SUITE_IN_PROGRESS:'Este número ya tiene una prueba automática sin terminar. Espera su resultado (o a que se concilie) antes de iniciar otra.',LAB_AUTOMATIC_RUN:'Esta conversación la maneja la prueba automática.',
  LAB_CATALOG_AMBIGUOUS:'El número tiene asignaciones ambiguas. Revisa sus variantes.',LAB_SOURCE_LIMIT:'La configuración del número es demasiado grande para una prueba.',
 };
@@ -73,7 +76,7 @@ const estimateSchema=z.object({account_id:z.string().uuid(),mode:z.enum(['CHAT',
 const actionSchema=z.object({expected_version:z.number().int().positive(),action:numberLabActionSchema}).strict();
 
 /** Capture, selections and estimate, all from the server's current state. */
-async function prepare(db:ProfileExecutor,authority:ProfileAuthority,accountId:string,mode:'CHAT'|'AUTOMATIC',only?:{variantId:string;scenarios:LabScenario[]}){
+async function prepare(db:ProfileExecutor,authority:ProfileAuthority,accountId:string,mode:'CHAT'|'AUTOMATIC',only?:{variantId:string;scenarios:LabScenario[];tiers?:string[]}){
  const engineSha256=process.env.LAB_ENGINE_SHA256;if(!engineSha256||!/^[a-f0-9]{64}$/.test(engineSha256))fail('LAB_NOT_INSTALLED',503);
  const version=Number((await db.query("SELECT version FROM ai_profile_preferences WHERE workspace_id=$1 AND environment='REAL'",[db.workspaceId])).rows[0]?.version??0);
  if(!version)fail('LAB_AI_DEPENDENCY_REQUIRED');
@@ -86,7 +89,7 @@ async function prepare(db:ProfileExecutor,authority:ProfileAuthority,accountId:s
  Object.assign(names,await variantNames(db,captured.snapshot.candidates.map(c=>c.release.variant_id)));
  const ai=await laboratoryAiConfiguration(db,selections);if(!ai.config)fail('LAB_AI_DEPENDENCY_REQUIRED');
  const now=new Date((await db.query('SELECT clock_timestamp() AS now')).rows[0].now).getTime();
- const estimate=estimateNumberLab(captured.snapshot,mode,ai.config,ai.models,now,only?.scenarios);
+ const estimate=estimateNumberLab(captured.snapshot,mode,ai.config,ai.models,now,only?.scenarios,only?.tiers);
  return{captured,estimate,selections,names};
 }
 /** RF-19.d: each variant's receipt rules as they are now, fixed with the test.
@@ -161,18 +164,38 @@ async function view(db:ProfileExecutor,authority:ProfileAuthority,runId:string){
  * gets two journeys, each captured and priced alone (its own isolated run):
  * a customer who buys and a customer who stops answering. */
 const JOURNEYS:{journey:SuiteJourney;scenario:LabScenario}[]=[{journey:'PURCHASE',scenario:'happy'},{journey:'FOLLOWUP',scenario:'followup'}];
-async function prepareSuite(db:ProfileExecutor,authority:ProfileAuthority,accountId:string){
+/** V7.5.3: a suite may be narrowed to selected cases (journey and tier of a
+ * variant). A selected purchase pays with the tier's amount, so 97 and 107 are
+ * executed, not only estimated. Without a selection, the full plan is kept. */
+const suiteCaseSchema=z.object({variant_id:z.string().uuid().optional(),journey:z.enum(['PURCHASE','FOLLOWUP']),tier_id:z.string().regex(/^[a-z0-9_-]{1,60}$/)}).strict();
+type SuiteSelection=z.infer<typeof suiteCaseSchema>[];
+async function prepareSuite(db:ProfileExecutor,authority:ProfileAuthority,accountId:string,selection?:SuiteSelection){
  const all=await prepare(db,authority,accountId,'CHAT');
- const cases=[];
+ const cases:{journey:SuiteJourney;scenario:LabScenario;variant_id:string;release:typeof all.captured.snapshot.candidates[number]['release'];prepared:Awaited<ReturnType<typeof prepare>>;tier_id:string|null}[]=[];
  for(const c of all.captured.snapshot.candidates)for(const j of JOURNEYS){
-  const p=await prepare(db,authority,accountId,'AUTOMATIC',{variantId:c.release.variant_id,scenarios:[j.scenario]});
-  cases.push({...j,variant_id:c.release.variant_id,release:c.release,prepared:p});
+  const chosen=selection?.filter(s=>s.journey===j.journey&&(!s.variant_id||s.variant_id===c.release.variant_id));
+  if(selection&&!chosen?.length)continue;
+  const tiers=chosen?.map(s=>s.tier_id);
+  if(tiers&&new Set(tiers).size!==tiers.length)fail('LAB_SUITE_SELECTION_DUPLICATE');
+  if(tiers&&tiers.length>1&&j.journey==='PURCHASE')fail('LAB_SUITE_SELECTION_ONE_PURCHASE_TIER');
+  const p=await prepare(db,authority,accountId,'AUTOMATIC',{variantId:c.release.variant_id,scenarios:[j.scenario],...(tiers?{tiers}:{})});
+  cases.push({...j,variant_id:c.release.variant_id,release:c.release,prepared:p,tier_id:tiers?.[0]??null});
  }
- return{cases,names:all.names,selections:all.selections,maximum_microusd:cases.reduce((n,c)=>n+c.prepared.estimate.maximum_microusd,0)};
+ if(selection&&(!cases.length||selection.some(s=>!cases.some(c=>c.journey===s.journey&&(!s.variant_id||s.variant_id===c.variant_id)))))fail('LAB_SUITE_SELECTION_NOT_IN_NUMBER');
+ return{cases,names:all.names,selections:all.selections,maximum_microusd:cases.reduce((n,c)=>n+c.prepared.estimate.maximum_microusd,0),maximum_ai_calls:cases.reduce((n,c)=>n+c.prepared.estimate.maximum_ai_calls,0)};
+}
+/** Amount a selected tier pays: its minimum total, never below the base price. */
+async function tierAmount(db:ProfileExecutor,release:{amount_minor:number;configuration:{offer:{id:string}}},tierId:string|null){
+ if(!tierId)return release.amount_minor;
+ const offer=(await db.query("SELECT body FROM records WHERE workspace_id=$1 AND environment='REAL' AND kind='offer' AND id=$2",[db.workspaceId,release.configuration.offer.id])).rows[0]?.body;
+ const tier=(offer?.tiers??[]).find((t:{id?:string})=>t.id===tierId);if(!tier&&tierId!=='base')fail('LAB_SUITE_TIER_NOT_FOUND');
+ const minimum=Number(tier?.minimum_total_minor??0);
+ return Math.max(release.amount_minor,Number.isSafeInteger(minimum)?minimum:0);
 }
 function presentSuiteEstimate(p:Awaited<ReturnType<typeof prepareSuite>>){
  return{currency:'USD' as const,maximum_microusd:p.maximum_microusd,paid_by:'PROFILE_KEY' as const,
-  cases:p.cases.map(c=>({variant_id:c.variant_id,name:p.names[c.variant_id]??'Variante',journey:c.journey,maximum_microusd:c.prepared.estimate.maximum_microusd,maximum_ai_calls:c.prepared.estimate.maximum_ai_calls})),
+  maximum_ai_calls:p.maximum_ai_calls,
+  cases:p.cases.map(c=>({variant_id:c.variant_id,name:p.names[c.variant_id]??'Variante',journey:c.journey,tier_id:c.tier_id,maximum_microusd:c.prepared.estimate.maximum_microusd,maximum_ai_calls:c.prepared.estimate.maximum_ai_calls})),
   note:'Es un máximo: cada respuesta de la IA y cada lectura de comprobante se cobran a la clave de tu perfil. Nada se envía por WhatsApp ni cuenta como venta.'};
 }
 async function expectsFollowup(db:ProfileExecutor,variantId:string){
@@ -201,9 +224,11 @@ export async function numberTestRoutes(app:FastifyInstance,deps?:ProfileRequestD
  // RF-19.p/h: the automatic buyer. Estimate first; the start accepts that
  // ceiling and creates one isolated run per variant and journey; the worker
  // plays each journey and the report gives one verdict per variant.
- app.post('/v2/number-tests/suites/estimate',{bodyLimit:1024},async req=>{const q=z.object({account_id:z.string().uuid()}).strict().parse(req.body);
-  return{data:await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:run',mutation:true},async({db,profile})=>presentSuiteEstimate(await prepareSuite(db,profile.authority,q.account_id)),deps))};});
- app.post('/v2/number-tests/suites',{bodyLimit:1024},async(req,reply)=>{const q=z.object({account_id:z.string().uuid(),accepted_maximum_microusd:z.number().int().positive().max(Number.MAX_SAFE_INTEGER)}).strict().parse(req.body),operationId=operationKey(req);
+ app.post('/v2/number-tests/suites/estimate',{bodyLimit:4096},async req=>{const q=z.object({account_id:z.string().uuid(),cases:z.array(suiteCaseSchema).min(1).max(4).optional()}).strict().parse(req.body);
+  return{data:await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:run',mutation:true},async({db,profile})=>presentSuiteEstimate(await prepareSuite(db,profile.authority,q.account_id,q.cases)),deps))};});
+ app.post('/v2/number-tests/suites',{bodyLimit:4096},async(req,reply)=>{const q=z.object({account_id:z.string().uuid(),accepted_maximum_microusd:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+   cases:z.array(suiteCaseSchema).min(1).max(4).optional(),
+   matrix:z.object({id:z.string().uuid(),maximum_microusd:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),maximum_ai_calls:z.number().int().positive().max(19200)}).strict().optional()}).strict().parse(req.body),operationId=operationKey(req);
   const data=await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:run',mutation:true},async({db,profile})=>{
    const a=profile.authority as ProfileAuthority,key=numberLabKeys().control;
    const prior=await readSuiteByStart(db,a,operationId);if(prior)return{suite_id:prior,created:false};
@@ -212,21 +237,23 @@ export async function numberTestRoutes(app:FastifyInstance,deps?:ProfileRequestD
    if((await db.query(`SELECT 1 FROM commerce_number_lab.suites s WHERE s.workspace_id=$1 AND s.account_id=$2 AND s.state='RUNNING'
      AND EXISTS(SELECT 1 FROM commerce_number_lab.suite_cases c JOIN commerce_number_lab.runs r ON r.workspace_id=c.workspace_id AND r.id=c.run_id
       WHERE c.workspace_id=s.workspace_id AND c.suite_id=s.id AND c.state='RUNNING' AND r.expires_at>clock_timestamp()) LIMIT 1`,[db.workspaceId,q.account_id])).rowCount)fail('LAB_SUITE_IN_PROGRESS');
-   const p=await prepareSuite(db,a,q.account_id);
+   const p=await prepareSuite(db,a,q.account_id,q.cases);
    if(p.maximum_microusd>q.accepted_maximum_microusd)fail('LAB_ESTIMATE_INCREASED');
+   if(q.matrix)await admitSuiteMatrix(db,a,q.matrix,{maximum_microusd:p.maximum_microusd,maximum_ai_calls:p.maximum_ai_calls});
    const {missing}=await laboratoryGrants(db,a,p.cases.flatMap(c=>c.prepared.estimate.cases),p.selections);if(missing.length)fail('LAB_AI_GRANT_REQUIRED');
    const suiteId=suiteDerivedId('suite',db.workspaceId,operationId);
-   await insertSuite(db,a,{id:suiteId,account_id:q.account_id,operation_id:operationId,maximum_microusd:p.maximum_microusd});
+   await insertSuite(db,a,{id:suiteId,account_id:q.account_id,operation_id:operationId,maximum_microusd:p.maximum_microusd,maximum_ai_calls:p.maximum_ai_calls,...(q.matrix?{matrix:q.matrix}:{})});
    const policies=await receiptPolicies(db,p.cases.map(c=>c.variant_id));
    for(const c of p.cases){
     const runOperation=suiteDerivedId('run',suiteId,c.variant_id,c.journey),captured=c.prepared.captured;
     const run=await startNumberLab(db,a,{operation_id:runOperation,account_id:q.account_id,snapshot_sha256:labHash(captured.snapshot),estimate_sha256:c.prepared.estimate.sha256,mode:'AUTOMATIC'},captured,c.prepared.estimate,key,{receipt_policies:policies});
     if(run.created)await bindNumberLabReleases(db,run.run_id,captured.snapshot,c.prepared.estimate);
     let attachment:string|null=null;
+    const amount=c.journey==='PURCHASE'?await tierAmount(db,c.release,c.tier_id):null;
     if(c.journey==='PURCHASE'){const tz=c.release.locale.timezone,paidOn=new Intl.DateTimeFormat('en-CA',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(run.virtual_now));
-     const pdf=syntheticReceiptPdf({amountMinor:c.release.amount_minor,currency:c.release.locale.currency,minorDigits:minorDigits(c.release.locale.currency),paidOn,reference:'LAB-'+run.run_id.slice(0,8).toUpperCase()});
+     const pdf=syntheticReceiptPdf({amountMinor:amount!,currency:c.release.locale.currency,minorDigits:minorDigits(c.release.locale.currency),paidOn,reference:'LAB-'+run.run_id.slice(0,8).toUpperCase()});
      attachment=(await attachNumberLabFile(db,a,run.run_id,{mime_type:'application/pdf',base64:pdf.toString('base64')},key)).attachment_id;}
-    await insertSuiteCase(db,{suite_id:suiteId,run_id:run.run_id,variant_id:c.variant_id,journey:c.journey,expect_followup:c.journey==='FOLLOWUP'&&await expectsFollowup(db,c.variant_id),attachment_id:attachment});
+    await insertSuiteCase(db,{suite_id:suiteId,run_id:run.run_id,variant_id:c.variant_id,journey:c.journey,expect_followup:c.journey==='FOLLOWUP'&&await expectsFollowup(db,c.variant_id),attachment_id:attachment,...(q.cases?{plan:{...(amount!==null?{receipt_amount_minor:amount}:{}),...(c.tier_id?{tier_id:c.tier_id}:{})}}:{})});
    }
    return{suite_id:suiteId,created:true};
   },deps));

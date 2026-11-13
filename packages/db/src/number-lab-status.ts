@@ -27,7 +27,10 @@ export function classifyNumberTest(input:{suite:{state:string;cases:{state:strin
   const cases=input.suite.cases,count=(state:string)=>cases.filter(c=>c.state===state).length;
   if(count('FAILED'))return 'FAILED';
   if(count('RUNNING')&&input.suite.state==='RUNNING'&&!input.runExpired)return uncertain?'UNCERTAIN':'IN_PROGRESS';
-  return cases.length>0&&count('PASSED')===cases.length&&!uncertain&&!pending?'PASSED':'INCOMPLETE';
+  // V7.5.3 (A04): success needs a terminal suite; cases that already read
+  // PASSED inside a suite still RUNNING are a transition, not a result.
+  if(input.suite.state==='RUNNING'&&!input.runExpired)return uncertain?'UNCERTAIN':'IN_PROGRESS';
+  return input.suite.state==='COMPLETED'&&cases.length>0&&count('PASSED')===cases.length&&!uncertain&&!pending?'PASSED':'INCOMPLETE';
  }
  return uncertain?'UNCERTAIN':pending?'IN_PROGRESS':'MANUAL';
 }

@@ -29,7 +29,8 @@ export interface LabCase {key:string;variant_id:string;release_id:string;tier_id
 export interface LabEstimate {schema_version:1;snapshot_sha256:string;mode:'CHAT'|'AUTOMATIC';currency:'USD';maximum_microusd:number;maximum_ai_calls:number;cases:LabCase[];valid_until:string;sha256:string}
 /** Trusted catalogue/profile configuration only. Callers cannot submit a price or model. */
 /** scenarios (RF-19.p): the automatic buyer runs one journey per run. */
-export function estimateNumberLab(raw:unknown,mode:'CHAT'|'AUTOMATIC',profile:ProfileConfiguration,catalog:readonly Model[],now:number,scenarios?:readonly LabScenario[]):LabEstimate{
+/** V7.5.3: `tiers` narrows an AUTOMATIC journey to the selected tier(s) of its variant. */
+export function estimateNumberLab(raw:unknown,mode:'CHAT'|'AUTOMATIC',profile:ProfileConfiguration,catalog:readonly Model[],now:number,scenarios?:readonly LabScenario[],tiers?:readonly string[]):LabEstimate{
  const snapshot=validateLabSnapshot(raw);need(['CHAT','AUTOMATIC'].includes(mode)&&Number.isFinite(now)&&profile.profileId===snapshot.workspace_id&&profile.version===snapshot.ai_configuration_version,'LAB_AI_SCOPE');
  need(Date.parse(snapshot.captured_at)<=now&&now-Date.parse(snapshot.captured_at)<=120000,'LAB_SNAPSHOT_STALE');
  need(scenarios===undefined||(scenarios.length>0&&scenarios.every(s=>(labScenarios as readonly string[]).includes(s))&&new Set(scenarios).size===scenarios.length),'LAB_SCENARIOS');
@@ -37,7 +38,9 @@ export function estimateNumberLab(raw:unknown,mode:'CHAT'|'AUTOMATIC',profile:Pr
  for(const c of [...snapshot.candidates].sort((a,b)=>a.release.variant_id.localeCompare(b.release.variant_id))){
   const selected=resolveModel(profile,c.release.variant_id,'chat',catalog,now);need(selected.state==='MODEL','LAB_AI_DEPENDENCY_REQUIRED');
   const q=quote(snapshot.workspace_id,selected.model,Number.MAX_SAFE_INTEGER,now);expiry=Math.min(expiry,Date.parse(selected.model.price.validUntil));
-  for(const tier of [...snapshot.tiers.find(t=>t.variant_id===c.release.variant_id)!.tier_ids].sort())for(const scenario of mode==='AUTOMATIC'?(scenarios??labScenarios):['happy']as const){
+  const available=snapshot.tiers.find(t=>t.variant_id===c.release.variant_id)!.tier_ids;
+  need(tiers===undefined||(mode==='AUTOMATIC'&&tiers.length>0&&new Set(tiers).size===tiers.length&&tiers.every(t=>available.includes(t))),'LAB_TIERS');
+  for(const tier of [...(tiers??available)].sort())for(const scenario of mode==='AUTOMATIC'?(scenarios??labScenarios):['happy']as const){
    // This is an enforced upper bound, not a promised amount spent. Partial runs
    // retain the original limit and report any unexecuted cases explicitly.
    const maximum=mode==='AUTOMATIC'?8:32,key=labHash({variant:c.release.variant_id,release:c.release.id,tier,scenario});

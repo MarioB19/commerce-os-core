@@ -1,4 +1,4 @@
-import {afterAll,beforeAll,expect,it} from 'vitest';
+import {afterAll,beforeAll,beforeEach,expect,it} from 'vitest';
 import {randomUUID,randomBytes,createHash} from 'node:crypto';
 import {mkdtemp,mkdir,rm,realpath,rename,lstat,writeFile,stat} from 'node:fs/promises';
 import {spawnSync} from 'node:child_process';
@@ -29,7 +29,11 @@ const origin=(process.env.TRUSTED_ORIGINS??'http://localhost:5173').split(',')[0
 const withRole=roleExecutor(pool),aiKey=aiCredentialKey(),suffix='t'+randomBytes(5).toString('hex');
 let app:Awaited<ReturnType<typeof createApp>>,aiPool:pg.Pool,runtime:NumberLabRuntime|null=null,root='',ownerId='',engineDatabase='',installed=false;
 const cookies:Record<string,string>={};const created:string[]=[];
-const call=(who:string,method:string,path:string,body?:unknown,key=randomUUID())=>app.inject({method:method as 'GET',url:path,payload:body as object,headers:{origin,cookie:cookies[who]!,'idempotency-key':key}});
+// The API limits requests per address (300/min). Each test calls from its own
+// address so the file's total never trips the limit; the limit is unchanged.
+let clientAddress='127.0.0.1',addresses=0;
+beforeEach(()=>{clientAddress=`127.0.1.${++addresses}`;});
+const call=(who:string,method:string,path:string,body?:unknown,key=randomUUID())=>app.inject({method:method as 'GET',url:path,payload:body as object,remoteAddress:clientAddress,headers:{origin,cookie:cookies[who]!,'idempotency-key':key}});
 const data=(r:{statusCode:number;body:string;json():any},status=200)=>{expect(r.statusCode,r.body).toBe(status);return r.json().data;};
 let sellerCalls=0,visionCalls=0;
 let authority:ProfileAuthority,owned:<T>(work:(db:import('../../packages/db/src/profile-context.js').ProfileExecutor)=>Promise<T>)=>Promise<T>;
@@ -69,7 +73,7 @@ beforeAll(async()=>{
  created.push(...Object.values(installation.logins!).map(l=>l.user));
  // Idempotent: a second run verifies and never rebuilds or issues logins.
  const again=await installNumberLabEngine(url.toString());expect(again).toEqual({database:installation.database,installationId:installation.installationId,engineSha256:installation.engineSha256,created:false});
- await fixtureProfiles({id:P,numbers:10});app=await createApp();ownerId=(await login('owner','owner')).id;await login('operator','operator');
+ await fixtureProfiles({id:P,numbers:12});app=await createApp();ownerId=(await login('owner','owner')).id;await login('operator','operator');
  aiPool=new pg.Pool({connectionString:process.env.DATABASE_URL,max:3});aiPool.on('connect',c=>{void c.query('SET ROLE commerce_ai');});
  authority={profile:{id:P,state:'ACTIVE'},membership:{userId:ownerId,workspaceId:P,role:'owner',active:true,version:1},
   credential:{kind:'session',userId:ownerId,workspaceId:P,revoked:false,expiresAt:new Date(Date.now()+3600000).toISOString(),scopes:[],membershipVersion:1}};
@@ -433,7 +437,7 @@ it('runs the automatic buyer over every variant of a number and reports one verd
  expect(report.suite.state,JSON.stringify(report.variants)).toBe('COMPLETED');
  expect(report.variants).toEqual([expect.objectContaining({variant_id:v.id,name:'Suite · México',verdict:'RESPONDE_BIEN',verdict_label:'Responde bien'})]);
  const [purchase,followup]=[report.variants[0].cases.find((c:{journey:string})=>c.journey==='PURCHASE'),report.variants[0].cases.find((c:{journey:string})=>c.journey==='FOLLOWUP')];
- expect(purchase.checks.map((c:{name:string;state:string})=>[c.name,c.state]).sort()).toEqual([['collection','PASSED'],['delivery','PASSED'],['exclusion','PASSED'],['offer','PASSED'],['receipt','PASSED'],['route','PASSED']]);
+ expect(purchase.checks.map((c:{name:string;state:string})=>[c.name,c.state]).sort()).toEqual([['agreement','PASSED'],['collection','PASSED'],['delivery','PASSED'],['exclusion','PASSED'],['initial_delivery','PASSED'],['offer','PASSED'],['receipt','PASSED'],['route','PASSED']]);
  expect(followup.checks.find((c:{name:string})=>c.name==='followup')).toMatchObject({state:'PASSED',label:'Da seguimiento si el cliente no responde'});
  // The synthetic receipt was read once with the profile's key.
  expect(visionCalls).toBe(reads+1);
@@ -442,6 +446,55 @@ it('runs the automatic buyer over every variant of a number and reports one verd
  expect(transcript.some((e:{kind:string;status:string})=>e.kind==='receipt'&&e.status==='APPROVED')).toBe(true);
  expect((await call('owner','POST',`/v2/number-tests/${purchase.run_id}/actions`,{expected_version:1,action:{type:'continue'}})).statusCode).toBe(409);
  expect(data(await call('owner','GET',`/v2/number-tests/suites/latest?account_id=${number}`)).suite.suite_id).toBe(started.suite_id);
+ expect(await footprint()).toEqual(before);
+},240000);
+
+// V7.5.3: one paid matrix across two numbers. Selected cases (journey and
+// tier) narrow each suite; the matrix keeps one persistent ceiling for both.
+// The purchase pays the tier's amount, so 97 and 107 are executed; delivery is
+// verified by ID per stage and approved amount, and the extra appears only at 107.
+it('V7.5.3: a matrix runs 97 on one number and 107 on another within one ceiling and verifies each inventory by ID',async()=>{
+ const links=[] as string[];for(const name of ['Material inicial A','Material inicial B','Calendario','Kit del grupo'])links.push(data(await call('owner','POST','/v2/materials?environment=REAL',{name,kind:'link',url:'https://example.com/'+encodeURIComponent(name)}),201).id as string);
+ let v=data(await call('owner','POST','/v2/products',{name:'Matriz',variant:{name:'México',locale:MX}}),201).variant;
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/sale`,{expected_version:v.version,value:{...v.document.sale,conversation:{...v.document.sale.conversation,deliver_before_payment:true}}}));
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/offer`,{expected_version:v.version,value:{...v.document.offer,price_minor:9700,
+  tiers:[{id:'acuerdo_97',name:'Lo Acordado',minimum_total_minor:1},{id:'apoyo_107',name:'Apoyo Valioso',minimum_total_minor:10700,included_extra_from_minor:10700}],
+  fulfillment:[{asset_id:links[0],release_on:'commitment_accepted'},{asset_id:links[1],release_on:'commitment_accepted'},{asset_id:links[2],release_on:'receipt_approved'},{asset_id:links[3],release_on:'receipt_approved',min_amount_minor:10700}]}}));
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/collection`,{expected_version:v.version,value:{spei:{bank:'Banco sintético',holder:'Titular sintético',clabe:clabe('01218000011835971')},links:[],instructions:''}}));
+ data(await call('owner','POST',`/v2/variants/${v.id}/publish`,{expected_version:v.version,document_sha256:v.document_sha256}));
+ // As Mi Ciclo Listo: automatic approval stays off; the receipt goes to human
+ // review and the test approves it there (the amount read is the one approved).
+ const numbers:string[]=[];
+ for(const name of ['Matriz A','Matriz B']){numbers.push(await withTransaction(async c=>{await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','REAL',true)",[P]);
+  return(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','channel_account',$2) RETURNING id",[P,{name,provider:'waha',gateway_ref:'lab-'+randomUUID(),status:'WORKING',sending_enabled:true,identity_verified:true}])).rows[0].id as string;}));
+  data(await call('owner','POST',`/v2/variants/${v.id}/numbers`,{account_id:numbers.at(-1),sell:true}));}
+ const before=await footprint();
+ const select=(tier:string)=>[{variant_id:v.id,journey:'PURCHASE',tier_id:tier}];
+ const [e97,e107]=[data(await call('owner','POST','/v2/number-tests/suites/estimate',{account_id:numbers[0],cases:select('acuerdo_97')})),data(await call('owner','POST','/v2/number-tests/suites/estimate',{account_id:numbers[1],cases:select('apoyo_107')}))];
+ expect([e97.cases,e107.cases]).toEqual([[expect.objectContaining({journey:'PURCHASE',tier_id:'acuerdo_97',maximum_ai_calls:8})],[expect.objectContaining({journey:'PURCHASE',tier_id:'apoyo_107',maximum_ai_calls:8})]]);
+ const matrix={id:randomUUID(),maximum_microusd:e97.maximum_microusd+e107.maximum_microusd,maximum_ai_calls:16};
+ const run=async(number:string,tier:string,amount:number,estimate:any)=>{
+  const started=data(await call('owner','POST','/v2/number-tests/suites',{account_id:number,accepted_maximum_microusd:estimate.maximum_microusd,cases:select(tier),matrix}),201);
+  const today=new Intl.DateTimeFormat('en-CA',{timeZone:MX.timezone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+  visionDocument={is_receipt:true,amount_minor:amount,currency:'MXN',destination_suffix:'0000',bank:'Banco de prueba',reference:'LAB-0001',status:'completed',confidence:0.97,contradictions:[],destination:'012180000000000000',beneficiary:'Negocio de prueba',paid_on:today,concept:'Compra de prueba'};
+  let report:any;for(let i=0;i<40;i++){await processNumberLabOperations(runtime);report=data(await call('owner','GET',`/v2/number-tests/suites/${started.suite_id}`));if(report.suite.state==='COMPLETED')break;}
+  const detail=report.suite.state==='COMPLETED'?'':(await call('owner','GET',`/v2/number-tests/${report.variants[0].cases[0].run_id}`)).body.slice(0,3000);
+  expect(report.suite,JSON.stringify(report.variants)+detail).toMatchObject({state:'COMPLETED',matrix_id:matrix.id,maximum_ai_calls:8});
+  const c=report.variants[0].cases[0];
+  expect(c.checks.find((x:{name:string})=>x.name==='receipt').detail).toContain('revisión');
+  return c;};
+ const c97=await run(numbers[0],'acuerdo_97',9700,e97);
+ expect(c97.plan).toEqual({receipt_amount_minor:9700,tier_id:'acuerdo_97'});
+ expect(c97.checks.map((c:{name:string;state:string})=>[c.name,c.state]).sort(),JSON.stringify(c97.checks)).toEqual([['agreement','PASSED'],['collection','PASSED'],['delivery','PASSED'],['exclusion','PASSED'],['initial_delivery','PASSED'],['offer','PASSED'],['receipt','PASSED'],['route','PASSED']]);
+ const c107=await run(numbers[1],'apoyo_107',10700,e107);
+ expect(c107.plan).toEqual({receipt_amount_minor:10700,tier_id:'apoyo_107'});
+ expect(c107.checks.find((c:{name:string})=>c.name==='delivery')).toMatchObject({state:'PASSED',detail:expect.stringContaining('Llegaron los 2 materiales')});
+ expect(c97.checks.find((c:{name:string})=>c.name==='delivery')).toMatchObject({state:'PASSED',detail:expect.stringContaining('Llegaron los 1 materiales')});
+ // The persistent ceiling is spent: a third suite under the same matrix is refused before anything runs.
+ const refused=await call('owner','POST','/v2/number-tests/suites',{account_id:numbers[0],accepted_maximum_microusd:e97.maximum_microusd,cases:[{variant_id:v.id,journey:'FOLLOWUP',tier_id:'acuerdo_97'}],matrix});
+ expect(refused.statusCode).toBe(409);expect(refused.json().error).toMatchObject({code:'LAB_MATRIX_LIMIT'});
+ const raised=await call('owner','POST','/v2/number-tests/suites',{account_id:numbers[0],accepted_maximum_microusd:e97.maximum_microusd,cases:select('acuerdo_97'),matrix:{...matrix,maximum_ai_calls:64}});
+ expect(raised.json().error).toMatchObject({code:'LAB_MATRIX_LIMIT_CHANGED'});
  expect(await footprint()).toEqual(before);
 },240000);
 

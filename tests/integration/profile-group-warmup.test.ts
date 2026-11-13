@@ -60,10 +60,12 @@ async function live(w:string,account:string){
  for(const dimension of ['session','transport','restriction','quality'])await admin.query("INSERT INTO records(id,workspace_id,environment,kind,body) VALUES($1,$2,'REAL','health_signal',$3)",[randomUUID(),w,{account_id:account,dimension,status:'OK',source:'provider_read',scope:'account',availability:'supported',observed_at:new Date(now.getTime()-1000).toISOString(),expires_at:new Date(now.getTime()+600000).toISOString(),value:dimension==='restriction'?{latest_read:{timelock:true,capping:true}}:dimension==='transport'?{identity_fingerprint:body.identity_fingerprint}:{}}]);
 }
 
+/** Synthetic LID for an own line (V7.5.3 F3): stable, digits only. */
+const lidOf=(raw:string)=>'9'+raw.replace(/\D/g,'').slice(-13).padStart(13,'0');
 /** V7.4: `external` adds members outside the profile (even ones with an explicit
  * phone mapping, odd ones with only the provider's opaque identity); `ready`
  * adds own connected lines whose owner chose «ya está preparado». */
-async function groupFixture(n=3,extra:{external?:number;ready?:number}={}){
+async function groupFixture(n=3,extra:{external?:number;ready?:number;jid?:string;lid?:boolean}={}){
  const w=await profile(),lines:Awaited<ReturnType<typeof connection>>[]=[],ready:Awaited<ReturnType<typeof connection>>[]=[];
  for(let i=0;i<n;i++){const q=await connection(w);await enrollment(w,q.account);lines.push(q);}
  for(let i=0;i<(extra.ready??0);i++){const q=await connection(w);await admin.query("UPDATE records SET body=body||$2::jsonb,version=version+1 WHERE id=$1",[q.account,{warmup_mode:'DECLARED_READY',warmup_mode_source:'owner_choice',ownership_confirmed_at:new Date().toISOString()}]);expect(await enrollment(w,q.account)).toEqual({state:'WARMUP_NOT_REQUESTED'});ready.push(q);}
@@ -71,7 +73,7 @@ async function groupFixture(n=3,extra:{external?:number;ready?:number}={}){
  const setExternals=(next:typeof externals)=>{externals=next;};
  const now=new Date(),offset=now.getUTCHours()-10,timezone=offset===0?'UTC':`Etc/GMT${offset<0?'-':'+'}${Math.abs(offset)}`;
  let group:any;
- const refresh=async()=>{for(const q of lines){group=await tx(w,'commerce_channel',async db=>observeGroup(db,(await getRecord(db,w,'channel_account',q.account))!,{id:'synthetic-'+w+'@g.us',name:'Equipo de prueba',complete:true,adminOnly:false,runtime:{engine:'SIMULATOR',version:'fixture'},observedAt:new Date().toISOString(),members:[...[...lines,...ready].map(q=>({identity:q.raw,verifiedIdentity:q.raw,admin:true,mappingSource:'provider'})),...externals]}));}return group;};
+ const refresh=async()=>{for(const q of lines){group=await tx(w,'commerce_channel',async db=>observeGroup(db,(await getRecord(db,w,'channel_account',q.account))!,{id:extra.jid??'synthetic-'+w+'@g.us',name:'Equipo de prueba',complete:true,adminOnly:false,runtime:{engine:'SIMULATOR',version:'fixture'},observedAt:new Date().toISOString(),members:[...[...lines,...ready].map(q=>extra.lid?{identity:'lid:'+lidOf(q.raw),verifiedIdentity:q.raw,admin:true,mappingSource:'provider_explicit_mapping'}:{identity:q.raw,verifiedIdentity:q.raw,admin:true,mappingSource:'provider'}),...externals]}));}return group;};
  await refresh();
  const config=groupWarmupConfigSchema.parse({name:'Grupo de prueba',groupId:group.id,senderIds:lines.map(q=>q.account),libraryVersion:'operacion-interna-es/v1',timezone,startHour:0,endHour:23});
  const start=async(c:GroupWarmupConfig=config)=>{
@@ -326,7 +328,7 @@ describe('V7.2 own group programs under restricted PostgreSQL',()=>{
    const before=(await old.pool.query('SELECT * FROM warmup_states WHERE account_id=$1',[account])).rows[0];
    await migrate({pool:old.pool,log:()=>{}});await migrate({pool:old.pool,log:()=>{}});
    const {group_required,...after}=(await old.pool.query('SELECT * FROM warmup_states WHERE account_id=$1',[account])).rows[0];expect(after).toEqual(before);expect(group_required).toBe(false);
-   expect((await old.pool.query('SELECT count(*)::int n FROM schema_migrations')).rows[0].n).toBe(121);expect((await old.pool.query('SELECT count(*)::int n FROM outbox')).rows[0].n).toBe(0);
+   expect((await old.pool.query('SELECT count(*)::int n FROM schema_migrations')).rows[0].n).toBe(122);expect((await old.pool.query('SELECT count(*)::int n FROM outbox')).rows[0].n).toBe(0);
   }finally{await old.close();}
  });
 
@@ -403,6 +405,87 @@ describe('V7.2 own group programs under restricted PostgreSQL',()=>{
   expect((await admin.query('SELECT receiver_id FROM warmup_group_receipts WHERE effect_id=$1',[effect.id])).rows).toEqual([{receiver_id:receiver.account}]);
   expect((await admin.query("SELECT count(*)::int n FROM domain_events WHERE aggregate_id=$1 AND event_type='warmup.effect_reconciled_from_group_event'",[effect.id])).rows[0].n).toBe(1);
   expect((await admin.query("SELECT status FROM effect_attempts WHERE effect_id=$1",[effect.id])).rows.map((r:any)=>r.status)).toEqual(['SENT']);
+ });
+ // V7.5.3 F3 (production 13-nov 09:01 CDMX): the sending session records
+ // `true_<group>_<id>_<author>` and each receiving session `false_<group>_<id>_<author>`
+ // with the author as LID or phone. Same chat and message ID, authors resolved
+ // to the turn's sender, receivers in the turn: one receipt each, once.
+ async function canonicalFixture(){
+  const jid='1203630'+String(Date.now()).slice(-8)+String(++serial).padStart(3,'0')+'@g.us';
+  const f=await groupFixture(3,{external:2,jid,lid:true}),p=await f.start();await f.schedule(p.id);
+  const effects=(await admin.query('SELECT * FROM outbox WHERE workspace_id=$1 ORDER BY not_before,dispatch_sequence',[f.w])).rows;
+  const effect=effects[0],next=effects.find((e:any)=>e.predecessor_id===effect.id);
+  const sender=f.lines.find(q=>q.account===effect.account_id)!,receivers=f.lines.filter(q=>q.account!==effect.account_id);
+  const msg='3EB0'+randomBytes(8).toString('hex').toUpperCase(),phone=sender.raw.replace(/@c\.us$/,''),lid=lidOf(sender.raw);
+  const event=(id:string,extra:Record<string,unknown>={})=>({key:randomUUID(),type:'message',providerMessageId:id,groupId:jid,identity:jid,fromMe:false,providerAt:new Date().toISOString(),senderIdentity:'lid:'+lid,participantIdentity:'lid:'+lid,text:effect.payload.text,...extra}) as any;
+  const consume=(account:string,e:any)=>tx(f.w,'commerce_channel',async db=>classifyGroupEvent(db,(await getRecord(db,f.w,'channel_account',account))!,e,randomUUID()));
+  const receipts=async()=>(await admin.query('SELECT receiver_id,delivery_source FROM warmup_group_receipts WHERE effect_id=$1 ORDER BY receiver_id',[effect.id])).rows;
+  const audits=async()=>(await admin.query("SELECT payload->>'match' AS match,payload->>'receiver_id' AS receiver FROM domain_events WHERE aggregate_id=$1 AND event_type='warmup.group_receipt_correlated' ORDER BY payload->>'receiver_id'",[effect.id])).rows;
+  const status=async(id=effect.id)=>(await admin.query('SELECT status,provider_message_id FROM outbox WHERE id=$1',[id])).rows[0];
+  return{f,jid,effect,next,sender,receivers,msg,phone,lid,event,consume,receipts,audits,status};
+ }
+ it('V7.5.3 F3: credits a SENT group message seen by receivers in their own serialization, once each, and nothing similar',async()=>{
+  const x=await canonicalFixture(),{jid,msg,phone,lid}=x;
+  expect(x.receivers).toHaveLength(2);
+  await asProfileOwner(admin,x.f.w,async db=>{await db.query("UPDATE outbox SET status='SENT',attempts=1,claimed_at=now()-interval '5 seconds',provider_message_id=$2,result=jsonb_build_object('accepted_at',to_char((now()-interval '5 seconds') AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')) WHERE id=$1",[x.effect.id,`true_${jid}_${msg}_${phone}@c.us`]);});
+  const other=x.f.lines.find(q=>q.account!==x.effect.account_id)!,otherLid=lidOf(other.raw);
+  // Lookalikes: another message ID, an ID naming another group, a forged author,
+  // the sender's own session and a «received» event serialized as sent.
+  await x.consume(x.receivers[0]!.account,x.event(`false_${jid}_3EB0FFFFFFFFFFFFFFFF_${lid}@lid`));
+  await x.consume(x.receivers[0]!.account,x.event(`false_${jid.replace(/^1203630/,'1203631')}_${msg}_${lid}@lid`));
+  await x.consume(x.receivers[0]!.account,x.event(`false_${jid}_${msg}_${otherLid}@lid`,{senderIdentity:'lid:'+otherLid,participantIdentity:'lid:'+otherLid}));
+  await x.consume(x.receivers[0]!.account,x.event(`false_${jid}_${msg}_${otherLid}@lid`,{key:randomUUID()}));
+  await x.consume(x.sender.account,x.event(`false_${jid}_${msg}_${lid}@lid`));
+  await x.consume(x.receivers[0]!.account,x.event(`true_${jid}_${msg}_${lid}@lid`));
+  await reconcileGroupDeliveries();
+  expect(await x.receipts()).toEqual([]);expect(await x.status()).toMatchObject({status:'SENT'});
+  // The next turn waits for receipts, not a past time.
+  for(const q of x.f.lines)await live(x.f.w,q.account);
+  expect((await tx(x.f.w,'commerce_api',db=>groupWarmupOverview(db,'REAL'))).programs[0].effective).toMatchObject({state:'WAITING_RECEIPT',nextSend:null});
+  // Real evidence: one receiver serializes the author as LID, the other as phone JID.
+  await x.consume(x.receivers[0]!.account,x.event(`false_${jid}_${msg}_${lid}@lid`));
+  await x.consume(x.receivers[0]!.account,x.event(`false_${jid}_${msg}_${lid}@lid`));
+  expect((await x.receipts()).map((r:any)=>r.receiver_id)).toEqual([x.receivers[0]!.account]);
+  expect(await x.status()).toMatchObject({status:'SENT'});
+  await x.consume(x.receivers[1]!.account,x.event(`false_${jid}_${msg}_${phone}@s.whatsapp.net`,{senderIdentity:'wa:'+phone,participantIdentity:'wa:'+phone}));
+  await reconcileGroupDeliveries();await reconcileGroupDeliveries();
+  expect(await x.receipts()).toEqual(x.receivers.map(q=>({receiver_id:q.account,delivery_source:'authenticated_receive'})).sort((a,b)=>a.receiver_id.localeCompare(b.receiver_id)));
+  expect(await x.status()).toMatchObject({status:'DELIVERED',provider_message_id:`true_${jid}_${msg}_${phone}@c.us`});
+  expect((await x.audits()).map((a:any)=>a.match)).toEqual(['CANONICAL','CANONICAL']);
+  // No contact, conversation or commercial record was created by group traffic.
+  expect((await admin.query("SELECT count(*)::int n FROM records WHERE workspace_id=$1 AND kind IN('contact','conversation','lead')",[x.f.w])).rows[0].n).toBe(0);
+ });
+ it('V7.5.3 F3: a receipt that arrives before the send result is reconciled once and the second receiver still matches',async()=>{
+  const x=await canonicalFixture(),{jid,msg,phone,lid}=x;
+  await asProfileOwner(admin,x.f.w,async db=>{const claim=(await db.query("UPDATE outbox SET status='SENDING',claim_id=gen_random_uuid(),claimed_at=now()-interval '3 seconds',attempts=1 WHERE id=$1 RETURNING claim_id",[x.effect.id])).rows[0].claim_id;await db.query("INSERT INTO effect_attempts(effect_id,claim_id,status) VALUES($1,$2,'SENDING')",[x.effect.id,claim]);});
+  await x.consume(x.receivers[0]!.account,x.event(`false_${jid}_${msg}_${lid}@lid`));await reconcileGroupDeliveries();
+  expect(await x.status()).toMatchObject({status:'SENT',provider_message_id:`false_${jid}_${msg}_${lid}@lid`});
+  await x.consume(x.receivers[1]!.account,x.event(`false_${jid}_${msg}_${phone}@c.us`,{senderIdentity:'wa:'+phone,participantIdentity:'wa:'+phone}));await reconcileGroupDeliveries();
+  expect(await x.status()).toMatchObject({status:'DELIVERED'});
+  expect((await x.audits()).map((a:any)=>a.match).sort()).toEqual(['CANONICAL','TEXT_EVIDENCE']);
+  expect((await admin.query("SELECT count(*)::int n FROM domain_events WHERE aggregate_id=$1 AND event_type='warmup.effect_reconciled_from_group_event'",[x.effect.id])).rows[0].n).toBe(1);
+ });
+ it('V7.5.3 F3: a released turn keeps its planned spacing from the predecessor\'s real departure',async()=>{
+  const x=await canonicalFixture(),{jid,msg,phone,lid}=x;expect(x.next).toBeTruthy();
+  for(const q of x.f.lines)await live(x.f.w,q.account);
+  const setTimes=async(acceptedSecondsAgo:number)=>asProfileOwner(admin,x.f.w,async db=>{
+   const first=new Date(Date.now()-120_000),second=new Date(Date.now()-30_000);
+   await db.query('UPDATE warmup_turns SET not_before=$2 WHERE effect_id=$1',[x.effect.id,first]);await db.query('UPDATE outbox SET not_before=$2 WHERE id=$1',[x.effect.id,first]);
+   await db.query('UPDATE warmup_turns SET not_before=$2 WHERE effect_id=$1',[x.next.id,second]);await db.query('UPDATE outbox SET not_before=$2 WHERE id=$1',[x.next.id,second]);
+   await db.query("UPDATE outbox SET result=jsonb_build_object('accepted_at',$2::text) WHERE id=$1",[x.effect.id,new Date(Date.now()-acceptedSecondsAgo*1000).toISOString()]);
+   return second;
+  });
+  await asProfileOwner(admin,x.f.w,async db=>{await db.query("UPDATE outbox SET status='SENT',attempts=1,provider_message_id=$2 WHERE id=$1",[x.effect.id,`true_${jid}_${msg}_${phone}@c.us`]);});
+  const gate=async()=>{const effect=(await admin.query('SELECT * FROM outbox WHERE id=$1',[x.next.id])).rows[0];await x.f.refresh();return tx(x.f.w,'commerce_channel',db=>withProfileQueryRouting(db,()=>gateWarmupDispatch(db,effect,'qr-gate')));};
+  await setTimes(5);
+  expect(await gate()).toMatchObject({allowed:false,reason:'CAUSAL_PREDECESSOR_UNRESOLVED'});
+  await x.consume(x.receivers[0]!.account,x.event(`false_${jid}_${msg}_${lid}@lid`));
+  await x.consume(x.receivers[1]!.account,x.event(`false_${jid}_${msg}_${lid}@lid`));
+  expect(await x.status()).toMatchObject({status:'DELIVERED'});
+  // Delivered 5 s after leaving; the planned gap is 90 s: the next turn waits.
+  expect(await gate()).toMatchObject({allowed:false,reason:'WARMUP_CAUSAL_SPACING'});
+  await setTimes(100);
+  const result:any=await gate();expect(result.reason).not.toBe('WARMUP_CAUSAL_SPACING');expect(result.reason).not.toBe('CAUSAL_PREDECESSOR_UNRESOLVED');
  });
  it('credits no delivery from an external participant or a global ACK (V7.4)',async()=>{
   const f=await groupFixture(2,{external:2}),p=await f.start();await f.schedule(p.id);
