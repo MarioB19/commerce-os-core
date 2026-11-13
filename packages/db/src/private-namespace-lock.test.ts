@@ -3,11 +3,41 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-import {afterEach,it,expect} from 'vitest';
+import {afterEach,it,expect,vi} from 'vitest';
 import {withPrivateNamespaceLock,assertPrivateNamespaceLease,type PrivateNamespaceLease} from './private-namespace-lock.js';
+const readonlyLocks=vi.hoisted(()=>new Set<string>());
+vi.mock('node:fs/promises',async importOriginal=>{
+ const fs=await importOriginal<typeof import('node:fs/promises')>(),{constants}=await import('node:fs');
+ return{...fs,open:(...args:Parameters<typeof fs.open>)=>{
+  // A read-only bind rejects write access even when the lock already exists.
+  if(readonlyLocks.has(String(args[0]))&&typeof args[1]==='number'&&(args[1]&(constants.O_WRONLY|constants.O_RDWR|constants.O_CREAT|constants.O_TRUNC)))return Promise.reject(Object.assign(Error('EROFS'),{code:'EROFS'}));
+  return fs.open(...args);
+ }};
+});
 const dirs:string[]=[];
 async function fixture(){const root=await mkdtemp(join(await realpath(tmpdir()),'commerce-namespace-'));dirs.push(root);await chmod(root,0o700);return root;}
-afterEach(async()=>{for(const d of dirs.splice(0))await rm(d,{recursive:true,force:true});});
+afterEach(async()=>{readonlyLocks.clear();for(const d of dirs.splice(0))await rm(d,{recursive:true,force:true});});
+it('takes a shared lock on an existing read-only mount without requesting write access',async()=>{
+ const root=await fixture(),path=join(root,'.private-namespace.lock');
+ await withPrivateNamespaceLock(root,'EXCLUSIVE',async()=>true);
+ const before=await lstat(path);readonlyLocks.add(path);
+ expect(await withPrivateNamespaceLock(root,'SHARED',async lease=>{
+  await assertPrivateNamespaceLease(lease,root,'SHARED');
+  return withPrivateNamespaceLock(root,'SHARED',async()=>42);
+ })).toBe(42);
+ await expect(withPrivateNamespaceLock(root,'EXCLUSIVE',async()=>true)).rejects.toMatchObject({code:'EROFS'});
+ const after=await lstat(path);expect([after.ino,after.mode,after.size,after.mtimeMs]).toEqual([before.ino,before.mode,before.size,before.mtimeMs]);
+});
+it('fails closed on a read-only mount without a preexisting lock',async()=>{
+ const root=await fixture(),path=join(root,'.private-namespace.lock');readonlyLocks.add(path);
+ await expect(withPrivateNamespaceLock(root,'SHARED',async()=>true)).rejects.toMatchObject({code:'EROFS'});
+ await expect(lstat(path)).rejects.toMatchObject({code:'ENOENT'});
+});
+it('initializes the same lock for two concurrent first readers',async()=>{
+ const root=await fixture();
+ expect(await Promise.all([1,2].map(n=>withPrivateNamespaceLock(root,'SHARED',async lease=>{await assertPrivateNamespaceLease(lease,root,'SHARED');return n;})))).toEqual([1,2]);
+ expect((await lstat(join(root,'.private-namespace.lock'))).mode&0o777).toBe(0o600);
+});
 it('retains a kernel exclusive lock after the helper exits and releases it at completion',async()=>{
  const root=await fixture();await withPrivateNamespaceLock(root,'EXCLUSIVE',async lease=>{await assertPrivateNamespaceLease(lease,root,'EXCLUSIVE');await expect(withPrivateNamespaceLock(root,'SHARED',async()=>true)).rejects.toThrow('PRIVATE_NAMESPACE_BUSY');await expect(withPrivateNamespaceLock(root,'EXCLUSIVE',async()=>true)).rejects.toThrow('PRIVATE_NAMESPACE_BUSY');});
  expect(await withPrivateNamespaceLock(root,'EXCLUSIVE',async()=>42)).toBe(42);expect((await lstat(join(root,'.private-namespace.lock'))).size).toBe(0);

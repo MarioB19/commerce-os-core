@@ -13,6 +13,18 @@ const states=new WeakMap<object,State>();
 const lockName='.private-namespace.lock';
 function need(v:unknown,code:string):asserts v{if(!v)throw Error(code);}
 const same=(a:Identity,b:Identity)=>a.dev===b.dev&&a.ino===b.ino;
+async function openLock(root:string,mode:PrivateNamespaceMode){
+ const path=join(root,lockName);
+ if(mode==='EXCLUSIVE')return open(path,constants.O_RDWR|constants.O_CREAT|constants.O_NOFOLLOW,0o600);
+ // Readers also run on a read-only source bind. Reuse its existing lock
+ // without requesting write access; initialization still requires a writable root.
+ const readFlags=constants.O_RDONLY|constants.O_NOFOLLOW;
+ try{return await open(path,readFlags);}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+ try{return await open(path,readFlags|constants.O_CREAT|constants.O_EXCL,0o600);}catch(error){
+  if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;
+  return open(path,readFlags);
+ }
+}
 async function directory(root:string){
  need(isAbsolute(root)&&resolve(root)===root&&await realpath(root)===root,'PRIVATE_NAMESPACE_ROOT');
  const s=await lstat(root,{bigint:true});need(s.isDirectory()&&!s.isSymbolicLink()&&(s.mode&0o777n)===0o700n&&typeof process.getuid==='function'&&s.uid===BigInt(process.getuid()),'PRIVATE_NAMESPACE_ROOT');
@@ -38,7 +50,7 @@ export async function assertPrivateNamespaceLease(lease:PrivateNamespaceLease,ro
 /** Internal host port. A lease serializes I/O; it is never deletion authority. */
 export async function withPrivateNamespaceLock<T>(root:string,mode:PrivateNamespaceMode,work:(lease:PrivateNamespaceLease)=>Promise<T>):Promise<T>{
  need(mode==='SHARED'||mode==='EXCLUSIVE','PRIVATE_NAMESPACE_MODE');const d=await directory(root);
- const handle=await open(join(root,lockName),constants.O_RDWR|constants.O_CREAT|constants.O_NOFOLLOW,0o600);
+ const handle=await openLock(root,mode);
  let state:State|undefined;
  try{
   const a=await handle.stat({bigint:true});need(a.isFile()&&a.nlink===1n&&a.size===0n&&(a.mode&0o777n)===0o600n&&a.uid===BigInt(process.getuid!()),'PRIVATE_NAMESPACE_LOCK_FILE');

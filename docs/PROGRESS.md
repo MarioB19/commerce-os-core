@@ -1,5 +1,22 @@
 # Estado de publicación
 
+## 12-nov-2026 — Laboratorio sobre almacén de solo lectura: preparación para Claude
+
+Desde V7.5.1 `76901884`, la suite de Mi Ciclo Listo queda en INTENT antes de
+materializar o llamar a IA. La prueba nativa del bloqueo compartido devuelve
+EROFS; el montaje fuente es de solo lectura. Rama local
+`codex/fix-lab-readonly-lock`: SHARED abre un lock existente en lectura y conserva
+la creación exclusiva y todas las verificaciones. Regresión roja sobre main;
+59/59 pruebas dirigidas, tipos del servidor y lint pasan con el parche.
+
+El diagnóstico nativo posterior también encontró el lock fuente ausente
+(ENOENT): **el parche es parcial**; falta inicializarlo en la preparación canónica
+antes del lector. No se modificó producción, el montaje ni las filas pendientes.
+FULL, instalación y aceptación del recorrido no ejecutados. Decisión y límites:
+[ADR](adr-number-lab-readonly-lock-2026-11-12.md). El plan y prompt del vault
+incluyen además coherencia entre asignación, permiso de envío y calentamiento,
+y el falso positivo de `last_test.ok` mientras la suite sigue pendiente.
+
 ## 12-nov-2026 — V7.5.1: contexto de perfil en el despacho de grupos QR (Claude)
 
 V7.5 quedó instalada el 12-nov (16:42–16:52 UTC, `963638fd`, SUCCEEDED/OPERATING,
