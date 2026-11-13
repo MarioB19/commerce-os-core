@@ -586,7 +586,7 @@ describe('V7.5.3 contextual agreement: AI proposal + deterministic rule',()=>{
  const committedEvents=async(journey:DomainRecord)=>(await pool.query("SELECT payload FROM domain_events WHERE workspace_id=$1 AND aggregate_id=$2 AND event_type='order.committed'",[journey.workspace_id,journey.id])).rows.map((r:any)=>r.payload);
 
  it('accepts a natural «Sí, acepto» after the explained agreement reached transport, through the canonical transition, without the model\'s claim',async()=>{
-  let {identity,journey}=await start();await transport(journey);
+  const started=await start(),identity=started.identity;let journey=started.journey;await transport(journey);
   await inbound(agreementCatalog.account,identity,'Sí, acepto');
   journey=await current(journey);expect(journey.body.ai_pending).toBe(true);expect((await order(journey)).body.committed_at).toBeUndefined();
   await processAgents(100,fixtureAi({intent:'commitment',reply:claim}));
@@ -605,7 +605,7 @@ describe('V7.5.3 contextual agreement: AI proposal + deterministic rule',()=>{
  });
  it('asks for clarification and delivers nothing for «Sí, soy maestra», a condition or a low-confidence proposal',async()=>{
   for(const [text,proposal] of [['Sí, soy maestra',{intent:'commitment',reply:claim}],['Sí, pero mañana',{intent:'commitment',reply:claim}],['Sí, acepto',{intent:'commitment',confidence:0.6,reply:claim}]] as const){
-   let {identity,journey}=await start();await transport(journey);
+   const started=await start(),identity=started.identity;let journey=started.journey;await transport(journey);
    await inbound(agreementCatalog.account,identity,text);await processAgents(100,fixtureAi(proposal));
    journey=await current(journey);
    expect((await order(journey)).body.committed_at).toBeUndefined();
@@ -617,7 +617,7 @@ describe('V7.5.3 contextual agreement: AI proposal + deterministic rule',()=>{
   }
  });
  it('never accepts before the agreement message reached transport and never sends the unverified claim',async()=>{
-  let {identity,journey}=await start();
+  const started=await start(),identity=started.identity;let journey=started.journey;
   await inbound(agreementCatalog.account,identity,'Sí, acepto');await processAgents(100,fixtureAi({intent:'commitment',reply:claim}));
   journey=await current(journey);
   expect((await order(journey)).body.committed_at).toBeUndefined();
@@ -626,14 +626,14 @@ describe('V7.5.3 contextual agreement: AI proposal + deterministic rule',()=>{
   expect(journey.body.ai_status).toBe('HUMAN_REVIEW');
  });
  it('a model reply that claims a registration while the agreement is pending is replaced, whatever its intent',async()=>{
-  let {identity,journey}=await start();await transport(journey);
+  const started=await start(),identity=started.identity;let journey=started.journey;await transport(journey);
   await inbound(agreementCatalog.account,identity,'Mándamelo');await processAgents(100,fixtureAi({intent:'question',reply:claim}));
   journey=await current(journey);
   expect((await order(journey)).body.committed_at).toBeUndefined();
   expect((await sellerReplies(journey)).map((p:Body)=>p.agreement_clarification)).toEqual(['AGREEMENT_REGISTERED_CLAIM']);
  });
  it('a human takeover before the model call leaves the reply to the person; one during the call holds the proposal, which is re-validated and applied once after release',async()=>{
-  let {identity,journey}=await start();await transport(journey);
+  const started=await start(),identity=started.identity;let journey=started.journey;await transport(journey);
   const takeover=async(on:boolean,conversation:DomainRecord)=>{if(on)await pool.query("INSERT INTO manual_controls(workspace_id,scope_type,scope_id,takeover,reason,actor_id) VALUES($1,'conversation',$2,true,'FIXTURE_TAKEOVER','fixture') ON CONFLICT(workspace_id,scope_type,scope_id) DO UPDATE SET takeover=true,version=manual_controls.version+1",[conversation.workspace_id,conversation.id]);
    else await pool.query("UPDATE manual_controls SET takeover=false,version=version+1 WHERE workspace_id=$1 AND scope_type='conversation' AND scope_id=$2",[conversation.workspace_id,conversation.id]);};
   await takeover(true,journey);
@@ -656,7 +656,7 @@ describe('V7.5.3 contextual agreement: AI proposal + deterministic rule',()=>{
   expect(await committedEvents(journey)).toHaveLength(1);expect(await sellerReplies(journey)).toEqual([]);
  });
  it('a stale proposal (a newer message or an opt-out arrived meanwhile) is discarded and changes nothing',async()=>{
-  let {identity,journey}=await start();await transport(journey);
+  const started=await start(),identity=started.identity;let journey=started.journey;await transport(journey);
   await inbound(agreementCatalog.account,identity,'Sí, acepto');
   await processAgents(100,fixtureAi({intent:'commitment',reply:claim},async()=>{await inbound(agreementCatalog.account,identity,'baja');}));
   journey=await current(journey);

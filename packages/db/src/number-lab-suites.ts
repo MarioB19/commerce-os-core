@@ -4,7 +4,7 @@ import {withProfileTransaction,type ProfileExecutor,type ProfilePool} from './pr
 import {currentProfileExecutor} from './profile-query-routing.js';
 import {authorizeProfileAction,type ProfileAuthority} from '../../domain/src/core/profile-authorization.js';
 import {labHash} from '../../domain/src/laboratory/number-lab.js';
-import {nextSuiteStep,finishSuiteCase,variantVerdict,verdictLabels,type SuiteCase,type SuiteCheck,type SuiteJourney,type SuiteLastStep} from '../../domain/src/laboratory/automatic-buyer.js';
+import {nextSuiteStep,finishSuiteCase,variantVerdict,verdictLabels,type SuiteCase,type SuiteCheck,type SuiteJourney,type SuiteLastStep,type SuitePlan} from '../../domain/src/laboratory/automatic-buyer.js';
 import {openLabValue,sealLabValue} from './number-laboratory.js';
 
 /** V7 RF-19.p/h: suites of the automatic buyer (control store, profile RLS). */
@@ -18,13 +18,25 @@ async function authorize(db:ProfileExecutor,a:ProfileAuthority,write:boolean){co
 
 export async function readSuiteByStart(db:ProfileExecutor,a:ProfileAuthority,operationId:string){await authorize(db,a,true);need(uuid.test(operationId),'LAB_SUITE_ID');
  const r=(await db.query('SELECT id::text FROM commerce_number_lab.suites WHERE workspace_id=$1 AND start_operation_id=$2',[db.workspaceId,operationId])).rows[0];return r?String(r.id):null;}
-export async function insertSuite(db:ProfileExecutor,a:ProfileAuthority,input:{id:string;account_id:string;operation_id:string;maximum_microusd:number}){await authorize(db,a,true);
- await db.query('INSERT INTO commerce_number_lab.suites(workspace_id,id,account_id,actor_id,start_operation_id,maximum_microusd) VALUES($1,$2,$3,$4,$5,$6)',[db.workspaceId,input.id,input.account_id,a.membership.userId,input.operation_id,input.maximum_microusd]);}
-export async function insertSuiteCase(db:ProfileExecutor,input:{suite_id:string;run_id:string;variant_id:string;journey:SuiteJourney;expect_followup:boolean;attachment_id:string|null}){
- await db.query('INSERT INTO commerce_number_lab.suite_cases(workspace_id,suite_id,run_id,variant_id,journey,expect_followup,attachment_id) VALUES($1,$2,$3,$4,$5,$6,$7)',[db.workspaceId,input.suite_id,input.run_id,input.variant_id,input.journey,input.expect_followup,input.attachment_id]);}
+export async function insertSuite(db:ProfileExecutor,a:ProfileAuthority,input:{id:string;account_id:string;operation_id:string;maximum_microusd:number;maximum_ai_calls?:number;matrix?:{id:string;maximum_microusd:number;maximum_ai_calls:number}}){await authorize(db,a,true);
+ await db.query('INSERT INTO commerce_number_lab.suites(workspace_id,id,account_id,actor_id,start_operation_id,maximum_microusd,maximum_ai_calls,matrix_id,matrix_maximum_microusd,matrix_maximum_ai_calls) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',[db.workspaceId,input.id,input.account_id,a.membership.userId,input.operation_id,input.maximum_microusd,input.maximum_ai_calls??null,input.matrix?.id??null,input.matrix?.maximum_microusd??null,input.matrix?.maximum_ai_calls??null]);}
+/** V7.5.3: one persistent ceiling shared by every suite started under a
+ * matrix (for example one paid acceptance across two numbers). Serialized per
+ * matrix; the ceiling is fixed by its first suite and can never be raised. */
+export async function admitSuiteMatrix(db:ProfileExecutor,a:ProfileAuthority,matrix:{id:string;maximum_microusd:number;maximum_ai_calls:number},suite:{maximum_microusd:number;maximum_ai_calls:number}){await authorize(db,a,true);need(uuid.test(matrix.id),'LAB_MATRIX_ID');
+ need(Number.isSafeInteger(matrix.maximum_microusd)&&matrix.maximum_microusd>0&&Number.isSafeInteger(matrix.maximum_ai_calls)&&matrix.maximum_ai_calls>0,'LAB_MATRIX_LIMIT_INVALID');
+ await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`number-lab-matrix:${db.workspaceId}:${matrix.id}`]);
+ const rows=(await db.query('SELECT maximum_microusd,maximum_ai_calls,matrix_maximum_microusd,matrix_maximum_ai_calls FROM commerce_number_lab.suites WHERE workspace_id=$1 AND matrix_id=$2',[db.workspaceId,matrix.id])).rows;
+ if(rows.length)need(rows.every(r=>Number(r.matrix_maximum_microusd)===matrix.maximum_microusd&&Number(r.matrix_maximum_ai_calls)===matrix.maximum_ai_calls),'LAB_MATRIX_LIMIT_CHANGED');
+ const spent=rows.reduce((n,r)=>n+Number(r.maximum_microusd),0),calls=rows.reduce((n,r)=>n+Number(r.maximum_ai_calls??0),0);
+ need(spent+suite.maximum_microusd<=matrix.maximum_microusd&&calls+suite.maximum_ai_calls<=matrix.maximum_ai_calls,'LAB_MATRIX_LIMIT');
+ return{reserved_microusd:spent+suite.maximum_microusd,reserved_ai_calls:calls+suite.maximum_ai_calls};
+}
+export async function insertSuiteCase(db:ProfileExecutor,input:{suite_id:string;run_id:string;variant_id:string;journey:SuiteJourney;expect_followup:boolean;attachment_id:string|null;plan?:SuitePlan}){
+ await db.query('INSERT INTO commerce_number_lab.suite_cases(workspace_id,suite_id,run_id,variant_id,journey,expect_followup,attachment_id,plan) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[db.workspaceId,input.suite_id,input.run_id,input.variant_id,input.journey,input.expect_followup,input.attachment_id,JSON.stringify(input.plan??{})]);}
 export async function latestSuiteId(db:ProfileExecutor,a:ProfileAuthority,accountId:string){await authorize(db,a,false);need(uuid.test(accountId),'LAB_ACCOUNT_ID');
  const r=(await db.query('SELECT s.id::text FROM commerce_number_lab.suites s WHERE s.workspace_id=$1 AND s.account_id=$2 AND EXISTS(SELECT 1 FROM commerce_number_lab.suite_cases c JOIN commerce_number_lab.runs r ON r.workspace_id=c.workspace_id AND r.id=c.run_id WHERE c.workspace_id=s.workspace_id AND c.suite_id=s.id AND r.expires_at>clock_timestamp()) ORDER BY s.created_at DESC,s.id LIMIT 1',[db.workspaceId,accountId])).rows[0];return r?String(r.id):null;}
-const checkLabels:Record<string,string>={route:'Llega a la variante',offer:'Presenta la oferta',collection:'Da los datos de pago',receipt:'Lee el comprobante',delivery:'Entrega lo comprado',exclusion:'No sigue insistiendo después de comprar',followup:'Da seguimiento si el cliente no responde'};
+const checkLabels:Record<string,string>={route:'Llega a la variante',offer:'Presenta la oferta',agreement:'Registra el acuerdo aceptado',initial_delivery:'Entrega completa al aceptar',collection:'Da los datos de pago',receipt:'Lee el comprobante',delivery:'Entrega lo comprado',exclusion:'No sigue insistiendo después de comprar',followup:'Da seguimiento si el cliente no responde'};
 const caseLabels:Record<string,string>={RUNNING:'En curso',PASSED:'Bien',FAILED:'Falló',PARTIAL:'Incompleto'};
 const journeyLabels:Record<SuiteJourney,string>={PURCHASE:'Cliente que compra',FOLLOWUP:'Cliente que no responde'};
 /** RF-19.h: the suite report, one verdict per variant with each journey's checks. */
@@ -34,13 +46,13 @@ export async function readSuiteReport(db:ProfileExecutor,a:ProfileAuthority,suit
  const variantIds=[...new Set(cases.map(c=>String(c.variant_id)))],label=await names(variantIds);
  const variants=variantIds.map(variantId=>{const own=cases.filter(c=>String(c.variant_id)===variantId),verdict=variantVerdict(own.map(c=>({journey:c.journey,state:c.state})));
   return{variant_id:variantId,name:label[variantId]??'Variante',verdict,verdict_label:verdictLabels[verdict],
-   cases:own.map(c=>({journey:c.journey as SuiteJourney,journey_label:journeyLabels[c.journey as SuiteJourney],run_id:String(c.run_id),state:String(c.state),state_label:caseLabels[c.state]??c.state,steps:Number(c.steps),
+   cases:own.map(c=>({journey:c.journey as SuiteJourney,journey_label:journeyLabels[c.journey as SuiteJourney],run_id:String(c.run_id),plan:c.plan&&typeof c.plan==='object'?c.plan:{},state:String(c.state),state_label:caseLabels[c.state]??c.state,steps:Number(c.steps),
     checks:(c.checks as SuiteCheck[]).map(k=>({...k,label:checkLabels[k.name]??k.name})),expired:Date.parse(String(iso(c.expires_at)))<=Date.now()}))};});
  const state=String(s.state);
  return{suite:{suite_id:String(s.id),account_id:String(s.account_id),state,state_label:{RUNNING:'En curso',COMPLETED:'Terminada',STOPPED:'Detenida'}[state]??state,
-   created_at:iso(s.created_at),completed_at:iso(s.completed_at),maximum_microusd:Number(s.maximum_microusd)},
+   created_at:iso(s.created_at),completed_at:iso(s.completed_at),maximum_microusd:Number(s.maximum_microusd),maximum_ai_calls:s.maximum_ai_calls===null||s.maximum_ai_calls===undefined?null:Number(s.maximum_ai_calls),matrix_id:s.matrix_id?String(s.matrix_id):null},
   variants,summary:{responde_bien:variants.filter(v=>v.verdict==='RESPONDE_BIEN').length,fallo:variants.filter(v=>v.verdict==='FALLO').length,incompleto:variants.filter(v=>v.verdict==='INCOMPLETO').length,en_curso:variants.filter(v=>v.verdict==='EN_CURSO').length},
-  note:'Cada variante se prueba con dos clientes simulados: uno que compra (saludo, oferta, cobro, comprobante, entrega y sin seguimientos después de comprar) y uno que no responde (seguimientos). «Responde bien» exige que todos los pasos pasen.'};
+  note:'Cada variante se prueba con clientes simulados: uno que compra (saludo, oferta, acuerdo, entrega completa al aceptar, cobro, comprobante con revisión humana, entrega por importe y sin seguimientos después de comprar) y uno que no responde (seguimientos). «Responde bien» exige que todos los pasos pasen; un paso omitido no cuenta.'};
 }
 
 // ------------------------------------------------------------------ worker
@@ -62,7 +74,8 @@ export async function advanceNumberLabSuites(pool:ProfilePool,key:Uint8Array,lim
    if(op&&['QUEUED','INTENT'].includes(op.state))return;
    let last:SuiteLastStep|null=null;
    if(op){const v=lastResultSchema.parse(openLabValue({workspaceId:d.workspace_id,runId:d.run_id,purpose:'result',operationId:String(op.id)},op.result_ciphertext,key));last={state:op.state,result:(v.result??null) as SuiteLastStep['result']};}
-   const current:SuiteCase={journey:row.journey,variant_id:String(row.variant_id),phase:String(row.phase),steps:Number(row.steps),checks:row.checks as SuiteCheck[],expect_followup:!!row.expect_followup,attachment_id:row.attachment_id?String(row.attachment_id):null};
+   const plan=row.plan&&typeof row.plan==='object'?row.plan as SuitePlan:{};
+   const current:SuiteCase={journey:row.journey,variant_id:String(row.variant_id),phase:String(row.phase),steps:Number(row.steps),checks:row.checks as SuiteCheck[],expect_followup:!!row.expect_followup,attachment_id:row.attachment_id?String(row.attachment_id):null,...(Object.keys(plan).length?{plan}:{})};
    const decision=nextSuiteStep(current,last);
    if('action' in decision){
     const operationId=suiteDerivedId('step',d.run_id,String(current.steps)),expected=Number(run.version);

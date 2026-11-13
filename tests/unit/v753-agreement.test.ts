@@ -1,6 +1,8 @@
 import {describe,expect,it} from 'vitest';
 import {acceptsAgreement,agreementClarification,decideAgreementProposal,screenAgreementReply,unverifiedAgreementClaim} from '../../packages/domain/src/sales/agreement.js';
 import {contextualAgreementPhrases} from '../../packages/domain/src/sales/sales-recipe-v2.js';
+import {buildSellerSnapshot} from '../../packages/domain/src/sales/seller-context.js';
+import type {DomainRecord} from '../../packages/contracts/src/index.js';
 
 /** V7.5.3 F1/F2 (docs/adr-v7-5-3-agreement-group-receipts.md): opción 2. */
 const base={intent:'commitment',confidence:0.95,tool:'none',reply:'¡Perfecto! 💛',customerText:'Sí, acepto',language:'es-MX',contextual:true,agreementDelivered:true,orderCommitted:false,controlsClear:true};
@@ -58,5 +60,13 @@ describe('V7.5.3 F1: replies backed by persisted state',()=>{
  it('the clarification never promises a registration or a delivery',()=>{
   for(const lang of ['es-MX','pt-BR','en-US'])expect(unverifiedAgreementClaim(agreementClarification(lang))).toBeUndefined();
   expect(agreementClarification('es-MX','acepto')).toContain('«acepto»');
+ });
+});
+describe('V7.5.3 F4: billing delay seen by the seller',()=>{
+ const offer=(body:Record<string,unknown>)=>({id:'00000000-0000-4000-8000-000000000001',kind:'offer',version:1,workspace_id:'synthetic',environment:'SIMULATION',created_at:'2026-11-13T00:00:00Z',updated_at:'2026-11-13T00:00:00Z',body:{currency:'MXN',base_amount_minor:9700,fulfillment:[],...body}} as unknown as DomainRecord);
+ it('a guided sale reads no wait even if the variant stores 1800 s; the default flow keeps its delay',()=>{
+  expect(buildSellerSnapshot({offer:offer({billing_delay_seconds:1800,sales_flow:{content:{presentation:{}}}})}).offer.billing_delay_seconds).toBe(0);
+  expect(buildSellerSnapshot({offer:offer({billing_delay_seconds:1800})}).offer.billing_delay_seconds).toBe(1800);
+  expect(buildSellerSnapshot({offer:offer({billing_delay_seconds:1800,sales_flow:{remarketing:{}}})}).offer.billing_delay_seconds).toBe(1800);
  });
 });

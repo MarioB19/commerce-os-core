@@ -734,12 +734,12 @@ V7_PROFILE_MIGRATION_NAMES = frozenset({
     '0105_v7_variant_documents.sql', '0106_v7_ai_price_catalog.sql', '0107_v7_ai_budget_continuity.sql',
     '0108_v7_number_lab_queue.sql', '0109_v7_retire_modules.sql', '0110_v7_meta_profile_sync.sql',
     '0111_v7_platform_recovery.sql', '0112_v7_invitation_mail_queue.sql', '0113_v7_number_lab_attachments.sql', '0114_v7_number_lab_retention.sql', '0115_v7_number_lab_suites.sql', '0116_v7_owner_alert_mail.sql', '0117_v7_profile_deletion_request.sql', '0118_v72_group_library_warmup.sql', '0119_v73_meta_portfolios.sql',
-    '0120_v74_numbers_warmup_choice.sql', '0121_v75_resilience.sql'})
+    '0120_v74_numbers_warmup_choice.sql', '0121_v75_resilience.sql', '0122_v753_number_lab_plans.sql'})
 V7_PROFILE_MIGRATION_TOTAL = 68 + len(V7_PROFILE_MIGRATION_NAMES)
 # Additive migrations published after the 68→117 V7 cutover. A database already at
-# the V7 base receives only this exact tail (V7.5: 120→121); the cutover-only work
-# (0109 retirement export, 0072 token versions) never runs again.
-V7_INCREMENTAL_MIGRATION_NAMES = frozenset({'0121_v75_resilience.sql'})
+# the V7 base receives only this exact tail (V7.5: 120→121; V7.5.3: 121→122); the
+# cutover-only work (0109 retirement export, 0072 token versions) never runs again.
+V7_INCREMENTAL_MIGRATION_NAMES = frozenset({'0122_v753_number_lab_plans.sql'})
 V7_INCREMENTAL_BASELINE = V7_PROFILE_MIGRATION_TOTAL - len(V7_INCREMENTAL_MIGRATION_NAMES)
 
 

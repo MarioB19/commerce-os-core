@@ -7,7 +7,7 @@ import {cancelPendingRemarketingForContact,closeRemarketingCycle,withTransaction
 import type {DomainRecord,Body} from '@commerce/contracts';
 import {canonicalIdentity} from '@commerce/messaging';
 import {parseReceiptExtraction,assessReceipt} from '../../../packages/domain/src/sales/receipt.js';
-import {create,save,event,cancelPending,cancelCollectionPending,proposeEffect,nowFor} from './shared.js';
+import {create,save,event,cancelPending,cancelCollectionPending,proposeEffect} from './shared.js';
 import {materializeMessage} from './inbound.js';
 import {advanceWorkflow,ensureOrder,deliver,commitAgreement} from './workflows.js';
 export async function applyCommand(client:QueryExecutor,cmd:Body):Promise<Body>{

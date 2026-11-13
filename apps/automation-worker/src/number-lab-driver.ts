@@ -31,6 +31,11 @@ function need(v:unknown,code:string):asserts v{if(!v)throw Error(code);}
 /** V7 F6 (RF-19.g): what the person reads in the test chat, from the engine's
  * own records (inbound messages and outbox effects of the run's conversation).
  * Text is the synthetic test conversation; no REAL data exists in the engine. */
+const assetRef=z.string().regex(/^[a-f0-9-]{36}$/);
+export const labInventorySchema=z.object({expected:z.object({commitment:z.array(assetRef).max(60),receipt:z.array(assetRef).max(60)}).strict(),
+ delivered:z.array(z.object({asset_id:assetRef,stage:z.enum(['commitment','receipt']),effects:z.number().int().min(0).max(100),confirmed:z.number().int().min(0).max(100)}).strict()).max(120),
+ approved_amount_minor:z.number().int().nullable(),extracted_amount_minor:z.number().int().nullable(),committed:z.boolean()}).strict();
+export const labAgreementSchema=z.object({classifier:z.string().regex(/^[a-z_]{1,40}$/).nullable(),literal:z.string().max(120).nullable()}).strict();
 export const transcriptEntrySchema=z.object({at:z.string().max(40),from:z.enum(['customer','business']),kind:z.string().max(20),text:z.string().max(4000).nullable(),
  material:z.string().max(160).nullable(),status:z.string().max(20).nullable(),purpose:z.string().max(40).nullable(),
  // RF-19.c: a file material carries its id and type so the chat can preview it
@@ -90,7 +95,37 @@ async function readTranscript(db:ProfileExecutor,conversationId:string){
   .map(r=>({due_at:at(r.due_at),purpose:typeof r.purpose==='string'?r.purpose.slice(0,40):null}));
  const flow=(await db.query(`SELECT body->'flow_state'->>'status' AS status,body->'flow_state'->>'waiting_for' AS waiting_for,body->>'ai_status' AS ai_status FROM records WHERE workspace_id=$1 AND environment='SIMULATION' AND kind='conversation' AND id::text=$2`,[db.workspaceId,conversationId])).rows[0];
  const word=(v:unknown)=>typeof v==='string'&&/^[A-Za-z_]{1,40}$/.test(v)?v:null;
- return{entries,timers,flow:{status:word(flow?.status),waiting_for:word(flow?.waiting_for),ai_status:word(flow?.ai_status)}};
+ const inventory=await readInventory(db,conversationId);
+ let agreement:z.infer<typeof labAgreementSchema>|undefined;
+ if(word(flow?.waiting_for)==='commitment'){const conv=await getRecord(db,db.workspaceId,'conversation',conversationId);const workflowId=conv?.body.runtime_workflow_id??conv?.body.workflow_version_id;
+  const wf=typeof workflowId==='string'?await getRecord(db,db.workspaceId,'workflow',workflowId):undefined;const node=(wf?.body.nodes as Array<{id:string;type:string;config?:Record<string,any>}>|undefined)?.find(n=>n.type==='commitment'&&(!conv?.body.flow_state?.waiting_node_id||n.id===conv.body.flow_state.waiting_node_id));
+  if(node)agreement={classifier:typeof node.config?.classifier==='string'&&/^[a-z_]{1,40}$/.test(node.config.classifier)?node.config.classifier:null,literal:Array.isArray(node.config?.accepted_phrases)&&typeof node.config.accepted_phrases[0]==='string'?String(node.config.accepted_phrases[0]).slice(0,120):null};}
+ return{entries,timers,flow:{status:word(flow?.status),waiting_for:word(flow?.waiting_for),ai_status:word(flow?.ai_status)},...(inventory?{inventory}:{}),...(agreement?{agreement}:{})};
+}
+/** Expected materials come from the order's pinned offer snapshot and the
+ * amount a person approved, filtered independently of the delivery code;
+ * delivered ones are the order's fulfillments and their transport effects. */
+async function readInventory(db:ProfileExecutor,conversationId:string):Promise<z.infer<typeof labInventorySchema>|undefined>{
+ const order=(await db.query("SELECT id,body FROM records WHERE workspace_id=$1 AND environment='SIMULATION' AND kind='order' AND body->>'conversation_id'=$2 LIMIT 1",[db.workspaceId,conversationId])).rows[0];
+ if(!order)return;
+ const b=order.body,items:Array<{asset_id?:string;release_on?:string;min_amount_minor?:number}>=Array.isArray(b.offer_snapshot?.fulfillment)?b.offer_snapshot.fulfillment:[];
+ // The approved amount is the recorded payment of approved receipts (a test
+ // order is not a recognized sale; its contributions are the evidence).
+ const paid=(await db.query(`SELECT count(*)::int n,COALESCE(sum(p.amount_minor),0)::text amount FROM payment_contributions p JOIN records r ON r.id=p.receipt_id AND r.workspace_id=p.workspace_id AND r.environment=p.environment
+  WHERE p.workspace_id=$1 AND p.environment='SIMULATION' AND p.order_id=$2 AND r.kind='receipt' AND r.body->>'status'='APPROVED'`,[db.workspaceId,order.id])).rows[0];
+ const recognized=b.sale_status==='RECOGNIZED'&&Number.isSafeInteger(Number(b.sale_amount_minor))?Number(b.sale_amount_minor):Number(paid?.n)>0&&Number.isSafeInteger(Number(paid.amount))?Number(paid.amount):null;
+ const unlockAll=b.offer_snapshot?.positive_payment_unlocks_all===true&&recognized!==null&&recognized>0;
+ const id=(v:unknown)=>typeof v==='string'&&/^[a-f0-9-]{36}$/.test(v);
+ const expected={commitment:items.filter(i=>i.release_on==='commitment_accepted'&&id(i.asset_id)).map(i=>i.asset_id!),
+  receipt:recognized===null?[]:items.filter(i=>['receipt_approved','reconciled'].includes(String(i.release_on))&&id(i.asset_id)&&(unlockAll||!i.min_amount_minor||recognized>=Number(i.min_amount_minor))).map(i=>i.asset_id!)};
+ const rows=(await db.query(`SELECT f.body->>'asset_id' AS asset_id,f.body->>'release_on' AS release_on,
+  (SELECT count(*)::int FROM outbox o WHERE o.workspace_id=f.workspace_id AND o.environment=f.environment AND o.payload->>'fulfillment_id'=f.id::text AND o.status<>'CANCELLED') AS effects,
+  (SELECT count(*)::int FROM outbox o WHERE o.workspace_id=f.workspace_id AND o.environment=f.environment AND o.payload->>'fulfillment_id'=f.id::text AND o.status IN('SENT','DELIVERED','READ')) AS confirmed
+  FROM records f WHERE f.workspace_id=$1 AND f.environment='SIMULATION' AND f.kind='fulfillment' AND f.body->>'order_id'=$2 ORDER BY f.created_at LIMIT 120`,[db.workspaceId,order.id])).rows;
+ const delivered=rows.filter(r=>id(r.asset_id)).map(r=>({asset_id:String(r.asset_id),stage:r.release_on==='commitment_accepted'?'commitment' as const:'receipt' as const,effects:Math.min(100,Number(r.effects)),confirmed:Math.min(100,Number(r.confirmed))}));
+ const receipt=(await db.query("SELECT body FROM records WHERE workspace_id=$1 AND environment='SIMULATION' AND kind='receipt' AND body->>'conversation_id'=$2 ORDER BY created_at DESC LIMIT 1",[db.workspaceId,conversationId])).rows[0]?.body;
+ const extracted=Number.isSafeInteger(Number(receipt?.extraction?.amount_minor))?Number(receipt.extraction.amount_minor):null;
+ return labInventorySchema.parse({expected,delivered,approved_amount_minor:recognized,extracted_amount_minor:extracted,committed:!!b.committed_at||b.status==='COMMITTED'});
 }
 const outcomeSchema=z.object({schema_version:z.literal(1),stage:z.enum(['ACTION_APPLIED','SETTLED']),
  action_sha256:z.string().regex(/^[a-f0-9]{64}$/),operation_state:z.enum(['APPLIED','FAILED']),run_state:z.enum(['RUNNING','PARTIAL']),
@@ -101,6 +136,10 @@ const outcomeSchema=z.object({schema_version:z.literal(1),stage:z.enum(['ACTION_
   transport_phase:z.literal('APPLIED').optional(),transport_result:z.object({projected:z.number().int().min(0),sent:z.number().int().nonnegative(),inbound:z.number().int().nonnegative(),observations:z.number().int().nonnegative(),statuses:z.record(z.string(),z.number().int().nonnegative())}).strict().optional(),
   pending:z.array(z.enum(['WORKFLOWS','AI','TRANSPORT','ATTACHMENTS','AUTOMATIC_REPORT'])).max(5),
   transcript:z.array(transcriptEntrySchema).max(200).optional(),flow:z.object({status:z.string().max(40).nullable(),waiting_for:z.string().max(40).nullable(),ai_status:z.string().max(40).nullable()}).strict().optional(),timers:z.array(z.object({due_at:z.string().max(40),purpose:z.string().max(40).nullable()}).strict()).max(10).optional(),
+  // V7.5.3 (A03/F2): what the buyer verifies by ID, from the engine's own
+  // records: the pinned offer's materials per stage and approved amount, what
+  // reached transport (with duplicates) and the waiting agreement's policy.
+  inventory:labInventorySchema.optional(),agreement:labAgreementSchema.optional(),
   ai_phase:z.enum(['APPLIED','NOT_REQUIRED']).optional(),ai_result:z.object({processed:z.number().int().min(0).max(5),run_id:z.uuid().nullable(),status:z.enum(['RUNNING','AWAITING_EFFECT','COMPLETED','FAILED','DISCARDED']).nullable(),provider_state:z.enum(['SUCCEEDED','REJECTED','UNCERTAIN']).nullable(),human_review:z.boolean(),dependency:z.string().regex(/^[A-Z_]+$/).max(128).nullable().optional()}).strict().optional(),ai_network:z.literal('PROFILE_AI_ONLY').optional(),
   receipt_id:z.uuid().nullable().optional(),receipt_phase:z.enum(['APPLIED','HUMAN_REQUIRED']).optional(),receipt_result:z.object({status:z.string().regex(/^[A-Z_]+$/).max(40),analysis_status:z.string().regex(/^[A-Z_]+$/).max(40),dependency:z.string().regex(/^[A-Z0-9_]+$/).max(128).nullable(),ai:z.boolean()}).strict().optional(),
   external_effects:z.literal(0)}).strict()}).strict();
@@ -204,7 +243,10 @@ async function applyAction(db:ProfileExecutor,input:Input,c:Captured,receiptAsse
   if(c.action.type==='receipt'){
    need(receiptAsset&&receiptAsset.attachment_id===c.action.attachment_id,'LAB_ATTACHMENT_REQUIRED');
    const asset=await putRecord(db,{id:derivedId('receipt-asset',input.operationId),workspaceId:db.workspaceId,environment:'SIMULATION',kind:'asset',
-    body:{kind:'file',name:'Comprobante de prueba',mime_type:receiptAsset.mime_type,size_bytes:receiptAsset.size_bytes,sha256:receiptAsset.sha256,storage_key:receiptAsset.storage_key,status:'READY',purpose:'receipt_evidence',lab_snapshot:true,lab_attachment_id:receiptAsset.attachment_id}});
+    body:{kind:'file',name:'Comprobante de prueba',mime_type:receiptAsset.mime_type,size_bytes:receiptAsset.size_bytes,sha256:receiptAsset.sha256,storage_key:receiptAsset.storage_key,status:'READY',purpose:'receipt_evidence',lab_snapshot:true,
+     // V7.5.3 (107): a lab receipt is test evidence of the isolated engine; the
+     // approved test amount (and so a tier's extra) counts only marked evidence.
+     synthetic_receipt:true,lab_attachment_id:receiptAsset.attachment_id}});
    kind='conversation_command';resource=conversation.id;payload={type:'receipt_received',asset_id:asset.id};
   }else{
    const receipt=await getRecord(db,db.workspaceId,'receipt',c.action.receipt_id);
@@ -386,7 +428,7 @@ export function createNumberLabDriver(options:{controlPool:ProfilePool;seedPool:
    await readControl(options.controlPool,key,installed,i,true);
    const transportComplete=!!transportResult&&Object.keys(transportResult.statuses).every(status=>['DELIVERED','READ','FAILED','CANCELLED'].includes(status));
    const final=outcomeSchema.parse({...applied,stage:'SETTLED',run_state:applied.operation_state==='FAILED'?'PARTIAL':'RUNNING',result:{...applied.result,
-    ...(applied.result.workflow_phase==='PENDING'?{state:'WORKFLOWS_APPLIED',workflow_phase:'APPLIED'}:{}),...(aiPhase?{ai_phase:aiPhase,ai_result:aiResult,ai_network:'PROFILE_AI_ONLY'}:{}),...(transportResult?{transport_phase:'APPLIED',transport_result:transportResult}:{}),...(receiptPhase?{receipt_phase:receiptPhase,receipt_result:receiptResult}:{}),...(view?{transcript:view.entries,timers:view.timers,flow:view.flow}:{}),pending:applied.result.pending.filter(p=>p!=='WORKFLOWS'&&(!aiPhase||p!=='AI')&&(!transportComplete||p!=='TRANSPORT')&&(!receiptPhase||p!=='ATTACHMENTS'))}});
+    ...(applied.result.workflow_phase==='PENDING'?{state:'WORKFLOWS_APPLIED',workflow_phase:'APPLIED'}:{}),...(aiPhase?{ai_phase:aiPhase,ai_result:aiResult,ai_network:'PROFILE_AI_ONLY'}:{}),...(transportResult?{transport_phase:'APPLIED',transport_result:transportResult}:{}),...(receiptPhase?{receipt_phase:receiptPhase,receipt_result:receiptResult}:{}),...(view?{transcript:view.entries,timers:view.timers,flow:view.flow,...(view.inventory?{inventory:view.inventory}:{}),...(view.agreement?{agreement:view.agreement}:{})}:{}),pending:applied.result.pending.filter(p=>p!=='WORKFLOWS'&&(!aiPhase||p!=='AI')&&(!transportComplete||p!=='TRANSPORT')&&(!receiptPhase||p!=='ATTACHMENTS'))}});
    await withNumberLabEngine(await runtime.lease(binding),p=>p.transaction(db=>writeReceipt(db,i,c,final,key)));
    return settle(i,c);
    }finally{receiptBytes?.fill(0);}

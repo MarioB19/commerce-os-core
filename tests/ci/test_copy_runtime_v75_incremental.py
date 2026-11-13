@@ -1,4 +1,4 @@
-"""V7.5: the exact 120→121 post-cutover tail on an OPERATING V7 base; synthetic services only."""
+"""V7.5.3: the exact 121→122 post-cutover tail on an OPERATING V7 base (V7.5 was 120→121); synthetic services only."""
 import json
 import sys
 import tempfile
@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]/'scripts'))
 import copy_runtime_deployment as c
 from ci_release import ReleaseError
 
-TAIL = '0121_v75_resilience.sql'
+TAIL = '0122_v753_number_lab_plans.sql'
 
 
 def history(count=68):
@@ -31,9 +31,9 @@ class V75IncrementalMigration(unittest.TestCase):
     def test_the_tail_is_exactly_the_v74_migration_on_the_v7_base(self):
         self.assertEqual(c.V7_INCREMENTAL_MIGRATION_NAMES, frozenset({TAIL}))
         self.assertTrue(c.V7_INCREMENTAL_MIGRATION_NAMES < c.V7_PROFILE_MIGRATION_NAMES)
-        self.assertEqual((c.V7_PROFILE_MIGRATION_TOTAL, c.V7_INCREMENTAL_BASELINE), (121, 120))
+        self.assertEqual((c.V7_PROFILE_MIGRATION_TOTAL, c.V7_INCREMENTAL_BASELINE), (122, 121))
 
-    def test_guard_admits_120_to_121_and_keeps_every_previous_boundary(self):
+    def test_guard_admits_121_to_122_and_keeps_every_previous_boundary(self):
         meta = {'migration_hashes': v7()}
         for applied in (history(), v7_base(), v7()):
             c.migration_stage_guard(applied, meta, stage='OPERATING')
@@ -54,9 +54,9 @@ class V75IncrementalMigration(unittest.TestCase):
         self.assertFalse(c.v7_incremental_baseline(drift, v7()))
 
     def test_bounded_script_carries_the_closed_incremental_profile(self):
-        self.assertIn("{stage:'OPERATING',baseline:120,total:121,names:[\"" + TAIL + "\"]}", c.BOUNDED_MIGRATION_JS)
+        self.assertIn("{stage:'OPERATING',baseline:121,total:122,names:[\"" + TAIL + "\"]}", c.BOUNDED_MIGRATION_JS)
         self.assertNotIn('V7_BASE', c.BOUNDED_MIGRATION_JS); self.assertNotIn('V7_INC', c.BOUNDED_MIGRATION_JS)
-        self.assertIn("baseline:68,total:121", c.BOUNDED_MIGRATION_JS)
+        self.assertIn("baseline:68,total:122", c.BOUNDED_MIGRATION_JS)
 
     def test_apply_runs_only_the_tail_without_cutover_work(self):
         expected = v7(); review = {'migration_hashes': {n: expected[n] for n in c.V7_PROFILE_MIGRATION_NAMES}}
@@ -74,7 +74,7 @@ class V75IncrementalMigration(unittest.TestCase):
             with patch.object(c.native, 'protected_bytes', side_effect=lambda path: Path(path).read_bytes()), \
                  patch.object(c, 'export_retired_modules', side_effect=AssertionError('cutover-only export ran')):
                 result = c.apply_reviewed_migrations(server, root, root, metadata, review, 600, stage='OPERATING')
-        self.assertEqual(result, {'status': 'APPLIED_BOUNDED_INCREMENTAL', 'migration_count': 121, 'bootstrap_or_import': False,
+        self.assertEqual(result, {'status': 'APPLIED_BOUNDED_INCREMENTAL', 'migration_count': 122, 'bootstrap_or_import': False,
                                   'applied_migrations': [TAIL], 'lab_storage': 'READY',
                                   'namespace_locks': {'source': 'CREATED', 'laboratory': 'CREATED'}})
         self.assertEqual(calls['plan'], {'stage': 'OPERATING', 'baseline': v7_base(), 'additions': {TAIL: expected[TAIL]}})
