@@ -1,3 +1,4 @@
+import { unverifiedAgreementClaim } from "./agreement.js";
 import type { Body, DomainRecord } from "../../../contracts/src/index.js";
 import type { AgentProposal } from "./ai.js";
 import { canonicalSalesVariables } from "./variables.js";
@@ -272,6 +273,10 @@ export function proposalGroundingIssue(
     )
   )
     return "UNVERIFIED_COMMERCIAL_CLAIM";
+  // V7.5.3 (F1): before the agreement is committed, no reply may say it was
+  // registered, that material or access was sent, or that a payment passed.
+  if ((context.order.status ?? "OFFERED") === "OFFERED" && unverifiedAgreementClaim(p.reply))
+    return "UNVERIFIED_AGREEMENT_CLAIM";
   const amounts = [
     ...p.reply.matchAll(
       /\$\s*(\d+(?:[.,]\d+)?)|(\d+(?:[.,]\d+)?)\s*(MXN|USD|EUR|pesos|d[oó]lares|euros)\b/gi,

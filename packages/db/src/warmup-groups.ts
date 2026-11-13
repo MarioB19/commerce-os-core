@@ -2,6 +2,7 @@ import {recordProfileExecutor} from './profile-record-context.js';
 import type {CanonicalEvent,ProviderGroup} from '../../messaging/src/types.js';
 import type {Body,DomainRecord} from '../../contracts/src/index.js';
 import {canonicalIdentity} from '../../messaging/src/security.js';
+import {groupMessageIdentity,sameGroupMessage} from '../../messaging/src/group-message-id.js';
 import {hash,encrypt,decrypt,stableJson,appendEvent,type QueryExecutor} from './index.js';
 
 export async function observeGroup(c:QueryExecutor,account:DomainRecord,snapshot:ProviderGroup,now=new Date()){
@@ -77,6 +78,16 @@ export async function classifyGroupEvent(c:QueryExecutor,account:DomainRecord,e:
  if(group&&classification==='GROUP_EVENT')await correlateGroupEvents(c,group.id);
  return true;
 }
+/** Hash of each own identity (warm-up registration, group member identity and
+ * verified phone) → the own accounts that claim it. A hash claimed by two
+ * accounts is ambiguous and never authenticates an author. */
+async function ownIdentityOwners(c:QueryExecutor,workspaceId:string,environment:string,groupId:string){
+ const owners=new Map<string,Set<string>>(),add=(h:unknown,id:unknown)=>{if(typeof h!=='string'||!h||typeof id!=='string'||!id)return;const set=owners.get(h)??new Set<string>();set.add(id);owners.set(h,set);};
+ const group=(await c.query('SELECT members FROM warmup_groups WHERE id=$1 AND workspace_id=$2 AND environment=$3',[groupId,workspaceId,environment])).rows[0];
+ const ids=new Set<string>();for(const m of (group?.members??[]) as Body[])if(m.account_id){ids.add(String(m.account_id));add(m.identity_hash,m.account_id);add(m.verified_hash,m.account_id);}
+ for(const r of (await c.query('SELECT account_id::text AS account_id,address_fingerprint FROM warmup_identities WHERE workspace_id=$1 AND environment=$2 AND account_id::text=ANY($3::text[])',[workspaceId,environment,[...ids]])).rows)add(r.address_fingerprint,r.account_id);
+ return owners;
+}
 /** V7.5.1: `workspaceId` limits correlation to the profile the caller's transaction is bound to. */
 export async function correlateGroupEvents(c:QueryExecutor,groupId?:string,workspaceId?:string){
  const events=(await c.query(`SELECT e.*,g.id group_id FROM warmup_group_events e JOIN warmup_groups g ON g.workspace_id=e.workspace_id AND g.environment=e.environment AND g.group_fingerprint=e.group_fingerprint WHERE NOT e.correlated AND e.classification='GROUP_EVENT' AND ($1::uuid IS NULL OR g.id=$1) AND ($2::text IS NULL OR e.workspace_id=$2) ORDER BY e.last_reconciled_at NULLS FIRST,e.observed_at LIMIT 200 FOR UPDATE OF e SKIP LOCKED`,[groupId??null,workspaceId??null])).rows;
@@ -84,6 +95,33 @@ export async function correlateGroupEvents(c:QueryExecutor,groupId?:string,works
   await c.query('UPDATE warmup_group_events SET last_reconciled_at=now() WHERE id=$1',[row.id]);
   const e=JSON.parse(decrypt(row.event_ciphertext))as CanonicalEvent;if(!e.providerMessageId||e.fromMe)continue;
   const turns=(await c.query(`SELECT t.*,o.status,o.provider_message_id,v.group_id,v.membership_version,v.member_ids FROM warmup_turns t JOIN warmup_conversations v ON v.id=t.conversation_id JOIN outbox o ON o.id=t.effect_id JOIN warmup_identities i ON i.account_id=t.sender_id WHERE v.group_id=$1 AND o.provider_message_id=$2 AND t.workspace_id=$3 AND t.environment=$4 AND (( $5='message' AND $6=ANY(t.recipient_ids) AND (i.address_fingerprint=$7 OR EXISTS(SELECT 1 FROM warmup_groups g,jsonb_array_elements(g.members) m WHERE g.id=v.group_id AND m->>'account_id'=t.sender_id::text AND m->>'identity_hash'=$7))) OR ($5='ack' AND t.sender_id=$6))`,[row.group_id,e.providerMessageId,row.workspace_id,row.environment,e.type,row.account_id,hash(e.senderIdentity??'')])).rows;
+  // V7.5.3 (F3): the sender's own session and each receiving session
+  // serialize the same group message differently (direction flag and the
+  // author's JID or LID). A stored effect ID with the same chat and message
+  // ID is the same message only when both authors resolve to the turn's
+  // sender and the observed chat is this group. Literal matches keep their
+  // V7.4 path above; this never matches by text and never crosses groups.
+  let match:'LITERAL'|'CANONICAL'|'TEXT_EVIDENCE'=turns.length?'LITERAL':'CANONICAL';
+  if(!turns.length){
+   const provider=String((await c.query("SELECT body->>'provider' AS provider FROM records WHERE id=$1 AND workspace_id=$2 AND environment=$3 AND kind='channel_account'",[row.account_id,row.workspace_id,row.environment])).rows[0]?.provider??'');
+   const observed=groupMessageIdentity(provider,e.providerMessageId);
+   if(observed?.structured&&hash(observed.chat!)===row.group_fingerprint&&(e.type!=='message'||observed.fromMe===false)){
+    const candidates=(await c.query(`SELECT t.*,o.status,o.provider_message_id,v.group_id,v.membership_version,v.member_ids FROM warmup_turns t JOIN warmup_conversations v ON v.id=t.conversation_id JOIN outbox o ON o.id=t.effect_id
+     JOIN records sa ON sa.id::text=o.account_id AND sa.workspace_id=o.workspace_id AND sa.environment=o.environment AND sa.kind='channel_account'
+     WHERE v.group_id=$1 AND t.workspace_id=$2 AND t.environment=$3 AND o.kind='warmup' AND o.provider_message_id IS NOT NULL AND strpos(o.provider_message_id,$4)>0
+      AND sa.body->>'provider'=$5 AND (($6='message' AND $7=ANY(t.recipient_ids)) OR ($6='ack' AND t.sender_id=$7)) LIMIT 20`,
+     [row.group_id,row.workspace_id,row.environment,'_'+observed.messageId+'_',provider,e.type,row.account_id])).rows
+     .filter((t:any)=>sameGroupMessage(provider,t.provider_message_id,e.providerMessageId)==='CANONICAL');
+    const authors=candidates.length?await ownIdentityOwners(c,row.workspace_id,row.environment,row.group_id):new Map<string,Set<string>>();
+    const authoredBy=(raw:string|null|undefined,sender:string)=>{const owners=raw?authors.get(hash(canonicalIdentity(raw))):undefined;return!!owners&&owners.size===1&&owners.has(sender);};
+    for(const t of candidates){
+     const stored=groupMessageIdentity(provider,t.provider_message_id);
+     if(!stored?.structured||!authoredBy(stored.participant,t.sender_id)||!authoredBy(observed.participant,t.sender_id))continue;
+     if(e.type==='message'&&!authoredBy(e.senderIdentity,t.sender_id))continue;
+     turns.push(t);
+    }
+   }
+  }
   // V7.5.1: a send whose provider answer was never recorded (SENDING/UNKNOWN,
   // no provider ID) is reconciled only by positive evidence: an own line
   // received, in the same group, a message from the turn's sender identity
@@ -101,7 +139,7 @@ export async function correlateGroupEvents(c:QueryExecutor,groupId?:string,works
     if(updated){
      await c.query("UPDATE effect_attempts SET status='SENT',result=result||jsonb_build_object('reconciled','GROUP_EVENT_EVIDENCE','provider_message_id',$2::text),finished_at=COALESCE(finished_at,now()) WHERE effect_id=$1 AND status IN('SENDING','UNKNOWN')",[t.effect_id,e.providerMessageId]);
      await appendEvent(c,{workspace_id:row.workspace_id,environment:row.environment,event_type:'warmup.effect_reconciled_from_group_event',aggregate_id:t.effect_id,payload:{effect_id:t.effect_id,evidence_receiver:row.account_id,evidence_event:row.id,external_effects:0}});
-     turns.push({...t,status:'SENT',provider_message_id:e.providerMessageId});
+     turns.push({...t,status:'SENT',provider_message_id:e.providerMessageId});match='TEXT_EVIDENCE';
     }
    }
   }
@@ -113,8 +151,9 @@ export async function correlateGroupEvents(c:QueryExecutor,groupId?:string,works
     ??(await c.query("SELECT m->>'account_id' AS account_id FROM warmup_groups g,jsonb_array_elements(g.members) m WHERE g.id=$1 AND m->>'account_id' IS NOT NULL AND (m->>'identity_hash'=$2 OR m->>'verified_hash'=$2)",[row.group_id,hash(e.participantIdentity)])).rows[0];receiver=member?.account_id;
   }
   if(!receiver||receiver===turn.sender_id||!turn.recipient_ids.includes(receiver))continue;
-  await c.query(`INSERT INTO warmup_group_receipts(effect_id,receiver_id,sender_id,group_id,membership_version,provider_message_id,delivery_source,envelope_id,observed_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`,[turn.effect_id,receiver,turn.sender_id,turn.group_id,turn.membership_version,e.providerMessageId,e.type==='message'?'authenticated_receive':'participant_ack',row.envelope_id,e.providerAt]);
+  const inserted=(await c.query(`INSERT INTO warmup_group_receipts(effect_id,receiver_id,sender_id,group_id,membership_version,provider_message_id,delivery_source,envelope_id,observed_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING RETURNING effect_id`,[turn.effect_id,receiver,turn.sender_id,turn.group_id,turn.membership_version,e.providerMessageId,e.type==='message'?'authenticated_receive':'participant_ack',row.envelope_id,e.providerAt])).rowCount;
   await c.query('UPDATE warmup_group_events SET correlated=true WHERE id=$1',[row.id]);
+  if(inserted)await appendEvent(c,{workspace_id:row.workspace_id,environment:row.environment,event_type:'warmup.group_receipt_correlated',aggregate_id:turn.effect_id,payload:{effect_id:turn.effect_id,receiver_id:receiver,sender_id:turn.sender_id,group_id:turn.group_id,group_event_id:row.id,delivery_source:e.type==='message'?'authenticated_receive':'participant_ack',match,external_effects:0}});
   const receipts=(await c.query('SELECT DISTINCT receiver_id FROM warmup_group_receipts WHERE effect_id=$1 AND group_id=$2 AND membership_version=$3',[turn.effect_id,turn.group_id,turn.membership_version])).rows;
   if(turn.recipient_ids.every((id:string)=>receipts.some(r=>r.receiver_id===id))){await recordProfileExecutor(c,row.workspace_id,row.environment);await c.query("UPDATE outbox SET status='DELIVERED',result=result||jsonb_build_object('group_delivery_confirmed',true,'delivery_source','per_recipient_evidence'),updated_at=now() WHERE id=$1 AND status='SENT'",[turn.effect_id]);}
  }

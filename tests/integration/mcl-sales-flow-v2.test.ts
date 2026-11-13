@@ -15,6 +15,7 @@ const primaryWorkspace=`mcl-sales-v2-${randomUUID()}`;
 const isolatedWorkspace=`mcl-sales-v2-isolated-${randomUUID()}`;
 const interruptionWorkspace=`mcl-sales-v2-interruption-${randomUUID()}`;
 const pdfWorkspace=`mcl-sales-v2-pdfs-${randomUUID()}`;
+const agreementWorkspace=`mcl-sales-v2-agreement-${randomUUID()}`;
 const environment='SIMULATION' as const;
 const expectedRecipeNodes=[
  'presentation_audio','pack_image','offer_text','agreement_audio','agreement_prompt',
@@ -560,3 +561,108 @@ describe('Mi Ciclo Listo sales agreement v2 runtime',()=>{
   }
  });
 });
+
+/** V7.5.3 F1/F2 (opción 2): a model proposal confirmed by the deterministic
+ * rule is the only way a non-literal «sí» changes the order; no reply claims a
+ * registration or a delivery the database does not show. */
+describe('V7.5.3 contextual agreement: AI proposal + deterministic rule',()=>{
+ let agreementCatalog:Catalog;
+ beforeAll(async()=>{agreementCatalog=await caseCatalog(agreementWorkspace);});
+ const fixtureAi=(proposal:Body,during?:()=>Promise<void>)=>({
+  propose:async()=>{await during?.();return{proposal:{grounding:['offer_snapshot'],tool:'none',confidence:0.95,...proposal},usage:{input_tokens:1,output_tokens:1,cost_minor:0},provider:'fixture',model:'fixture'};},
+  receipt:async()=>{throw new Error('UNUSED');},
+ }) as never;
+ const claim='Ya queda registrado tu acuerdo y el sistema te envía ahorita tu material completo y tu acceso al portal 💛';
+ const recipe=async(conversation:DomainRecord)=>(await pool.query(`SELECT * FROM outbox WHERE workspace_id=$1 AND conversation_id=$2 AND payload ? 'workflow_recipe_step' ORDER BY dispatch_sequence`,[conversation.workspace_id,conversation.id])).rows;
+ /** Transport acceptance exactly as the dispatcher records it (effect + attempt). */
+ const transport=async(conversation:DomainRecord)=>{for(const effect of await recipe(conversation)){if(effect.status!=='READY')continue;const claim=randomUUID();
+  await pool.query("UPDATE outbox SET status='SENT',attempts=1,claim_id=$2,claimed_at=clock_timestamp(),provider_message_id=$3,result=$4,updated_at=now() WHERE id=$1",[effect.id,claim,`sim:${effect.id}`,{accepted_at:new Date().toISOString()}]);
+  await pool.query("INSERT INTO effect_attempts(effect_id,claim_id,status,finished_at) VALUES($1,$2,'SENT',clock_timestamp())",[effect.id,claim]);}};
+ const start=async()=>{const identity=`opaque:agreement-buyer-${randomUUID()}`;let journey=(await inbound(agreementCatalog.account,identity,'Quiero Mi Ciclo Listo'))!;journey=await withTransaction(client=>advanceWorkflow(client,journey));
+  expect(journey.body.flow_state).toMatchObject({status:'WAITING',waiting_for:'commitment'});return{identity,journey};};
+ const order=async(journey:DomainRecord)=>(await withTransaction(client=>ensureOrder(client,journey)))!;
+ const sellerReplies=async(journey:DomainRecord)=>(await pool.query("SELECT payload FROM outbox WHERE workspace_id=$1 AND conversation_id=$2 AND payload->>'purpose'='seller_reply' ORDER BY dispatch_sequence",[journey.workspace_id,journey.id])).rows.map((r:any)=>r.payload);
+ const lastRun=async(journey:DomainRecord)=>(await pool.query("SELECT body FROM records WHERE workspace_id=$1 AND kind='ai_run' AND body->>'conversation_id'=$2 ORDER BY created_at DESC LIMIT 1",[journey.workspace_id,journey.id])).rows[0]?.body;
+ const committedEvents=async(journey:DomainRecord)=>(await pool.query("SELECT payload FROM domain_events WHERE workspace_id=$1 AND aggregate_id=$2 AND event_type='order.committed'",[journey.workspace_id,journey.id])).rows.map((r:any)=>r.payload);
+
+ it('accepts a natural «Sí, acepto» after the explained agreement reached transport, through the canonical transition, without the model\'s claim',async()=>{
+  let {identity,journey}=await start();await transport(journey);
+  await inbound(agreementCatalog.account,identity,'Sí, acepto');
+  journey=await current(journey);expect(journey.body.ai_pending).toBe(true);expect((await order(journey)).body.committed_at).toBeUndefined();
+  await processAgents(100,fixtureAi({intent:'commitment',reply:claim}));
+  journey=await current(journey);const committed=await order(journey);
+  expect(committed.body).toMatchObject({status:'COMMITTED',commitment_source:'ai_proposal_rule_confirmed'});
+  expect(await committedEvents(journey)).toEqual([expect.objectContaining({source:'ai_proposal_rule_confirmed'})]);
+  expect(journey.body.flow_state).toMatchObject({status:'WAITING',waiting_for:'prepayment_delivery_confirmed'});
+  expect(await sellerReplies(journey)).toEqual([]);
+  expect(await lastRun(journey)).toMatchObject({status:'COMPLETED',reply_suppressed:'AGREEMENT_TRANSITION_APPLIED',agreement:{decision:'ACCEPT',reason:'AI_PROPOSAL_RULE_CONFIRMED'}});
+  const fulfillments=(await pool.query("SELECT body->>'asset_id' asset_id FROM records WHERE workspace_id=$1 AND kind='fulfillment' AND body->>'order_id'=$2 AND body->>'release_on'='commitment_accepted'",[journey.workspace_id,committed.id])).rows.map((r:any)=>r.asset_id);
+  expect(fulfillments).toEqual([agreementCatalog.assets.core.id]);
+  // Replaying the worker and the workflow is idempotent: one commitment, one delivery.
+  await processAgents(100,fixtureAi({intent:'commitment',reply:claim}));await withTransaction(client=>advanceWorkflow(client,journey));
+  expect(await committedEvents(journey)).toHaveLength(1);
+  expect((await pool.query("SELECT count(*)::int n FROM records WHERE workspace_id=$1 AND kind='fulfillment' AND body->>'order_id'=$2",[journey.workspace_id,committed.id])).rows[0].n).toBe(1);
+ });
+ it('asks for clarification and delivers nothing for «Sí, soy maestra», a condition or a low-confidence proposal',async()=>{
+  for(const [text,proposal] of [['Sí, soy maestra',{intent:'commitment',reply:claim}],['Sí, pero mañana',{intent:'commitment',reply:claim}],['Sí, acepto',{intent:'commitment',confidence:0.6,reply:claim}]] as const){
+   let {identity,journey}=await start();await transport(journey);
+   await inbound(agreementCatalog.account,identity,text);await processAgents(100,fixtureAi(proposal));
+   journey=await current(journey);
+   expect((await order(journey)).body.committed_at).toBeUndefined();
+   expect(journey.body.flow_state).toMatchObject({status:'WAITING',waiting_for:'commitment'});
+   const replies=await sellerReplies(journey);expect(replies).toHaveLength(1);
+   expect(replies[0].text).toBe('Antes de continuar necesito confirmarlo contigo: ¿aceptas el acuerdo que te expliqué? 💛');
+   expect(replies[0].agreement_clarification).toMatch(/^(REPLY_OTHER|REPLY_CONDITIONAL|LOW_CONFIDENCE)$/);
+   expect((await pool.query("SELECT count(*)::int n FROM records WHERE workspace_id=$1 AND kind='fulfillment' AND body->>'conversation_id'=$2",[journey.workspace_id,journey.id])).rows[0].n).toBe(0);
+  }
+ });
+ it('never accepts before the agreement message reached transport and never sends the unverified claim',async()=>{
+  let {identity,journey}=await start();
+  await inbound(agreementCatalog.account,identity,'Sí, acepto');await processAgents(100,fixtureAi({intent:'commitment',reply:claim}));
+  journey=await current(journey);
+  expect((await order(journey)).body.committed_at).toBeUndefined();
+  expect((await sellerReplies(journey)).map((p:Body)=>p.text)).not.toContain(claim);
+  expect(await lastRun(journey)).toMatchObject({agreement:{decision:'PASS',reason:'AGREEMENT_NOT_DELIVERED'}});
+  expect(journey.body.ai_status).toBe('HUMAN_REVIEW');
+ });
+ it('a model reply that claims a registration while the agreement is pending is replaced, whatever its intent',async()=>{
+  let {identity,journey}=await start();await transport(journey);
+  await inbound(agreementCatalog.account,identity,'Mándamelo');await processAgents(100,fixtureAi({intent:'question',reply:claim}));
+  journey=await current(journey);
+  expect((await order(journey)).body.committed_at).toBeUndefined();
+  expect((await sellerReplies(journey)).map((p:Body)=>p.agreement_clarification)).toEqual(['AGREEMENT_REGISTERED_CLAIM']);
+ });
+ it('a human takeover before the model call leaves the reply to the person; one during the call holds the proposal, which is re-validated and applied once after release',async()=>{
+  let {identity,journey}=await start();await transport(journey);
+  const takeover=async(on:boolean,conversation:DomainRecord)=>{if(on)await pool.query("INSERT INTO manual_controls(workspace_id,scope_type,scope_id,takeover,reason,actor_id) VALUES($1,'conversation',$2,true,'FIXTURE_TAKEOVER','fixture') ON CONFLICT(workspace_id,scope_type,scope_id) DO UPDATE SET takeover=true,version=manual_controls.version+1",[conversation.workspace_id,conversation.id]);
+   else await pool.query("UPDATE manual_controls SET takeover=false,version=version+1 WHERE workspace_id=$1 AND scope_type='conversation' AND scope_id=$2",[conversation.workspace_id,conversation.id]);};
+  await takeover(true,journey);
+  await inbound(agreementCatalog.account,identity,'Sí, acepto');
+  let calls=0;await processAgents(100,fixtureAi({intent:'commitment',reply:claim},async()=>{calls++;}));
+  journey=await current(journey);expect(calls).toBe(0);expect(journey.body.ai_pending).toBe(false);expect((await order(journey)).body.committed_at).toBeUndefined();
+  await takeover(false,journey);
+  // Second journey: the person takes over while the model is answering.
+  ({identity,journey}=await start());await transport(journey);
+  await inbound(agreementCatalog.account,identity,'Sí, acepto');
+  const held=journey;await processAgents(100,fixtureAi({intent:'commitment',reply:claim},async()=>{await takeover(true,held);}));
+  journey=await current(journey);expect((await order(journey)).body.committed_at).toBeUndefined();
+  expect(journey.body).toMatchObject({ai_pending:true,ai_status:'AWAITING_EFFECT'});expect(await sellerReplies(journey)).toEqual([]);
+  await processAgents(100,fixtureAi({intent:'question',reply:'no debe usarse'}));
+  expect((await order(await current(journey))).body.committed_at).toBeUndefined();
+  await takeover(false,journey);
+  await processAgents(100,fixtureAi({intent:'question',reply:'no debe usarse'}));
+  journey=await current(journey);
+  expect((await order(journey)).body).toMatchObject({status:'COMMITTED',commitment_source:'ai_proposal_rule_confirmed'});
+  expect(await committedEvents(journey)).toHaveLength(1);expect(await sellerReplies(journey)).toEqual([]);
+ });
+ it('a stale proposal (a newer message or an opt-out arrived meanwhile) is discarded and changes nothing',async()=>{
+  let {identity,journey}=await start();await transport(journey);
+  await inbound(agreementCatalog.account,identity,'Sí, acepto');
+  await processAgents(100,fixtureAi({intent:'commitment',reply:claim},async()=>{await inbound(agreementCatalog.account,identity,'baja');}));
+  journey=await current(journey);
+  expect((await order(journey)).body.committed_at).toBeUndefined();
+  expect(await sellerReplies(journey)).toEqual([]);
+  expect((await pool.query("SELECT body->>'status' status FROM records WHERE workspace_id=$1 AND kind='ai_run' AND body->>'conversation_id'=$2 ORDER BY created_at",[journey.workspace_id,journey.id])).rows.map((r:any)=>r.status)).toContain('DISCARDED');
+ });
+});
+
