@@ -181,6 +181,23 @@ class MeterTests(unittest.TestCase):
         for key, row in old_rows.items():
             self.assertEqual(self.store.document['requests'][key], row)
         self.assertEqual(usage(self.store.document)['2026-11']['cpu_ms'], 74_435_000)
+
+    def test_november_amendment_admits_the_repeated_main_full(self):
+        # Amendment (14-nov 08:05 UTC), the real sequence: candidate FULL and its
+        # attestation, the FULL of main that failed on a flaky Docker test after
+        # its three ticks, its reconciliation, the repeated FULL, its attestation
+        # and one attestation retry: 75,905 s under 76,000 s.
+        self.time = datetime(2026, 11, 14, 8, tzinfo=timezone.utc)
+        for seconds, count in ((450, 141), (120, 33), (5, 7)):
+            for _ in range(count):
+                reservation = self.meter.extend(self.reserve(), seconds) if seconds > 5 else self.reserve()
+                self.meter.finish(reservation, {'ok': True})
+        chain = [450, 450, 450, 120] + [450, 450, 450] + [450, 450, 450] + [120] + [450, 450, 450, 120] + [450, 450, 450] * 2
+        self.assertEqual(sum(chain), 8_460)
+        for seconds in chain:
+            reservation = self.meter.extend(self.reserve(), seconds)
+            self.meter.finish(reservation, {'ok': True})
+        self.assertEqual(usage(self.store.document)['2026-11']['cpu_ms'], 75_905_000)
         with self.assertRaisesRegex(AdmissionError, 'MONTHLY_CEILING'):
             self.meter.extend(self.reserve(), 120)
 
