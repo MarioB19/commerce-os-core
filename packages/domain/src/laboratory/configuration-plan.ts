@@ -32,8 +32,20 @@ export function compileNumberLabConfiguration(raw:{snapshot:unknown;records:read
   const release=candidate.release,c=release.configuration,variant=release.variant_id;
   const roots=[{kind:'binding',ref:candidate.binding},{kind:'product',ref:{id:release.family_id}},
    {kind:'offer',ref:c.offer},{kind:'workflow',ref:c.flow},{kind:'agent',ref:c.seller},{kind:'bank_profile',ref:c.collection},...c.materials.map(ref=>({kind:'asset',ref}))];
+  // V7.5.4: the binding is tested as a new conversation routes it. A number
+  // that follows a variant sells with the variant's current release, while its
+  // stored binding keeps the offer/flow/seller it was assigned with; after a
+  // republication the engine assignment must point at the release roots or the
+  // driver fails closed (LAB_DRIVER_ASSIGNMENTS_CHANGED). For a pinned binding
+  // the release was matched by these same IDs, so this is a no-op there.
+  const routed=(source:LabPlanSource):LabPlanSource=>{
+   if(source.kind!=='binding'||source.ref.id!==candidate.binding.id)return source;
+   const body={...source.body},release={offer_version_id:c.offer.id,workflow_version_id:c.flow.id,agent_version_id:c.seller.id} as const;
+   for(const [field,id] of Object.entries(release))if(Object.hasOwn(body,field))body[field]=id;
+   return{...source,body};
+  };
   const reachable=new Map<string,LabPlanSource>(),pending=roots.map(root=>{
-   const source=sources.get(key(root.kind,root.ref.id));need(source&&(!('sha256'in root.ref)||labCanonical(source.ref)===labCanonical(root.ref)),'LAB_CONFIGURATION_INCOMPLETE');return source;
+   const source=sources.get(key(root.kind,root.ref.id));need(source&&(!('sha256'in root.ref)||labCanonical(source.ref)===labCanonical(root.ref)),'LAB_CONFIGURATION_INCOMPLETE');return routed(source);
   });
   for(let i=0;i<pending.length;i++){
    const source=pending[i]!,k=key(source.kind,source.ref.id);if(reachable.has(k))continue;reachable.set(k,source);

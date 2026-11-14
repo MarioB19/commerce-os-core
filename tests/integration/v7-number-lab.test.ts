@@ -73,7 +73,7 @@ beforeAll(async()=>{
  created.push(...Object.values(installation.logins!).map(l=>l.user));
  // Idempotent: a second run verifies and never rebuilds or issues logins.
  const again=await installNumberLabEngine(url.toString());expect(again).toEqual({database:installation.database,installationId:installation.installationId,engineSha256:installation.engineSha256,created:false});
- await fixtureProfiles({id:P,numbers:12});app=await createApp();ownerId=(await login('owner','owner')).id;await login('operator','operator');
+ await fixtureProfiles({id:P,numbers:13});app=await createApp();ownerId=(await login('owner','owner')).id;await login('operator','operator');
  aiPool=new pg.Pool({connectionString:process.env.DATABASE_URL,max:3});aiPool.on('connect',c=>{void c.query('SET ROLE commerce_ai');});
  authority={profile:{id:P,state:'ACTIVE'},membership:{userId:ownerId,workspaceId:P,role:'owner',active:true,version:1},
   credential:{kind:'session',userId:ownerId,workspaceId:P,revoked:false,expiresAt:new Date(Date.now()+3600000).toISOString(),scopes:[],membershipVersion:1}};
@@ -447,6 +447,36 @@ it('runs the automatic buyer over every variant of a number and reports one verd
  expect((await call('owner','POST',`/v2/number-tests/${purchase.run_id}/actions`,{expected_version:1,action:{type:'continue'}})).statusCode).toBe(409);
  expect(data(await call('owner','GET',`/v2/number-tests/suites/latest?account_id=${number}`)).suite.suite_id).toBe(started.suite_id);
  expect(await footprint()).toEqual(before);
+},240000);
+
+// V7.5.4: a number that follows a variant is sold with the variant's current
+// release (RF/F4). Republishing after the assignment must not break its test:
+// production 14-nov, every run of the paid matrix failed closed with
+// LAB_DRIVER_ASSIGNMENTS_CHANGED before any AI call.
+it('V7.5.4: tests a number with the republished release of the variant it follows',async()=>{
+ const link=data(await call('owner','POST','/v2/materials?environment=REAL',{name:'Acceso republicado',kind:'link',url:'https://example.com/republicado'}),201).id as string;
+ let v=data(await call('owner','POST','/v2/products',{name:'Republicado',variant:{name:'México',locale:MX}}),201).variant;
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/offer`,{expected_version:v.version,value:{...v.document.offer,price_minor:4500,fulfillment:[{asset_id:link,release_on:'receipt_approved'}]}}));
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/collection`,{expected_version:v.version,value:{spei:{bank:'Banco sintético',holder:'Titular sintético',clabe:clabe('01218000011835971')},links:[],instructions:''}}));
+ v=data(await call('owner','POST',`/v2/variants/${v.id}/publish`,{expected_version:v.version,document_sha256:v.document_sha256})).variant;
+ const number=await withTransaction(async c=>{await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','REAL',true)",[P]);
+  return(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','channel_account',$2) RETURNING id",[P,{name:'Ventas republicado',provider:'waha',gateway_ref:'lab-'+randomUUID(),status:'WORKING',sending_enabled:true,identity_verified:true}])).rows[0].id as string;});
+ data(await call('owner','POST',`/v2/variants/${v.id}/numbers`,{account_id:number,sell:true}));
+ // The owner edits and republishes; the number keeps following the variant.
+ v=data(await call('owner','GET',`/v2/variants/${v.id}?environment=REAL`));
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/remarketing`,{expected_version:v.version,value:{schema_version:1,policy_id:'remarketing-3-slot',policy_revision:1,window:{start_hour:0,end_hour:24},
+  slots:[1,2,3].map((position,i)=>({id:'slot-'+position,position,enabled:position===1,delay:{quantity:[2,8,24][i],unit:'hours'},stages:{awaiting_agreement:{medium:'text',text:`¿Seguimos? (${position})`},awaiting_payment:{medium:'text',text:`¿Pagas? (${position})`}}}))}}));
+ const republished=data(await call('owner','POST',`/v2/variants/${v.id}/publish`,{expected_version:v.version,document_sha256:v.document_sha256}));
+ expect(republished.numbers_following).toBe(1);
+ const estimate=data(await call('owner','POST','/v2/number-tests/suites/estimate',{account_id:number,cases:[{variant_id:v.id,journey:'FOLLOWUP',tier_id:'base'}]}));
+ const started=data(await call('owner','POST','/v2/number-tests/suites',{account_id:number,accepted_maximum_microusd:estimate.maximum_microusd,cases:[{variant_id:v.id,journey:'FOLLOWUP',tier_id:'base'}]}),201);
+ let report:any;
+ for(let i=0;i<30;i++){await processNumberLabOperations(runtime);report=data(await call('owner','GET',`/v2/number-tests/suites/${started.suite_id}`));if(report.suite.state==='COMPLETED')break;}
+ expect(report.suite.state,JSON.stringify(report.variants)).toBe('COMPLETED');
+ const followup=report.variants[0].cases.find((c:{journey:string})=>c.journey==='FOLLOWUP');
+ expect(followup.checks.find((c:{name:string})=>c.name==='followup')).toMatchObject({state:'PASSED'});
+ // The run used the current release (the republished one), not the assigned one.
+ expect(data(await call('owner','GET',`/v2/number-tests/${followup.run_id}`)).variants[0].revision).toBe(2);
 },240000);
 
 // V7.5.3: one paid matrix across two numbers. Selected cases (journey and
