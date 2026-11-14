@@ -6,6 +6,7 @@ import {authorizeProfileAction,type ProfileAuthority} from '../../domain/src/cor
 import {labHash} from '../../domain/src/laboratory/number-lab.js';
 import {nextSuiteStep,finishSuiteCase,variantVerdict,verdictLabels,type SuiteCase,type SuiteCheck,type SuiteJourney,type SuiteLastStep,type SuitePlan} from '../../domain/src/laboratory/automatic-buyer.js';
 import {openLabValue,sealLabValue} from './number-laboratory.js';
+import {matrixReservation} from '../../domain/src/laboratory/matrix.js';
 
 /** V7 RF-19.p/h: suites of the automatic buyer (control store, profile RLS). */
 const uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
@@ -22,15 +23,49 @@ export async function insertSuite(db:ProfileExecutor,a:ProfileAuthority,input:{i
  await db.query('INSERT INTO commerce_number_lab.suites(workspace_id,id,account_id,actor_id,start_operation_id,maximum_microusd,maximum_ai_calls,matrix_id,matrix_maximum_microusd,matrix_maximum_ai_calls) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',[db.workspaceId,input.id,input.account_id,a.membership.userId,input.operation_id,input.maximum_microusd,input.maximum_ai_calls??null,input.matrix?.id??null,input.matrix?.maximum_microusd??null,input.matrix?.maximum_ai_calls??null]);}
 /** V7.5.3: one persistent ceiling shared by every suite started under a
  * matrix (for example one paid acceptance across two numbers). Serialized per
- * matrix; the ceiling is fixed by its first suite and can never be raised. */
+ * matrix; the ceiling is fixed by its first suite and can never be raised.
+ * V7.5.4: each suite counts what it really holds (matrixReservation): an open
+ * suite its whole maximum, a terminal one only its confirmed and uncertain
+ * consumption across all its runs and attempts. A continuation under the same
+ * matrix uses only the demonstrably unconsumed part; nothing is reset. */
 export async function admitSuiteMatrix(db:ProfileExecutor,a:ProfileAuthority,matrix:{id:string;maximum_microusd:number;maximum_ai_calls:number},suite:{maximum_microusd:number;maximum_ai_calls:number}){await authorize(db,a,true);need(uuid.test(matrix.id),'LAB_MATRIX_ID');
  need(Number.isSafeInteger(matrix.maximum_microusd)&&matrix.maximum_microusd>0&&Number.isSafeInteger(matrix.maximum_ai_calls)&&matrix.maximum_ai_calls>0,'LAB_MATRIX_LIMIT_INVALID');
  await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`number-lab-matrix:${db.workspaceId}:${matrix.id}`]);
- const rows=(await db.query('SELECT maximum_microusd,maximum_ai_calls,matrix_maximum_microusd,matrix_maximum_ai_calls FROM commerce_number_lab.suites WHERE workspace_id=$1 AND matrix_id=$2',[db.workspaceId,matrix.id])).rows;
+ const rows=(await db.query(matrixUsageSql,[db.workspaceId,matrix.id])).rows;
  if(rows.length)need(rows.every(r=>Number(r.matrix_maximum_microusd)===matrix.maximum_microusd&&Number(r.matrix_maximum_ai_calls)===matrix.maximum_ai_calls),'LAB_MATRIX_LIMIT_CHANGED');
- const spent=rows.reduce((n,r)=>n+Number(r.maximum_microusd),0),calls=rows.reduce((n,r)=>n+Number(r.maximum_ai_calls??0),0);
- need(spent+suite.maximum_microusd<=matrix.maximum_microusd&&calls+suite.maximum_ai_calls<=matrix.maximum_ai_calls,'LAB_MATRIX_LIMIT');
- return{reserved_microusd:spent+suite.maximum_microusd,reserved_ai_calls:calls+suite.maximum_ai_calls};
+ const held=matrixReservation(rows.map(r=>({terminal:['COMPLETED','STOPPED'].includes(String(r.state))&&!r.open,maximum_microusd:Number(r.maximum_microusd),maximum_ai_calls:Number(r.maximum_ai_calls??0),
+  confirmed_microusd:Number(r.confirmed_microusd),uncertain_microusd:Number(r.uncertain_microusd),calls:Number(r.calls)})));
+ need(held.reserved_microusd+suite.maximum_microusd<=matrix.maximum_microusd&&held.reserved_ai_calls+suite.maximum_ai_calls<=matrix.maximum_ai_calls,'LAB_MATRIX_LIMIT');
+ return{reserved_microusd:held.reserved_microusd+suite.maximum_microusd,reserved_ai_calls:held.reserved_ai_calls+suite.maximum_ai_calls,
+  consumed_microusd:held.consumed_microusd,uncertain_microusd:held.uncertain_microusd,consumed_ai_calls:held.calls};
+}
+/** Per suite of a matrix: whether anything is still open, and every AI binding
+ * of its runs with its attempt: settled attempts count what they charged, the
+ * rest (no attempt, or not final) their whole maximum as uncertain. */
+const matrixUsageSql=`SELECT s.id,s.state,s.maximum_microusd,s.maximum_ai_calls,s.matrix_maximum_microusd,s.matrix_maximum_ai_calls,
+ EXISTS(SELECT 1 FROM commerce_number_lab.suite_cases c WHERE c.workspace_id=s.workspace_id AND c.suite_id=s.id AND c.state='RUNNING')
+  OR EXISTS(SELECT 1 FROM commerce_number_lab.suite_cases c JOIN commerce_number_lab.operations o ON o.workspace_id=c.workspace_id AND o.run_id=c.run_id
+   WHERE c.workspace_id=s.workspace_id AND c.suite_id=s.id AND o.state IN('QUEUED','INTENT')) AS open,
+ COALESCE(u.calls,0) AS calls,COALESCE(u.confirmed,0) AS confirmed_microusd,COALESCE(u.uncertain,0) AS uncertain_microusd
+ FROM commerce_number_lab.suites s LEFT JOIN LATERAL(
+  SELECT count(*)::bigint AS calls,
+   sum(CASE WHEN t.state IN('SUCCEEDED','REJECTED') THEN t.charged_microusd ELSE 0 END)::bigint AS confirmed,
+   sum(CASE WHEN t.state IN('SUCCEEDED','REJECTED') THEN 0 ELSE greatest(b.maximum_microusd,COALESCE(t.reserved_microusd,0)) END)::bigint AS uncertain
+  FROM commerce_number_lab.suite_cases c JOIN commerce_number_lab.ai_bindings b ON b.workspace_id=c.workspace_id AND b.run_id=c.run_id
+  LEFT JOIN public.ai_attempts t ON t.workspace_id=b.workspace_id AND t.environment=b.budget_environment AND t.lab_binding_id=b.attempt_id
+  WHERE c.workspace_id=s.workspace_id AND c.suite_id=s.id) u ON true
+ WHERE s.workspace_id=$1 AND s.matrix_id=$2 ORDER BY s.created_at,s.id`;
+/** V7.5.4: a continuation picks up a terminal suite of the same number (and
+ * matrix): its new runs capture the current publication and each case keeps a
+ * link to the case it continues. The previous suite and its history stay. */
+export async function readContinuedSuite(db:ProfileExecutor,a:ProfileAuthority,suiteId:string,accountId:string,matrixId:string|null){await authorize(db,a,true);need(uuid.test(suiteId),'LAB_SUITE_ID');
+ const s=(await db.query('SELECT id::text,account_id::text,state,matrix_id::text FROM commerce_number_lab.suites WHERE workspace_id=$1 AND id=$2',[db.workspaceId,suiteId])).rows[0];
+ need(s,'LAB_SUITE_NOT_FOUND');need(s.account_id===accountId&&(s.matrix_id??null)===matrixId,'LAB_CONTINUATION_MISMATCH');
+ const open=(await db.query(`SELECT EXISTS(SELECT 1 FROM commerce_number_lab.suite_cases c WHERE c.workspace_id=$1 AND c.suite_id=$2 AND c.state='RUNNING')
+   OR EXISTS(SELECT 1 FROM commerce_number_lab.suite_cases c JOIN commerce_number_lab.operations o ON o.workspace_id=c.workspace_id AND o.run_id=c.run_id WHERE c.workspace_id=$1 AND c.suite_id=$2 AND o.state IN('QUEUED','INTENT')) AS open`,[db.workspaceId,suiteId])).rows[0].open;
+ need(['COMPLETED','STOPPED'].includes(String(s.state))&&!open,'LAB_CONTINUATION_NOT_TERMINAL');
+ const cases=(await db.query('SELECT run_id::text,variant_id::text,journey FROM commerce_number_lab.suite_cases WHERE workspace_id=$1 AND suite_id=$2',[db.workspaceId,suiteId])).rows;
+ return{suite_id:String(s.id),cases:cases.map(c=>({run_id:String(c.run_id),variant_id:String(c.variant_id),journey:String(c.journey) as SuiteJourney}))};
 }
 export async function insertSuiteCase(db:ProfileExecutor,input:{suite_id:string;run_id:string;variant_id:string;journey:SuiteJourney;expect_followup:boolean;attachment_id:string|null;plan?:SuitePlan}){
  await db.query('INSERT INTO commerce_number_lab.suite_cases(workspace_id,suite_id,run_id,variant_id,journey,expect_followup,attachment_id,plan) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[db.workspaceId,input.suite_id,input.run_id,input.variant_id,input.journey,input.expect_followup,input.attachment_id,JSON.stringify(input.plan??{})]);}

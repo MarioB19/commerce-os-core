@@ -48,4 +48,20 @@ describe('pure closed laboratory configuration compiler',()=>{
  it('does not accept drafts or unready assets as materialized configuration',()=>{
   const f=fixture();f.sub.body.status='DRAFT';f.seal();expect(()=>compileNumberLabConfiguration(f,f.run)).toThrow('LAB_SOURCE_NOT_PUBLISHED');const g=fixture();g.asset.body.status='PENDING';g.seal();expect(()=>compileNumberLabConfiguration(g,g.run)).toThrow('LAB_ASSET_NOT_READY');
  });
+ // V7.5.4: the binding is tested as a new conversation routes it.
+ it('V7.5.4: a binding that follows a republished variant points the engine at the release, and a pinned one is unchanged',()=>{
+  const pinned=fixture(),plan=compileNumberLabConfiguration(pinned,pinned.run),v=plan.variants[0]!,b=v.records.find(r=>r.kind==='binding')!;
+  // Pinned (binding IDs = release IDs): identical to the compilation before V7.5.4.
+  expect([b.body.offer_version_id,b.body.workflow_version_id,b.body.agent_version_id]).toEqual([v.roots.offer_id,v.roots.workflow_id,v.roots.agent_id]);
+  const f=fixture(),old=f.add('offer',{...f.offer.body}),oldFlow=f.add('workflow',{...f.flow.body});
+  // Assigned with an older offer and flow; the variant was republished since.
+  f.binding.body.offer_version_id=old.ref.id;f.binding.body.workflow_version_id=oldFlow.ref.id;f.seal();
+  const routed=compileNumberLabConfiguration(f,f.run),r=routed.variants[0]!,rb=r.records.find(x=>x.kind==='binding')!;
+  expect([rb.body.offer_version_id,rb.body.workflow_version_id,rb.body.agent_version_id]).toEqual([r.roots.offer_id,r.roots.workflow_id,r.roots.agent_id]);
+  // Only the binding's routing changes: the capture, its hash and the original records stay.
+  expect(rb.source).toEqual(f.binding.ref);expect(f.binding.body.offer_version_id).toBe(old.ref.id);
+  expect(routed.snapshot_sha256).toBe(labHash(f.snapshot));expect(r.records.some(x=>x.source.id===old.ref.id)).toBe(false);
+  // Deterministic: a historical capture recompiles to the same plan.
+  expect(compileNumberLabConfiguration(f,f.run)).toEqual(routed);
+ });
 });
