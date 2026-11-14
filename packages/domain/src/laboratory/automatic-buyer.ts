@@ -9,7 +9,8 @@ export type SuiteJourney='PURCHASE'|'FOLLOWUP';
 export type CheckName='route'|'offer'|'agreement'|'initial_delivery'|'collection'|'receipt'|'delivery'|'exclusion'|'followup';
 export interface SuiteCheck {name:CheckName;state:'PASSED'|'FAILED'|'UNKNOWN'|'SKIPPED';detail:string}
 /** V7.5.3: what a case must prove beyond its journey (set when the suite starts). */
-export interface SuitePlan {receipt_amount_minor?:number;tier_id?:string}
+/** V7.5.4: a continuation keeps the suite and run it continues. */
+export interface SuitePlan {receipt_amount_minor?:number;tier_id?:string;continues_suite_id?:string;continues_run_id?:string}
 export interface SuiteCase {journey:SuiteJourney;variant_id:string;phase:string;steps:number;checks:SuiteCheck[];expect_followup:boolean;attachment_id:string|null;plan?:SuitePlan}
 /** V7.5.3 (A03): the engine's own record of expected and delivered materials. */
 export interface SuiteInventory {expected:{commitment:string[];receipt:string[]};delivered:{asset_id:string;stage:'commitment'|'receipt';effects:number;confirmed:number}[];approved_amount_minor:number|null;extracted_amount_minor:number|null;committed:boolean}

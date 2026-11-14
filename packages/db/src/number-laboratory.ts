@@ -152,14 +152,37 @@ export class NumberLabWorkerStore {
   * person reads why instead of an endless «Ejecutando». `minimumIntentAgeSeconds`
   * protects a claim that may still be preparing in another process. */
  async settleNotAdmitted(workspaceId:string,runId:string,operationId:string,reason:string,minimumIntentAgeSeconds:number){
+  return this.closeIntent(workspaceId,runId,operationId,reason,minimumIntentAgeSeconds,false);
+ }
+ /** V7.5.4: is this INTENT eligible to close as stopped before effects? Read
+  * only: it is INTENT, older than the minimum and has no AI binding (no call
+  * reserved, confirmed or uncertain). The engine fence comes after this. */
+ async stoppedCandidate(workspaceId:string,runId:string,operationId:string,minimumIntentAgeSeconds:number){
+  need(uuid.test(runId)&&uuid.test(operationId)&&Number.isInteger(minimumIntentAgeSeconds)&&minimumIntentAgeSeconds>=0,'LAB_OUTCOME');
+  return this.tx(workspaceId,async db=>{
+   const o=(await db.query("SELECT state,intent_at<=clock_timestamp()-make_interval(secs=>$4) AS stale,(SELECT count(*)::int FROM commerce_number_lab.ai_bindings b WHERE b.workspace_id=o.workspace_id AND b.run_id=o.run_id AND b.operation_id=o.id) AS ai FROM commerce_number_lab.operations o WHERE workspace_id=$1 AND run_id=$2 AND id=$3",[workspaceId,runId,operationId,minimumIntentAgeSeconds])).rows[0];
+   return !!o&&o.state==='INTENT'&&o.stale===true&&Number(o.ai)===0;
+  });
+ }
+ /** V7.5.4: closes an INTENT the engine admitted but that stopped before any
+  * effect: the caller already fenced the engine execution (FAILED, so a late
+  * worker can no longer open an engine phase) and proved it has no driver
+  * receipt. Under the operation lock this re-checks INTENT, age and that no AI
+  * call was ever bound to it; otherwise it stays for reconciliation. */
+ async settleStoppedBeforeEffects(workspaceId:string,runId:string,operationId:string,reason:string,minimumIntentAgeSeconds:number){
+  return this.closeIntent(workspaceId,runId,operationId,reason,minimumIntentAgeSeconds,true);
+ }
+ private async closeIntent(workspaceId:string,runId:string,operationId:string,reason:string,minimumIntentAgeSeconds:number,admitted:boolean){
   need(uuid.test(runId)&&uuid.test(operationId)&&/^[A-Z0-9_]{1,80}$/.test(reason)&&Number.isInteger(minimumIntentAgeSeconds)&&minimumIntentAgeSeconds>=0,'LAB_OUTCOME');
   return this.tx(workspaceId,async db=>{
    const o=(await db.query("SELECT *,intent_at<=clock_timestamp()-make_interval(secs=>$4) AS stale FROM commerce_number_lab.operations WHERE workspace_id=$1 AND run_id=$2 AND id=$3 FOR UPDATE",[workspaceId,runId,operationId,minimumIntentAgeSeconds])).rows[0];need(o,'LAB_OPERATION_MISSING');
    if(o.state!=='INTENT'||!o.stale)return null;
    const r=(await db.query('SELECT * FROM commerce_number_lab.runs WHERE workspace_id=$1 AND id=$2 FOR UPDATE',[workspaceId,runId])).rows[0];
    if(!r||amount(r.version)!==amount(o.expected_version)||!['READY','RUNNING','PARTIAL'].includes(r.state))return null;
+   // An AI binding means a call was reserved (confirmed or uncertain): never closed here.
+   if(admitted&&Number((await db.query('SELECT count(*)::int n FROM commerce_number_lab.ai_bindings WHERE workspace_id=$1 AND run_id=$2 AND operation_id=$3',[workspaceId,runId,operationId])).rows[0].n)!==0)return null;
    const runState=r.state==='READY'?'RUNNING':String(r.state);
-   const result=sealLabValue({workspaceId,runId,purpose:'result',operationId},{schema_version:1,run_state:runState,result:{state:'DEPENDENCY_REQUIRED',reason,engine_admitted:false,external_effects:0}},this.key);
+   const result=sealLabValue({workspaceId,runId,purpose:'result',operationId},{schema_version:1,run_state:runState,result:{state:'DEPENDENCY_REQUIRED',reason,engine_admitted:admitted,...(admitted?{effects:0,ai_calls:0}:{}),external_effects:0}},this.key);
    const saved=(await db.query("UPDATE commerce_number_lab.operations SET state='FAILED',result_ciphertext=$4 WHERE workspace_id=$1 AND run_id=$2 AND id=$3 RETURNING *",[workspaceId,runId,operationId,result])).rows[0];
    await db.query('UPDATE commerce_number_lab.runs SET state=$3,version=version+1 WHERE workspace_id=$1 AND id=$2',[workspaceId,runId,runState]);
    return presentOperation(saved,this.key);

@@ -326,6 +326,32 @@ export function createNumberLabDriver(options:{controlPool:ProfilePool;seedPool:
    if(admitted)return null;
    return store.settleNotAdmitted(i.workspaceId,i.runId,i.operationId,'LAB_OPERATION_NOT_ADMITTED',minimumIntentAgeSeconds);
   },
+  /** V7.5.4: a stale INTENT the engine admitted but that never produced a
+   * driver receipt stopped before any effect (the action, its simulation and
+   * its receipt commit in one engine transaction; AI and transport come after).
+   * Order: (1) control: INTENT, old enough, no AI binding; (2) engine, under
+   * the execution row lock (an engine phase holds it FOR SHARE and re-verifies
+   * INTENT at its start and end): still no receipt, then FAILED, which fences
+   * any late worker; (3) control closes it FAILED under its own lock with the
+   * reason. Repeated, concurrent or after a restart it converges on the same
+   * single closure; a receipt or an AI binding leaves it for reconciliation. */
+  async settleStoppedBeforeEffects(raw:unknown,minimumIntentAgeSeconds:number){
+   const i=input(raw);
+   if(!await store.stoppedCandidate(i.workspaceId,i.runId,i.operationId,minimumIntentAgeSeconds))return null;
+   const c=await readControl(options.controlPool,key,installed,i,false);
+   const fenced=await withProfileTransaction(options.seedPool,'number-lab:'+i.runId,async db=>{
+    await db.query("SELECT pg_catalog.set_config('app.environment','SIMULATION',true)");await seedIdentity(db,installed);
+    const execution=(await db.query('SELECT state,snapshot_sha256,engine_sha256 FROM commerce_number_lab_engine.executions WHERE run_id=$1 AND operation_id=$2 FOR UPDATE',[i.runId,i.operationId])).rows[0];
+    if(!execution)return false;
+    need(execution.snapshot_sha256===c.plan.snapshot_sha256&&execution.engine_sha256===installed.engineSha256,'LAB_DRIVER_CAPTURE_CHANGED');
+    const receipts=Number((await db.query('SELECT count(*)::int n FROM commerce_number_lab_engine.driver_receipts WHERE run_id=$1 AND operation_id=$2',[i.runId,i.operationId])).rows[0].n);
+    if(receipts!==0||!['INTENT','FAILED'].includes(execution.state))return false;
+    if(execution.state==='INTENT')await db.query("UPDATE commerce_number_lab_engine.executions SET state='FAILED' WHERE run_id=$1 AND operation_id=$2 AND state='INTENT'",[i.runId,i.operationId]);
+    await seedIdentity(db,installed);return true;
+   });
+   if(!fenced)return null;
+   return store.settleStoppedBeforeEffects(i.workspaceId,i.runId,i.operationId,'LAB_OPERATION_STOPPED_BEFORE_EFFECTS',minimumIntentAgeSeconds);
+  },
   async execute(raw:unknown){
    const i=input(raw);let prepared:Awaited<ReturnType<typeof materializer.prepare>>;
    try{prepared=await materializer.prepare(i);}

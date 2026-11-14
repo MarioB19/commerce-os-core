@@ -1,5 +1,34 @@
 # Estado de publicación
 
+## 14-nov-2026 — V7.5.4: recuperar la matriz pagada del laboratorio y seguir la publicación, candidato (Claude)
+
+Desde V7.5.3 `618ce5c5`, instalada el 14-nov 00:16 UTC (SUCCEEDED/OPERATING, 122
+migraciones, GitHub Deployment `7779710209`). Sin migraciones nuevas. Decisiones:
+`docs/adr-v7-5-4-lab-matrix-recovery.md` y `docs/adr-v7-ci-pool-fourth-extension.md`.
+
+- **Defecto 1 (`2abb09d`).** Un número que sigue una variante vende con la
+  publicación vigente (F4), pero su binding conserva la oferta, el flujo y el
+  vendedor con los que se asignó. Tras volver a publicar, el driver fallaba
+  cerrado con `LAB_DRIVER_ASSIGNMENTS_CHANGED` antes de la IA (matriz pagada de
+  MCL en producción, 0 llamadas). El plan compila el binding como lo enruta una
+  conversación nueva; con un binding fijo no cambia nada.
+- **Defecto 2.** Esos cuatro pasos quedaron admitidos en `INTENT` sin recibo: el
+  worker sólo cerraba los no admitidos. Ahora los cierra como detenidos antes de
+  efectos (`LAB_OPERATION_STOPPED_BEFORE_EFFECTS`), después de cercar la
+  ejecución del motor (bloquea al worker atrasado) y sin tocar los que tienen
+  recibo o vínculo de IA. Un solo cierre aunque se repita, corra en paralelo o
+  tras un reinicio.
+- **Defecto 3.** `admitSuiteMatrix` sumaba los máximos de todas las suites,
+  también las terminadas: la matriz no admitía continuar. Ahora una suite
+  terminal cuenta sólo su consumo confirmado e incierto; una abierta, su máximo.
+  `continues_suite_id` vincula la continuación (mismo número y matriz).
+- **CI.** Medidor del controlador: sólo noviembre de 2026 a 74,500 s (mínimo para
+  esta cadena con un reintento); imagen derivada del controlador vivo, revisión
+  `commerce-v7-controller-core-v754-meter74500` (`controller@sha256:4a9f0b74…`).
+- **Pruebas locales.** typecheck y lint limpios; unitarias 2,338; integración
+  `v7-number-lab` 12/12 (incluida la reproducción del 409 y su recuperación),
+  driver 41, IA 20, laboratorio 12, remarketing MCL 6; Python CI del medidor 29.
+
 ## 13-nov-2026 — V7.5.3: acuerdo contextual, recepciones de grupo, laboratorio por tier y remarketing MCL, candidato (Claude)
 
 Desde V7.5.2 `13461428` (instalada el 13-nov, 121 migraciones). Decisiones:

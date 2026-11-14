@@ -11,7 +11,7 @@ import {diagnoseNumberTest,duringFix} from './number-test-diagnosis.js';
 import {createHash} from 'node:crypto';
 import {estimateNumberLab,labHash,type LabScenario} from '../../../packages/domain/src/laboratory/number-lab.js';
 import {syntheticReceiptPdf} from '../../../packages/domain/src/laboratory/synthetic-receipt.js';
-import {readSuiteByStart,insertSuite,insertSuiteCase,latestSuiteId,readSuiteReport,suiteDerivedId,admitSuiteMatrix} from '../../../packages/db/src/number-lab-suites.js';
+import {readSuiteByStart,insertSuite,insertSuiteCase,latestSuiteId,readSuiteReport,suiteDerivedId,admitSuiteMatrix,readContinuedSuite} from '../../../packages/db/src/number-lab-suites.js';
 import type {SuiteJourney} from '../../../packages/domain/src/laboratory/automatic-buyer.js';
 import {numberLabActionSchema} from '../../../packages/contracts/src/number-laboratory.js';
 import {laboratoryAiConfiguration,laboratoryGrants,type VariantAiSelection} from '../../../packages/ai-providers/src/variant-ai.js';
@@ -48,6 +48,7 @@ const messages:Record<string,string>={
  LAB_ATTACHMENT_LIMIT:'Esta prueba ya tiene 20 comprobantes. Inicia otra.',LAB_ATTACHMENT_NOT_FOUND:'No encontramos ese comprobante en esta prueba.',
  LAB_RUN_EXPIRED:'Esta prueba venció: las pruebas se guardan 30 días. Inicia otra.',
  LAB_SUITE_NOT_FOUND:'No encontramos esa prueba automática en este perfil.',
+ LAB_CONTINUATION_MISMATCH:'La prueba que continúas es de otro número o de otra matriz.',LAB_CONTINUATION_NOT_TERMINAL:'La prueba que continúas aún no termina o tiene un paso sin conciliar.',
  LAB_MATRIX_LIMIT:'La matriz de pruebas ya reservó su límite total de llamadas o costo; esta prueba no cabe.',LAB_MATRIX_LIMIT_CHANGED:'El límite de la matriz no puede cambiar después de su primera prueba.',
  LAB_MATRIX_ID:'Identificador de matriz inválido.',LAB_MATRIX_LIMIT_INVALID:'El límite de la matriz es inválido.',LAB_TIERS:'El importe elegido no existe en la variante.',
  LAB_SUITE_SELECTION_DUPLICATE:'La selección repite un caso.',LAB_SUITE_SELECTION_ONE_PURCHASE_TIER:'Cada compra de prueba usa un solo importe.',LAB_SUITE_SELECTION_NOT_IN_NUMBER:'Algún caso elegido no corresponde a una variante del número.',LAB_SUITE_TIER_NOT_FOUND:'El importe elegido no existe en la oferta publicada.',
@@ -111,6 +112,8 @@ function presentEstimate(p:Awaited<ReturnType<typeof prepare>>){
 const reasonLabels:Record<string,string>={
  // V7.5.2 L01/T01: steps closed before the engine ran (nothing executed, nothing charged).
  LAB_OPERATION_NOT_ADMITTED:'Este paso no llegó a ejecutarse (sin motor ni IA, sin costo); quedó cerrado sin resultado.',
+ // V7.5.4: admitted, but stopped before any effect (no result, no AI call, no cost).
+ LAB_OPERATION_STOPPED_BEFORE_EFFECTS:'Este paso se detuvo antes de producir efectos (sin resultado, sin IA y sin costo); quedó cerrado y la prueba puede continuar con otra.',
  PRIVATE_NAMESPACE_LOCK_UNINITIALIZED:'El almacenamiento del laboratorio no estaba preparado; el paso no se ejecutó ni se cobró.',
  PRIVATE_NAMESPACE_BUSY:'El almacenamiento del laboratorio estaba ocupado; el paso no se ejecutó ni se cobró.',LAB_CONVERSATION_REQUIRED:'Primero escribe un mensaje como cliente.',LAB_ATTACHMENT_DRIVER_REQUIRED:'Este servidor no tiene habilitados los comprobantes de prueba.',LAB_ATTACHMENT_NOT_FOUND:'No encontramos ese comprobante en esta prueba.',LAB_RECEIPT_NOT_FOUND:'Ese comprobante no es de esta conversación.',
  AUTOMATIC_DRIVER_REQUIRED:'El comprador automático aún no está disponible.',CANONICAL_MESSAGE_LIMIT:'El mensaje es demasiado largo.',LAB_SELLER_GRANT_REQUIRED:'Falta confirmar la IA de la prueba.'};
@@ -228,7 +231,8 @@ export async function numberTestRoutes(app:FastifyInstance,deps?:ProfileRequestD
   return{data:await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:run',mutation:true},async({db,profile})=>presentSuiteEstimate(await prepareSuite(db,profile.authority,q.account_id,q.cases)),deps))};});
  app.post('/v2/number-tests/suites',{bodyLimit:4096},async(req,reply)=>{const q=z.object({account_id:z.string().uuid(),accepted_maximum_microusd:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
    cases:z.array(suiteCaseSchema).min(1).max(4).optional(),
-   matrix:z.object({id:z.string().uuid(),maximum_microusd:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),maximum_ai_calls:z.number().int().positive().max(19200)}).strict().optional()}).strict().parse(req.body),operationId=operationKey(req);
+   matrix:z.object({id:z.string().uuid(),maximum_microusd:z.number().int().positive().max(Number.MAX_SAFE_INTEGER),maximum_ai_calls:z.number().int().positive().max(19200)}).strict().optional(),
+   continues_suite_id:z.string().uuid().optional()}).strict().parse(req.body),operationId=operationKey(req);
   const data=await mapped(()=>withProfileRequest(req,'REAL',{scope:'tests:run',mutation:true},async({db,profile})=>{
    const a=profile.authority as ProfileAuthority,key=numberLabKeys().control;
    const prior=await readSuiteByStart(db,a,operationId);if(prior)return{suite_id:prior,created:false};
@@ -237,6 +241,8 @@ export async function numberTestRoutes(app:FastifyInstance,deps?:ProfileRequestD
    if((await db.query(`SELECT 1 FROM commerce_number_lab.suites s WHERE s.workspace_id=$1 AND s.account_id=$2 AND s.state='RUNNING'
      AND EXISTS(SELECT 1 FROM commerce_number_lab.suite_cases c JOIN commerce_number_lab.runs r ON r.workspace_id=c.workspace_id AND r.id=c.run_id
       WHERE c.workspace_id=s.workspace_id AND c.suite_id=s.id AND c.state='RUNNING' AND r.expires_at>clock_timestamp()) LIMIT 1`,[db.workspaceId,q.account_id])).rowCount)fail('LAB_SUITE_IN_PROGRESS');
+   // V7.5.4: a continuation of a terminal suite (same number and matrix).
+   const continued=q.continues_suite_id?await readContinuedSuite(db,a,q.continues_suite_id,q.account_id,q.matrix?.id??null):null;
    const p=await prepareSuite(db,a,q.account_id,q.cases);
    if(p.maximum_microusd>q.accepted_maximum_microusd)fail('LAB_ESTIMATE_INCREASED');
    if(q.matrix)await admitSuiteMatrix(db,a,q.matrix,{maximum_microusd:p.maximum_microusd,maximum_ai_calls:p.maximum_ai_calls});
@@ -253,7 +259,9 @@ export async function numberTestRoutes(app:FastifyInstance,deps?:ProfileRequestD
     if(c.journey==='PURCHASE'){const tz=c.release.locale.timezone,paidOn=new Intl.DateTimeFormat('en-CA',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(run.virtual_now));
      const pdf=syntheticReceiptPdf({amountMinor:amount!,currency:c.release.locale.currency,minorDigits:minorDigits(c.release.locale.currency),paidOn,reference:'LAB-'+run.run_id.slice(0,8).toUpperCase()});
      attachment=(await attachNumberLabFile(db,a,run.run_id,{mime_type:'application/pdf',base64:pdf.toString('base64')},key)).attachment_id;}
-    await insertSuiteCase(db,{suite_id:suiteId,run_id:run.run_id,variant_id:c.variant_id,journey:c.journey,expect_followup:c.journey==='FOLLOWUP'&&await expectsFollowup(db,c.variant_id),attachment_id:attachment,...(q.cases?{plan:{...(amount!==null?{receipt_amount_minor:amount}:{}),...(c.tier_id?{tier_id:c.tier_id}:{})}}:{})});
+    const previous=continued?.cases.find(x=>x.variant_id===c.variant_id&&x.journey===c.journey);
+    const link=continued?{continues_suite_id:continued.suite_id,...(previous?{continues_run_id:previous.run_id}:{})}:{};
+    await insertSuiteCase(db,{suite_id:suiteId,run_id:run.run_id,variant_id:c.variant_id,journey:c.journey,expect_followup:c.journey==='FOLLOWUP'&&await expectsFollowup(db,c.variant_id),attachment_id:attachment,...(q.cases||continued?{plan:{...(amount!==null&&q.cases?{receipt_amount_minor:amount}:{}),...(c.tier_id&&q.cases?{tier_id:c.tier_id}:{}),...link}}:{})});
    }
    return{suite_id:suiteId,created:true};
   },deps));

@@ -161,6 +161,38 @@ class MeterTests(unittest.TestCase):
         with self.assertRaisesRegex(AdmissionError, 'MONTHLY_CEILING'):
             self.meter.extend(self.reserve(), 450)
 
+    def test_november_extension_admits_the_v754_chain_only(self):
+        # 14-nov-2026: November held 67,445 s (the shape below is illustrative;
+        # the total is the live one). The V7.5.4 chain needs two FULLs
+        # (3 x 450 + 120 each), two attestations (3 x 450 each) and one retry of
+        # an attestation (3 x 450): 6,990 s. November alone is raised to 74,500 s.
+        self.time = datetime(2026, 11, 14, 6, tzinfo=timezone.utc)
+        for seconds, count in ((450, 141), (120, 33), (5, 7)):
+            for _ in range(count):
+                reservation = self.meter.extend(self.reserve(), seconds) if seconds > 5 else self.reserve()
+                self.meter.finish(reservation, {'ok': True})
+        self.assertEqual(usage(self.store.document)['2026-11']['cpu_ms'], 67_445_000)
+        old_rows = copy.deepcopy(self.store.document['requests'])
+        chain = [450, 450, 450, 120] * 2 + [450, 450, 450] * 3
+        self.assertEqual(sum(chain), 6_990)
+        for seconds in chain:
+            reservation = self.meter.extend(self.reserve(), seconds)
+            self.meter.finish(reservation, {'ok': True})
+        for key, row in old_rows.items():
+            self.assertEqual(self.store.document['requests'][key], row)
+        self.assertEqual(usage(self.store.document)['2026-11']['cpu_ms'], 74_435_000)
+        with self.assertRaisesRegex(AdmissionError, 'MONTHLY_CEILING'):
+            self.meter.extend(self.reserve(), 120)
+
+    def test_november_extension_does_not_reach_other_months(self):
+        self.time = datetime(2026, 12, 1, 6, tzinfo=timezone.utc)
+        for _ in range(155):
+            reservation = self.meter.extend(self.reserve(), 450)
+            self.meter.finish(reservation, {'ok': True})
+        self.assertEqual(usage(self.store.document)['2026-12']['cpu_ms'], 69_750_000)
+        with self.assertRaisesRegex(AdmissionError, 'MONTHLY_CEILING'):
+            self.meter.extend(self.reserve(), 450)
+
     def test_conflict_never_retries_cas(self):
         self.store.failure = 'conflict'
         with self.assertRaises(CASConflict):

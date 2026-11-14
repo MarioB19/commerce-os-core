@@ -12,7 +12,8 @@ import {pool,withTransaction,readOperationalSettings,writeOperationalSettings} f
 import {withProfileTransaction} from '../../packages/db/src/profile-context.js';
 import {saveAiPreferences,saveAiKey,verifyAiKey,aiCredentialKey} from '../../packages/ai-providers/src/profile-integrations.js';
 import {installNumberLabEngine,numberLabUrls} from '../../packages/db/src/number-lab-install.js';
-import {numberLabRuntimeFromEnv,processNumberLabOperations,type NumberLabRuntime} from '../../apps/automation-worker/src/number-lab-runner.js';
+import {numberLabRuntimeFromEnv,processNumberLabOperations,reconcileStaleNumberLabOperation,type NumberLabRuntime} from '../../apps/automation-worker/src/number-lab-runner.js';
+import {createNumberLabEngineRuntime,withNumberLabEngine} from '../../packages/db/src/number-lab-engine-runtime.js';
 import type {ProfileAuthority} from '../../packages/domain/src/core/profile-authorization.js';
 import {localInventoryTarget} from '../../scripts/profile-inventory.js';
 import {writeReceiptPolicy} from '../../packages/db/src/receipt-policies.js';
@@ -73,7 +74,7 @@ beforeAll(async()=>{
  created.push(...Object.values(installation.logins!).map(l=>l.user));
  // Idempotent: a second run verifies and never rebuilds or issues logins.
  const again=await installNumberLabEngine(url.toString());expect(again).toEqual({database:installation.database,installationId:installation.installationId,engineSha256:installation.engineSha256,created:false});
- await fixtureProfiles({id:P,numbers:12});app=await createApp();ownerId=(await login('owner','owner')).id;await login('operator','operator');
+ await fixtureProfiles({id:P,numbers:15});app=await createApp();ownerId=(await login('owner','owner')).id;await login('operator','operator');
  aiPool=new pg.Pool({connectionString:process.env.DATABASE_URL,max:3});aiPool.on('connect',c=>{void c.query('SET ROLE commerce_ai');});
  authority={profile:{id:P,state:'ACTIVE'},membership:{userId:ownerId,workspaceId:P,role:'owner',active:true,version:1},
   credential:{kind:'session',userId:ownerId,workspaceId:P,revoked:false,expiresAt:new Date(Date.now()+3600000).toISOString(),scopes:[],membershipVersion:1}};
@@ -449,6 +450,36 @@ it('runs the automatic buyer over every variant of a number and reports one verd
  expect(await footprint()).toEqual(before);
 },240000);
 
+// V7.5.4: a number that follows a variant is sold with the variant's current
+// release (RF/F4). Republishing after the assignment must not break its test:
+// production 14-nov, every run of the paid matrix failed closed with
+// LAB_DRIVER_ASSIGNMENTS_CHANGED before any AI call.
+it('V7.5.4: tests a number with the republished release of the variant it follows',async()=>{
+ const link=data(await call('owner','POST','/v2/materials?environment=REAL',{name:'Acceso republicado',kind:'link',url:'https://example.com/republicado'}),201).id as string;
+ let v=data(await call('owner','POST','/v2/products',{name:'Republicado',variant:{name:'México',locale:MX}}),201).variant;
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/offer`,{expected_version:v.version,value:{...v.document.offer,price_minor:4500,fulfillment:[{asset_id:link,release_on:'receipt_approved'}]}}));
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/collection`,{expected_version:v.version,value:{spei:{bank:'Banco sintético',holder:'Titular sintético',clabe:clabe('01218000011835971')},links:[],instructions:''}}));
+ v=data(await call('owner','POST',`/v2/variants/${v.id}/publish`,{expected_version:v.version,document_sha256:v.document_sha256})).variant;
+ const number=await withTransaction(async c=>{await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','REAL',true)",[P]);
+  return(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','channel_account',$2) RETURNING id",[P,{name:'Ventas republicado',provider:'waha',gateway_ref:'lab-'+randomUUID(),status:'WORKING',sending_enabled:true,identity_verified:true}])).rows[0].id as string;});
+ data(await call('owner','POST',`/v2/variants/${v.id}/numbers`,{account_id:number,sell:true}));
+ // The owner edits and republishes; the number keeps following the variant.
+ v=data(await call('owner','GET',`/v2/variants/${v.id}?environment=REAL`));
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/remarketing`,{expected_version:v.version,value:{schema_version:1,policy_id:'remarketing-3-slot',policy_revision:1,window:{start_hour:0,end_hour:24},
+  slots:[1,2,3].map((position,i)=>({id:'slot-'+position,position,enabled:position===1,delay:{quantity:[2,8,24][i],unit:'hours'},stages:{awaiting_agreement:{medium:'text',text:`¿Seguimos? (${position})`},awaiting_payment:{medium:'text',text:`¿Pagas? (${position})`}}}))}}));
+ const republished=data(await call('owner','POST',`/v2/variants/${v.id}/publish`,{expected_version:v.version,document_sha256:v.document_sha256}));
+ expect(republished.numbers_following).toBe(1);
+ const estimate=data(await call('owner','POST','/v2/number-tests/suites/estimate',{account_id:number,cases:[{variant_id:v.id,journey:'FOLLOWUP',tier_id:'base'}]}));
+ const started=data(await call('owner','POST','/v2/number-tests/suites',{account_id:number,accepted_maximum_microusd:estimate.maximum_microusd,cases:[{variant_id:v.id,journey:'FOLLOWUP',tier_id:'base'}]}),201);
+ let report:any;
+ for(let i=0;i<30;i++){await processNumberLabOperations(runtime);report=data(await call('owner','GET',`/v2/number-tests/suites/${started.suite_id}`));if(report.suite.state==='COMPLETED')break;}
+ expect(report.suite.state,JSON.stringify(report.variants)).toBe('COMPLETED');
+ const followup=report.variants[0].cases.find((c:{journey:string})=>c.journey==='FOLLOWUP');
+ expect(followup.checks.find((c:{name:string})=>c.name==='followup')).toMatchObject({state:'PASSED'});
+ // The run used the current release (the republished one), not the assigned one.
+ expect(data(await call('owner','GET',`/v2/number-tests/${followup.run_id}`)).variants[0].revision).toBe(2);
+},240000);
+
 // V7.5.3: one paid matrix across two numbers. Selected cases (journey and
 // tier) narrow each suite; the matrix keeps one persistent ceiling for both.
 // The purchase pays the tier's amount, so 97 and 107 are executed; delivery is
@@ -490,13 +521,133 @@ it('V7.5.3: a matrix runs 97 on one number and 107 on another within one ceiling
  expect(c107.plan).toEqual({receipt_amount_minor:10700,tier_id:'apoyo_107'});
  expect(c107.checks.find((c:{name:string})=>c.name==='delivery')).toMatchObject({state:'PASSED',detail:expect.stringContaining('Llegaron los 2 materiales')});
  expect(c97.checks.find((c:{name:string})=>c.name==='delivery')).toMatchObject({state:'PASSED',detail:expect.stringContaining('Llegaron los 1 materiales')});
- // The persistent ceiling is spent: a third suite under the same matrix is refused before anything runs.
- const refused=await call('owner','POST','/v2/number-tests/suites',{account_id:numbers[0],accepted_maximum_microusd:e97.maximum_microusd,cases:[{variant_id:v.id,journey:'FOLLOWUP',tier_id:'acuerdo_97'}],matrix});
+ // The persistent ceiling counts what both suites consumed (V7.5.4: a terminal
+ // suite holds its confirmed and uncertain use, an open one its whole maximum).
+ // A third suite fits only in the unconsumed part; once open it holds its
+ // maximum, so a fourth one is refused before anything runs.
+ const used=Number((await withTransaction(c=>c.query("SELECT count(*)::int n FROM commerce_number_lab.ai_bindings b JOIN commerce_number_lab.suite_cases sc ON sc.workspace_id=b.workspace_id AND sc.run_id=b.run_id JOIN commerce_number_lab.suites s ON s.workspace_id=sc.workspace_id AND s.id=sc.suite_id WHERE s.workspace_id=$1 AND s.matrix_id=$2",[P,matrix.id]))).rows[0].n);
+ expect(used).toBeGreaterThan(0);expect(used).toBeLessThanOrEqual(16);
+ const third=await call('owner','POST','/v2/number-tests/suites',{account_id:numbers[0],accepted_maximum_microusd:e97.maximum_microusd,cases:[{variant_id:v.id,journey:'FOLLOWUP',tier_id:'acuerdo_97'}],matrix});
+ expect(third.statusCode,third.body).toBe(used+8<=16?201:409);
+ const refused=await call('owner','POST','/v2/number-tests/suites',{account_id:numbers[1],accepted_maximum_microusd:e107.maximum_microusd,cases:[{variant_id:v.id,journey:'FOLLOWUP',tier_id:'apoyo_107'}],matrix});
  expect(refused.statusCode).toBe(409);expect(refused.json().error).toMatchObject({code:'LAB_MATRIX_LIMIT'});
- const raised=await call('owner','POST','/v2/number-tests/suites',{account_id:numbers[0],accepted_maximum_microusd:e97.maximum_microusd,cases:select('acuerdo_97'),matrix:{...matrix,maximum_ai_calls:64}});
+ const raised=await call('owner','POST','/v2/number-tests/suites',{account_id:numbers[1],accepted_maximum_microusd:e107.maximum_microusd,cases:select('apoyo_107'),matrix:{...matrix,maximum_ai_calls:64}});
  expect(raised.json().error).toMatchObject({code:'LAB_MATRIX_LIMIT_CHANGED'});
  expect(await footprint()).toEqual(before);
 },240000);
+
+// V7.5.4: production 14-nov. Two numbers follow Mi Ciclo Listo and the owner
+// republished after assigning them; the paid matrix admitted two suites (four
+// runs). Every first step was admitted by the engine and stopped before any
+// effect (in production by LAB_DRIVER_ASSIGNMENTS_CHANGED; here by an engine
+// that becomes unreachable right after admission, which leaves the same state:
+// control INTENT, engine execution INTENT, no receipt, no simulation, no AI).
+// The start answered 409 LAB_SUITE_IN_PROGRESS and the matrix stayed fully
+// reserved. The worker recovers each step once (fenced in the engine first),
+// the suites conclude «Incompleto» with their history, and a continuation
+// linked to them runs under the same matrix and ceiling with the current release.
+it('V7.5.4: recovers a paid matrix whose four steps stopped before any effect and continues it under the same ceiling',async()=>{
+ const links=[] as string[];for(const name of ['Inicial A','Inicial B','Calendario R','Kit R'])links.push(data(await call('owner','POST','/v2/materials?environment=REAL',{name,kind:'link',url:'https://example.com/r/'+encodeURIComponent(name)}),201).id as string);
+ let v=data(await call('owner','POST','/v2/products',{name:'Recuperación',variant:{name:'México',locale:MX}}),201).variant;
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/sale`,{expected_version:v.version,value:{...v.document.sale,conversation:{...v.document.sale.conversation,deliver_before_payment:true}}}));
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/offer`,{expected_version:v.version,value:{...v.document.offer,price_minor:9700,
+  tiers:[{id:'acuerdo_97',name:'Lo Acordado',minimum_total_minor:1},{id:'apoyo_107',name:'Apoyo Valioso',minimum_total_minor:10700,included_extra_from_minor:10700}],
+  fulfillment:[{asset_id:links[0],release_on:'commitment_accepted'},{asset_id:links[1],release_on:'commitment_accepted'},{asset_id:links[2],release_on:'receipt_approved'},{asset_id:links[3],release_on:'receipt_approved',min_amount_minor:10700}]}}));
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/collection`,{expected_version:v.version,value:{spei:{bank:'Banco sintético',holder:'Titular sintético',clabe:clabe('01218000011835971')},links:[],instructions:''}}));
+ v=data(await call('owner','POST',`/v2/variants/${v.id}/publish`,{expected_version:v.version,document_sha256:v.document_sha256})).variant;
+ const numbers:string[]=[];
+ for(const name of ['Recupera A','Recupera B']){numbers.push(await withTransaction(async c=>{await c.query("SELECT set_config('app.workspace_id',$1,true),set_config('app.environment','REAL',true)",[P]);
+  return(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','channel_account',$2) RETURNING id",[P,{name,provider:'waha',gateway_ref:'lab-'+randomUUID(),status:'WORKING',sending_enabled:true,identity_verified:true}])).rows[0].id as string;}));
+  data(await call('owner','POST',`/v2/variants/${v.id}/numbers`,{account_id:numbers.at(-1),sell:true}));}
+ // Republished after the assignment (remarketing slot 1): both numbers follow it.
+ v=data(await call('owner','GET',`/v2/variants/${v.id}?environment=REAL`));
+ v=data(await call('owner','PUT',`/v2/variants/${v.id}/remarketing`,{expected_version:v.version,value:{schema_version:1,policy_id:'remarketing-3-slot',policy_revision:1,window:{start_hour:0,end_hour:24},
+  slots:[1,2,3].map((position,i)=>({id:'slot-'+position,position,enabled:position===1,delay:{quantity:[2,8,24][i],unit:'hours'},stages:{awaiting_agreement:{medium:'text',text:`¿Seguimos? (${position})`},awaiting_payment:{medium:'text',text:`¿Pagas? (${position})`}}}))}}));
+ expect(data(await call('owner','POST',`/v2/variants/${v.id}/publish`,{expected_version:v.version,document_sha256:v.document_sha256})).numbers_following).toBe(2);
+ const before=await footprint(),calls=[sellerCalls,visionCalls];
+ const tiers=['acuerdo_97','apoyo_107'],select=(tier:string)=>[{variant_id:v.id,journey:'PURCHASE',tier_id:tier},{variant_id:v.id,journey:'FOLLOWUP',tier_id:tier}];
+ const estimates=[] as any[];for(const [i,n] of numbers.entries())estimates.push(data(await call('owner','POST','/v2/number-tests/suites/estimate',{account_id:n,cases:select(tiers[i]!)})));
+ const matrix={id:randomUUID(),maximum_microusd:estimates[0].maximum_microusd+estimates[1].maximum_microusd,maximum_ai_calls:estimates[0].maximum_ai_calls+estimates[1].maximum_ai_calls};
+ const start=(i:number,extra:Record<string,unknown>={})=>call('owner','POST','/v2/number-tests/suites',{account_id:numbers[i],accepted_maximum_microusd:estimates[i].maximum_microusd,cases:select(tiers[i]!),matrix,...extra});
+ const suites=[data(await start(0),201).suite_id as string,data(await start(1),201).suite_id as string];
+ const stalled={...runtime!,engine:{connect:async()=>{throw Error('LAB_ENGINE_UNREACHABLE');}}} as NumberLabRuntime;
+ for(let i=0;i<3;i++)await processNumberLabOperations(stalled);
+ const admin=new pg.Client({connectionString:process.env.DATABASE_URL});await admin.connect();
+ const engineUrl=new URL(process.env.DATABASE_URL!);engineUrl.pathname='/'+engineDatabase;const engine=new pg.Client({connectionString:engineUrl.toString()});await engine.connect();
+ try{
+  const ops=async()=>(await admin.query(`SELECT o.run_id::text,o.id::text AS operation_id,o.state FROM commerce_number_lab.operations o JOIN commerce_number_lab.suite_cases c ON c.workspace_id=o.workspace_id AND c.run_id=o.run_id
+   WHERE c.workspace_id=$1 AND c.suite_id=ANY($2::uuid[]) ORDER BY o.run_id`,[P,suites])).rows as {run_id:string;operation_id:string;state:string}[];
+  const stuck=await ops();expect(stuck.map(o=>o.state)).toEqual(['INTENT','INTENT','INTENT','INTENT']);
+  const runIds=stuck.map(o=>o.run_id);
+  const engineState=async()=>({executions:(await engine.query('SELECT state,count(*)::int n FROM commerce_number_lab_engine.executions WHERE run_id=ANY($1::uuid[]) GROUP BY state',[runIds])).rows,
+   receipts:Number((await engine.query('SELECT count(*)::int n FROM commerce_number_lab_engine.driver_receipts WHERE run_id=ANY($1::uuid[])',[runIds])).rows[0].n),
+   simulations:Number((await engine.query("SELECT count(*)::int n FROM records WHERE kind='simulation' AND id=ANY($1::uuid[])",[runIds])).rows[0].n)});
+  expect(await engineState()).toEqual({executions:[{state:'INTENT',n:4}],receipts:0,simulations:0});
+  const aiBound=async()=>Number((await admin.query('SELECT count(*)::int n FROM commerce_number_lab.ai_bindings WHERE workspace_id=$1 AND run_id=ANY($2::uuid[])',[P,runIds])).rows[0].n);
+  expect(await aiBound()).toBe(0);
+  // The 409 of V7.5.3, on both numbers, and the matrix fully reserved.
+  for(const i of [0,1]){const r=await start(i);expect(r.statusCode).toBe(409);expect(r.json().error).toMatchObject({code:'LAB_SUITE_IN_PROGRESS'});}
+  // A recent INTENT is never closed (a claim may still be preparing).
+  const input=(o:{run_id:string;operation_id:string})=>({workspaceId:P,runId:o.run_id,operationId:o.operation_id});
+  expect(await reconcileStaleNumberLabOperation(runtime!,input(stuck[0]!))).toEqual({settled:null});
+  // Recovery: twice concurrently and once more as after a restart; each step closes exactly once.
+  for(const o of stuck){
+   const outcomes=await Promise.all([reconcileStaleNumberLabOperation(runtime!,input(o),0),reconcileStaleNumberLabOperation(runtime!,input(o),0)]);
+   expect(outcomes.map(x=>x.settled).sort()).toEqual(['STOPPED_BEFORE_EFFECTS',null].sort());
+   expect(await reconcileStaleNumberLabOperation(runtime!,input(o),0)).toEqual({settled:null});
+   const events=(await admin.query('SELECT state FROM commerce_number_lab.events WHERE workspace_id=$1 AND run_id=$2 AND operation_id=$3 ORDER BY state',[P,o.run_id,o.operation_id])).rows.map(r=>r.state);
+   expect(events.filter(s=>s==='FAILED')).toHaveLength(1);
+  }
+  expect((await ops()).map(o=>o.state)).toEqual(['FAILED','FAILED','FAILED','FAILED']);
+  expect(await engineState()).toEqual({executions:[{state:'FAILED',n:4}],receipts:0,simulations:0});
+  // A late worker can no longer open an engine phase for a fenced step.
+  const fenced=(await engine.query('SELECT snapshot_sha256 FROM commerce_number_lab_engine.executions WHERE run_id=$1 AND operation_id=$2',[stuck[0]!.run_id,stuck[0]!.operation_id])).rows[0].snapshot_sha256 as string;
+  await expect(createNumberLabEngineRuntime(runtime!.engine,runtime!.identity).lease({runId:stuck[0]!.run_id,operationId:stuck[0]!.operation_id,snapshotSha256:fenced})
+   .then(late=>withNumberLabEngine(late,p=>p.transaction(db=>db.query('SELECT 1'))))).rejects.toThrow('LAB_ENGINE_BINDING_REQUIRED');
+  expect(await aiBound()).toBe(0);expect([sellerCalls,visionCalls]).toEqual(calls);
+  // The suites conclude «Incompleto» with the reason; their history stays.
+  for(let i=0;i<3;i++)await processNumberLabOperations(runtime);
+  for(const id of suites){const report=data(await call('owner','GET',`/v2/number-tests/suites/${id}`));
+   expect(report.suite.state).toBe('COMPLETED');expect(report.variants).toEqual([expect.objectContaining({variant_id:v.id,verdict:'INCOMPLETO'})]);
+   for(const c of report.variants[0].cases){expect(c.state).toBe('PARTIAL');expect(c.checks).toEqual([expect.objectContaining({state:'UNKNOWN',detail:'LAB_OPERATION_STOPPED_BEFORE_EFFECTS'})]);
+    const run=data(await call('owner','GET',`/v2/number-tests/${c.run_id}`));
+    expect(run.operations).toEqual([expect.objectContaining({state:'FAILED',result:expect.objectContaining({state:'DEPENDENCY_REQUIRED',reason:'LAB_OPERATION_STOPPED_BEFORE_EFFECTS',reason_label:expect.stringContaining('sin costo')})})]);}}
+  // A continuation must be of the same number and matrix.
+  expect((await start(1,{continues_suite_id:suites[0]})).json().error).toMatchObject({code:'LAB_CONTINUATION_MISMATCH'});
+  // Under the same matrix: only the demonstrably unconsumed part (all of it) is reused.
+  const next=[data(await start(0,{continues_suite_id:suites[0]}),201).suite_id as string,data(await start(1,{continues_suite_id:suites[1]}),201).suite_id as string];
+  // Both continuations open again hold the whole ceiling: nothing else fits.
+  const over=await call('owner','POST','/v2/number-tests/suites',{account_id:numbers[0],accepted_maximum_microusd:estimates[0].maximum_microusd,cases:[select(tiers[0]!)[1]],matrix});
+  expect(over.statusCode).toBe(409);
+  // Both run at once: the (contract) model reads each synthetic receipt's own amount.
+  const today=new Intl.DateTimeFormat('en-CA',{timeZone:MX.timezone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+  const reading:typeof fetch=async(input,init)=>{const raw=String(init?.body??'');
+   const pdf=[...raw.matchAll(/"data":"([A-Za-z0-9+/=]{100,})"/g)].map(m=>Buffer.from(m[1]!,'base64').toString('latin1')).find(t=>t.includes('COMPROBANTE'));
+   const amount=pdf&&/Monto: (\d+)\.(\d{2}) MXN/.exec(pdf);
+   if(amount)visionDocument={is_receipt:true,amount_minor:Number(amount[1])*100+Number(amount[2]),currency:'MXN',destination_suffix:'0000',bank:'Banco de prueba',reference:'LAB-0001',status:'completed',confidence:0.97,contradictions:[],destination:'012180000000000000',beneficiary:'Negocio de prueba',paid_on:today,concept:'Compra de prueba'};
+   return fakeAnthropic(input,init);};
+  const reader={...runtime!,fetcher:reading} as NumberLabRuntime,reports=[] as any[];
+  for(let k=0;k<80;k++){await processNumberLabOperations(reader);
+   const states=await Promise.all(next.map(async id=>data(await call('owner','GET',`/v2/number-tests/suites/${id}`)).suite.state));if(states.every(s=>s==='COMPLETED'))break;}
+  for(const id of next){const report=data(await call('owner','GET',`/v2/number-tests/suites/${id}`));
+   expect(report.suite,JSON.stringify(report.variants)).toMatchObject({state:'COMPLETED',matrix_id:matrix.id});reports.push(report);}
+  for(const [i,report] of reports.entries()){
+   const old=data(await call('owner','GET',`/v2/number-tests/suites/${suites[i]}`)).variants[0].cases;
+   for(const c of report.variants[0].cases){
+    expect(c.plan).toMatchObject({tier_id:tiers[i],continues_suite_id:suites[i],continues_run_id:old.find((x:{journey:string})=>x.journey===c.journey).run_id});
+    expect(c.state,JSON.stringify(c.checks)).toBe('PASSED');
+    // Tested with the current release (the republished one) as a new conversation.
+    expect(data(await call('owner','GET',`/v2/number-tests/${c.run_id}`)).variants[0].revision).toBe(2);
+   }
+   expect(report.variants[0].verdict).toBe('RESPONDE_BIEN');
+  }
+  // One ceiling across both numbers and every attempt, old and new.
+  const used=await admin.query(`SELECT count(*)::int n FROM commerce_number_lab.ai_bindings b JOIN commerce_number_lab.suite_cases c ON c.workspace_id=b.workspace_id AND c.run_id=b.run_id
+   JOIN commerce_number_lab.suites s ON s.workspace_id=c.workspace_id AND s.id=c.suite_id WHERE s.workspace_id=$1 AND s.matrix_id=$2`,[P,matrix.id]);
+  expect(Number(used.rows[0].n)).toBeGreaterThan(0);expect(Number(used.rows[0].n)).toBeLessThanOrEqual(matrix.maximum_ai_calls);
+  expect(await footprint()).toEqual(before);
+ }finally{await engine.end();await admin.end();}
+},400000);
 
 // V7.5.2 L01/T01 on a real Linux read-only bind (production: /data/private:ro).
 // Runs where the bench may mount (root with CAP_SYS_ADMIN); evidence of the

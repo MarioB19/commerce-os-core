@@ -50,6 +50,32 @@ async function labGrants(ai:{pool:pg.Pool},workspaceId:string,runId:string,task:
   return Object.fromEntries(rows.map(r=>[r.variant_id,r.id])) as Record<string,string>;});
 }
 export const LAB_SELLER_MAXIMUM_MICROUSD=250_000;
+/** The canonical driver of one run with this host's custody and, when the
+ * profile granted it, the laboratory seller and receipt reading. */
+async function numberLabDriverFor(runtime:NumberLabRuntime,workspaceId:string,runId:string){
+ let seller:NumberLabDriverSellerConfiguration|undefined;
+ if(runtime.ai){const grants=await labGrants(runtime.ai,workspaceId,runId,'laboratory.chat'),visionGrants=await labGrants(runtime.ai,workspaceId,runId,'laboratory.vision');
+  if(Object.keys(grants).length||Object.keys(visionGrants).length)seller={workspaceId,enterprisePool:runtime.ai.pool as never,custodyKey:runtime.ai.custodyKey,grants,visionGrants,maximumMicrousd:LAB_SELLER_MAXIMUM_MICROUSD,...(runtime.fetcher?{fetcher:runtime.fetcher}:{})};}
+ const materials=createNumberLabMaterialCustody({controlPool:runtime.control,sourcePool:runtime.source,controlKey:runtime.keys.control,sourceKey:runtime.keys.source,laboratoryKey:runtime.keys.files,sourceRoot:runtime.sourceRoot,laboratoryRoot:runtime.laboratoryRoot});
+ return createNumberLabDriver({controlPool:runtime.control,seedPool:runtime.seed,enginePool:runtime.engine,identity:runtime.identity,key:runtime.keys.control,materials,...(seller?{seller}:{}),
+  transport:{key:runtime.keys.transport,reader:createNumberLabMaterialReader({laboratoryRoot:runtime.laboratoryRoot,laboratoryKey:runtime.keys.files})},
+  receipts:{custody:createNumberLabReceiptCustody({laboratoryRoot:runtime.laboratoryRoot,laboratoryKey:runtime.keys.files})}});
+}
+/** A stale INTENT settles only from its engine receipt. Without a receipt it
+ * closes as not executed when the engine never admitted it (no execution row,
+ * V7.5.2 L01/T01) or, V7.5.4, as stopped before effects when the engine
+ * admitted it but nothing committed and no AI call was bound (fenced in the
+ * engine first, so a late worker cannot run it). Never re-executed. Returns
+ * what happened; the queue only offers INTENT older than two minutes and the
+ * closures wait `minimumIntentAgeSeconds` (a claim may still be preparing). */
+export async function reconcileStaleNumberLabOperation(runtime:NumberLabRuntime,input:{workspaceId:string;runId:string;operationId:string},minimumIntentAgeSeconds=NOT_ADMITTED_AFTER_SECONDS){
+ const driver=await numberLabDriverFor(runtime,input.workspaceId,input.runId);
+ if((await driver.observe(input)).receipt)return{settled:'FROM_RECEIPT' as const,operation:await driver.reconcile(input)};
+ const notAdmitted=await driver.settleNotAdmitted(input,minimumIntentAgeSeconds);if(notAdmitted)return{settled:'NOT_ADMITTED' as const,operation:notAdmitted};
+ const stopped=await driver.settleStoppedBeforeEffects(input,minimumIntentAgeSeconds);if(stopped)return{settled:'STOPPED_BEFORE_EFFECTS' as const,operation:stopped};
+ return{settled:null};
+}
+
 /** One bounded pass: the next queued operation of each run, executed once by
  * the canonical driver. A failure is reported by code; the operation keeps its
  * native state (INTENT/UNKNOWN) for reconciliation, never a blind retry. */
@@ -65,20 +91,9 @@ export async function processNumberLabOperations(runtime:NumberLabRuntime|null,l
  catch(error){process.stderr.write(`number_lab_queue_failed ${code(error)}\n`);return 0;}
  for(const q of queued){
   try{
-   let seller:NumberLabDriverSellerConfiguration|undefined;
-   if(runtime.ai){const grants=await labGrants(runtime.ai,q.workspace_id,q.run_id,'laboratory.chat'),visionGrants=await labGrants(runtime.ai,q.workspace_id,q.run_id,'laboratory.vision');
-    if(Object.keys(grants).length||Object.keys(visionGrants).length)seller={workspaceId:q.workspace_id,enterprisePool:runtime.ai.pool as never,custodyKey:runtime.ai.custodyKey,grants,visionGrants,maximumMicrousd:LAB_SELLER_MAXIMUM_MICROUSD,...(runtime.fetcher?{fetcher:runtime.fetcher}:{})};}
-   const materials=createNumberLabMaterialCustody({controlPool:runtime.control,sourcePool:runtime.source,controlKey:runtime.keys.control,sourceKey:runtime.keys.source,laboratoryKey:runtime.keys.files,sourceRoot:runtime.sourceRoot,laboratoryRoot:runtime.laboratoryRoot});
-   const driver=createNumberLabDriver({controlPool:runtime.control,seedPool:runtime.seed,enginePool:runtime.engine,identity:runtime.identity,key:runtime.keys.control,materials,...(seller?{seller}:{}),
-    transport:{key:runtime.keys.transport,reader:createNumberLabMaterialReader({laboratoryRoot:runtime.laboratoryRoot,laboratoryKey:runtime.keys.files})},
-    receipts:{custody:createNumberLabReceiptCustody({laboratoryRoot:runtime.laboratoryRoot,laboratoryKey:runtime.keys.files})}});
    const input={workspaceId:q.workspace_id,runId:q.run_id,operationId:q.operation_id};
-   if(q.stage==='EXECUTE')await driver.execute(input);
-   // A stale INTENT settles only from its engine receipt. Without a receipt it
-   // stays uncertain, unless the engine never admitted it (no execution row):
-   // then it closes as not executed (V7.5.2 L01/T01), never re-executed.
-   else if((await driver.observe(input)).receipt)await driver.reconcile(input);
-   else await driver.settleNotAdmitted(input,NOT_ADMITTED_AFTER_SECONDS);
+   if(q.stage==='EXECUTE')await numberLabDriverFor(runtime,q.workspace_id,q.run_id).then(driver=>driver.execute(input));
+   else await reconcileStaleNumberLabOperation(runtime,input);
   }catch(error){process.stderr.write(`number_lab_operation_failed ${code(error)}\n`);if(process.env.LAB_DEBUG)console.error(error);}
  }
  return queued.length;

@@ -13,11 +13,26 @@ from cloudbuild_admission import AdmissionError, canonical_hash
 # Companion to the FULL pool; existing reservations are never reset.
 # Raised on 20-oct-2026 (owner-approved) after October reached 40,000 s, and on
 # 26-oct-2026 (owner-approved) to 70,000 s after October reached 49,150 s.
+# 14-nov-2026: a one-month extension for November only (below).
 CPU_LIMIT_MS = 70_000_000
 MEMORY_LIMIT_MIB_MS = 140_000_000 * 1024
 REQUEST_LIMIT = 2000
 MEMORY_MIB = 2048
 MAX_SECONDS = 450
+# 14-nov-2026 (owner-approved for the V7.5.4 release only): November 2026 alone
+# gets 4,500 s vCPU (9,000 GiB-s) more, the minimum for two FULLs, two
+# attestations and one attestation retry over the 67,445 s already reserved.
+# Every other month keeps the ceilings above; rows and charges are untouched.
+# docs/adr-v7-ci-pool-fourth-extension.md.
+MONTH_EXTENSIONS_MS = {'2026-11': 4_500_000}
+
+
+def cpu_limit_ms(month):
+    return CPU_LIMIT_MS + MONTH_EXTENSIONS_MS.get(month, 0)
+
+
+def memory_limit_mib_ms(month):
+    return MEMORY_LIMIT_MIB_MS + MONTH_EXTENSIONS_MS.get(month, 0) * MEMORY_MIB
 
 
 def need(value, code):
@@ -94,9 +109,9 @@ def usage(document):
             totals['requests'] += 1
             totals['cpu_ms'] += row['ceiling_ms']
             totals['memory_mib_ms'] += row['ceiling_ms'] * MEMORY_MIB
-    for totals in result.values():
-        need(totals['requests'] <= REQUEST_LIMIT and totals['cpu_ms'] <= CPU_LIMIT_MS
-             and totals['memory_mib_ms'] <= MEMORY_LIMIT_MIB_MS, 'METER_MONTHLY_CEILING')
+    for month, totals in result.items():
+        need(totals['requests'] <= REQUEST_LIMIT and totals['cpu_ms'] <= cpu_limit_ms(month)
+             and totals['memory_mib_ms'] <= memory_limit_mib_ms(month), 'METER_MONTHLY_CEILING')
     return result
 
 
