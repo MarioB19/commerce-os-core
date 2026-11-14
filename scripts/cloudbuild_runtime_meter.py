@@ -20,11 +20,13 @@ REQUEST_LIMIT = 2000
 MEMORY_MIB = 2048
 MAX_SECONDS = 450
 # 14-nov-2026 (owner-approved for the V7.5.4 release only): November 2026 alone
-# gets 4,500 s vCPU (9,000 GiB-s) more, the minimum for two FULLs, two
-# attestations and one attestation retry over the 67,445 s already reserved.
-# Every other month keeps the ceilings above; rows and charges are untouched.
+# gets 6,000 s vCPU (12,000 GiB-s) more. 4,500 s were the minimum for two FULLs,
+# two attestations and one attestation retry over the 67,445 s already
+# reserved; the FULL of main failed on an unrelated flaky Docker test and its
+# repetition needed 1,500 s more (amendment). Every other month keeps the
+# ceilings above; rows and charges are untouched.
 # docs/adr-v7-ci-pool-fourth-extension.md.
-MONTH_EXTENSIONS_MS = {'2026-11': 4_500_000}
+MONTH_EXTENSIONS_MS = {'2026-11': 6_000_000}
 
 
 def cpu_limit_ms(month):
