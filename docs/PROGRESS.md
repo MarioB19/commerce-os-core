@@ -1,5 +1,24 @@
 # Estado de publicación
 
+## 14-nov-2026 — V7.5.4 (candidato, sin desplegar): laboratorio con variantes republicadas (Claude)
+
+Desde V7.5.3 `618ce5c5`, instalada el 14-nov 00:16 UTC (SUCCEEDED/OPERATING, 122
+migraciones, GitHub Deployment `7779710209`).
+
+- **Defecto.** Un número que sigue una variante vende con la publicación vigente
+  (F4), pero su binding conserva la oferta, el flujo y el vendedor con los que
+  se asignó. Tras volver a publicar, el plan del laboratorio tomaba las raíces de
+  la publicación y el motor sembraba la asignación con la oferta anterior: el
+  driver fallaba cerrado con `LAB_DRIVER_ASSIGNMENTS_CHANGED` antes de llamar a la
+  IA. Le pasó en producción a la matriz pagada de Mi Ciclo Listo (0 llamadas).
+  La venta real no se afectaba: el enrutamiento usa la publicación vigente.
+- **Corrección.** `compileNumberLabConfiguration` compila el binding como lo
+  enruta una conversación nueva (oferta/flujo/vendedor de la publicación). Para
+  un binding fijo no cambia nada.
+- **Pruebas.** Una de integración (`v7-number-lab`) reproduce el caso; falla sin
+  el cambio y pasa con él. Siguen en verde las suites del laboratorio y del
+  remarketing de MCL.
+
 ## 13-nov-2026 — V7.5.3: acuerdo contextual, recepciones de grupo, laboratorio por tier y remarketing MCL, candidato (Claude)
 
 Desde V7.5.2 `13461428` (instalada el 13-nov, 121 migraciones). Decisiones:
