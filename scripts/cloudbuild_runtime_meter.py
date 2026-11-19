@@ -26,8 +26,8 @@ MAX_SECONDS = 450
 # repetition needed 1,500 s more (amendment). Every other month keeps the
 # ceilings above; rows and charges are untouched.
 # docs/adr-v7-ci-pool-fourth-extension.md.
-# November 19: add the 4,195 seconds required for the two exact-SHA checks.
-MONTH_EXTENSIONS_MS = {'2026-11': 10_195_000}
+# November 19: 4,195 seconds for both release checks and 900 for inventory retries.
+MONTH_EXTENSIONS_MS = {'2026-11': 11_095_000}
 
 
 def cpu_limit_ms(month):

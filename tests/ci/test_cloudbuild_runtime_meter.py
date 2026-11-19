@@ -206,9 +206,12 @@ class MeterTests(unittest.TestCase):
                 reservation = self.meter.extend(self.reserve(), seconds) if seconds > 5 else self.reserve()
                 self.meter.finish(reservation, {'ok': True})
         self.assertEqual(usage(self.store.document)['2026-11']['cpu_ms'], 74_555_000)
+        # The controller retains the reservation after an unsuccessful inventory read.
+        for _ in range(2):
+            self.meter.finish(self.meter.extend(self.reserve(), 450), {'outcome': 'read_failed'})
         for seconds in ([450, 450, 450, 120] + [450, 450, 450]) * 2:
             self.meter.finish(self.meter.extend(self.reserve(), seconds), {'ok': True})
-        self.assertEqual(usage(self.store.document)['2026-11']['cpu_ms'], 80_195_000)
+        self.assertEqual(usage(self.store.document)['2026-11']['cpu_ms'], 81_095_000)
         with self.assertRaisesRegex(AdmissionError, 'MONTHLY_CEILING'):
             self.reserve()
 

@@ -67,3 +67,5 @@ tanto `main` dice 74,500 y la revisión viva 76,000, y ambos vuelven a 70,000 el
 ## Ampliación para la publicación del vendedor, 19-nov-2026 UTC
 
 El dueño autorizó 4,195 segundos de controlador adicionales para noviembre. El mes conserva las reservas ya registradas y admite un total de 80,195 segundos. La cadena de esta publicación requiere 5,640 segundos entre dos verificaciones FULL y sus atestaciones. La reserva de Cloud Build sigue en 108,000 segundos. Los meses siguientes conservan sus límites anteriores.
+
+La primera lectura del inventario del 19-nov terminó antes de registrar un intento de compilación. El medidor conserva los 450 segundos de esa consulta. El dueño autorizó hasta 900 segundos adicionales en noviembre, incluidos los 450 ya consumidos. El techo queda en 81,095 segundos de controlador. Se mantienen US$5 para la publicación y US$180 para el mes.
