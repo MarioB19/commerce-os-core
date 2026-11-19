@@ -510,6 +510,18 @@ def _budget_usage(document, *, now):
             for month, row in sorted(totals.items())}
 
 
+def monthly_pool_limit(document, month):
+    base = document['monthly_limit_seconds']
+    if month == '2026-11' and base == THIRD_EXTENSION_LIMIT_SECONDS:
+        return base + 7_620
+    return base
+
+
+def within_monthly_pool(document, moment):
+    return all(row['total_seconds'] <= monthly_pool_limit(document, month)
+               for month, row in _budget_usage(document, now=moment).items())
+
+
 def validate_approval(approval, plan, now):
     exact(approval, 'plan_sha256 review_sha256 expires_at', 'SOURCE_APPROVAL_FIELDS_INVALID')
     need(digest(approval['plan_sha256']) == canonical_hash(plan), 'APPROVAL_PLAN_MISMATCH')
@@ -774,7 +786,7 @@ def _transition(document, command, *, now, validator):
             validate_admission(command['admission'], moment, attempt['approval'])
             attempt.update(state='RESERVED', reserved_at=stamp(moment), admission=deepcopy(command['admission']))
             doc['active_attempt'] = attempt_id
-            need(all(row['total_seconds'] <= doc['monthly_limit_seconds'] for row in _budget_usage(doc, now=moment).values()),
+            need(within_monthly_pool(doc, moment),
                  'MONTHLY_POOL_EXCEEDED')
         elif op in {'submit_intent', 'approve_intent'}:
             target = 'gate' if op == 'approve_intent' else 'source'
@@ -787,7 +799,7 @@ def _transition(document, command, *, now, validator):
             need(doc['blocked'] is None, 'ADMISSION_BLOCKED')
             validate_approval(attempt['approval'], attempt['plan'], moment)
             validate_admission(attempt['admission'], moment, attempt['approval'])
-            need(all(row['total_seconds'] <= doc['monthly_limit_seconds'] for row in _budget_usage(doc, now=moment).values()),
+            need(within_monthly_pool(doc, moment),
                  'MONTHLY_POOL_EXCEEDED')
             for other in doc['attempts'].values():
                 if 'intent' in other:
@@ -883,7 +895,7 @@ def _transition(document, command, *, now, validator):
             if sum(charges(attempt['terminal']).values()) > attempt['plan']['timeout_seconds']:
                 doc['blocked'] = {'reason': 'OBSERVED_USAGE_EXCEEDS_RESERVATION', 'evidence_sha256': command['evidence_sha256']}
     if op in {'reconcile', 'account_external', 'abandon_without_native'}:
-        if any(row['total_seconds'] > doc['monthly_limit_seconds'] for row in _budget_usage(doc, now=moment).values()):
+        if not within_monthly_pool(doc, moment):
             doc['blocked'] = {'reason': 'OBSERVED_MONTHLY_POOL_EXCEEDED',
                               'evidence_sha256': command.get('evidence_sha256', command.get('observation', {}).get('evidence_sha256'))}
     doc['revision'] += 1

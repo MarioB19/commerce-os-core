@@ -1,5 +1,6 @@
 import contextlib
 import copy
+import datetime
 import importlib.util
 import io
 import hashlib
@@ -103,6 +104,29 @@ class ApiWebOwnerIdentityTests(unittest.TestCase):
         self.assertEqual(facts['expired_sessions'],6)
         self.assertTrue(facts['identity_preserved'])
 
+    def test_retained_owner_history_keeps_all_identities_and_limits_active_sessions(self):
+        value=self.identity()
+        clock=vps.owner_auth_date(value['clock_utc'])
+        template=value['sessions'][0]
+        def session(index,active):
+            created=clock-datetime.timedelta(seconds=index+1,days=0 if active else 2)
+            return dict(template,id=str(index),created_at=created.isoformat(),updated_at=created.isoformat(),
+                        expires_at=(created+datetime.timedelta(hours=12)).isoformat(),unexpired=active)
+        value['sessions']=[session(i,i==0) for i in range(33)]
+        before=self.snapshot(value)
+        facts=vps.compare_owner_auth(before,copy.deepcopy(before))
+        self.assertEqual((facts['retained_session_rows'],facts['active_sessions'],facts['expired_sessions']),(33,1,32))
+        after=copy.deepcopy(before)
+        after['sessions'].pop()
+        with self.assertRaisesRegex(ReleaseError,'COPY_OWNER_AUTH_IDENTITY_CHANGED'):
+            vps.compare_owner_auth(before,after)
+        value['sessions']=[session(i,True) for i in range(guards.MAX_OWNER_SESSIONS+1)]
+        with self.assertRaisesRegex(ReleaseError,'COPY_OWNER_AUTH_ACTIVE_SESSION_LIMIT'):
+            self.snapshot(value)
+        value['sessions']=[session(i,False) for i in range(vps.MAX_RETAINED_OWNER_SESSIONS+1)]
+        with self.assertRaisesRegex(ReleaseError,'COPY_OWNER_AUTH_BINDING_CHANGED'):
+            self.snapshot(value)
+
     def test_foreign_inactive_nonowner_duplicate_or_wrong_workspace_members_stop(self):
         for failure in ('foreign','inactive','nonowner','duplicate','workspace','missing-pat-owner'):
             value=self.expanded_identity()
@@ -117,7 +141,7 @@ class ApiWebOwnerIdentityTests(unittest.TestCase):
     def test_observation_is_bounded_and_empty_sessions_do_not_create_access(self):
         value=self.identity();value['sessions']=[]
         self.assertEqual(vps.compare_owner_auth(value,copy.deepcopy(value))['retained_session_rows'],0)
-        for field,maximum in [('sessions',guards.MAX_OWNER_SESSIONS),('memberships',guards.MAX_OWNER_USERS),
+        for field,maximum in [('sessions',vps.MAX_RETAINED_OWNER_SESSIONS),('memberships',guards.MAX_OWNER_USERS),
                               ('tokens',guards.MAX_OWNER_TOKENS)]:
             value=self.identity();value[field]=[copy.deepcopy(value[field][0]) for _ in range(maximum+1)]
             with self.subTest(field=field),self.assertRaises(ReleaseError):self.snapshot(value)
