@@ -213,9 +213,10 @@ class MeterTests(unittest.TestCase):
         # The first main admission and source request finished before build dispatch.
         failed_main_preparation = [450, 450]
         rejected_attestation_admission = [450]
-        for seconds in previous + verification + failed_main_preparation + rejected_attestation_admission:
+        failed_main_attestation = [450, 450, 450]
+        for seconds in previous + verification + failed_main_preparation + rejected_attestation_admission + failed_main_attestation:
             self.meter.finish(self.meter.extend(self.reserve(), seconds), {'ok': True})
-        self.assertEqual(usage(self.store.document)['2026-11']['cpu_ms'], 83_465_000)
+        self.assertEqual(usage(self.store.document)['2026-11']['cpu_ms'], 84_815_000)
         with self.assertRaisesRegex(AdmissionError, 'MONTHLY_CEILING'):
             self.reserve()
 
