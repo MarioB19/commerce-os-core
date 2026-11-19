@@ -193,6 +193,15 @@ export function buildSellerSnapshot(input: {
     agent: agentConfig,
   };
 }
+export function sellerOrderContext(order?: Body): Body {
+  return {
+    status: order?.status ?? "OFFERED",
+    receipt_status: order?.receipt_status ?? "NONE",
+    sale_definition: order?.sale_definition ?? null,
+    ...(order?.sale_status !== undefined ? {sale_status: order.sale_status, sale_amount_minor: order.sale_amount_minor} : {}),
+  };
+}
+
 export function composeSellerContext(
   snapshot: SellerSnapshot,
   input: {
@@ -219,11 +228,7 @@ export function composeSellerContext(
     offer: snapshot.offer,
     history,
     stage: input.stage ?? "NEW",
-    order: {
-      status: input.order?.status ?? "OFFERED",
-      receipt_status: input.order?.receipt_status ?? "NONE",
-      sale_definition: input.order?.sale_definition ?? null,
-    },
+    order: sellerOrderContext(input.order),
     variables: Object.fromEntries(
       Object.entries(canonicalSalesVariables(input.variables))
         .filter(
@@ -415,6 +420,7 @@ export function sellerInstructions(snapshot: SellerSnapshot): string {
   const style = snapshot.agent.style ?? {};
   return sanitizeSellerText(
     [
+      "Antes del pago verificado atiende tú las objeciones e interrupciones. Usa las fuentes de esta oferta o pide una aclaración. Sólo tras verificar el pago se permite derivar la conversación a una persona.",
       style.language,
       style.tone,
       style.length,

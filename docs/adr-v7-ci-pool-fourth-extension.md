@@ -46,3 +46,28 @@ con IVA**, sólo si se usa. Cabe en la bolsa de V7.5.4 y en el techo vigente.
    `main`. El atestador no usa el medidor y no cambia.
 3. Revisión nueva de Cloud Run con los controles en pausa y sin intento activo.
 4. Fusión dentro del PR de V7.5.4.
+
+## Enmienda — 14-nov-2026 08:05 UTC: 76,000 s
+
+El FULL de `main` `2f31dc5c` (build `251ca388`) falló a los 4 min en la etapa
+`portal-capsule-linux` (`test_b02_portal_capsule_linux.mjs`: un `docker start`
+superó su límite de 20 s y terminó con 143; la prueba no se relaciona con V7.5.4
+y pasó en el FULL del candidato `01a7a3e3` con el mismo árbol). Sus tres ticks
+ya estaban reservados: el medidor quedó en 71,615 de 74,500 s. Repetir el FULL
+del mismo SHA (conciliación 120 + FULL 1,470 + atestación 1,350) necesita 2,940
+s; con un reintento de atestación, 4,290. Con la misma autorización del dueño
+(incremento mínimo para esta ejecución), noviembre pasa a **76,000 s vCPU /
+152,000 GiB-s**; costo adicional como techo ≤ USD 0.05 con IVA. Mismo
+procedimiento: imagen derivada de la revisión viva (sólo cambia este módulo) y
+revisión nueva de Cloud Run con los controles en pausa. Esta enmienda vive en la
+rama `claude/v7-5-4-meter-amend` y se integra en el siguiente release; mientras
+tanto `main` dice 74,500 y la revisión viva 76,000, y ambos vuelven a 70,000 el
+1-dic.
+
+## Ampliación para la publicación del vendedor, 19-nov-2026 UTC
+
+El dueño autorizó 4,195 segundos de controlador adicionales para noviembre. El mes conserva las reservas ya registradas y admite un total de 80,195 segundos. La cadena de esta publicación requiere 5,640 segundos entre dos verificaciones FULL y sus atestaciones. La reserva de Cloud Build sigue en 108,000 segundos. Los meses siguientes conservan sus límites anteriores.
+
+La primera lectura del inventario del 19-nov terminó antes de registrar un intento de compilación. El medidor conserva los 450 segundos de esa consulta. El dueño autorizó hasta 900 segundos adicionales en noviembre, incluidos los 450 ya consumidos. El techo queda en 81,095 segundos de controlador. Se mantienen US$5 para la publicación y US$180 para el mes.
+
+La prueba con dos preguntas aprobadas en el mismo producto detectó una respuesta incorrecta antes de instalar. La verificación de ese candidato se canceló y concilió. Después de contabilizar el intento, el medidor registró 76,475 segundos. Brandon autorizó 1,020 segundos adicionales para verificar el candidato corregido y su integración. El techo de noviembre queda en 82,115 segundos. Se mantienen US$5 para la publicación y US$180 para noviembre.

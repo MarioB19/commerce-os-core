@@ -80,3 +80,7 @@ atestador `attestor@sha256:0541d12d696aa9e249a9a490959339fe67997517a56ba3656eac9
 `-pr`. La única diferencia de cada imagen es la línea `GROSS_CAP_MICROUSD` de
 `/opt/trusted/cloudbuild_admission.py`; variables, recursos, cuenta de servicio
 y aprobación requerida no cambiaron.
+
+## Enmienda del 19-nov-2026 UTC para la publicación del vendedor
+
+El dueño autorizó US$180 de proyección bruta para noviembre y hasta US$5 incrementales por esta publicación, incluido su respaldo. La vía de presupuesto del dueño contrasta el mes, la autorización y el costo. A partir de diciembre vuelve a aplicar el límite anterior de US$175. La vía de créditos conserva su límite anterior.

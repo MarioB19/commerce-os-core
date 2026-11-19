@@ -1,10 +1,10 @@
 import {describe,it,expect,afterAll,beforeAll} from 'vitest';
 import {fixtureProfiles} from '../support/profile-fixture.js';
 import {randomUUID} from 'node:crypto';
-import {pool,putRecord,withTransaction,getRecord} from '../../packages/db/src/index.js';
+import {cancelPendingRemarketingForContact,pool,putRecord,withTransaction,getRecord} from '../../packages/db/src/index.js';
 import {materializeMessage} from '../../apps/automation-worker/src/inbound.js';
 import {processAgents} from '../../apps/automation-worker/src/agents.js';
-import {advanceWorkflow,processTimers} from '../../apps/automation-worker/src/workflows.js';
+import {advanceWorkflow,processTimers,resumeCancelledFollowup} from '../../apps/automation-worker/src/workflows.js';
 import {applyCommand} from '../../apps/automation-worker/src/commands.js';
 import {proposeEffect} from '../../apps/automation-worker/src/shared.js';
 import {dispatchOutbox,acquireOwnership,recordHealth,recoverChannelCommands,processChannelCommands} from '../../apps/channel-worker/src/runtime.js';
@@ -128,6 +128,30 @@ describe('Automation durable controls with real PostgreSQL',()=>{
  // and may commit just after B's send on a loaded host: wait (bounded) for it.
  let status='';for(let i=0;i<150&&status!=='SENDING';i++){status=(await pool.query('SELECT status FROM outbox WHERE id=$1',[a.id])).rows[0].status;if(status!=='SENDING')await new Promise(r=>setTimeout(r,20));}expect(status).toBe('SENDING');}finally{release();clearTimeout(timeout);await running;}expect((await pool.query('SELECT status FROM outbox WHERE id=$1',[b.id])).rows[0].status).toBe('SENT');});
 
+ it('a buyer cancels the optional reminder, receives one seller reply and reaches the next required step',async()=>{
+  const f=await fixture();
+  const flow=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'workflow',body:{
+   name:'Optional reminder',status:'PUBLISHED',entry_node_id:'wait',nodes:[
+    {id:'wait',type:'wait',config:{seconds:900,cancel_on_response:true},next:'reminder'},
+    {id:'reminder',type:'message',config:{text:'Optional reminder',purpose:'followup'},next:'receipt'},
+    {id:'receipt',type:'receipt',config:{},next:'end'},{id:'end',type:'end',config:{}},
+   ]}});
+  const assigned=await putRecord(pool,{id:f.conversation.id,workspaceId:workspace,environment:'SIMULATION',kind:'conversation',
+   version:f.conversation.version,body:{...f.conversation.body,workflow_version_id:flow.id,ai_pending:true}});
+  const waiting=await withTransaction(c=>advanceWorkflow(c,assigned));
+  expect(waiting.body.flow_state.wake_at).toBeTruthy();
+  const resumed=await withTransaction(async c=>{
+   const cancelled=await cancelPendingRemarketingForContact(c,waiting,'CUSTOMER_REPLIED');
+   expect(cancelled.timers).toHaveLength(1);
+   expect((await resumeCancelledFollowup(c,waiting,[randomUUID()])).body.flow_state.wake_at).toBe(waiting.body.flow_state.wake_at);
+   return resumeCancelledFollowup(c,waiting,cancelled.timers);
+  });
+  expect(resumed.body.flow_state).toMatchObject({waiting_for:'ai_accepted',node_id:'receipt'});
+  await processAgents(100,{propose:async()=>aiResult,receipt:async()=>{throw Error('UNUSED');}});
+  expect((await getRecord(pool,workspace,'conversation',assigned.id))?.body.flow_state.waiting_for).toBe('receipt_approved');
+  const effects=await pool.query("SELECT payload FROM outbox WHERE conversation_id=$1",[assigned.id]);
+  expect(effects.rows.map(r=>r.payload.text)).toEqual([aiResult.proposal.reply]);
+ });
  it('human approval is pinned to the waiting node and resumes a condition and subflow once',async()=>{const f=await fixture();const sub=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'workflow',body:{name:'Approval subflow',status:'PUBLISHED',entry_node_id:'m',nodes:[{id:'m',type:'message',config:{text:'Approved subflow'},next:'end'},{id:'end',type:'end',config:{}}]}});const flow=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'workflow',body:{name:'Approval fixture',status:'PUBLISHED',entry_node_id:'approve',nodes:[{id:'approve',type:'approval',config:{},next:'condition'},{id:'condition',type:'condition',config:{field:'order.currency',operator:'equals',value:'MXN'},branches:{true:'sub',false:'end'}},{id:'sub',type:'subflow',config:{workflow_version_id:sub.id},next:'end'},{id:'end',type:'end',config:{}}]}});await pool.query('UPDATE records SET body=body||$2::jsonb,version=version+1 WHERE id=$1',[f.conversation.id,JSON.stringify({workflow_version_id:flow.id})]);await withTransaction(c=>advanceWorkflow(c,f.conversation));const approve={id:randomUUID(),workspace_id:workspace,environment:'SIMULATION',resource_id:f.conversation.id,kind:'conversation_command',actor_id:'fixture-reviewer',payload:{type:'approve_step',expected_workflow_version_id:flow.id,expected_node_id:'approve',reason:'Reviewed fixture branch and subflow'}};await expect(withTransaction(c=>applyCommand(c,{...approve,payload:{...approve.payload,expected_node_id:'wrong'}}))).rejects.toThrow('WORKFLOW_APPROVAL_INVALIDATED');await withTransaction(c=>applyCommand(c,approve));expect((await getRecord(pool,workspace,'conversation',f.conversation.id))?.body.flow_state.status).toBe('FINISHED');expect(Number((await pool.query('SELECT count(*) FROM outbox WHERE conversation_id=$1',[f.conversation.id])).rows[0].count)).toBe(1);await expect(withTransaction(c=>applyCommand(c,approve))).rejects.toThrow();});
 
  it('referral binding chooses ad before ad set and unknown observed ads do not infer campaign',async()=>{const f=await fixture();const campaign=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'acquisition_campaign',body:{name:'Evidence campaign'}}),adSet=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'ad_set',body:{name:'Evidence ad set',campaign_id:campaign.id}}),ad=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'ad',body:{name:'Evidence ad',ad_set_id:adSet.id,external_id:'observed-fixture-ad'}});const otherOffer=await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'offer',body:{product_id:f.product.id,base_amount_minor:5000,currency:'MXN',status:'PUBLISHED',fulfillment:[]}});for(const scope of [{ad_set_id:adSet.id,offer_version_id:otherOffer.id},{ad_id:ad.id,offer_version_id:f.offer.id}])await putRecord(pool,{workspaceId:workspace,environment:'SIMULATION',kind:'binding',body:{account_id:f.account.id,campaign_id:campaign.id,valid_from:'2026-01-01T00:00:00Z',source:'explicit fixture',evidence:'Local fixture evidence',...scope}});const identity='opaque:'+randomUUID();const first=await withTransaction(c=>materializeMessage(c,f.account,{key:randomUUID(),type:'message',providerAt:'2026-09-05T12:00:00Z',identity,text:'Known ad',kind:'text',referral:{source_id:'observed-fixture-ad'},payload:{}},randomUUID()));expect(first?.body.offer_version_id).toBe(f.offer.id);expect(first?.body.origin.ad_id).toBe(ad.id);await withTransaction(c=>materializeMessage(c,f.account,{key:randomUUID(),type:'message',providerAt:'2026-09-05T12:01:00Z',identity,text:'Another referral',kind:'text',referral:{source_id:'observed-fixture-ad'},payload:{}},randomUUID()));expect(Number((await pool.query("SELECT count(*) FROM records WHERE kind='touchpoint' AND body->>'conversation_id'=$1",[first!.id])).rows[0].count)).toBe(2);const unknown=await withTransaction(c=>materializeMessage(c,f.account,{key:randomUUID(),type:'message',providerAt:'2026-09-05T12:00:00Z',identity:'opaque:'+randomUUID(),text:'Unknown ad',kind:'text',referral:{source_id:'unknown-ad'},payload:{}},randomUUID()));expect(unknown?.body.origin.campaign_id).toBeUndefined();expect(unknown?.body.origin.binding_id).toBeUndefined();});
