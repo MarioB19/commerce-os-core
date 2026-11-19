@@ -26,8 +26,8 @@ MAX_SECONDS = 450
 # repetition needed 1,500 s more (amendment). Every other month keeps the
 # ceilings above; rows and charges are untouched.
 # docs/adr-v7-ci-pool-fourth-extension.md.
-# November 19: includes the two charged requests before the failed main source upload.
-MONTH_EXTENSIONS_MS = {'2026-11': 13_015_000}
+# November 19: retain the failed main source preparation and the rejected attestation admission.
+MONTH_EXTENSIONS_MS = {'2026-11': 13_465_000}
 
 
 def cpu_limit_ms(month):
