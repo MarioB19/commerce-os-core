@@ -3,11 +3,13 @@ import {fixtureProfiles} from '../support/profile-fixture.js';
 import {disposeAllFixtureProfiles} from '../support/migrated-database.js';
 import {randomBytes,randomUUID} from 'node:crypto';
 import {applyCommand} from '../../apps/automation-worker/src/commands.js';
+import {consumeProviderObservations} from '../../apps/channel-worker/src/observations.js';
+import {roleExecutor} from '../support/database-role.js';
 import {processAgents} from '../../apps/automation-worker/src/agents.js';
 import {materializeEffectResults} from '../../apps/automation-worker/src/effect-results.js';
 import {materializeMessage} from '../../apps/automation-worker/src/inbound.js';
 import {advanceWorkflow,ensureOrder} from '../../apps/automation-worker/src/workflows.js';
-import {buyerExcluded,pool,putRecord,getRecord,withTransaction} from '../../packages/db/src/index.js';
+import {appendEvent,buyerExcluded,pool,putRecord,getRecord,withTransaction} from '../../packages/db/src/index.js';
 import {salesAgreementRecipeV1,salesAgreementWorkflowV1} from '../../packages/domain/src/sales/sales-recipe-v2.js';
 import type {Body,DomainRecord} from '../../packages/contracts/src/index.js';
 
@@ -218,7 +220,16 @@ describe('Mi Ciclo Listo sales agreement v2 runtime',()=>{
   const effects=(await pool.query("SELECT * FROM outbox WHERE workspace_id=$1 AND conversation_id=$2 AND payload ? 'fulfillment_id' ORDER BY dispatch_sequence",[pdfWorkspace,journey.id])).rows;
   expect(effects).toHaveLength(10);
   expect((await pool.query("SELECT count(*)::int count FROM outbox WHERE workspace_id=$1 AND conversation_id=$2 AND payload->>'workflow_recipe_step' IN ('7','8')",[pdfWorkspace,journey.id])).rows[0].count).toBe(0);
-  for(const [index,effect] of effects.entries())await pool.query("UPDATE outbox SET status=$2,provider_message_id=$3,updated_at=now() WHERE id=$1",[effect.id,index===9?'SENT':'DELIVERED',`pdf-delivery-${index}`]);
+  const withRole=roleExecutor(pool);
+  const channel=()=>withRole('commerce_channel',()=>consumeProviderObservations(1000));
+  const ack=(index:number,account=pdfCatalog.account.id,hint=effects[index].id)=>appendEvent(pool,{workspace_id:pdfWorkspace,environment,event_type:'provider.ack.observed',aggregate_id:account,payload:{
+   status:'DELIVERED',canonical_key:`delivered-${index}`,provider_message_id:`pdf-delivery-${index}`,effect_id_hint:hint,provider_at:new Date().toISOString(),envelope_id:randomUUID(),
+  }});
+  for(const [index,effect] of effects.entries())await pool.query("UPDATE outbox SET status='SENT',provider_message_id=$2 WHERE id=$1",[effect.id,`pdf-delivery-${index}`]);
+  for(let i=0;i<9;i++)await ack(i);
+  await ack(9,pdfCatalog.secondAccount.id);
+  await ack(9,pdfCatalog.account.id,effects[0].id);
+  await channel();
   await materializeEffectResults(1000);
   expect((await current(journey)).body.flow_state.waiting_for).toBe('prepayment_delivery_confirmed');
   await inbound(pdfCatalog.account,identity,'Porque no contestas');
@@ -226,16 +237,19 @@ describe('Mi Ciclo Listo sales agreement v2 runtime',()=>{
   expect((await current(journey)).body).toMatchObject({ai_status:'COMPLETED',flow_state:{waiting_for:'prepayment_delivery_confirmed'}});
   const reply=(await pool.query("SELECT payload FROM outbox WHERE workspace_id=$1 AND conversation_id=$2 AND payload->>'purpose'='seller_reply' ORDER BY dispatch_sequence DESC LIMIT 1",[pdfWorkspace,journey.id])).rows[0];
   expect(reply?.payload.text).toContain('Aquí sigo');
-  await pool.query("UPDATE outbox SET status='DELIVERED',updated_at=now() WHERE id=$1",[effects[9].id]);
+  await ack(9);await ack(9);await channel();await channel();
+  const applied=await pool.query("SELECT count(*)::int n FROM domain_events WHERE workspace_id=$1 AND aggregate_id=$2 AND event_type='message.acknowledged'",[pdfWorkspace,journey.id]);
+  expect(applied.rows[0].n).toBe(10);
   await materializeEffectResults(1000);
   expect((await current(journey)).body.flow_state.waiting_for).toBe('receipt_approved');
   await materializeEffectResults(1000);
   expect((await pool.query("SELECT payload->>'workflow_recipe_step' step FROM outbox WHERE workspace_id=$1 AND conversation_id=$2 AND payload->>'workflow_recipe_step' IN ('7','8') ORDER BY dispatch_sequence",[pdfWorkspace,journey.id])).rows.map(row=>row.step)).toEqual(['7','8']);
   await inbound(pdfCatalog.account,identity,'¿Me garantizas algo fuera de la oferta?');
   await processAgents(100,{propose:async()=>({proposal:{reply:'Afirmación no sustentada',intent:'question',confidence:1,tool:'none',grounding:[]},usage:{input_tokens:1,output_tokens:1,cost_minor:0},provider:'fixture',model:'fixture'}),receipt:async()=>{throw new Error('UNUSED');}});
-  expect((await current(journey)).body.ai_status).toBe('HUMAN_REVIEW');
-  const acknowledgement=(await pool.query("SELECT payload FROM outbox WHERE workspace_id=$1 AND conversation_id=$2 AND payload->>'purpose'='seller_review_ack' ORDER BY dispatch_sequence DESC LIMIT 1",[pdfWorkspace,journey.id])).rows[0];
-  expect(acknowledgement?.payload.text).toContain('Recibí tu mensaje');
+  expect((await current(journey)).body).toMatchObject({ai_status:'COMPLETED',flow_state:{waiting_for:'receipt_approved'}});
+  const replies=(await pool.query("SELECT payload FROM outbox WHERE workspace_id=$1 AND conversation_id=$2 AND payload->>'purpose'='seller_reply' ORDER BY dispatch_sequence DESC",[pdfWorkspace,journey.id])).rows;
+  expect(replies[0].payload.text).toContain('cómo hacer el pago');
+  expect((await pool.query("SELECT count(*)::int n FROM outbox WHERE workspace_id=$1 AND conversation_id=$2 AND payload ? 'fulfillment_id'",[pdfWorkspace,journey.id])).rows[0].n).toBe(10);
  });
  it.each(['Si envíalo','Ok dámelo'])('commits an explicit pending agreement and releases the initial material: %s',async reply=>{
   const identity=`opaque:agreement-${randomUUID()}`;
@@ -585,6 +599,35 @@ describe('V7.5.3 contextual agreement: AI proposal + deterministic rule',()=>{
  const lastRun=async(journey:DomainRecord)=>(await pool.query("SELECT body FROM records WHERE workspace_id=$1 AND kind='ai_run' AND body->>'conversation_id'=$2 ORDER BY created_at DESC LIMIT 1",[journey.workspace_id,journey.id])).rows[0]?.body;
  const committedEvents=async(journey:DomainRecord)=>(await pool.query("SELECT payload FROM domain_events WHERE workspace_id=$1 AND aggregate_id=$2 AND event_type='order.committed'",[journey.workspace_id,journey.id])).rows.map((r:any)=>r.payload);
 
+ it('resumes a previous automatic prepayment review only after the same buyer writes again',async()=>{
+  for(const automatic of [true,false]){
+   const {identity,journey}=await start();await transport(journey);
+   const held=await current(journey);
+   const resume=held.body.flow_state;
+   const run=await record(held.workspace_id,'ai_run',{conversation_id:held.id,status:'COMPLETED',snapshot_flow_state:resume,snapshot_sequence:held.body.sequence??1});
+   if(automatic)await appendEvent(pool,{workspace_id:held.workspace_id,environment,event_type:'ai.handoff_requested',aggregate_id:held.id,payload:{ai_run_id:run.id}});
+   await putRecord(pool,{id:held.id,workspaceId:held.workspace_id,environment,kind:'conversation',version:held.version,body:{
+    ...held.body,ai_pending:false,ai_status:'HUMAN_REVIEW',ai_review_resume_state:resume,flow_state:{...resume,status:'HUMAN_REVIEW',waiting_for:'human_approved'},
+   }});
+   await processAgents(100,fixtureAi({intent:'unknown',reply:'No sé'}));
+   expect(await sellerReplies(held)).toHaveLength(0);
+   await inbound(agreementCatalog.account,identity,'¿Podrías aclararme qué sigue?');
+   await processAgents(100,fixtureAi({intent:'unknown',reply:'No sé'}));
+   const conv=await current(held);
+   expect(conv.body.ai_status).toBe(automatic?'COMPLETED':'HUMAN_REVIEW');
+   expect(conv.body.flow_state.waiting_for).toBe(automatic?'commitment':'human_approved');
+   expect(await sellerReplies(held)).toHaveLength(automatic?1:0);
+   expect((await order(held)).body.committed_at).toBeUndefined();
+  }
+ });
+ it('discards an unpaid proposal if a verified payment arrives during the model call',async()=>{
+  const {identity,journey}=await start();await transport(journey);
+  await inbound(agreementCatalog.account,identity,'Necesito ayuda');
+  await processAgents(100,fixtureAi({intent:'unknown',reply:'No sé'},async()=>{await attachAndApprove(journey,9700,'during-seller');}));
+  expect((await order(journey)).body).toMatchObject({sale_status:'RECOGNIZED',sale_amount_minor:9700});
+  expect(await lastRun(journey)).toMatchObject({status:'DISCARDED'});
+  expect(await sellerReplies(journey)).toHaveLength(0);
+ });
  it('accepts a natural «Sí, acepto» after the explained agreement reached transport, through the canonical transition, without the model\'s claim',async()=>{
   const started=await start(),identity=started.identity;let journey=started.journey;await transport(journey);
   await inbound(agreementCatalog.account,identity,'Sí, acepto');
@@ -623,7 +666,8 @@ describe('V7.5.3 contextual agreement: AI proposal + deterministic rule',()=>{
   expect((await order(journey)).body.committed_at).toBeUndefined();
   expect((await sellerReplies(journey)).map((p:Body)=>p.text)).not.toContain(claim);
   expect(await lastRun(journey)).toMatchObject({agreement:{decision:'PASS',reason:'AGREEMENT_NOT_DELIVERED'}});
-  expect(journey.body.ai_status).toBe('HUMAN_REVIEW');
+  expect(journey.body.ai_status).toBe('COMPLETED');
+  expect(await sellerReplies(journey)).toHaveLength(1);
  });
  it('a model reply that claims a registration while the agreement is pending is replaced, whatever its intent',async()=>{
   const started=await start(),identity=started.identity;let journey=started.journey;await transport(journey);

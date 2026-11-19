@@ -76,9 +76,9 @@ export async function collectOperationalAlerts(){
    await workspaceAlert(c,workspace,'REAL_POLICY_FROZEN',!policy.release_hold&&(policy.body.dispatch_frozen||!policy.body.real_sends_enabled||!policy.body.allow_real_operations),String(policy.version),now);
    // RF-13.d (CHAOS-PROVIDER): the profile's AI is failing (provider error, its
    // balance or the monthly budget). The owner sees it; the next successful answer
-   // resolves it with no reauthorization. Chats already with a person stay there.
-   const lastAi=(await c.query("SELECT body->>'status' status,body->>'reason' reason,updated_at FROM records WHERE workspace_id=$1 AND environment='REAL' AND kind='ai_run' AND body->>'status' IN('COMPLETED','AWAITING_EFFECT','FAILED') ORDER BY updated_at DESC LIMIT 1",[workspace])).rows[0];
-   await workspaceAlert(c,workspace,'AI_UNAVAILABLE',lastAi?.status==='FAILED'&&lastAi.reason!=='AI_AUTHORITY',lastAi?new Date(lastAi.updated_at).toISOString():'none',now);
+   // resolves it even if an earlier clarification is still waiting for dispatch.
+   const lastAi=(await c.query("SELECT body->>'status' status,body->>'reason' reason,body->>'provider_failure' provider_failure,updated_at FROM records WHERE workspace_id=$1 AND environment='REAL' AND kind='ai_run' AND body->>'status' IN('COMPLETED','AWAITING_EFFECT','FAILED') ORDER BY updated_at DESC LIMIT 1",[workspace])).rows[0];
+   await workspaceAlert(c,workspace,'AI_UNAVAILABLE',Boolean(lastAi&&(lastAi.status==='FAILED'||lastAi.provider_failure)&&(lastAi.provider_failure??lastAi.reason)!=='AI_AUTHORITY'),lastAi?new Date(lastAi.updated_at).toISOString():'none',now);
    const rows=(await c.query(`SELECT r.id::text account_id,o.release_frozen,o.updated_at ownership_updated_at,
     (SELECT min(auth.expires_at) FROM commercial_assignments a JOIN operation_authorizations auth ON auth.id=a.authorization_id WHERE a.account_id=r.id AND a.state='ACTIVE' AND auth.revoked_at IS NULL AND auth.configuration_version=$2) authorization_expires_at,
     (SELECT count(*)::int FROM outbox e WHERE e.workspace_id=$1 AND e.environment='REAL' AND e.account_id=r.id::text AND e.status='UNKNOWN') unknown,

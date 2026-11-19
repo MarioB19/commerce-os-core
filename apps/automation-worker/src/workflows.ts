@@ -1,4 +1,5 @@
 import {recordProfileExecutor} from '../../../packages/db/src/profile-record-context.js';
+import {paymentVerifiedForSeller} from '../../../packages/domain/src/sales/before-payment.js';
 import {withNumberLabEngine,type NumberLabEngineLease} from '../../../packages/db/src/number-lab-engine-runtime.js';
 import {captureNewReceiptPolicy} from './receipt-policy.js';
 import {acceptsAgreement} from '../../../packages/domain/src/sales/agreement.js';
@@ -14,7 +15,7 @@ import {firstObservedAttribution} from '../../../packages/db/src/receipt-sales.j
 import {cancelPendingRemarketingForContact,closeRemarketingCycle,getRecord,hash,query,reserveRemarketingAttempt,setRemarketingAttemptStatus,verifiedTemplateCapabilityEvidence,withTransaction,uuid,decrypt,type QueryExecutor} from '@commerce/db';
 import {remarketingTransportTemplateSchema,type DomainRecord,type Body} from '@commerce/contracts';
 import {defaultSalesWorkflow,newFlowState,waitingCommitmentNode,evaluateCondition,renderMessage,validateWorkflow,type FlowDefinition,type FlowState} from '../../../packages/domain/src/sales/workflow.js';
-import {save,event,create,commercialContext,proposeEffect,proposeEffectOutcome,gated,nowFor,cancelCollectionPending,cancelPending} from './shared.js';
+import {currentSellerOrder,save,event,create,commercialContext,proposeEffect,proposeEffectOutcome,gated,nowFor,cancelCollectionPending,cancelPending} from './shared.js';
 import {interruptPendingRecipeEffects} from './recipe-interruptions.js';
 const transportConfirmedStatuses=new Set(['SENT','DELIVERED','READ']);
 const deliveryConfirmedStatuses=new Set(['DELIVERED','READ']);
@@ -357,13 +358,62 @@ export async function agreementEvidence(client:QueryExecutor,conversation:Domain
  return{node,contextual:node?.config.classifier==='contextual_agreement',language:String(offer?.body.language??'es'),literalPhrase:phrases[0],delivered,committed:!!order?.committed_at||order?.status==='COMMITTED',agreementEffectId:effect?.id??null};
 }
 
+/** A required wait (including a different journey of this contact) must keep its own timer. */
+export async function resumeCancelledFollowup(client:QueryExecutor,conversation:DomainRecord,timerIds:string[]){
+ const state=conversation.body.flow_state;
+ if(!state?.wake_at||!timerIds.length||state.status!=='WAITING')return conversation;
+ const timer=(await client.query(`SELECT payload FROM timers WHERE workspace_id=$1 AND environment=$2 AND conversation_id=$3
+    AND id=ANY($4::uuid[]) AND status='CANCELLED' AND kind='followup' AND due_at=$5 AND NOT (payload ? 'plan_key')`,
+  [conversation.workspace_id,conversation.environment,conversation.id,timerIds,state.wake_at])).rows[0];
+ if(!timer)return conversation;
+ const def=await definition(client,conversation);
+ const wait=def.flow.nodes.find(n=>n.id===timer.payload.node_id&&n.type==='wait'&&n.config.cancel_on_response&&n.next===state.node_id);
+ if(!wait)return conversation;
+ const next=def.flow.nodes.find(node=>node.id===state.node_id);
+ const reminder=next?.type==='message'&&['followup','remarketing'].includes(next.config.purpose??timer.payload.purpose);
+ const cursor=reminder?next.next:state.node_id;
+ const resumed={...state,node_id:cursor??state.node_id,status:cursor?'WAITING':'FINISHED',waiting_for:cursor?'ai_accepted':undefined};
+ delete resumed.wake_at;delete resumed.waiting_node_id;
+ return save(client,conversation,{...conversation.body,flow_state:resumed,followup_stop_reason:'CUSTOMER_REPLIED'});
+}
+
+/** Only a new buyer message can resume an old automatic escalation. Authored approval steps stay pinned. */
+async function resumeUnpaidSeller(client:QueryExecutor,conversation:DomainRecord,cause:string){
+ const body=conversation.body,resume=body.ai_review_resume_state;
+ if(body.ai_status!=='HUMAN_REVIEW'||body.status==='CLOSED'||body.retirement_handoff||body.collection_stop_reason||
+    body.flow_state?.status!=='HUMAN_REVIEW'||body.flow_state.waiting_for!=='human_approved'||!resume||resume.status==='HUMAN_REVIEW'||
+    paymentVerifiedForSeller(await currentSellerOrder(client,conversation)))return conversation;
+ const match=await client.query(`SELECT a.id FROM records a JOIN domain_events e ON e.workspace_id=a.workspace_id
+    AND e.environment=a.environment AND e.aggregate_id=$3 AND e.payload->>'ai_run_id'=a.id::text
+    AND e.event_type IN('ai.handoff_requested','ai.failed')
+   WHERE a.workspace_id=$1 AND a.environment=$2 AND a.kind='ai_run' AND a.body->>'conversation_id'=$3
+     AND a.body->'snapshot_flow_state'=$4::jsonb AND jsonb_typeof(a.body->'snapshot_sequence')='number'
+     AND a.body->'snapshot_sequence' < to_jsonb($5::bigint)
+     AND NOT EXISTS(SELECT 1 FROM domain_events newer WHERE newer.workspace_id=e.workspace_id
+       AND newer.environment=e.environment AND newer.aggregate_id=e.aggregate_id AND newer.recorded_at>e.recorded_at
+       AND newer.event_type IN('workflow.step_approved','workflow.human_review_requested'))
+   ORDER BY e.recorded_at DESC LIMIT 1`,[conversation.workspace_id,conversation.environment,conversation.id,JSON.stringify(resume),body.sequence]);
+ if(!match.rowCount)return conversation;
+ const next:Body={...body,flow_state:{...resume},ai_status:null,ai_pending:true,active_ai_run_id:null};
+ if(next.flow_state.waiting_for==='ai_accepted')next.flow_state.waiting_for='ai_customer_message';
+ delete next.ai_review_resume_state;
+ const updated=await save(client,conversation,next);
+ await event(client,updated,'ai.prepayment_seller_resumed',{prior_ai_run_id:match.rows[0].id},cause);
+ return updated;
+}
+
 export async function acceptCustomerResponse(client:QueryExecutor,conversation:DomainRecord,cause:string){
  if(conversation.body.sponsorship_id||conversation.body.launch_test_role==='beneficiary')return;
- const stop=collectionStopReason(String(conversation.body.last_customer_text??''));
+ let stop=collectionStopReason(String(conversation.body.last_customer_text??''));
+ if(stop==='PAYMENT_DATE_REQUIRES_REVIEW'){
+  if(!paymentVerifiedForSeller(await currentSellerOrder(client,conversation)))stop=undefined;
+ }
  if(stop){if(['CUSTOMER_DECLINED','CONTACT_OPT_OUT'].includes(stop))await cancelPending(client,conversation,stop,stop==='CONTACT_OPT_OUT');else await cancelCollectionPending(client,conversation,stop);await cancelPendingRemarketingForContact(client,conversation,stop);await closeRemarketingCycle(client,conversation,stop==='CONTACT_OPT_OUT'?'OPTED_OUT':stop==='CUSTOMER_DECLINED'?'DECLINED':'HUMAN_REVIEW',stop);conversation=await save(client,conversation,{...conversation.body,collection_stop_reason:stop,followup_stop_reason:stop,ai_pending:stop==='PAYMENT_DATE_REQUIRES_REVIEW',...(stop==='PAYMENT_DATE_REQUIRES_REVIEW'?{ai_status:'HUMAN_REVIEW'}:{})});await event(client,conversation,'collection.customer_stopped',{reason:stop},cause);return;}
  if(conversation.body.followup_plan){await cancelPendingRemarketingForContact(client,conversation,'CUSTOMER_REPLIED');conversation=await save(client,conversation,{...conversation.body,followup_stop_reason:'CUSTOMER_REPLIED'});}
  if(conversation.body.collection_stop_reason)return;
- if(await gated(client,conversation)||conversation.body.ai_status==='HUMAN_REVIEW'||conversation.body.flow_state?.status==='HUMAN_REVIEW')return;
+ if(await gated(client,conversation))return;
+ conversation=await resumeUnpaidSeller(client,conversation,cause);
+ if(conversation.body.ai_status==='HUMAN_REVIEW'||conversation.body.flow_state?.status==='HUMAN_REVIEW')return;
  if(conversation.body.flow_state?.waiting_for==='ai_customer_message'){conversation=await save(client,conversation,{...conversation.body,ai_pending:true,flow_state:{...conversation.body.flow_state,waiting_for:'ai_accepted'}});return;}
  if(conversation.body.flow_state?.waiting_for==='customer_reply'){
   const def=await definition(client,conversation),node=def.flow.nodes.find(n=>n.id===conversation.body.flow_state.waiting_node_id&&n.type==='reply');

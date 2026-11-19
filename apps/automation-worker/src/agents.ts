@@ -5,8 +5,9 @@ import type {QueryExecutor} from '@commerce/db';
 import type {LaboratorySellerResult} from '../../../packages/ai-providers/src/laboratory-seller.js';
 import {salesAiConfiguration} from '../../../packages/db/src/sales-ai-configuration.js';
 import {launchTestOrderFields} from '../../../packages/db/src/launch-test-scope.js';
-import {composeSellerContext,deterministicSellerReply,proposalGroundingIssue,sellerInstructions} from '../../../packages/domain/src/sales/seller-context.js';
+import {composeSellerContext,deterministicSellerReply,proposalGroundingIssue,sellerOrderContext,sellerInstructions} from '../../../packages/domain/src/sales/seller-context.js';
 import {loadSellerSnapshot} from '../../../packages/db/src/seller-context.js';
+import {beforePaymentReply,paymentVerifiedForSeller} from '../../../packages/domain/src/sales/before-payment.js';
 import {readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {ProfileSellerAi} from '../../../packages/ai-providers/src/variant-ai.js';
@@ -16,7 +17,7 @@ import {query,withTransaction,getRecord,decrypt,pool,readOperationalSettings,sta
 import {readIntegrationSettings,validateIntegrationConfig} from '../../../packages/db/src/integration-settings.js';
 import type {Body,DomainRecord} from '@commerce/contracts';
 import {DeterministicSalesAi,OpenAiSalesProvider,parseProposal,type SalesAiProvider,type AgentConfig} from '../../../packages/domain/src/sales/ai.js';
-import {event,save,create,gated,controls,proposeEffect,proposeEffectOutcome,cancelPending,receiptReviewPending} from './shared.js';
+import {event,save,create,gated,controls,currentSellerOrder,proposeEffect,proposeEffectOutcome,cancelPending,receiptReviewPending} from './shared.js';
 import {advanceWorkflow,agreementEvidence,commitAgreement} from './workflows.js';
 import {agreementClarification,decideAgreementProposal,type AgreementProposalDecision} from '../../../packages/domain/src/sales/agreement.js';
 import {reviewAcknowledgement} from '../../../packages/domain/src/catalog/variant-document.js';
@@ -41,6 +42,11 @@ function sellerHistoryText(message:Body){
  return protectedContent?'[contenido protegido]':body.text??'';
 }
 function agentBinding(conv:DomainRecord){return{account_id:conv.body.account_id,contact_id:conv.body.contact_id,assignment_id:conv.body.assignment_id,assignment_revision:conv.body.assignment_revision,binding_id:conv.body.binding_id,product_id:conv.body.product_id,offer_version_id:conv.body.offer_version_id,workflow_version_id:conv.body.workflow_version_id,agent_version_id:conv.body.agent_version_id};}
+async function retryCurrentTurn(client:QueryExecutor,current:DomainRecord,runId:string){
+ if(current.body.active_ai_run_id!==runId)return;
+ const pending=current.body.status!=='CLOSED'&&current.body.ai_status!=='HUMAN_REVIEW'&&current.body.flow_state?.status!=='HUMAN_REVIEW'&&current.body.flow_response_sequence!==current.body.sequence;
+ await save(client,current,{...current.body,active_ai_run_id:null,ai_pending:pending});
+}
 function reviewBody(current:DomainRecord){const body:Body={...current.body,ai_status:'HUMAN_REVIEW',ai_pending:false,active_ai_run_id:null};if(current.body.flow_state?.status==='FINISHED'){delete body.ai_review_resume_state;return body;}return{...body,ai_review_resume_state:current.body.flow_state??null,flow_state:current.body.flow_state?{...current.body.flow_state,status:'HUMAN_REVIEW',waiting_for:'human_approved',waiting_node_id:current.body.flow_state.waiting_node_id??current.body.flow_state.node_id}:undefined};}
 async function acknowledgeReview(client:Parameters<typeof proposeEffect>[0],current:DomainRecord,runId:string){
  if(!['COMMITTED','AWAITING_RECEIPT'].includes(String(current.body.stage)))return;
@@ -66,7 +72,7 @@ type BoundSeller=ReturnType<typeof bindNumberLabSeller>;
 async function processAgentsImpl(store:AgentStore,limit:number,override?:SalesAiProvider,lab?:BoundSeller){
  const candidates=(await store.query(`SELECT * FROM records WHERE kind='conversation' AND body->>'ai_pending'='true' AND body->>'last_customer_text' IS NOT NULL ${lab?'AND id=$2':''} ORDER BY updated_at LIMIT $1`,lab?[limit,lab.conversationId]:[limit])).rows as DomainRecord[];
  for(const candidate of candidates){
-  const snapshot=await store.transaction(async c=>{const operationalRevision=(await readOperationalSettings(c,candidate.workspace_id,candidate.environment,{lock:'share'})).version;await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[candidate.id]);let conv=await getRecord(c,candidate.workspace_id,'conversation',candidate.id);if(!conv||!conv.body.ai_pending)return undefined;if(conv.body.sponsorship_id||conv.body.launch_test_role==='beneficiary'||(await launchTestOrderFields(c,conv)).launch_test_role==='beneficiary'||conv.body.ai_status==='HUMAN_REVIEW'||conv.body.flow_state?.status==='HUMAN_REVIEW'||conv.body.flow_response_sequence===conv.body.sequence){await save(c,conv,{...conv.body,ai_pending:false});return undefined;}
+  const snapshot=await store.transaction(async c=>{const operationalRevision=(await readOperationalSettings(c,candidate.workspace_id,candidate.environment,{lock:'share'})).version;await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[candidate.id]);let conv=await getRecord(c,candidate.workspace_id,'conversation',candidate.id);if(!conv||!conv.body.ai_pending)return undefined;if(conv.body.sponsorship_id||conv.body.launch_test_role==='beneficiary'||(await launchTestOrderFields(c,conv)).launch_test_role==='beneficiary'||conv.body.ai_status==='HUMAN_REVIEW'||(conv.body.flow_state?.status==='HUMAN_REVIEW'&&paymentVerifiedForSeller(await currentSellerOrder(c,conv)))||conv.body.flow_response_sequence===conv.body.sequence){await save(c,conv,{...conv.body,ai_pending:false});return undefined;}
    const pending=conv.body.active_ai_run_id?await getRecord(c,conv.workspace_id,'ai_run',conv.body.active_ai_run_id):undefined;
    if(await gated(c,conv)){await save(c,conv,{...conv.body,ai_pending:pending?.body.status==='AWAITING_EFFECT'});return undefined;}
    const agent=conv.body.agent_version_id?await getRecord(c,conv.workspace_id,'agent',conv.body.agent_version_id):undefined;if(conv.environment==='REAL'&&!agent){await save(c,conv,{...conv.body,ai_pending:false,ai_status:'CONFIGURATION_REQUIRED'});return undefined;}
@@ -76,7 +82,7 @@ async function processAgentsImpl(store:AgentStore,limit:number,override?:SalesAi
    const offer=await getRecord(c,conv.workspace_id,'offer',conv.body.offer_version_id??'');if(!offer){await save(c,conv,{...conv.body,ai_pending:false,ai_status:'OFFER_REQUIRED'});return undefined;}
    const sellerSnapshot=conv.body.seller_snapshot??await loadSellerSnapshot(c,conv.workspace_id,conv.environment,offer.id,agent?.id,new Date(conv.created_at).toISOString());
    const messages=(await c.query("SELECT m.body,o.payload->>'purpose' purpose,o.payload->>'payment_profile_version_id' payment_profile_version_id,o.payload->>'asset_id' effect_asset_id FROM records m LEFT JOIN outbox o ON o.id::text=m.body->>'effect_id' AND o.workspace_id=m.workspace_id WHERE m.workspace_id=$1 AND m.environment=$2 AND m.kind='message' AND m.body->>'conversation_id'=$3 AND m.id::text<>$4 AND (m.body->>'direction'='INBOUND' OR m.body->>'status' IN('SENT','DELIVERED','READ')) ORDER BY m.created_at DESC LIMIT 12",[conv.workspace_id,conv.environment,conv.id,conv.body.last_message_id??''])).rows.reverse();
-   const order=(await c.query("SELECT body FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='order' AND body->>'conversation_id'=$3 LIMIT 1",[conv.workspace_id,conv.environment,conv.id])).rows[0]?.body;
+   const order=await currentSellerOrder(c,conv);
    const context=composeSellerContext(sellerSnapshot,{text:conv.body.last_customer_text,stage:conv.body.stage,order,variables:conv.body.flow_state?.variables,history:messages.map(m=>({role:m.body.direction==='INBOUND'?'customer':'seller',text:sellerHistoryText(m)}))});
    if(pending?.body.status==='AWAITING_EFFECT'){
     const exact=pending.body.conversation_id===conv.id&&pending.body.configuration_revision===operationalRevision
@@ -85,8 +91,8 @@ async function processAgentsImpl(store:AgentStore,limit:number,override?:SalesAi
      &&stableJson(pending.body.snapshot_flow_state)===stableJson(conv.body.flow_state??null)
      &&pending.body.agent_version_id===agent?.id&&pending.body.offer_version_id===offer.id
      &&stableJson(pending.body.context_snapshot)===stableJson(context);
-    if(!exact){await save(c,pending,{...pending.body,status:'DISCARDED',reason:'CONTEXT_OR_CONFIGURATION_CHANGED',completed_at:new Date().toISOString()});await save(c,conv,reviewBody(conv));await event(c,conv,'ai.proposal_discarded',{ai_run_id:pending.id,reason:'CONTEXT_OR_CONFIGURATION_CHANGED'});return undefined;}
-    return{conv,agent,offer,run:pending,operationalRevision,context,sellerSnapshot,cachedProposal:parseProposal(pending.body.proposal)};
+    if(!exact){await save(c,pending,{...pending.body,status:'DISCARDED',reason:'CONTEXT_OR_CONFIGURATION_CHANGED',completed_at:new Date().toISOString()});await retryCurrentTurn(c,conv,pending.id);await event(c,conv,'ai.proposal_discarded',{ai_run_id:pending.id,reason:'CONTEXT_OR_CONFIGURATION_CHANGED'});return undefined;}
+    return{conv,agent,offer,run:pending,operationalRevision,context,sellerSnapshot,cachedProposal:parseProposal(pending.body.provider_proposal??pending.body.proposal)};
    }
    const run=await create(c,conv,'ai_run',{conversation_id:conv.id,agent_version_id:agent?.id,offer_version_id:offer.id,status:'RUNNING',context_snapshot:context,source_revisions:sellerSnapshot.sources.map((x:any)=>({id:x.id,revision:x.revision})),configuration_revision:operationalRevision,snapshot_sequence:conv.body.sequence,snapshot_stage:conv.body.stage,snapshot_binding:agentBinding(conv),snapshot_flow_state:conv.body.flow_state??null,control_snapshot:await controls(c,conv),provider:inherited?.agent?.provider??agent?.body.provider??'deterministic',model:inherited?.agent?.model??(agent?.body.provider==='workspace'?null:agent?.body.model??'deterministic-v1'),started_at:new Date().toISOString()});conv=await save(c,conv,{...conv.body,seller_snapshot:sellerSnapshot,ai_pending:false,active_ai_run_id:run.id});return{conv,agent,offer,run,operationalRevision,context,sellerSnapshot,cachedProposal:undefined};
   });if(!snapshot)continue;
@@ -118,14 +124,26 @@ async function processAgentsImpl(store:AgentStore,limit:number,override?:SalesAi
   const nativeFields=nativeAi?{provider:nativeAi.provider,model:nativeAi.model,lab_ai:{attempt_id:nativeAi.attemptId,execution_environment:nativeAi.executionEnvironment,operation_class:nativeAi.operationClass,
    state:nativeAi.invocation.state,...('code'in nativeAi.invocation?{code:nativeAi.invocation.code}:{}),outcome:nativeAi.invocation.outcome??null}}:{};
   const reconcile=async(c:QueryExecutor,cacheAdmitted=true)=>{const configurationChanged=(await readOperationalSettings(c,candidate.workspace_id,candidate.environment,{lock:'share'})).version!==snapshot.operationalRevision;await c.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[candidate.id]);const current=await getRecord(c,candidate.workspace_id,'conversation',candidate.id);const run=await getRecord(c,candidate.workspace_id,'ai_run',snapshot.run.id);if(!current||!run)return;
-   const stale=configurationChanged||stableJson(agentBinding(current))!==stableJson(agentBinding(snapshot.conv))||current.body.sequence!==snapshot.conv.body.sequence||current.body.active_ai_run_id!==run.id||current.body.stage!==snapshot.conv.body.stage||JSON.stringify(current.body.flow_state)!==JSON.stringify(snapshot.conv.body.flow_state);if(stale){await save(c,run,{...run.body,...nativeFields,status:'DISCARDED',reason:configurationChanged?'CONFIGURATION_CHANGED':'CONTEXT_OR_CONTROLS_CHANGED',completed_at:new Date().toISOString()});await event(c,current,'ai.proposal_discarded',{ai_run_id:run.id,reason:configurationChanged?'CONFIGURATION_CHANGED':'CONTEXT_OR_CONTROLS_CHANGED'});if(snapshot.cachedProposal)await save(c,current,reviewBody(current));return;}
+   const orderChanged=stableJson(sellerOrderContext(await currentSellerOrder(c,current)))!==stableJson(snapshot.context.order);
+   const stale=configurationChanged||orderChanged||stableJson(agentBinding(current))!==stableJson(agentBinding(snapshot.conv))||current.body.sequence!==snapshot.conv.body.sequence||current.body.active_ai_run_id!==run.id||current.body.stage!==snapshot.conv.body.stage||JSON.stringify(current.body.flow_state)!==JSON.stringify(snapshot.conv.body.flow_state);if(stale){await save(c,run,{...run.body,...nativeFields,status:'DISCARDED',reason:configurationChanged?'CONFIGURATION_CHANGED':'CONTEXT_OR_CONTROLS_CHANGED',completed_at:new Date().toISOString()});await event(c,current,'ai.proposal_discarded',{ai_run_id:run.id,reason:configurationChanged?'CONFIGURATION_CHANGED':'CONTEXT_OR_CONTROLS_CHANGED'});await retryCurrentTurn(c,current,run.id);return;}
    if(lab&&!cacheAdmitted){await save(c,run,{...run.body,...nativeFields,proposal:snapshot.cachedProposal??output!.proposal,usage:snapshot.cachedProposal?run.body.usage:output?.usage,status:'AWAITING_EFFECT',effect_proposal_block:'AI_AUTHORITY_UNAVAILABLE'});await save(c,current,{...current.body,ai_pending:true,ai_status:'AWAITING_EFFECT',active_ai_run_id:run.id});return;}
    const controlsBlocked=await gated(c,current);
    const support=deterministicSellerReply(snapshot.context);
    const supportQuestion=/pdf|portal|abr[ei]|pago|comprobante/i.test(String(snapshot.context.customer_text).normalize('NFD').replace(/[\u0300-\u036f]/g,''));
    const safeSupport=['COMMITTED','AWAITING_RECEIPT'].includes(String(snapshot.context.stage))&&(support.reason==='POST_AGREEMENT_CHECK_IN'||support.reason==='APPROVED_SOURCE'&&supportQuestion)&&!proposalGroundingIssue(support.proposal,snapshot.context)?support.proposal:undefined;
-   if((failure||!output)&&!safeSupport&&!snapshot.cachedProposal){await save(c,run,{...run.body,...nativeFields,status:'FAILED',reason:failure??'AI_NO_OUTPUT'});if(!controlsBlocked)await acknowledgeReview(c,current,run.id);await save(c,current,reviewBody(current));await event(c,current,'ai.failed',{ai_run_id:run.id,reason:failure});return;}
-   const p=snapshot.cachedProposal??safeSupport??output!.proposal;const groundingIssue=proposalGroundingIssue(p,snapshot.context);const resultBody:Body={...run.body,...nativeFields,proposal:p,usage:snapshot.cachedProposal?run.body.usage:output?.usage,...(safeSupport?{fallback_reason:support.reason}:{})};
+   // A retry of an already proposed effect retains the original provider outcome.
+   const providerFailure=failure??(snapshot.cachedProposal?run.body.provider_failure:undefined);
+   const modelProposal=snapshot.cachedProposal??output?.proposal;
+   const candidateProposal=modelProposal?.intent==='opt_out'?modelProposal:safeSupport??modelProposal;
+   const prepayment=beforePaymentReply(snapshot.context,candidateProposal,{waitingFor:current.body.flow_state?.waiting_for,language:snapshot.offer.body.language});
+   const p=prepayment?.proposal??candidateProposal;
+   if(!p){await save(c,run,{...run.body,...nativeFields,status:'FAILED',reason:failure??'AI_NO_OUTPUT'});if(!controlsBlocked)await acknowledgeReview(c,current,run.id);await save(c,current,reviewBody(current));await event(c,current,'ai.failed',{ai_run_id:run.id,reason:failure});return;}
+   const groundingIssue=prepayment?.reason==='PREPAYMENT_CLARIFICATION'?undefined:proposalGroundingIssue(p,snapshot.context);
+   const resultBody:Body={...run.body,...nativeFields,proposal:p,
+    ...(prepayment&&modelProposal?{provider_proposal:modelProposal}:{}),usage:snapshot.cachedProposal?run.body.usage:output?.usage,
+    ...(prepayment?{fallback_reason:prepayment.reason}:safeSupport?{fallback_reason:support.reason}:{}),
+    ...(providerFailure?{provider_failure:providerFailure}:{}),
+   };
    if(controlsBlocked&&p.intent!=='opt_out'){await save(c,run,{...resultBody,status:'AWAITING_EFFECT',effect_proposal_block:'CONTROLS_BLOCKED'});await save(c,current,{...current.body,ai_pending:true,ai_status:'AWAITING_EFFECT',active_ai_run_id:run.id});return;}
 	   // V7.5.3 (F1, opción 2): while the pinned agreement is pending, the model
 	   // only proposes. The deterministic rule confirms the canonical transition
@@ -134,7 +152,8 @@ async function processAgentsImpl(store:AgentStore,limit:number,override?:SalesAi
 	   let agreement:AgreementProposalDecision|undefined,agreementReply:string|undefined;
 	   if(current.body.flow_state?.status==='WAITING'&&current.body.flow_state?.waiting_for==='commitment'&&p.intent!=='opt_out'){
 	    const evidence=await agreementEvidence(c,current);
-	    agreement=decideAgreementProposal({intent:p.intent,confidence:p.confidence,tool:p.tool,reply:p.reply,customerText:String(current.body.last_customer_text??''),language:evidence.language,
+	    const agreementCandidate=prepayment?.reason==='PREPAYMENT_CLARIFICATION'&&modelProposal?modelProposal:p;
+	    agreement=decideAgreementProposal({intent:agreementCandidate.intent,confidence:agreementCandidate.confidence,tool:agreementCandidate.tool,reply:agreementCandidate.reply,customerText:String(current.body.last_customer_text??''),language:evidence.language,
 	     contextual:evidence.contextual,agreementDelivered:evidence.delivered,orderCommitted:evidence.committed,controlsClear:!controlsBlocked});
 	    resultBody.agreement={...agreement,agreement_effect_id:evidence.agreementEffectId};
 	    if(agreement.decision==='ACCEPT'){
@@ -148,14 +167,15 @@ async function processAgentsImpl(store:AgentStore,limit:number,override?:SalesAi
 	   }
 	   let acceptedEffect:Body|undefined;
 	   if(p.intent==='opt_out'){await c.query(`INSERT INTO manual_controls(workspace_id,scope_type,scope_id,suppressed,reason,actor_id) VALUES($1,'contact',$2,true,'AI_CLASSIFIED_OPT_OUT','automation') ON CONFLICT(workspace_id,scope_type,scope_id) DO UPDATE SET suppressed=true,version=manual_controls.version+1,updated_at=now()`,[current.workspace_id,current.body.contact_id]);await cancelPending(c,current,'OPT_OUT',true);}
-	   else if(!agreementReply&&(p.confidence<0.8||p.tool==='request_human'||p.intent==='unknown'||!!groundingIssue)){await save(c,run,{...resultBody,status:'COMPLETED',completed_at:new Date().toISOString()});await acknowledgeReview(c,current,run.id);await save(c,current,reviewBody(current));await event(c,current,'ai.handoff_requested',{ai_run_id:run.id,reason:groundingIssue??'HUMAN_REQUEST'});return;}
+	   else if(!agreementReply&&(p.confidence<0.8||p.tool==='request_human'||p.intent==='unknown'||p.intent==='human_handoff'||!!groundingIssue)){await save(c,run,{...resultBody,status:'COMPLETED',completed_at:new Date().toISOString()});await acknowledgeReview(c,current,run.id);await save(c,current,reviewBody(current));await event(c,current,'ai.handoff_requested',{ai_run_id:run.id,reason:groundingIssue??'HUMAN_REQUEST'});return;}
 	   else{const proposed=await proposeEffectOutcome(c,current,{kind:'text',purpose:'seller_reply',text:agreementReply??p.reply,ai_run_id:run.id,agent_version_id:snapshot.agent?.id,...(agreementReply?{agreement_clarification:agreement!.reason}:{})},`ai:${run.id}`);
      if(proposed.state==='BLOCKED'){
       await save(c,run,{...resultBody,status:'AWAITING_EFFECT',effect_proposal_block:proposed.reason});
       await save(c,current,{...current.body,ai_pending:true,ai_status:'AWAITING_EFFECT',active_ai_run_id:run.id});return;
      }
      acceptedEffect=proposed.effect;await event(c,current,'ai.proposal_accepted',{ai_run_id:run.id,intent:p.intent,effect_id:acceptedEffect.id,...(agreementReply?{agreement_clarification:agreement!.reason}:{})});}
-    await save(c,run,{...resultBody,status:'COMPLETED',effect_proposal_block:null,completed_at:new Date().toISOString()});
+    await save(c,run,{...resultBody,status:providerFailure?'FAILED':'COMPLETED',...(providerFailure?{reason:providerFailure}:{}),effect_proposal_block:null,completed_at:new Date().toISOString()});
+     if(providerFailure)await event(c,current,'ai.failed',{ai_run_id:run.id,reason:providerFailure,seller_replied:!!acceptedEffect});
 	   const body:Body={...current.body,ai_pending:false,ai_status:'COMPLETED',active_ai_run_id:null};
 	   const interruption=current.body.recipe_interruption;
 	   if(acceptedEffect&&interruption?.status==='AWAITING_SELLER_REPLY'){

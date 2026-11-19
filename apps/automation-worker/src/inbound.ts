@@ -10,7 +10,7 @@ import {loadSellerSnapshot} from '../../../packages/db/src/seller-context.js';
 import {currentVariantRelease,captureVariantJourney} from '../../../packages/db/src/variant-workspace.js';
 import {recordProfileExecutor} from '../../../packages/db/src/profile-record-context.js';
 import {readIntegrationSettings} from '../../../packages/db/src/integration-settings.js';
-import {acceptCustomerResponse} from './workflows.js';
+import {acceptCustomerResponse,resumeCancelledFollowup} from './workflows.js';
 import {cancelPendingRemarketingForContact,closeRemarketingCycle,withTransaction,getRecord,decrypt,encrypt,appendEvent,hash,type QueryExecutor} from '@commerce/db';
 import {normalizeWaha,normalizeCloud,normalizeSimulator,type CanonicalEvent} from '@commerce/messaging';
 import type {DomainRecord,Body} from '@commerce/contracts';
@@ -67,7 +67,13 @@ export async function materializeMessage(client:QueryExecutor,account:DomainReco
     await client.query(`INSERT INTO manual_controls(workspace_id,scope_type,scope_id,suppressed,reason,actor_id) VALUES($1,'contact',$2,true,'CONTACT_OPT_OUT','contact') ON CONFLICT(workspace_id,scope_type,scope_id) DO UPDATE SET suppressed=true,version=manual_controls.version+1,updated_at=now()`,[account.workspace_id,contact.id]);await cancelPending(client,conversation,'CONTACT_OPT_OUT',true);await cancelPendingRemarketingForContact(client,conversation,'CONTACT_OPT_OUT');await closeRemarketingCycle(client,conversation,'OPTED_OUT','CONTACT_OPT_OUT');await save(client,contact,{...contact.body,status:'SUPPRESSED'});await event(client,conversation,'contact.opted_out',{contact_id:contact.id},envelopeId);
   }
   // Inbound response cancels only follow-up timers, preserving required workflow wait timers.
-  if(!normalized.fromMe){const cancelled=await cancelPendingRemarketingForContact(client,conversation,'CUSTOMER_REPLIED');if(cancelled.timers.length&&conversation.body.flow_state?.wake_at){conversation=await save(client,conversation,{...conversation.body,flow_state:{...conversation.body.flow_state,status:'HUMAN_REVIEW',waiting_for:'human_approved',wake_at:undefined},followup_stop_reason:'CUSTOMER_REPLIED'});await event(client,conversation,'followup.cancelled',{reason:'CUSTOMER_REPLIED',timer_ids:cancelled.timers},envelopeId);}}
+  if(!normalized.fromMe){
+    const cancelled=await cancelPendingRemarketingForContact(client,conversation,'CUSTOMER_REPLIED');
+    if(cancelled.timers.length){
+      if(!late&&!routingBlocked)conversation=await resumeCancelledFollowup(client,conversation,cancelled.timers);
+      await event(client,conversation,'followup.cancelled',{reason:'CUSTOMER_REPLIED',timer_ids:cancelled.timers},envelopeId);
+    }
+  }
   if(!normalized.fromMe&&!late&&!routingBlocked)await acceptCustomerResponse(client,conversation,message.id);
   return conversation;
 }
