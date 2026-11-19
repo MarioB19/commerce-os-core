@@ -11,6 +11,7 @@ import {materializeMessage} from '../../apps/automation-worker/src/inbound.js';
 import {advanceWorkflow,ensureOrder} from '../../apps/automation-worker/src/workflows.js';
 import {appendEvent,buyerExcluded,pool,putRecord,getRecord,withTransaction} from '../../packages/db/src/index.js';
 import {salesAgreementRecipeV1,salesAgreementWorkflowV1} from '../../packages/domain/src/sales/sales-recipe-v2.js';
+import {buildSellerSnapshot} from '../../packages/domain/src/sales/seller-context.js';
 import type {Body,DomainRecord} from '../../packages/contracts/src/index.js';
 
 const primaryWorkspace=`mcl-sales-v2-${randomUUID()}`;
@@ -599,6 +600,28 @@ describe('V7.5.3 contextual agreement: AI proposal + deterministic rule',()=>{
  const lastRun=async(journey:DomainRecord)=>(await pool.query("SELECT body FROM records WHERE workspace_id=$1 AND kind='ai_run' AND body->>'conversation_id'=$2 ORDER BY created_at DESC LIMIT 1",[journey.workspace_id,journey.id])).rows[0]?.body;
  const committedEvents=async(journey:DomainRecord)=>(await pool.query("SELECT payload FROM domain_events WHERE workspace_id=$1 AND aggregate_id=$2 AND event_type='order.committed'",[journey.workspace_id,journey.id])).rows.map((r:any)=>r.payload);
 
+ it('answers price and payment-timing objections from the two published FAQs while retaining the agreement',async()=>{
+  const faq=[
+   {question:'Está caro, es mucho',answer:'El curso incluye las guías. ¿Quieres que te explique qué recibes?'},
+   {question:'No puedo pagar hoy, hasta que me paguen',answer:'Puedes escribirme cuando estés lista para continuar.'},
+  ];
+  const {identity,journey}=await start();await transport(journey);
+  const pinned=await current(journey);
+  const agent=agreementCatalog.mclAgent;
+  const snapshot=buildSellerSnapshot({offer:agreementCatalog.mclOffer,product:agreementCatalog.mclProduct,
+   agent:{...agent,body:{...agent.body,knowledge:JSON.stringify({compilation:'KNOWLEDGE_WITHOUT_MONETARY_LITERALS',rules:{},faq})}}});
+  await putRecord(pool,{id:pinned.id,workspaceId:pinned.workspace_id,environment,kind:'conversation',version:pinned.version,body:{...pinned.body,seller_snapshot:snapshot}});
+  for(const [text,expected] of [['Se sale de mi presupuesto',faq[0]!.answer],['¿Puedo pagarte mañana?',faq[1]!.answer]] as const){
+   await inbound(agreementCatalog.account,identity,text);
+   await processAgents(100,fixtureAi({intent:'human_handoff',tool:'request_human',reply:'No sé.'}));
+   await processAgents(100,fixtureAi({intent:'unknown',reply:'No sé.'}));
+   expect((await sellerReplies(journey)).filter(reply=>reply.text===expected)).toHaveLength(1);
+   expect((await current(journey)).body).toMatchObject({ai_status:'COMPLETED',flow_state:{status:'WAITING',waiting_for:'commitment'}});
+   expect(await lastRun(journey)).toMatchObject({fallback_reason:'APPROVED_FAQ'});
+  }
+  expect(await sellerReplies(journey)).toHaveLength(2);
+  expect(await committedEvents(journey)).toHaveLength(0);
+ });
  it('resumes a previous automatic prepayment review only after the same buyer writes again',async()=>{
   for(const automatic of [true,false]){
    const {identity,journey}=await start();await transport(journey);

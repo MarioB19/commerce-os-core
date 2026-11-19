@@ -16,7 +16,14 @@ const normalized = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0
 function priceObjection(text: string) {
   if (/\b(no (?:esta|es|parece) (?:tan |muy )?car[oa]|not (?:too )?expensive)\b/.test(text)) return false;
   const expensive = /^(?:(?:muy|demasiado|que) )?car[oa]s?$|\b(?:esta[n]?|es|son|parece[n]?|resulta[n]?|se me hace[n]?|que) (?:muy |bastante |demasiado |tan |un poco )?(?:car[oa]s?|costos[oa]s?)\b/;
-  return expensive.test(text) || /\b(carisim[oa]s?|precio (?:muy |demasiado )?(?:alt[oa]|elevado)|fuera de (?:mi )?presupuesto|se (?:me )?sale de (?:mi )?presupuesto|no me alcanza|no (?:me )?puedo (?:permitir|pagar)(?:lo| tanto)?|(?:mucho|demasiado) dinero|expensive|too (?:much|pricey)|out of (?:my )?budget|cannot afford|can t afford|fora do (?:meu )?orcamento|muito dinheiro)\b/.test(text);
+  return expensive.test(text) || /\b(carisim[oa]s?|precio (?:muy |demasiado )?(?:alt[oa]|elevado)|fuera de (?:mi )?presupuesto|se (?:me )?sale de (?:mi )?presupuesto|no me alcanza|no (?:me )?puedo permitir(?:lo|melo)?|no puedo pagar (?:tanto|ese precio|esa cantidad)|(?:mucho|demasiado) dinero|expensive|too (?:much|pricey)|out of (?:my )?budget|cannot afford|can t afford|fora do (?:meu )?orcamento|muito dinheiro)\b/.test(text);
+}
+
+function paymentConcern(text: string): 'price' | 'timing' | undefined {
+  const price = priceObjection(text);
+  const timing = /\b(?:no (?:te )?puedo pagar(?:lo|te)? (?:hoy|ahora|ahorita)|pagar(?:lo|te)? (?:manana|mas tarde|despues|el (?:lunes|martes|miercoles|jueves|viernes|sabado|domingo))|(?:hasta que|cuando) (?:me paguen|cobre)|pay (?:later|tomorrow|on payday)|(?:can t|cannot) pay (?:now|today)|(?:nao (?:posso|consigo) pagar (?:hoje|agora)|pagar (?:amanha|depois)))\b/.test(text);
+  if (price === timing) return;
+  return price ? 'price' : 'timing';
 }
 
 function approvedAnswer(source: SellerSource) {
@@ -29,10 +36,11 @@ function matchedFaq(context: SellerContext): SellerSource | undefined {
   if (context.conflicts.length) return;
   const text = normalized(context.customer_text);
   const sources = context.sources.filter(s => s.topic === 'faq' || s.topic === 'objection');
-  const exact = sources.find(s => normalized(s.title) === text);
-  if (exact) return exact;
-  if (!priceObjection(text)) return;
-  const matching = sources.filter(s => priceObjection(normalized(s.title)));
+  const exact = sources.filter(s => normalized(s.title) === text);
+  if (exact.length) return exact.length === 1 ? exact[0] : undefined;
+  const concern = paymentConcern(text);
+  if (!concern) return;
+  const matching = sources.filter(s => paymentConcern(normalized(s.title)) === concern);
   if (matching.length === 1) return matching[0];
 }
 
