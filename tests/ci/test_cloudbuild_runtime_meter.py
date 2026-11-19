@@ -210,9 +210,13 @@ class MeterTests(unittest.TestCase):
         # dispatched and reconciled FULL all retain their original charges.
         previous = [450] + [450, 450, 450, 120]
         verification = ([450, 450, 450, 120] + [450, 450, 450]) * 2
-        for seconds in previous + verification:
+        # The first main admission and source request finished before build dispatch.
+        failed_main_preparation = [450, 450]
+        rejected_attestation_admission = [450]
+        failed_main_attestation = [450, 450, 450]
+        for seconds in previous + verification + failed_main_preparation + rejected_attestation_admission + failed_main_attestation + verification:
             self.meter.finish(self.meter.extend(self.reserve(), seconds), {'ok': True})
-        self.assertEqual(usage(self.store.document)['2026-11']['cpu_ms'], 82_115_000)
+        self.assertEqual(usage(self.store.document)['2026-11']['cpu_ms'], 90_455_000)
         with self.assertRaisesRegex(AdmissionError, 'MONTHLY_CEILING'):
             self.reserve()
 

@@ -71,3 +71,12 @@ El dueño autorizó 4,195 segundos de controlador adicionales para noviembre. El
 La primera lectura del inventario del 19-nov terminó antes de registrar un intento de compilación. El medidor conserva los 450 segundos de esa consulta. El dueño autorizó hasta 900 segundos adicionales en noviembre, incluidos los 450 ya consumidos. El techo queda en 81,095 segundos de controlador. Se mantienen US$5 para la publicación y US$180 para el mes.
 
 La prueba con dos preguntas aprobadas en el mismo producto detectó una respuesta incorrecta antes de instalar. La verificación de ese candidato se canceló y concilió. Después de contabilizar el intento, el medidor registró 76,475 segundos. Brandon autorizó 1,020 segundos adicionales para verificar el candidato corregido y su integración. El techo de noviembre queda en 82,115 segundos. Se mantienen US$5 para la publicación y US$180 para noviembre.
+
+
+## 19 de noviembre, verificación de la continuidad de los accesos del dueño
+
+La revisión de la copia se detuvo antes de ejecutar el instalador. El paquete aprobado conserva las correcciones del vendedor. La nueva verificación cubre también las 33 sesiones del panel observadas en producción. Brandon autorizó los minutos necesarios para terminar esta publicación y mantuvo US$5 por la publicación y US$180 por noviembre.
+
+El registro nativo tenía 103,980 segundos de compilación confirmados y cero reservados. Dos verificaciones completas de 5,700 segundos y dos atestaciones de 120 requieren hasta 115,620 segundos en noviembre. La extensión de 7,620 segundos corresponde solo a noviembre de 2026 y al proyecto que ya adoptó la bolsa de 108,000 segundos. Los demás meses conservan su límite. El controlador pasa de 84,815 a 90,455 segundos en noviembre. La contabilidad conserva cada reserva y resultado histórico.
+
+El margen adicional modelado incluye US$1.35024 de compilación, US$0.18973 de controlador y US$0.55 para la máquina de empaquetado, la copia temporal y las operaciones asociadas. La proyección acumulada es US$4.90 por la publicación y US$179.05 brutos en noviembre.

@@ -813,6 +813,8 @@ def owner_auth_date(value):
             'COPY_OWNER_AUTH_UTC_REQUIRED')
     return result
 
+MAX_RETAINED_OWNER_SESSIONS = 256
+
 def owner_auth_lifecycle(value):
     """Validate a private observation; only aggregate facts may enter a report."""
     require(type(value) is dict and set(value)=={'clock_utc','read_only','sessions','tokens','memberships'}
@@ -820,7 +822,7 @@ def owner_auth_lifecycle(value):
     clock=owner_auth_date(value['clock_utc'])
     sessions=value['sessions'];tokens=value['tokens'];members=value['memberships']
     require(all(type(rows) is list for rows in (sessions,tokens,members))
-            and 0<=len(sessions)<=api_web.MAX_OWNER_SESSIONS
+            and len(sessions)<=MAX_RETAINED_OWNER_SESSIONS
             and 1<=len(tokens)<=api_web.MAX_OWNER_TOKENS
             and 1<=len(members)<=api_web.MAX_OWNER_USERS,
             'COPY_OWNER_AUTH_BINDING_CHANGED')
@@ -868,6 +870,7 @@ def owner_auth_lifecycle(value):
         require(type(row['unexpired']) is bool and row['unexpired'] is (expiry>clock),
                 'COPY_OWNER_AUTH_CLOCK_FACT_MISMATCH')
         active+=int(row['unexpired'])
+    require(active<=api_web.MAX_OWNER_SESSIONS, 'COPY_OWNER_AUTH_ACTIVE_SESSION_LIMIT')
     return {'retained_session_rows':len(sessions),'active_sessions':active,'expired_sessions':len(sessions)-active,
             'valid_nonrevoked_pat_rows':len(tokens),'active_owner_users':len(owners)}
 
