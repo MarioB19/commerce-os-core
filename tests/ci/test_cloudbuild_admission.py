@@ -211,6 +211,22 @@ class BudgetAndStateTests(unittest.TestCase):
         replay = step(doc, 'discover', now=NOW+timedelta(days=32), plan=plan()).document
         self.assertEqual(replay['attempts'][ATTEMPT]['admission'], value)
 
+    def test_november_owner_funding_increase_expires_and_never_applies_to_credit(self):
+        for month, cap in ((11, 180_000_000), (12, 175_000_000)):
+            when = NOW.replace(month=month)
+            review = approval(now=when)
+            value = admission(now=when)
+            value.update(credit_verified=False, projected_gross_microusd=cap, owner_budget={
+                'decision_sha256': '7'*64, 'month': when.strftime('%Y-%m'), 'monthly_cap_microusd': cap})
+            m.validate_admission(value, when, review)
+            with self.assertRaisesRegex(m.AdmissionError, 'GROSS_CAP_EXCEEDED'):
+                m.validate_admission({**value, 'projected_gross_microusd': cap + 1}, when, review)
+            if month == 11:
+                credit = {**value, 'credit_verified': True}
+                del credit['owner_budget']
+                with self.assertRaisesRegex(m.AdmissionError, 'GROSS_CAP_EXCEEDED'):
+                    m.validate_admission(credit, when, review)
+
     def test_owner_budget_rejects_wrong_month_cap_unknown_fields_and_missing_receipt(self):
         changes = [{'month': '2026-09'}, {'month': '2026-11'},
                    {'monthly_cap_microusd': 175_000_001},

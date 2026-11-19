@@ -1,5 +1,13 @@
 # Estado de publicación
 
+## 19-nov-2026 — Confirmación de entrega y atención del vendedor antes del pago
+
+La candidata corrige el consumidor de acuses del canal. Asocia el perfil, ambiente y número del envío antes de escribir el estado de entrega. Los acuses repetidos conservan el efecto original y cada paso de cobro se propone una vez al confirmarse todos los materiales.
+
+La regla del vendedor cubre todos los productos. Usa la respuesta aprobada de la oferta frente a una objeción conocida y pide aclaración frente a mensajes ambiguos o propuestas sin sustento. Las bajas, las pausas humanas y la validación del comprobante conservan sus controles. Un fallo del proveedor queda visible para el operador. [Decisión y alcance](seller-before-verified-payment.md).
+
+La verificación de esta publicación cuenta con un ajuste limitado a noviembre en los controles de admisión. La cuota de Cloud Build sigue en 108,000 segundos. [Medidor](adr-v7-ci-pool-fourth-extension.md) · [Presupuesto mensual](adr-v7-gross-cap-2026-11-06.md).
+
 ## 14-nov-2026 — V7.5.4: recuperar la matriz pagada del laboratorio y seguir la publicación, candidato (Claude)
 
 Desde V7.5.3 `618ce5c5`, instalada el 14-nov 00:16 UTC (SUCCEEDED/OPERATING, 122

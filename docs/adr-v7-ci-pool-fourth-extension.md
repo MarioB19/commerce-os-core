@@ -63,3 +63,7 @@ revisión nueva de Cloud Run con los controles en pausa. Esta enmienda vive en l
 rama `claude/v7-5-4-meter-amend` y se integra en el siguiente release; mientras
 tanto `main` dice 74,500 y la revisión viva 76,000, y ambos vuelven a 70,000 el
 1-dic.
+
+## Ampliación para la publicación del vendedor, 19-nov-2026 UTC
+
+El dueño autorizó 4,195 segundos de controlador adicionales para noviembre. El mes conserva las reservas ya registradas y admite un total de 80,195 segundos. La cadena de esta publicación requiere 5,640 segundos entre dos verificaciones FULL y sus atestaciones. La reserva de Cloud Build sigue en 108,000 segundos. Los meses siguientes conservan sus límites anteriores.

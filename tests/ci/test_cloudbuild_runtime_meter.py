@@ -198,8 +198,19 @@ class MeterTests(unittest.TestCase):
             reservation = self.meter.extend(self.reserve(), seconds)
             self.meter.finish(reservation, {'ok': True})
         self.assertEqual(usage(self.store.document)['2026-11']['cpu_ms'], 75_905_000)
+
+    def test_november_seller_release_exactly_exhausts_the_approved_extension(self):
+        self.time = datetime(2026, 11, 19, 6, tzinfo=timezone.utc)
+        for seconds, count in ((450, 165), (120, 2), (5, 13)):
+            for _ in range(count):
+                reservation = self.meter.extend(self.reserve(), seconds) if seconds > 5 else self.reserve()
+                self.meter.finish(reservation, {'ok': True})
+        self.assertEqual(usage(self.store.document)['2026-11']['cpu_ms'], 74_555_000)
+        for seconds in ([450, 450, 450, 120] + [450, 450, 450]) * 2:
+            self.meter.finish(self.meter.extend(self.reserve(), seconds), {'ok': True})
+        self.assertEqual(usage(self.store.document)['2026-11']['cpu_ms'], 80_195_000)
         with self.assertRaisesRegex(AdmissionError, 'MONTHLY_CEILING'):
-            self.meter.extend(self.reserve(), 120)
+            self.reserve()
 
     def test_november_extension_does_not_reach_other_months(self):
         self.time = datetime(2026, 12, 1, 6, tzinfo=timezone.utc)

@@ -524,7 +524,8 @@ def validate_admission(admission, now, approval):
     digest(admission['approval_sha256']); digest(admission['inventory_sha256'])
     need(admission['approval_sha256'] == canonical_hash(approval), 'ECONOMIC_APPROVAL_MISMATCH')
     amount = admission['projected_gross_microusd']
-    need(type(amount) is int and 0 <= amount <= GROSS_CAP_MICROUSD, 'GROSS_CAP_EXCEEDED')
+    gross_cap = 180_000_000 if owner_budget and now.strftime('%Y-%m') == '2026-11' else GROSS_CAP_MICROUSD
+    need(type(amount) is int and 0 <= amount <= gross_cap, 'GROSS_CAP_EXCEEDED')
     if owner_budget:
         # Protected operator custody authenticates this decision, just as it does
         # source approval. A digest alone is not proof of owner authorization.
@@ -534,7 +535,7 @@ def validate_admission(admission, now, approval):
         exact(budget, 'decision_sha256 month monthly_cap_microusd', 'OWNER_BUDGET_FIELDS_INVALID')
         digest(budget['decision_sha256'])
         cap = budget['monthly_cap_microusd']
-        need(type(cap) is int and 0 <= amount <= cap <= GROSS_CAP_MICROUSD, 'OWNER_BUDGET_CAP_EXCEEDED')
+        need(type(cap) is int and 0 <= amount <= cap <= gross_cap, 'OWNER_BUDGET_CAP_EXCEEDED')
         need(budget['month'] == now.strftime('%Y-%m'), 'OWNER_BUDGET_MONTH_MISMATCH')
         need(admission['credit_verified'] is False, 'OWNER_BUDGET_MUST_NOT_ASSERT_CREDITS')
         need(admission['inventory_complete'] is True, 'CREDIT_AND_INVENTORY_REQUIRED')
