@@ -513,7 +513,7 @@ def _budget_usage(document, *, now):
 def monthly_pool_limit(document, month):
     base = document['monthly_limit_seconds']
     if month == '2026-11' and base == THIRD_EXTENSION_LIMIT_SECONDS:
-        return base + 16_140
+        return base + 19_920
     return base
 
 

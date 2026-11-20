@@ -28,7 +28,8 @@ MAX_SECONDS = 450
 # docs/adr-v7-ci-pool-fourth-extension.md.
 # November 19: retain the failed source preparation, rejected admission and first main attestation.
 # Two additional FULLs and their attestations preserve the owner's login history.
-MONTH_EXTENSIONS_MS = {'2026-11': 26_095_000}
+# November 20: retain the first catalog FULL and rerun its candidate and main.
+MONTH_EXTENSIONS_MS = {'2026-11': 27_565_000}
 
 
 def cpu_limit_ms(month):

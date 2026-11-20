@@ -84,3 +84,7 @@ El margen adicional modelado incluye US$1.35024 de compilación, US$0.18973 de c
 ## 19-nov-2026 — Cobros del catálogo
 
 Brandon autorizó US$3 brutos para una publicación y US$183 brutos en noviembre. La compilación nativa dispone de 124,140 segundos en noviembre tras añadir 8,520. El controlador dispone de 96,095 segundos tras añadir 5,640. La reserva conjunta del candidato, integración y sus atestaciones es de 11,640 segundos de compilación.
+
+## 20-nov-2026 — Reintento de cobros del catálogo
+
+El primer FULL del PR 39 consumió 3,780 segundos de compilación y 1,470 del controlador. El registro de noviembre llegó a 116,280 y 91,925 segundos respectivamente. Brandon autorizó el reintento con límites de 127,920 y 97,565 segundos. El cálculo incluye el intento anterior y prevé hasta US$2.58 por este release y US$181.63 brutos para noviembre. Los máximos aprobados son US$3 y US$183.
