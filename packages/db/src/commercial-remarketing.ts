@@ -44,7 +44,7 @@ function rebindCyclePolicyContent(current:Body,next:Body):Body{
   if(!replacement?.stages)throw new Error('REMARKETING_POLICY_REBIND_INVALID');
   return{...slot,stages:structuredClone(replacement.stages)};
  });
- return{...structuredClone(current),slots};
+ return{...structuredClone(current),...(next.after_agreement_only?{after_agreement_only:true}:{}),slots};
 }
 
 async function orderContactId(c:QueryExecutor,order:DomainRecord):Promise<string|undefined>{

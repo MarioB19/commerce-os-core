@@ -2,6 +2,7 @@ import {useEffect,useId,useRef,useState,type FormEvent} from 'react';
 import type {ProfileOverview,ProfileRole} from '../../../../packages/contracts/src/profiles.js';
 import {downloadProfileExport,loadProfileSettings,saveProfileSettings,type ProfileRequestFence} from '../lib/profile-settings.js';
 import {Alert,Button,Card,CardHead,Field,Input,Skeleton} from './ui';
+import {variantRequest,newOperationKey} from '../lib/variants.js';
 import {Download} from 'lucide-react';
 
 /** Prepared for the complete server profile cutover; not mounted by legacy UI. */
@@ -43,6 +44,7 @@ export function ProfileSettings({selection,role}:{selection:ProfileRequestFence;
     <dl className="facts"><div><dt>Límite de números</dt><dd>{currentData.number_limit}</dd></div><div><dt>Límite de productos</dt><dd>{currentData.product_limit}</dd></div><div><dt>Conversaciones diarias</dt><dd>{currentData.daily_conversation_limit}</dd></div></dl>
    </>}
   </Card>
+  {canEdit&&<ProfileSpin key={selection.workspaceId+'-'+selection.version} selection={selection}/>}
   {role==='owner'&&<ProfileDataExport selection={selection}/>}
  </div>;
 }
@@ -61,5 +63,46 @@ function ProfileDataExport({selection}:{selection:ProfileRequestFence}){
   {error&&<Alert tone="error">{error}</Alert>}
   {done&&<Alert tone="success">Exportación descargada ({Math.max(1,Math.round(done.bytes/1024))} KB). Huella: <code>{done.sha256.slice(0,16)}…</code></Alert>}
   <div><Button type="button" variant="secondary" disabled={busy} loading={busy} onClick={()=>{void run();}}><Download aria-hidden="true"/>Exportar datos</Button></div>
+ </Card>;
+}
+
+type SpinSummary={revision:number;last4:string|null;variants_published?:number};
+function ProfileSpin({selection}:{selection:ProfileRequestFence}){
+ const [summary,setSummary]=useState<SpinSummary>(),[number,setNumber]=useState(''),[holder,setHolder]=useState('');
+ const [busy,setBusy]=useState(false),[notice,setNotice]=useState(''),[error,setError]=useState('');
+ const [reload,setReload]=useState(0),id=useId();
+ useEffect(()=>{
+  const controller=new AbortController();
+  variantRequest<SpinSummary>(selection,'GET','/v2/profile/spin',undefined,undefined,controller.signal)
+   .then(value=>{if(!controller.signal.aborted)setSummary(value);})
+   .catch(()=>{if(!controller.signal.aborted)setError('No se pudo consultar la tarjeta del perfil.');});
+  return ()=>controller.abort();
+ },[selection.workspaceId,selection.version,reload]);
+ async function save(remove:boolean){
+  if(!summary||busy)return;
+  setBusy(true);setNotice('');setError('');
+  try{
+   const value=await variantRequest<SpinSummary>(selection,'PUT','/v2/profile/spin',{
+    expected_revision:summary.revision,apply_to_published:true,card:remove?null:{card_number:number,holder},
+   },newOperationKey());
+   setNumber('');setHolder('');setSummary(value);
+   setNotice('Perfil guardado. Ofertas actualizadas para pedidos nuevos: '+value.variants_published+'.');
+  }catch{
+   setError('Revisa la terminación guardada antes de volver a intentar.');
+   setSummary(undefined);setReload(r=>r+1);
+  }finally{setBusy(false);}
+ }
+ return <Card aria-labelledby={id}>
+  <CardHead id={id} title="Depósitos a Spin by OXXO" description="Los productos nuevos de México que cobren en pesos heredarán esta tarjeta. Guardarla o quitarla también actualiza las ofertas publicadas que usan la tarjeta del perfil y están al día. Las ofertas con ediciones pendientes se aplican al publicarlas."
+   actions={<Button type="button" variant="ghost" disabled={busy} onClick={()=>{setError('');setReload(r=>r+1);}}>Actualizar</Button>}/>
+  {summary&&<p>{summary.last4?'Tarjeta del perfil · terminación '+summary.last4:'Falta configurar la tarjeta receptora.'}</p>}
+  {error&&<Alert tone="error">{error}</Alert>}{notice&&<Alert tone="success">{notice}</Alert>}
+  <form className="form" onSubmit={e=>{e.preventDefault();void save(false);}}>
+   <Field label="Titular de la cuenta Spin"><Input required maxLength={160} value={holder} onChange={e=>setHolder(e.target.value)} autoComplete="off"/></Field>
+   <Field label="Tarjeta Spin de recepción (16 dígitos)"><Input required inputMode="numeric" type="password" pattern="[0-9 ]{16,19}" maxLength={19} value={number} onChange={e=>setNumber(e.target.value)} autoComplete="off"/></Field>
+   <div className="form-actions"><Button type="submit" disabled={!summary||busy}>Guardar y aplicar a ofertas</Button>
+    {summary?.last4&&<Button type="button" variant="ghost" disabled={busy} onClick={()=>void save(true)}>Quitar tarjeta del perfil</Button>}
+   </div>
+  </form>
  </Card>;
 }

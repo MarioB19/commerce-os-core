@@ -90,3 +90,21 @@ export function nextRemarketingTime(at:Date,window:{start_hour:number;end_hour:n
 export function insideRemarketingWindow(at:Date,window:{start_hour:number;end_hour:number;timezone?:string}|undefined,fallbackTimezone='America/Mexico_City'){
  if(!window)return true;const h=localParts(at,window.timezone??fallbackTimezone).hour;return h>=window.start_hour&&h<window.end_hour;
 }
+
+/** Schedules post-agreement collection inside both the shop and customer windows. */
+export function collectionReminderTime(target:Date,window:Parameters<typeof nextRemarketingTime>[1],position:number,lastInbound:Date,first?:Date):Date|null{
+ const hour=3600_000;
+ if(!Number.isFinite(lastInbound.getTime()))return null;
+ let due=nextRemarketingTime(target,window);
+ if(position===2&&window&&!insideRemarketingWindow(target,window)){
+  // Find the preceding local closing quarter-hour, including across a DST transition.
+  const quarter=15*60_000;
+  let cursor=Math.floor(target.getTime()/quarter)*quarter;
+  const limit=cursor-26*hour;
+  while(cursor>=limit&&!insideRemarketingWindow(new Date(cursor),window))cursor-=quarter;
+  if(cursor<limit)return null;
+  due=new Date(cursor);
+ }
+ if(position===2&&(!first||due.getTime()-first.getTime()<8*hour))return null;
+ return due.getTime()<lastInbound.getTime()+24*hour?due:null;
+}

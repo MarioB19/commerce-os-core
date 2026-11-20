@@ -45,7 +45,7 @@ export function evaluateReceiptPolicy(rawPolicy:unknown,rawContext:unknown,rawEv
  check('CONTRADICTIONS',e.contradictions.length?'UNKNOWN':'PASSED',e.contradictions.length?'CONTRADICTORY_FIELDS':'FIELDS_CONSISTENT');
  if(e.amountMinor===null)check('AMOUNT','UNKNOWN','AMOUNT_MISSING');
  else{const amount=BigInt(e.amountMinor),expected=BigInt(context.amountMinor),delta=amount>=expected?amount-expected:expected-amount;
-  const ok=amount>0n&&(p.amount.mode==='EXACT'?amount===expected:p.amount.mode==='MINIMUM'?amount>=expected:delta<=BigInt(p.amount.toleranceMinor));check('AMOUNT',ok?'PASSED':'FAILED',ok?'AMOUNT_MATCH':'AMOUNT_MISMATCH');}
+  const ok=amount>0n&&(p.amount.mode==='POSITIVE'||(p.amount.mode==='EXACT'?amount===expected:p.amount.mode==='MINIMUM'?amount>=expected:delta<=BigInt(p.amount.toleranceMinor)));check('AMOUNT',ok?'PASSED':'FAILED',ok?'AMOUNT_MATCH':'AMOUNT_MISMATCH');}
  check('CURRENCY',e.currency===null?'UNKNOWN':e.currency===context.currency?'PASSED':'FAILED',e.currency===null?'CURRENCY_MISSING':e.currency===context.currency?'CURRENCY_MATCH':'CURRENCY_MISMATCH');
  if(p.destination.mode==='DISABLED')check('DESTINATION','SKIPPED','DESTINATION_DISABLED');
  else{const actual=digits(e.destination),expected=digits(context.expectedDestination),minimum=p.destination.mode==='SUFFIX'?p.destination.digits:4;

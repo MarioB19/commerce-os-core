@@ -96,3 +96,28 @@ describe('deterministic documentary assessment',()=>{
   for(const change of [{scope:{...f.scope,workspace_id:'other'}},{variantId:randomUUID()}])expect(()=>evaluateReceiptPolicy(f.resolve(),{...f.context,...change},f.evidence)).toThrow('RECEIPT_POLICY_SCOPE');
  });
 });
+
+describe('positive contributions across the two receipt channels',()=>{
+ const amounts=[0,1,5000,8000,9000,9700,9701,10000,10700];
+ it.each(['spin_cash','spei'] as const)('validates only the documented receiving account and net amount on %s',async channel=>{
+  const {collectionDestination}=await import('../catalog/variant-document.js');
+  const {receiptDocumentEvidence}=await import('../../../contracts/src/receipt-extraction.js');
+  const f=fixture(); f.policy.amount={mode:'POSITIVE'};f.context.amountMinor=9700;
+  const secret={spin:{card_number:'4242424242424242',holder:'Persona sintética'},spei:{clabe:'012345678901234567',holder:'Persona sintética'}};
+  const bank={methods:{spin:true,spei:true}};
+  const destination=collectionDestination(bank,secret,channel);
+  f.context.expectedDestination=destination.account_number!;
+  for(const amount of amounts){
+   const doc=receiptDocumentEvidence({is_receipt:true,amount_minor:amount,currency:'MXN',destination:destination.account_number,destination_suffix:null,bank:null,reference:'PRUEBA',status:'completed',confidence:0.99,contradictions:[],beneficiary:'Persona sintética',paid_at:f.context.observedAt,payment_channel:channel,cash_total_minor:amount+1500,service_fee_minor:1500},false);
+   const result=evaluateReceiptPolicy(f.resolve(),f.context,doc.evidence);
+   expect(result.decision).toBe(amount>0?'APPROVED':'REVIEW');
+   if(channel==='spin_cash'){
+    const conflict=receiptDocumentEvidence({...doc.document,cash_total_minor:amount+2000},false);
+    expect(evaluateReceiptPolicy(f.resolve(),f.context,conflict.evidence).reasons).toContain('CONTRADICTORY_FIELDS');
+   }
+   expect(evaluateReceiptPolicy(f.resolve(),f.context,{...doc.evidence,destination:'4242'}).decision).toBe('REVIEW');
+   expect(evaluateReceiptPolicy(f.resolve(),{...f.context,duplicate:true},doc.evidence).decision).toBe('REVIEW');
+  }
+  expect(collectionDestination(bank,secret,null)).toEqual({});
+ });
+});

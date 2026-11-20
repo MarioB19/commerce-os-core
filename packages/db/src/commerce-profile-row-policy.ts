@@ -78,7 +78,7 @@ const platformTables=['platform_admins','platform_operations','platform_tokens']
 // V7 F1 (0111) and later: platform tables created after the retirement
 // boundary. A catalog through 0108 (or 0109-0110) does not have them yet.
 // V7 RF-01.5 (0117): platform deletion requests, outside every profile.
-const environmentAddedAfterRetirement=['warmup_library_releases','warmup_program_operations'];
+const environmentAddedAfterRetirement=['warmup_library_releases','warmup_program_operations','profile_spin_collections'];
 const addedAfterRetirement=['platform_backup_runs','platform_profile_deletions'];
 // V7 RF-19.d: laboratory example receipts (0113), preserved only when present.
 // V7 RF-07.e: owner alert mail (0116), profile scoped, preserved only when present.

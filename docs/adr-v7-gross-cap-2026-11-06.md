@@ -84,3 +84,7 @@ y aprobación requerida no cambiaron.
 ## Enmienda del 19-nov-2026 UTC para la publicación del vendedor
 
 El dueño autorizó US$180 de proyección bruta para noviembre y hasta US$5 incrementales por esta publicación, incluido su respaldo. La vía de presupuesto del dueño contrasta el mes, la autorización y el costo. A partir de diciembre vuelve a aplicar el límite anterior de US$175. La vía de créditos conserva su límite anterior.
+
+## 19-nov-2026 — Cobros del catálogo
+
+Brandon autorizó US$3 brutos para una publicación y US$183 brutos en noviembre. La compilación nativa dispone de 124,140 segundos en noviembre tras añadir 8,520. El controlador dispone de 96,095 segundos tras añadir 5,640. La reserva conjunta del candidato, integración y sus atestaciones es de 11,640 segundos de compilación.

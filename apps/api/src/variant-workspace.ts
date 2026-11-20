@@ -3,7 +3,7 @@ import {z} from 'zod';
 import {withProfileRequest,type ProfileRequestDependencies} from './profile-request.js';
 import {marketOperation,readMarketOperation} from '../../../packages/db/src/market-variants.js';
 import {VariantError,listProducts,createProduct,editProduct,productDependencies,setProductArchived,createVariant,readVariant,listVariants,
- saveVariantSection,reviewVariant,publishVariant,duplicateVariant,setVariantArchived,variantHistory,variantNumbers,variantNumberImpact,
+ saveProfileSpin,profileSpinSummary,saveVariantSection,reviewVariant,publishVariant,duplicateVariant,setVariantArchived,variantHistory,variantNumbers,variantNumberImpact,
  setVariantNumber,numberVariantsView,numberAssignmentHistory} from '../../../packages/db/src/variant-workspace.js';
 import {adoptLegacyProduct} from '../../../packages/db/src/variant-migration.js';
 import {variantRemarketingResults} from '../../../packages/db/src/remarketing-results.js';
@@ -27,7 +27,7 @@ const messages:Record<string,string>={
  VARIANT_INCOMPLETE:'Completa lo que falta antes de publicar.',VARIANT_MATERIAL_INVALID:'Revisa los materiales indicados.',
  VARIANT_NOT_PUBLISHED:'Publica la variante antes de asignarla a un número.',NUMBER_SELLS_OTHER_VARIANT:'Este número ya vende otra variante de este producto. Quítala primero.',
  VARIANT_NUMBER_NOT_ASSIGNED:'Este número no vende esta variante.',NUMBER_NOT_FOUND:'No encontramos ese número en este perfil.',
- COLLECTION_METHOD_REQUIRED:'Configura SPEI, un enlace de pago o ambos.',COLLECTION_SPEI_REQUIRES_MXN:'SPEI sólo aplica a variantes en pesos mexicanos (MXN).',
+ COLLECTION_SPIN_MISSING:'Agrega la tarjeta Spin de recepción.',COLLECTION_SPIN_REQUIRES_MXN:'El depósito en OXXO requiere pesos mexicanos.',COLLECTION_METHOD_REQUIRED:'Agrega al menos un método de cobro.',COLLECTION_SPEI_REQUIRES_MXN:'SPEI sólo aplica a variantes en pesos mexicanos (MXN).',
  COLLECTION_SPEI_MISSING:'No hay datos SPEI guardados para conservar.',COLLECTION_LINK_MISSING:'Escribe el enlace de pago.',COLLECTION_LINK_DUPLICATE:'Hay un enlace repetido.',
  VARIANT_CURRENCY_LOCKED:'Una variante publicada conserva su moneda. Duplica la variante para otro mercado.',
  VARIANT_FLOW_NOT_PUBLISHED:'Elige un flujo publicado.',VARIANT_FLOW_OTHER_PRODUCT:'Ese flujo pertenece a otro producto.',
@@ -69,6 +69,17 @@ export async function variantWorkspaceRoutes(app:FastifyInstance,deps?:ProfileRe
   },deps));
  };
  app.addHook('onRequest',async(req,reply)=>{if(req.url.startsWith('/v2/products')||req.url.startsWith('/v2/variants')||req.url.startsWith('/v2/number-variants'))headers(reply);});
+ app.get('/v2/profile/spin',async(req,reply)=>{
+  headers(reply);
+  return {data:await read(req,'collections:read',({db,environment})=>profileSpinSummary(db,environment))};
+ });
+ app.put('/v2/profile/spin',{bodyLimit:2048},async(req,reply)=>{
+  headers(reply);
+  return {data:await write(req,'collections:write',req.body,({db,environment,profile,actor})=>{
+   if(profile.authority.membership.role!=='owner'||profile.authority.credential.kind!=='session')fail('PROFILE_INTERACTIVE_SESSION_REQUIRED',403);
+   return saveProfileSpin(db,environment,req.body,actor);
+  })};
+ });
  // Products (parents).
  app.get('/v2/products',async req=>({data:await read(req,'products:read',({db,environment})=>listProducts(db,environment,rest(req)))}));
  app.post('/v2/products',{bodyLimit:16384},async(req,reply)=>{const data=await write(req,'products:write',req.body,({db,environment,actor})=>createProduct(db,environment,req.body,actor));reply.code(201);return{data};});

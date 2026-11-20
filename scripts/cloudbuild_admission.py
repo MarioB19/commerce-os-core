@@ -513,7 +513,7 @@ def _budget_usage(document, *, now):
 def monthly_pool_limit(document, month):
     base = document['monthly_limit_seconds']
     if month == '2026-11' and base == THIRD_EXTENSION_LIMIT_SECONDS:
-        return base + 7_620
+        return base + 19_920
     return base
 
 
@@ -536,7 +536,7 @@ def validate_admission(admission, now, approval):
     digest(admission['approval_sha256']); digest(admission['inventory_sha256'])
     need(admission['approval_sha256'] == canonical_hash(approval), 'ECONOMIC_APPROVAL_MISMATCH')
     amount = admission['projected_gross_microusd']
-    gross_cap = 180_000_000 if owner_budget and now.strftime('%Y-%m') == '2026-11' else GROSS_CAP_MICROUSD
+    gross_cap = 183_000_000 if owner_budget and now.strftime('%Y-%m') == '2026-11' else GROSS_CAP_MICROUSD
     need(type(amount) is int and 0 <= amount <= gross_cap, 'GROSS_CAP_EXCEEDED')
     if owner_budget:
         # Protected operator custody authenticates this decision, just as it does

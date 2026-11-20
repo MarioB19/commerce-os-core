@@ -1256,6 +1256,18 @@
     }
    }
   },
+  "/v2/customer/spin-deposit": {
+   "post": {
+    "description": "The buyer presents the signed grant from their private payment link in the POST body.",
+    "responses": {
+     "200": {
+      "description": "Default Response"
+     }
+    },
+    "security": [],
+    "summary": "Read the payment destinations fixed for one order"
+   }
+  },
   "/v2/employees": {
    "get": {
     "responses": {
@@ -2596,6 +2608,22 @@
   },
   "/v2/profile/export": {
    "get": {
+    "responses": {
+     "200": {
+      "description": "Default Response"
+     }
+    }
+   }
+  },
+  "/v2/profile/spin": {
+   "get": {
+    "responses": {
+     "200": {
+      "description": "Default Response"
+     }
+    }
+   },
+   "put": {
     "responses": {
      "200": {
       "description": "Default Response"

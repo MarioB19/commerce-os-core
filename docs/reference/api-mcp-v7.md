@@ -2,7 +2,7 @@
 
 > Generada por `scripts/api-reference.ts` desde el código (OpenAPI de la app y registro MCP tipado). No se edita a mano: CI falla si difiere del código.
 
-Contenido: `44f4b362b2445beb` · 223 operaciones HTTP en 199 rutas · 40 herramientas MCP (presupuesto 40).
+Contenido: `84a6a4e2ad973cea` · 226 operaciones HTTP en 201 rutas · 40 herramientas MCP (presupuesto 40).
 
 ## Herramientas MCP
 
@@ -272,6 +272,12 @@ Contenido: `44f4b362b2445beb` · 223 operaciones HTTP en 199 rutas · 40 herrami
 | POST | `/v2/continuity/warmup/{id}/commands` | autenticado |
 | GET | `/v2/continuity/warmup/operations/{id}` | autenticado |
 
+### `/v2/customer`
+
+| Método | Ruta | Acceso |
+|---|---|---|
+| POST | `/v2/customer/spin-deposit` | público |
+
 ### `/v2/employees`
 
 | Método | Ruta | Acceso |
@@ -470,6 +476,8 @@ Contenido: `44f4b362b2445beb` · 223 operaciones HTTP en 199 rutas · 40 herrami
 | GET | `/v2/profile` | autenticado |
 | PATCH | `/v2/profile` | autenticado |
 | GET | `/v2/profile/export` | autenticado |
+| GET | `/v2/profile/spin` | autenticado |
+| PUT | `/v2/profile/spin` | autenticado |
 
 ### `/v2/receipts`
 

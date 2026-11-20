@@ -78,7 +78,7 @@ export function duplicateVariantDocument(source:VariantDocument,input:{name:stri
   pending_review:[...marketCopyReviewFields]});
 }
 
-export interface CollectionPresence {spei:boolean;links:number}
+export interface CollectionPresence {spei:boolean;spin?:boolean;links:number}
 /** Missing items in operator language keys (variantMissingLabels). */
 export function variantMissing(document:VariantDocument,collection:CollectionPresence){
  const d=variantDocumentSchema.parse(document),missing:string[]=[];
@@ -87,7 +87,7 @@ export function variantMissing(document:VariantDocument,collection:CollectionPre
  if(!d.sale.seller.name.trim())missing.push('seller');
  if(d.offer.price_minor<=0)missing.push('offer_price');
  if(!d.offer.fulfillment.length)missing.push('materials');
- if(!collection.spei&&collection.links===0&&!d.collection.legacy_profile_id)missing.push('collection');
+ if(!collection.spei&&!collection.spin&&collection.links===0&&!d.collection.legacy_profile_id)missing.push('collection');
  for(const field of d.pending_review)missing.push('review_'+field);
  return missing;
 }
@@ -135,20 +135,28 @@ export interface CollectionSecret {spei?:{holder:string;clabe:string};links?:{id
 /** The destination a receipt is checked against: the SPEI CLABE and holder of
  * a V7 collection, or the account of a legacy bank profile. A link-only
  * collection has no bank destination (the policy then decides by its rules). */
-export function collectionDestination(bank:Body,secret:Body|null):{account_number?:string;holder?:string}{
+export function collectionDestination(bank:Body,secret:Body|null,channel?:'spin_cash'|'spei'|'other'|null):{account_number?:string;holder?:string}{
  if(!secret)return{};
+ if(channel==='spin_cash'){
+  return bank.methods?.spin===true&&secret.spin?{account_number:secret.spin.card_number,holder:secret.spin.holder}:{};
+ }
  if(!bank.methods){const legacy=secret as {account_number?:unknown;holder?:unknown};return{...(typeof legacy.account_number==='string'?{account_number:legacy.account_number}:{}),...(typeof legacy.holder==='string'?{holder:legacy.holder}:{})};}
+ if(bank.methods.spin&&channel!=='spei')return {};
  const spei=secret.spei as {clabe?:unknown;holder?:unknown}|undefined;
  return spei&&typeof spei.clabe==='string'&&typeof spei.holder==='string'?{account_number:spei.clabe,holder:spei.holder}:{};
 }
-export function collectionInstructions(input:{bank:Body;secret:Body|null;price:string|null;currency:string|null}){
+export function collectionInstructions(input:{bank:Body;secret:Body|null;price:string|null;currency:string|null;spinSlip?:string}){
  const b=input.bank,s=input.secret;
  if(!s)return null;
  const amount=input.price!==null?`\n${input.price} ${input.currency??''}`:'';
  // Legacy bank profiles keep their exact historical text.
  if(!b.methods)return `${b.bank} · ${s.holder}\n${s.account_number}\n${s.instructions??''}${amount}`;
  const lines:string[]=[];
- if(s.spei&&typeof s.spei.clabe==='string')lines.push(`${b.spei_bank??b.bank} · ${s.spei.holder}`,`CLABE ${s.spei.clabe}`);
+ if(b.methods.spin){
+  if(!input.spinSlip)throw new Error('SPIN_DEPOSIT_SLIP_REQUIRED');
+  const methods=s.spei?'Transferencia SPEI o depósito en efectivo en OXXO':'Depósito en efectivo en OXXO';
+  lines.push(methods+' · Consulta los datos de tu pedido:',input.spinSlip,'Después de pagar, envía por este chat una foto legible del comprobante.');
+ }else if(s.spei&&typeof s.spei.clabe==='string')lines.push(`${b.spei_bank??b.bank} · ${s.spei.holder}`,`CLABE ${s.spei.clabe}`);
  const labels=new Map<string,string>((Array.isArray(b.methods?.links)?b.methods.links:[]).map((link:Body)=>[String(link.id),String(link.label)]));
  const online={es:'Pago en línea',pt:'Pagamento on-line',en:'Online payment'}[languageFamily(String(b.language??'es'))];
  for(const link of Array.isArray(s.links)?s.links:[])if(typeof link.url==='string')lines.push(`${labels.get(String(link.id))??online}: ${link.url}`);
@@ -177,6 +185,7 @@ export function simulatedCollectionInstructions(bank:Body|null|undefined,fallbac
   en:{head:'SIMULATION: test bank instructions; do not make transfers.',spei:'SPEI transfer to a test CLABE',link:'test payment link'}}[languageFamily(language)];
  const lines=[t.head],methods=bank?.methods;
  if(methods&&typeof methods==='object'){
+  if(methods.spin===true)lines.push('Spin by OXXO · depósito en efectivo de prueba.');
   if(methods.spei===true)lines.push(`${String(bank?.spei_bank??bank?.bank??'SPEI')}: ${t.spei}`);
   for(const link of Array.isArray(methods.links)?methods.links:[])if(link&&typeof link.label==='string')lines.push(`${link.label}: ${t.link}`);
  }

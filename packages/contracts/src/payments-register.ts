@@ -18,7 +18,7 @@ export const paymentOptionResponseSchema=z.object({workspaceId:profileIdSchema,k
 export const paymentExportQuerySchema=paymentFilterSchema.safeExtend({format:z.enum(['csv','xlsx'])});
 export const paymentRowSchema=z.object({receiptId:id,receiptVersion:z.number().int().positive(),contributionId:id.nullable(),orderId:id.nullable(),conversationId:id.nullable(),
  occurredAt:z.iso.datetime(),familyId:id.nullable(),familyName:text.nullable(),variantId:id.nullable(),variantName:text.nullable().default(null),market:text.nullable(),
- amountMinor:minor.nullable(),currency:z.string().regex(/^[A-Z]{3}$/).nullable(),method:z.enum(['BANK_TRANSFER','LINK','UNKNOWN']),status:z.enum(paymentStatuses),
+ amountMinor:minor.nullable(),currency:z.string().regex(/^[A-Z]{3}$/).nullable(),method:z.enum(['BANK_TRANSFER','SPIN_CASH','LINK','UNKNOWN']),status:z.enum(paymentStatuses),
  accountId:id.nullable(),accountMasked:z.string().regex(/^••••[0-9]{4}$/).nullable(),contactMasked:z.string().regex(/^••••[0-9]{4}$/).nullable(),
  campaignId:z.string().regex(/^[0-9]{1,40}$/).nullable(),adId:z.string().regex(/^[0-9]{1,40}$/).nullable(),
  assetId:id.nullable(),recognizedRevenueMinor:minor,duplicate:z.boolean(),

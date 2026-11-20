@@ -248,6 +248,7 @@ function OfferSection({variant,fence,manage,materials,reloadMaterials,save,busy,
      <Field label="Nombre de la oferta"><Input required maxLength={160} value={offer.name} disabled={!manage} onChange={e=>setOffer(o=>({...o,name:e.target.value}))}/></Field>
      <Field label={`Precio (${currency})`} error={error||undefined} help={!error&&minor!==null&&minor>0?`Se mostrará como ${formatMoney(minor,currency,d.locale.language)}`:undefined}><Input inputMode="decimal" required value={price} disabled={!manage} onChange={e=>setPrice(e.target.value)}/></Field>
     </div>
+    <label><input type="checkbox" disabled={!manage} checked={offer.accept_positive_contributions===true} onChange={e=>setOffer(o=>({...o,accept_positive_contributions:e.target.checked}))}/> El primer pago válido, de cualquier importe, cumple el acuerdo. Los materiales se liberan según el total acreditado.</label>
     <h3>Qué recibe el cliente y cuándo</h3>
     {!offer.fulfillment.length&&<Alert tone="warn">Agrega al menos un material entregable.</Alert>}
     {offer.fulfillment.length>0&&<ul className="item-list">{offer.fulfillment.map((f,i)=><li key={f.asset_id+f.release_on+i}>
@@ -321,13 +322,17 @@ function MaterialsPanel({fence,manage,materials,reload}:{fence:ProfileFence;mana
 function CollectionSection({variant,manage,save,busy,publishable}:SectionProps){
  const c=variant.document.collection,currency=variant.document.locale.currency;
  const [spei,setSpei]=useState<'keep'|'new'|'none'>(c.spei?'keep':'none'),[bank,setBank]=useState(''),[holder,setHolder]=useState(''),[clabe,setClabe]=useState('');
+ const savedSpin=c.spin_mode==='disabled'?'none':c.spin_mode==='custom'?'keep':'profile';
+ const [spin,setSpin]=useState<'keep'|'new'|'none'|'profile'>(savedSpin);
+ const [spinNumber,setSpinNumber]=useState(''),[spinHolder,setSpinHolder]=useState('');
  const [links,setLinks]=useState(c.links.map(l=>({id:l.id,label:l.label,provider:l.provider,host:l.host,url:'keep'})));
  const [instructions,setInstructions]=useState(c.instructions),[error,setError]=useState('');
  const [reference,setReference]=useState(c.expected_reference??''),[concept,setConcept]=useState(c.expected_concept??'');
- useEffect(()=>{setSpei(c.spei?'keep':'none');setLinks(c.links.map(l=>({id:l.id,label:l.label,provider:l.provider,host:l.host,url:'keep'})));setInstructions(c.instructions);setReference(c.expected_reference??'');setConcept(c.expected_concept??'');setBank('');setHolder('');setClabe('');},[variant.version]);
+ useEffect(()=>{setSpin(savedSpin);setSpinNumber('');setSpinHolder('');setSpei(c.spei?'keep':'none');setLinks(c.links.map(l=>({id:l.id,label:l.label,provider:l.provider,host:l.host,url:'keep'})));setInstructions(c.instructions);setReference(c.expected_reference??'');setConcept(c.expected_concept??'');setBank('');setHolder('');setClabe('');},[variant.version]);
  async function submit(e:FormEvent){e.preventDefault();setError('');
-  if(spei==='none'&&!links.length){setError('Configura SPEI, un enlace de pago o ambos.');return;}
-  const ok=await save('collection',{spei:spei==='keep'?'keep':spei==='new'?{bank:bank.trim(),holder:holder.trim(),clabe}:null,
+  if(spei==='none'&&spin==='none'&&!links.length){setError('Agrega al menos un método de cobro.');return;}
+  const spinDestination=spin==='new'?{card_number:spinNumber,holder:spinHolder.trim()}:spin==='keep'?'keep':spin==='profile'&&variant.document.locale.country==='MX'&&currency==='MXN'?'profile':null;
+  const ok=await save('collection',{spin:spinDestination,spei:spei==='keep'?'keep':spei==='new'?{bank:bank.trim(),holder:holder.trim(),clabe}:null,
    links:links.map(l=>({...(l.id?{id:l.id}:{}),label:l.label.trim(),provider:l.provider,url:l.url})),instructions,
    expected_reference:reference.trim()||null,expected_concept:concept.trim()||null});
   if(ok){setBank('');setHolder('');setClabe('');}
@@ -350,6 +355,24 @@ function CollectionSection({variant,manage,save,busy,publishable}:SectionProps){
     </>}
    </fieldset>
    <hr className="divider"/>
+   {currency==='MXN'&&<>
+    <fieldset className="plain"><legend>Depósito en efectivo en OXXO</legend>
+     <p className="muted">El cliente consulta los datos de tu tarjeta Spin en una ficha privada y envía la foto del ticket por WhatsApp.</p>
+     {spin==='profile'&&<p>{c.spin?'Tarjeta del perfil · terminación '+c.spin.last4:'Tarjeta del perfil pendiente de configurar.'}</p>}
+     {spin==='keep'&&c.spin&&<p><Badge tone="success">Guardado</Badge> Spin by OXXO · terminación {c.spin.last4}</p>}
+     {manage&&spin!=='new'&&<div className="cluster">
+      <Button type="button" variant="secondary" onClick={()=>setSpin('new')}>{spin==='keep'?'Reemplazar tarjeta Spin':'Agregar tarjeta Spin'}</Button>
+      {spin!=='profile'&&<Button type="button" variant="ghost" onClick={()=>setSpin('profile')}>Usar tarjeta del perfil</Button>}
+      {spin!=='none'&&<Button type="button" variant="ghost" onClick={()=>setSpin('none')}>Desactivar Spin en esta variante</Button>}
+     </div>}
+     {manage&&spin==='new'&&<div className="form-grid">
+      <Field label="Titular de la cuenta Spin"><Input required maxLength={160} autoComplete="off" value={spinHolder} onChange={e=>setSpinHolder(e.target.value)}/></Field>
+      <Field label="Tarjeta Spin de recepción (16 dígitos)"><Input required type="password" inputMode="numeric" autoComplete="off" maxLength={19} value={spinNumber} onChange={e=>setSpinNumber(e.target.value.replace(/[^0-9 ]/g,''))}/></Field>
+      <Button type="button" variant="ghost" onClick={()=>{setSpin(savedSpin);setSpinNumber('');setSpinHolder('');}}>Cancelar edición de tarjeta</Button>
+     </div>}
+    </fieldset>
+    <hr className="divider"/>
+   </>}
    <fieldset className="plain"><legend>Enlace de pago</legend>
     {links.map((l,i)=><div key={l.id??'new'+i} className="link-card">
      <div className="form-grid">
@@ -390,6 +413,7 @@ function RemarketingSection({variant,fence,manage,materials,save,busy,publishabl
   <Card aria-labelledby="remarketing-title">
    <CardHead id="remarketing-title" title="Seguimientos" description="A personas que aún no compraron. Se detienen si compra, responde, pide la baja, se alcanza el máximo o pausas la venta."/>
    {!policy?<EmptyState inline level={3} title="Sin seguimientos configurados" description="Hasta tres recordatorios con espera, formato y mensaje propios." action={manage?<Button type="button" variant="secondary" onClick={()=>setPolicy(base())}>Configurar seguimientos</Button>:undefined}/>:<>
+    <NativeCheck label="Enviar únicamente después del acuerdo y la entrega del material" checked={policy.after_agreement_only===true} disabled={!manage} onChange={e=>setPolicy(p=>p&&{...p,after_agreement_only:e.target.checked})}/>
     <fieldset className="plain"><legend>Horario permitido</legend>
      <div className="form-grid">
       <Field label="Desde"><NativeSelect value={policy.window?.start_hour??''} disabled={!manage} onChange={e=>setPolicy(p=>p&&{...p,window:e.target.value===''?undefined:{start_hour:Number(e.target.value),end_hour:Math.max(Number(e.target.value)+1,p.window?.end_hour??21)}})}>
@@ -399,14 +423,14 @@ function RemarketingSection({variant,fence,manage,materials,save,busy,publishabl
      </div>
      <p className="muted text-sm">Hora de {variant.document.locale.market} ({variant.document.locale.timezone}). Un seguimiento que cae fuera de este horario espera al siguiente momento permitido.</p>
     </fieldset>
-    <p className="muted text-sm">Máximo por persona: {active} seguimiento{active===1?'':'s'} en total, entre ambas etapas.</p>
+    <p className="muted text-sm">Máximo por persona: {active} seguimiento{active===1?'':'s'} en total.</p>
     {policy.slots.map((slot,i)=><fieldset key={slot.id} className="plain slot-card"><legend>Seguimiento {slot.position}</legend>
      <NativeCheck label="Activo" checked={slot.enabled} disabled={!manage} onChange={e=>update(i,s=>({...s,enabled:e.target.checked}))}/>
      {slot.position>1&&slot.enabled&&<NativeCheck label="Entiendo que más seguimientos aumentan el riesgo de bloqueo y bajas." checked={slot.warning_acknowledged===true} disabled={!manage} onChange={e=>update(i,s=>({...s,warning_acknowledged:e.target.checked}))}/>}
      {!slot.enabled&&<p className="muted text-sm">Inactivo · se enviaría {slot.delay.quantity} {({minutes:'minutos',hours:'horas',days:'días'} as const)[slot.delay.unit]} después del último mensaje.</p>}
      {slot.enabled&&<><div className="form-grid"><Field label="Espera"><Input type="number" min={1} value={slot.delay.quantity} disabled={!manage} onChange={e=>update(i,s=>({...s,delay:{...s.delay,quantity:Math.max(1,Number(e.target.value))}}))}/></Field>
       <Field label="Unidad"><NativeSelect value={slot.delay.unit} disabled={!manage} onChange={e=>update(i,s=>({...s,delay:{...s.delay,unit:e.target.value as typeof s.delay.unit}}))}><option value="minutes">minutos</option><option value="hours">horas</option><option value="days">días</option></NativeSelect></Field></div>
-     {(['awaiting_agreement','awaiting_payment'] as const).map(key=><div key={key} className="stack-tight"><h3>{stageLabels[key]}</h3>
+     {(['awaiting_agreement','awaiting_payment'] as const).filter(key=>key==='awaiting_payment'||!policy.after_agreement_only).map(key=><div key={key} className="stack-tight"><h3>{stageLabels[key]}</h3>
       <div className="form-grid">
        <Field label="Formato"><NativeSelect value={slot.stages[key].medium} disabled={!manage} onChange={e=>{const medium=e.target.value as Medium;stage(i,key,{medium,...(medium==='text'?{asset_id:undefined}:{})});}}>
         <option value="text">Sólo texto</option><option value="audio">Audio y texto</option><option value="video">Video y texto</option></NativeSelect></Field>

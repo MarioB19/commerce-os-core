@@ -55,6 +55,7 @@ export const variantOfferSchema=z.object({
  tiers:z.array(tierSchema).max(20),
  fulfillment:z.array(fulfillmentSchema).max(30),
  billing_delay_seconds:z.number().int().min(0).max(604800),
+ accept_positive_contributions:z.boolean().optional(),
  positive_payment_unlocks_all:z.boolean(),
  legacy:variantLegacyTermsSchema,
 }).strict();
@@ -64,6 +65,8 @@ const linkId=z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/);
 const expectedText=z.string().trim().min(1).max(120);
 /** Public description only. SPEI and URLs are kept in the encrypted column. */
 export const variantCollectionSchema=z.object({
+ spin_mode:z.enum(['profile','custom','disabled']).optional(),
+ spin:z.object({last4:z.string().regex(/^[0-9]{4}$/),revision:z.number().int().positive()}).strict().optional(),
  spei:z.object({bank:label,last4:z.string().regex(/^[0-9]{4}$/)}).strict().nullable(),
  links:z.array(z.object({id:linkId,label,provider:z.enum(paymentLinkProviders),host:z.string().max(253)}).strict()).max(5),
  instructions:text(2000),
@@ -102,7 +105,18 @@ export function clabeValid(value:string){
 export const httpsPaymentUrlSchema=z.string().trim().max(2000).url('Usa una dirección completa.').refine(value=>{
  try{const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password&&url.hostname.includes('.');}catch{return false;}
 },'El enlace debe empezar con https://');
+export const spinCardNumber=z.string().trim().max(24).transform(value=>value.replace(/[ -]/g,''))
+ .pipe(z.string().regex(/^[0-9]{16}$/,'La tarjeta de recepción tiene 16 dígitos.'))
+ .refine(value=>{
+  let sum=0;
+  for(let index=0;index<value.length;index++){
+   const digit=Number(value[index])*(index%2===0?2:1);
+   sum+=digit>9?digit-9:digit;
+  }
+  return sum%10===0&&!/^(\d)\1+$/.test(value);
+ },'Revisa el número de la tarjeta de recepción.');
 export const collectionInputSchema=z.object({
+ spin:z.union([z.object({card_number:spinCardNumber,holder:label}).strict(),z.literal('keep'),z.literal('profile'),z.null()]).optional(),
  spei:z.union([z.object({bank:label,holder:label,clabe}).strict(),z.literal('keep'),z.null()]),
  links:z.array(z.object({id:linkId.optional(),label,provider:z.enum(paymentLinkProviders),url:z.union([httpsPaymentUrlSchema,z.literal('keep')])}).strict()).max(5),
  instructions:text(2000),

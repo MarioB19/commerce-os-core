@@ -24,9 +24,9 @@ beforeEach(async()=>{await disposeAllFixtureProfiles(pool);w='campaign-'+randomU
 const call=(method:'GET'|'POST',url:string,payload?:Body,key=randomUUID(),auth=cookie)=>app.inject(explicitFixtureEnvironment({method,url,headers:{cookie:auth,origin,'idempotency-key':key},...(payload?{payload}:{})}));
 async function applied(id:string){await processCommands(200);const r=(await pool.query('SELECT * FROM commands WHERE id=$1',[id])).rows[0];expect(r.status,JSON.stringify(r.result)).toBe('APPLIED');return r.result;}
 const record=(kind:string,body:Body)=>putRecord(pool,{workspaceId:w,environment:'SIMULATION',kind,body});
-async function fixture(amount=9700,auto=false,ad=true,product?:DomainRecord){
+async function fixture(amount=9700,auto=false,ad=true,product?:DomainRecord,positive=false){
  const p=product??await record('product',{name:'Product '+randomUUID().slice(0,5)}),policy=await record('receipt_policy',{name:'Synthetic receipt policy',auto_approve:auto,allow_amount_mismatch:true});
- const offer=await record('offer',{name:'Synthetic offer',product_id:p.id,currency:'MXN',base_amount_minor:9900,receipt_policy_version_id:policy.id,fulfillment:[]});
+ const offer=await record('offer',{name:'Synthetic offer',product_id:p.id,currency:'MXN',base_amount_minor:9900,receipt_policy_version_id:policy.id,fulfillment:[],...(positive?{accept_positive_contributions:true}:{})});
  const conv=await record('conversation',{offer_version_id:offer.id,product_id:p.id,status:'OPEN',flow_state:{status:'FINISHED'},started_at:'2026-07-01T12:00:00Z'});
  if(ad)await record('touchpoint',{conversation_id:conv.id,classification:'observed',referral:{source_id:'55',source_type:'ad'},evidence_ref:'synthetic-provider-event',occurred_at:'2026-07-01T12:00:00Z'});
  const order=await withTransaction(c=>ensureOrder(c,conv));expect(order).toBeTruthy();
@@ -78,6 +78,22 @@ describe('Receipt → sale → campaign performance in PostgreSQL',()=>{
   await review(second,{amount_minor:1000,payment_key:'additional-1'});await periodReceipts();expect((await report()).summary).toMatchObject({sales:1,revenue_minor:10700,spend_minor:null});
   const current=(await getRecord(pool,w,'receipt',f.receipt.id))!;const correction=await enqueue('receipt_review',f.receipt.id,{expected_version:current.version,decision:'APPROVED',amount_minor:9900,reason:'Correct accepted amount'});const excluded=await enqueue('receipt_classification',f.receipt.id,{classification:'FALSE',expected_version:current.version,reason:'Concurrent classification'});await processCommands();expect((await commandRow(excluded.id)).result.error).toBe('VERSION_CONFLICT');
   expect((await commandRow(correction.id)).status).toBe('APPLIED');expect((await report()).summary.revenue_minor).toBe(10900); // queued correction won; stale classification fails
+ });
+ it('counts a corrected contribution once and holds a repeated reference on positive-payment orders',async()=>{
+  const f=await fixture(5000,false,false,undefined,true);
+  await review(f.receipt);
+  const newReceipt=async(reference:string)=>{
+   const asset=await record('asset',{status:'READY',storage_key:randomUUID(),sha256:hash(randomUUID())});
+   return record('receipt',{...f.receipt.body,asset_id:asset.id,extraction:{...f.receipt.body.extraction,reference}});
+  };
+  const replay=await newReceipt(f.receipt.body.extraction.reference.toUpperCase());
+  const decision=await enqueue('receipt_review',replay.id,{decision:'APPROVED',expected_version:replay.version,reason:'Same reference in another document',payment_key:'another'});
+  await processCommands();expect((await commandRow(decision.id)).result.error).toBe('DUPLICATE_PAYMENT_REFERENCE');
+  const extra=await newReceipt(randomUUID());await review(extra,{amount_minor:4800});
+  const corrected=await newReceipt(extra.body.extraction.reference);await review(corrected,{amount_minor:4900,replaces_receipt_id:extra.id});
+  expect((await getRecord(pool,w,'order',f.order.id))!.body.sale_amount_minor).toBe(9900);
+  const payments=await pool.query('SELECT receipt_id FROM payment_contributions WHERE workspace_id=$1 AND order_id=$2',[w,f.order.id]);
+  expect(payments.rows.map(row=>row.receipt_id).sort()).toEqual([f.receipt.id,corrected.id].sort());
  });
  it('preserves the evidence ledger when an alternative document replaces a payment',async()=>{
   const f=await fixture();await review(f.receipt);await periodReceipts();

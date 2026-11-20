@@ -126,3 +126,97 @@ it('builds, publishes, sells and copies a variant without mixing markets or prof
  expect(history.releases.map((r:{revision:number})=>r.revision)).toEqual([2,1]);
  expect(history.events.map((e:{event:string})=>e.event)).toContain('ARCHIVED');
 },120000);
+
+it('inherits Spin for existing offers, new products and variants, and freezes each published order destination',async()=>{
+ const card1={card_number:'4242424242424242',holder:'Titular ficticio uno'};
+ const card2={card_number:'4000000000000002',holder:'Titular ficticio dos'};
+ const products=[];
+ for(let n=1;n<=8;n++){
+  const created=data(await call(A,'POST','/v2/products',{name:'Oferta de prueba '+n,variant:{name:'México',locale:MX}}),201);
+  products.push(created);
+ }
+ const endpoint='/v2/profile/spin';
+ expect(data(await call(A,'GET',endpoint))).toEqual({revision:0,last4:null});
+ data(await call(A,'PUT',endpoint,{expected_revision:0,card:card1}));
+ for(const product of products){
+  const saved=data(await call(A,'GET','/v2/variants/'+product.variant.id));
+  expect(saved.document.collection).toMatchObject({spin_mode:'profile',spin:{last4:'4242'}});
+ }
+ const ninth=data(await call(A,'POST','/v2/products',{name:'Producto nueve',variant:{name:'México',locale:MX}}),201);
+ let v=ninth.variant;
+ expect(v.document.collection.spin).toMatchObject({last4:'4242'});
+ const extra=data(await call(A,'POST','/v2/variants',{product_id:ninth.product.id,name:'Segunda variante',locale:MX}),201);
+ expect(extra.document.collection.spin).toMatchObject({last4:'4242'});
+ const bank={bank:'Banco ficticio',holder:'Titular ficticio',clabe:clabe('01218000011835971')};
+ const collection={spei:bank,links:[],instructions:''};
+ const custom=data(await call(A,'PUT','/v2/variants/'+extra.id+'/collection',{expected_version:extra.version,value:{...collection,spin:card1}}));
+ const disabled=data(await call(A,'PUT','/v2/variants/'+products[0].variant.id+'/collection',{expected_version:data(await call(A,'GET','/v2/variants/'+products[0].variant.id)).version,value:{...collection,spin:null}}));
+ v=data(await call(A,'PUT','/v2/variants/'+v.id+'/collection',{expected_version:v.version,value:collection}));
+ const asset=await inProfile(A,async c=>(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','asset',$2) RETURNING id",[A,{name:'Material sintético',kind:'link',url:'https://example.invalid/base',status:'READY'}])).rows[0].id);
+ v=data(await call(A,'PUT','/v2/variants/'+v.id+'/offer',{expected_version:v.version,value:{...v.document.offer,price_minor:9700,accept_positive_contributions:true,fulfillment:[{asset_id:asset,release_on:'receipt_approved'}]}}));
+ const published=data(await call(A,'POST','/v2/variants/'+v.id+'/publish',{expected_version:v.version,document_sha256:v.document_sha256}));
+ const number=await inProfile(A,async c=>(await c.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'REAL','channel_account',$2) RETURNING *",[A,{name:'Simulador local',provider:'simulator',status:'WORKING'}])).rows[0]);
+ data(await call(A,'POST','/v2/variants/'+v.id+'/numbers',{account_id:number.id,sell:true}));
+ const {ensureOrder}=await import('../../apps/automation-worker/src/workflows.js');
+ const {spinDepositLink}=await import('../../packages/db/src/spin-deposit-slip.js');
+ const newOrder=async(identity:string)=>withRole('commerce_automation',()=>withTransaction(async c=>{
+  const chat=(await materializeMessage(c,number,{key:randomUUID(),type:'message',providerAt:new Date().toISOString(),identity,kind:'text',text:'Hola',payload:{}},randomUUID()))!;
+  const order=(await ensureOrder(c,chat))!;
+  return new URL(spinDepositLink(origin,A,'REAL',chat.id,order.id,order.body.payment_profile_version_id)).hash.slice(1);
+ }));
+ const readSlip=(token:string)=>app.inject({method:'POST',url:'/v2/customer/spin-deposit',payload:{token}});
+ const oldToken=await newOrder('opaque:noveno-1');
+ expect((await readSlip(oldToken)).json()).toMatchObject({spin:card1,spei:bank});
+ const result=await call(A,'PUT',endpoint,{expected_revision:1,card:card2,apply_to_published:true});
+ expect(data(result)).toMatchObject({revision:2,last4:'0002'});
+ expect(result.body).not.toContain(card2.card_number);
+ expect((await call(A,'PUT',endpoint,{expected_revision:1,card:card1})).statusCode).toBe(409);
+ const draft=data(await call(A,'GET','/v2/variants/'+v.id));
+ expect(draft.version).toBeGreaterThan(published.variant.version);
+ expect(draft.unpublished_changes).toBe(false);
+ expect(data(result).variants_published).toBe(1);
+ expect((await readSlip(oldToken)).json()).toMatchObject({spin:card1,spei:bank});
+ expect((await readSlip(await newOrder('opaque:noveno-2'))).json()).toMatchObject({spin:card2,spei:bank});
+ expect((await readSlip(oldToken+'x')).statusCode).toBe(404);
+ expect(data(await call(A,'GET','/v2/variants/'+custom.id)).document.collection.spin).toMatchObject({last4:'4242'});
+ expect(data(await call(A,'GET','/v2/variants/'+disabled.id)).document.collection.spin).toBeUndefined();
+ expect(data(await call(B,'GET',endpoint))).toEqual({revision:0,last4:null});
+ const isolated=data(await call(B,'POST','/v2/products',{name:'Perfil independiente',variant:{name:'México',locale:MX}}),201);
+ expect(isolated.variant.document.collection.spin).toBeUndefined();
+},120000);
+
+it('opens the published simulation slip from a newly created Mexican product without copying a live destination',async()=>{
+ const {withProfileTransaction}=await import('../../packages/db/src/profile-context.js');
+ const {bindProfileEnvironment}=await import('../../packages/db/src/profile-environment.js');
+ const {captureVariantJourney,currentVariantRelease}=await import('../../packages/db/src/variant-workspace.js');
+ const {spinDepositLink}=await import('../../packages/db/src/spin-deposit-slip.js');
+ const simulate=async(method:string,path:string,body?:object)=>app.inject({method:method as 'GET',url:path+'?environment=SIMULATION',payload:body,headers:{cookie:cookies[A]!,origin,'idempotency-key':randomUUID()}});
+ const fake={card_number:'5555555555554444',holder:'Titular simulado'};
+ data(await simulate('PUT','/v2/profile/spin',{expected_revision:0,card:fake}));
+ const p=data(await simulate('POST','/v2/products',{name:'Noveno producto simulado',variant:{name:'México',locale:MX}}),201);
+ let v=p.variant;
+ expect(v.document.collection.spin).toMatchObject({last4:'4444'});
+ const seed=(kind:string,body:object)=>withProfileTransaction(pool,A,async db=>{
+  await bindProfileEnvironment(db,'SIMULATION');
+  return (await db.query("INSERT INTO records(workspace_id,environment,kind,body) VALUES($1,'SIMULATION',$2,$3) RETURNING id",[A,kind,body])).rows[0].id as string;
+ });
+ const asset=await seed('asset',{kind:'link',url:'https://example.invalid/kit',status:'READY'});
+ v=data(await simulate('PUT','/v2/variants/'+v.id+'/offer',{expected_version:v.version,value:{...v.document.offer,price_minor:9700,fulfillment:[{asset_id:asset,release_on:'receipt_approved'}]}}));
+ v=data(await simulate('PUT','/v2/variants/'+v.id+'/collection',{expected_version:v.version,value:{spei:{bank:'Simulado',holder:'Titular simulado',clabe:clabe('01218000011835971')},links:[],instructions:''}}));
+ data(await simulate('POST','/v2/variants/'+v.id+'/publish',{expected_version:v.version,document_sha256:v.document_sha256}));
+ const token=await withProfileTransaction(pool,A,async db=>{
+  await bindProfileEnvironment(db,'SIMULATION');
+  const release=(await currentVariantRelease(db,'SIMULATION',v.id))!;
+  const bindingId=await seed('binding',{status:'SIMULATED'}),accountId=await seed('channel_account',{provider:'simulator',status:'PAUSED'}),contactId=await seed('contact',{name:'Prueba local'});
+  const journeyId=await seed('conversation',{account_id:accountId,contact_id:contactId,binding_id:bindingId});
+  await captureVariantJourney(db,'SIMULATION',{journeyId,accountId,contactId,bindingId,release});
+  const bank=release.configuration.collection.id;
+  const order=await seed('order',{conversation_id:journeyId,payment_profile_version_id:bank,currency:'MXN',status:'COMMITTED',receipt_status:'NONE'});
+  return new URL(spinDepositLink(origin,A,'SIMULATION',journeyId,order,bank)).hash.slice(1);
+ });
+ const response=await app.inject({method:'POST',url:'/v2/customer/spin-deposit',payload:{token}});
+ expect(response.statusCode,response.body).toBe(200);
+ expect(response.json().spin.card_number).toBe('0000000000000000');
+ expect(response.json().spei.clabe).toBe('000000000000000000');
+ expect(response.body).not.toContain(fake.card_number);
+},120000);

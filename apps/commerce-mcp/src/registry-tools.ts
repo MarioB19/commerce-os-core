@@ -153,7 +153,7 @@ export function registerProfileRegistryTools(server:McpServer,c:ProfileRegistryC
   previsualizar_reprogramacion:P('POST',z.object({variantId:z.uuid(),cycleId:z.uuid()}).strict(),i=>'/v2/variants/'+id(i.variantId)+'/remarketing/cycles/'+id(i.cycleId)+'/reprogram/preview',()=>({}),{read:true}),
   reprogramar:P('POST',operation.extend({variantId:z.uuid(),cycleId:z.uuid(),expectedRevision:z.number().int().positive(),previewHash:z.string().regex(/^[a-f0-9]{64}$/),previewedAt:z.string().datetime()}).strict(),i=>'/v2/variants/'+id(i.variantId)+'/remarketing/cycles/'+id(i.cycleId)+'/reprogram',i=>({expected_revision:i.expectedRevision,preview_hash:i.previewHash,previewed_at:i.previewedAt})),
  });
- sectionTool('collections_manage','Cobro de la variante','SPEI y/o enlace de pago. Los datos se guardan cifrados y nunca se devuelven completos.','collection',collectionInputSchema,false);
+ sectionTool('collections_manage','Cobro de la variante','SPEI, depósito en efectivo a Spin by OXXO o enlace de pago. Los datos se guardan cifrados y nunca se devuelven completos.','collection',collectionInputSchema,false);
  tool('receipt_rules_manage','Reglas de comprobantes','Consulta o guarda las reglas de validación de comprobantes del perfil o de una variante.',
   fromUnion(receiptPolicyCommand,{get_profile:'leer_perfil',get_variant:'leer_variante',save_profile:'guardar_perfil',save_variant:'guardar_variante',reconcile:'consultar_operacion'},op=>op.startsWith('get')||op==='reconcile',i=>c.receiptPolicies(i)));
  const receiptId=z.object({receiptId:z.uuid()}).strict();

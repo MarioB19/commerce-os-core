@@ -24,7 +24,7 @@ describe('D18 complete native reference inventory, no erase permission',()=>{
   const catalog=await readProfileCatalog(admin,[]) as PrivacyInventoryCatalog;
   // V7 F8-E: 0109 dropped 39 retired tables (227 relations through 0108).
   // 0118 adds two warmup relations and 0119 eight Meta relations to V7.1.1's 197.
-  const plan=buildPrivacyInventoryPlan(catalog,privacyInventoryPolicy(catalog.tables.map(t=>t.name)));expect(plan.relations).toBe(207);
+  const plan=buildPrivacyInventoryPlan(catalog,privacyInventoryPolicy(catalog.tables.map(t=>t.name)));expect(plan.relations).toBe(208);
   await admin.query(plan.prepare_sql);
   const secret=randomBytes(32).toString('hex');await admin.query(`CREATE ROLE "${login}" LOGIN PASSWORD '${secret}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;GRANT commerce_privacy_worker TO "${login}"`);
   const u=new URL(url);u.username=login;u.password=secret;worker=new pg.Pool({connectionString:u.toString(),max:2});

@@ -17,9 +17,22 @@ const checks=[];
 try{
  browser=await chromium.launch({headless:true});
  const page=await browser.newPage(),errors=[];page.on('pageerror',error=>errors.push(error.message));
+ const spinCards=new Map(),testCard='4242'.repeat(4);
+ let spinWrites=0;
  let rows={first:profile('first'),second:profile('second')},posts=[],gets=[],mode='success',release;
  await page.route('**/*',async route=>{
   const request=route.request(),url=new URL(request.url());if(url.origin!==base)return route.abort();
+  if(url.pathname==='/v2/profile/spin'){
+   const headers=request.headers(),id=headers['x-commerce-profile-id'];
+   assert.ok(rows[id]);assert.equal(url.searchParams.get('environment'),'REAL');
+   const current=spinCards.get(id)??{revision:0,last4:null};
+   if(request.method()==='GET')return route.fulfill({json:{data:current}});
+   assert.equal(request.method(),'PUT');assert.ok(headers['idempotency-key']);
+   assert.deepEqual(request.postDataJSON(),{expected_revision:current.revision,apply_to_published:true,card:{holder:'Titular de prueba',card_number:testCard}});
+   const stored={revision:current.revision+1,last4:testCard.slice(-4)};
+   spinCards.set(id,stored);spinWrites++;
+   return route.fulfill({json:{data:{...stored,variants_published:8}}});
+  }
   if(url.pathname!=='/v2/profile')return route.continue();
   assert.equal(url.search,'');const headers=request.headers(),id=headers['x-commerce-profile-id'];assert.ok(rows[id]);assert.match(headers['x-commerce-profile-version'],/^[1-9][0-9]*$/);assert.equal(headers.authorization,undefined);
   if(request.method()==='GET'){gets.push({id,version:headers['x-commerce-profile-version']});return route.fulfill({json:{data:rows[id]}});}
@@ -30,15 +43,26 @@ try{
   return route.fulfill({json:{data:result}});
  });
  await page.goto(base);await expect(page.getByLabel('Nombre del negocio')).toHaveValue('Negocio Uno');await expect(page.getByLabel('Zona horaria')).toHaveValue('America/Mexico_City');assert.deepEqual(gets,[{id:'first',version:'1'}]);checks.push('profile_read_uses_exact_selection_fence');
+ const business=page.getByRole('region',{name:'Datos del negocio'});
+ const spin=page.getByRole('region',{name:'Depósitos a Spin by OXXO'});
+ await expect(spin.getByText('Falta configurar la tarjeta receptora.')).toBeVisible();
+ await spin.getByLabel('Titular de la cuenta Spin').fill('Titular de prueba');
+ const card=spin.getByLabel('Tarjeta Spin de recepción (16 dígitos)');
+ await expect(card).toHaveAttribute('type','password');await card.fill(testCard);
+ await spin.getByRole('button',{name:'Guardar y aplicar a ofertas'}).click();
+ await expect(spin.getByText('Tarjeta del perfil · terminación 4242')).toBeVisible();
+ await expect(spin.getByRole('status')).toContainText('Ofertas actualizadas para pedidos nuevos: 8');
+ await expect(card).toHaveValue('');assert.equal(spinWrites,1);
+ checks.push('owner_stores_spin_for_current_and_future_offers_with_masked_readback');
  await page.getByLabel('Nombre del negocio').fill('Nombre nuevo');mode='delayed';
  await page.getByRole('button',{name:'Guardar datos'}).evaluate(button=>{button.click();button.click();});await expect.poll(()=>posts.length).toBe(1);release();
- await expect(page.getByRole('status')).toHaveText('Datos del negocio guardados.');assert.deepEqual(posts[0],{id:'first',body:{expectedVersion:1,businessName:'Nombre nuevo',timezone:'America/Mexico_City'}});checks.push('double_submit_sends_one_versioned_patch');
- mode='lost';await page.getByLabel('Nombre del negocio').fill('Guardado incierto');await page.getByRole('button',{name:'Guardar datos'}).click();await expect(page.getByRole('alert')).toContainText('Actualiza los datos');await expect(page.getByLabel('Nombre del negocio')).toBeDisabled();await expect(page.getByRole('button',{name:'Guardar datos'})).toBeDisabled();assert.equal(posts.length,2);checks.push('lost_response_blocks_repeated_save');
+ await expect(business.getByRole('status')).toHaveText('Datos del negocio guardados.');assert.deepEqual(posts[0],{id:'first',body:{expectedVersion:1,businessName:'Nombre nuevo',timezone:'America/Mexico_City'}});checks.push('double_submit_sends_one_versioned_patch');
+ mode='lost';await page.getByLabel('Nombre del negocio').fill('Guardado incierto');await page.getByRole('button',{name:'Guardar datos'}).click();await expect(business.getByRole('alert')).toContainText('Actualiza los datos');await expect(page.getByLabel('Nombre del negocio')).toBeDisabled();await expect(page.getByRole('button',{name:'Guardar datos'})).toBeDisabled();assert.equal(posts.length,2);checks.push('lost_response_blocks_repeated_save');
  rows.first={...rows.first,business_name:'Estado confirmado',version:3};mode='success';const before=gets.length;await page.getByRole('button',{name:'Actualizar datos'}).click();await expect(page.getByLabel('Nombre del negocio')).toHaveValue('Estado confirmado');await expect(page.getByRole('button',{name:'Guardar datos'})).toBeEnabled();assert.equal(gets.length,before+1);assert.equal(posts.length,2);checks.push('fresh_get_restores_authoritative_version_without_replay');
  mode='delayed';await page.getByLabel('Nombre del negocio').fill('Respuesta antigua');await page.getByRole('button',{name:'Guardar datos'}).click();await expect.poll(()=>posts.length).toBe(3);
  await page.evaluate(()=>window.chooseProfile({selection:{workspaceId:'second',version:2},role:'owner'}));await expect(page.getByLabel('Nombre del negocio')).toHaveValue('Negocio Dos');release();
  await expect.poll(()=>rows.first.business_name).toBe('Respuesta antigua');await expect(page.getByLabel('Nombre del negocio')).toHaveValue('Negocio Dos');await expect(page.getByText('Datos del negocio guardados.')).toHaveCount(0);checks.push('old_profile_write_response_cannot_replace_current_profile');
- await page.evaluate(()=>window.chooseProfile({selection:{workspaceId:'second',version:2},role:'viewer'}));await expect(page.getByLabel('Nombre del negocio')).toBeDisabled();await expect(page.getByRole('button',{name:'Guardar datos'})).toHaveCount(0);await expect(page.getByText('La persona dueña del perfil puede editar estos datos.')).toBeVisible();checks.push('viewer_has_read_only_business_form');
+ await page.evaluate(()=>window.chooseProfile({selection:{workspaceId:'second',version:2},role:'viewer'}));await expect(page.getByLabel('Nombre del negocio')).toBeDisabled();await expect(page.getByRole('button',{name:'Guardar datos'})).toHaveCount(0);await expect(page.getByText('La persona dueña del perfil puede editar estos datos.')).toBeVisible();await expect(spin).toHaveCount(0);checks.push('viewer_has_read_only_business_form');
  rows.second={...rows.second,state:'SUSPENDED'};await page.evaluate(()=>window.chooseProfile({selection:{workspaceId:'second',version:3},role:'owner'}));await expect(page.getByText('Este perfil está suspendido.',{exact:false})).toBeVisible();await expect(page.getByLabel('Nombre del negocio')).toBeDisabled();await expect(page.getByRole('button',{name:'Guardar datos'})).toHaveCount(0);assert.equal(posts.length,3);checks.push('suspended_profile_keeps_read_only_visibility');
  assert.deepEqual(errors,[]);console.log(JSON.stringify({status:'PROFILE_SETTINGS_BROWSER_CONTRACT_PASS',checks,synthetic_fixture:true,production_activation:false}));
 }finally{if(browser)await browser.close();await new Promise(resolve=>server.close(resolve));}
