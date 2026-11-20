@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="es-MX">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>Datos de depósito · Commerce OS</title>
+  <style>
+    :root { color-scheme: light; font: 100%/1.55 system-ui, sans-serif; color: #172622; background: #f3f5f3 }
+    main { max-width: 30rem; margin: 8vh auto; padding: clamp(1.25rem,5vw,3rem); background: white; border-radius: 1rem }
+    h1,h2 { line-height: 1.2 } h2 { font-size: 1.15rem } section { border-top: 1px solid #dce4df; margin-top: 1.5rem }
+    button { padding: .75rem 1.2rem; font: inherit; font-weight: 600; color: white; background: #185441; border: 0; border-radius: .5rem; cursor: pointer }
+    button:focus-visible { outline: 3px solid #dd851c; outline-offset: 3px }
+    output { display:block; font-size: 1.32rem; font-variant-numeric: tabular-nums; overflow-wrap:anywhere }
+  </style>
+  <script defer src="/deposito-spin.js"></script>
+</head>
+<body>
+  <main>
+    <h1>Datos para tu depósito</h1>
+    <button id="show" type="button">Ver datos del pedido</button>
+    <p id="status" role="status"></p>
+    <div id="details" hidden>
+      <section>
+        <h2>En efectivo en OXXO</h2>
+        <p>Pide un depósito a esta tarjeta Spin by OXXO y entrega el efectivo en caja.</p>
+        <output id="card" aria-label="Tarjeta Spin de recepción"></output>
+        <p id="holder"></p>
+      </section>
+      <section id="spei" hidden>
+        <h2>Por transferencia SPEI</h2>
+        <p id="bank"></p>
+        <output id="clabe" aria-label="CLABE"></output>
+        <p id="beneficiary"></p>
+      </section>
+      <p>Al terminar, vuelve a tu conversación de WhatsApp y envía una foto legible del comprobante.</p>
+    </div>
+  </main>
+</body>
+</html>

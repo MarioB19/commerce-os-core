@@ -31,7 +31,12 @@ export async function materializeInboundMedia(limit=50){const rows=(await query(
  // Outside the explicit collection state, only payment-labelled media becomes
  // a receipt candidate. Unrelated photos/PDFs remain private chat attachments
  // and are never forwarded to the receipt-vision provider automatically.
- if(receiptMime&&(awaitingReceipt||earlyPaymentSignal)){await applyCommand(c,{id:observation.id,workspace_id:observation.workspace_id,environment:observation.environment,kind:'conversation_command',resource_id:conversation.id,actor_id:'provider-ingress',payload:{type:'receipt_received',asset_id:asset.id}});}
+ const additionalContribution=receiptMime&&!awaitingReceipt&&!earlyPaymentSignal&&earlyPinnedOrder&&
+  (await c.query(`SELECT 1 FROM records WHERE workspace_id=$1 AND environment=$2 AND kind='order'
+    AND body->>'conversation_id'=$3 AND body->>'sale_status'='RECOGNIZED'
+    AND body#>>'{offer_snapshot,accept_positive_contributions}'='true' LIMIT 1`,
+   [conversation.workspace_id,conversation.environment,conversation.id])).rowCount;
+ if(receiptMime&&(awaitingReceipt||earlyPaymentSignal||additionalContribution)){await applyCommand(c,{id:observation.id,workspace_id:observation.workspace_id,environment:observation.environment,kind:'conversation_command',resource_id:conversation.id,actor_id:'provider-ingress',payload:{type:'receipt_received',asset_id:asset.id}});}
  });return rows.length;
 }
 

@@ -126,6 +126,7 @@ export function buildSellerSnapshot(input: {
     // when the variant still stores one (only the default flow applies it).
     billing_delay_seconds: offer?.body.sales_flow?.content ? 0 : offer?.body.billing_delay_seconds,
     positive_payment_unlocks_all: offer?.body.positive_payment_unlocks_all === true,
+    ...(offer?.body.accept_positive_contributions?{accept_positive_contributions:true}:{}),
     madrina: offer?.body.madrina?.enabled ? {enabled:true,threshold_exclusive_minor:10700,policy_version:'mcl-receipt-total-v5',third_party_effects:false} : undefined,
     delivery_rules: (offer?.body.fulfillment ?? []).map(
       (f: Body, _i: number, all: Body[]) => ({
@@ -254,6 +255,11 @@ export function composeSellerContext(
 export function canonicalThresholdReply(context: SellerContext): string | undefined {
   if(context.offer.positive_payment_unlocks_all&&context.offer.currency&&Number.isSafeInteger(context.offer.base_amount_minor))
     return `El precio de referencia es $${(Number(context.offer.base_amount_minor)/100).toFixed(2)} ${context.offer.currency}. Cualquier comprobante válido con un importe positivo registra exactamente ese importe y libera todos los regalos y accesos configurados; no hay un monto mínimo comercial ni beneficios por niveles.`;
+  if(context.offer.accept_positive_contributions){
+    const amounts=(context.offer.delivery_rules??[]).filter((r:Body)=>r.release_on!=='commitment_accepted'&&r.min_amount_minor>context.offer.base_amount_minor).map((r:Body)=>r.min_amount_minor);
+    const base='El acuerdo es de '+(context.offer.base_amount_minor/100).toFixed(2)+' '+context.offer.currency+'. Cualquier aporte positivo verificado cubre el producto.';
+    return amounts.length?base+' Con un total acreditado desde '+(Math.min(...amounts)/100).toFixed(2)+' '+context.offer.currency+' recibes también el kit.':base;
+  }
   if(context.offer.madrina?.enabled&&context.offer.currency==='MXN'&&context.offer.base_amount_minor===9700)
     return 'El precio base es $97.00 MXN. Primero recibes el Core después de aceptar el acuerdo y luego realizas el pago. Con $107.00 MXN en total aprobados recibes Calendario y Kit; no es un cargo adicional. Cualquier total aprobado superior a $107.00 MXN acredita el tier Madrina: conserva Calendario y Kit. El pago extra está incluido en el total y no agrega beneficios ni entregas a terceros.';
   const thresholds = [...new Set<number>((context.offer.delivery_rules ?? [])
@@ -367,7 +373,7 @@ export function deterministicSellerReply(context: SellerContext): {
       [],
       "UNSUPPORTED_REQUEST",
     );
-  if ((/kit|total|adicional/.test(text)||context.offer.madrina?.enabled&&/madrina|107|108|194|precio|cuanto|cuesta|pago antes|pagar antes|pago despues/.test(text)) && canonicalThresholdReply(context))
+  if ((/kit|total|adicional/.test(text)||context.offer.accept_positive_contributions&&/monto|importe|menor|menos|cuanto|pagar|aportar/.test(text)||context.offer.madrina?.enabled&&/madrina|107|108|194|precio|cuanto|cuesta|pago antes|pagar antes|pago despues/.test(text)) && canonicalThresholdReply(context))
     return result(canonicalThresholdReply(context)!, "question", ["offer_snapshot"], "CANONICAL_BENEFIT_TOTAL");
   if (/precio|cuanto|cuesta|moneda/.test(text) && context.offer.currency)
     return result(

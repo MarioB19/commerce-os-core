@@ -1,6 +1,6 @@
 import {withProfileQueryRouting} from '../../packages/db/src/profile-query-routing.js';
 import {putRecord,encrypt,decrypt,type QueryExecutor} from '../../packages/db/src/index.js';
-import {ensureOrder} from '../../apps/automation-worker/src/workflows.js';
+import {ensureOrder,eligibleFulfillmentItems} from '../../apps/automation-worker/src/workflows.js';
 import {applyReceiptAnalysis} from '../../apps/automation-worker/src/commands.js';
 import type {DomainRecord} from '../../packages/contracts/src/index.js';
 import {receiptDocumentEvidence} from '../../packages/contracts/src/receipt-extraction.js';
@@ -11,7 +11,7 @@ async function prepared(automatic=true){
  await tx(db=>policies.writeReceiptPolicy(db,'REAL',f.draft.id,{expectedRevision:0,override:{automaticApproval:automatic}},owner.user,randomUUID()));
  const conversation=await read(admin,conversationId),order=await worker(db=>ensureOrder(db,conversation));expect(order).toBeDefined();return{...f,release,conversation,order:order!};
 }
-async function receipt(f:Awaited<ReturnType<typeof prepared>>,patch:Record<string,unknown>={},imageHash=randomBytes(32).toString('hex')){
+async function receipt(f:Pick<Awaited<ReturnType<typeof prepared>>,'release'|'conversation'|'order'>,patch:Record<string,unknown>={},imageHash=randomBytes(32).toString('hex')){
  const a=await record('asset',{status:'READY',storage_key:randomUUID(),sha256:imageHash,mime_type:'image/png'});
  return worker(db=>putRecord(db,{workspaceId:one,environment:'REAL',kind:'receipt',body:{order_id:f.order.id,conversation_id:f.conversation.id,product_id:f.release.family_id,asset_id:a.id,status:'HUMAN_REVIEW',analysis_status:'RUNNING',...patch}}));
 }
@@ -66,19 +66,22 @@ async function record(kind:string,body:object,workspace=one,environment='REAL',o
  const row=(await admin.query('SELECT * FROM record_versions WHERE record_id=$1 AND version=1',[id])).rows[0];
  return{id,revision:1,sha256:store.marketRecordVersionHash(row)};
 }
-async function fixture(){
- const product=await record('product',{name:'Synthetic product',status:'DRAFT'});
+type CatalogOffer={product:string;tiers:{id:string;name:string;minimum_total_minor:number;included_extra_from_minor?:number}[];amounts:number[]};
+async function fixture(catalog?:CatalogOffer){
+ const product=await record('product',{name:catalog?.product??'Synthetic product',status:'DRAFT'});
  const flow=await record('workflow',{name:'Receipt fixture',status:'PUBLISHED',product_id:product.id,entry_node_id:'end',nodes:[{id:'end',type:'end',config:{}}]}),seller=await record('agent',{product_id:product.id});
- const collection=await record('bank_profile',{currency:'MXN',last4:'6789',secret_ciphertext:encrypt({account_number:'123456789',holder:'Synthetic Holder',instructions:'Fixture only'})}),material=await record('asset',{status:'READY'});
- const offer=await record('offer',{product_id:product.id,status:'PUBLISHED',currency:'MXN',base_amount_minor:10000,
- workflow_version_id:flow.id,agent_version_id:seller.id,payment_profile_version_id:collection.id,fulfillment:[{asset_id:material.id}]});
- const fields:MarketDraftFields={locale:{...locale},amount_minor:10000,configuration:{offer,flow,seller,collection,remarketing:offer,materials:[material]}};
+ const collection=await record('bank_profile',{currency:'MXN',last4:'6789',...(catalog?{methods:{spei:true,spin:true},secret_ciphertext:encrypt({spin:{card_number:'4242424242424242',holder:'Synthetic Holder'},spei:{clabe:'012345678901234567',holder:'Synthetic Holder'}})}:{secret_ciphertext:encrypt({account_number:'123456789',holder:'Synthetic Holder',instructions:'Fixture only'})})}),material=await record('asset',{status:'READY'});
+ const extra=[];
+ for(const min of catalog?.amounts??[]){const ref=await record('asset',{kind:'link',url:'https://example.invalid/material',status:'READY'});extra.push({ref,min});}
+ const offer=await record('offer',{product_id:product.id,status:'PUBLISHED',currency:'MXN',base_amount_minor:catalog?9700:10000,...(catalog?{accept_positive_contributions:true,tiers:catalog.tiers}:{}),
+ workflow_version_id:flow.id,agent_version_id:seller.id,payment_profile_version_id:collection.id,fulfillment:catalog?extra.map(({ref,min})=>({asset_id:ref.id,release_on:'receipt_approved',min_amount_minor:min})):[{asset_id:material.id}]});
+ const fields:MarketDraftFields={locale:{...locale},amount_minor:catalog?9700:10000,configuration:{offer,flow,seller,collection,remarketing:offer,materials:[material,...extra.map(x=>x.ref)]}};
  await tx(db=>store.adoptMarketFamily(db,'REAL',{product_id:product.id,expected_product_version:1}));
  const draft=await tx(db=>store.createMarketDraft(db,'REAL',{family_id:product.id,fields},owner.user));return{product,fields,draft};
 }
 async function publish(draft:{id:string;version:number;draft_sha256:string}){return (await tx(db=>store.publishMarketRelease(db,'REAL',draft.id,{expected_version:draft.version,draft_sha256:draft.draft_sha256,reviewed_fields:[...marketCopyReviewFields]},owner.user))).release;}
-async function journey(release:MarketRelease){
- const account=await record('channel_account',{status:'PAUSED'}),contact=await record('contact',{name:'Synthetic'}),c=release.configuration;
+async function journey(release:MarketRelease,sharedAccount?:{id:string}){
+ const account=sharedAccount??await record('channel_account',{status:'PAUSED'}),contact=await record('contact',{name:'Synthetic'}),c=release.configuration;
  const binding=await record('binding',{account_id:account.id,offer_version_id:c.offer.id,workflow_version_id:c.flow.id,agent_version_id:c.seller.id});
  return(await record('conversation',{product_id:release.family_id,account_id:account.id,contact_id:contact.id,binding_id:binding.id,offer_version_id:c.offer.id,workflow_version_id:c.flow.id,agent_version_id:c.seller.id})).id;
 }
@@ -100,7 +103,7 @@ describe('F5 policy023 canonical order and receipt workers',()=>{
   // Existing commercial tables receive fixture-owned policies only. New market
   // tables use exactly the production-proposed 008 FORCE RLS and grants.
   for(const table of ['records','record_versions','personal_access_tokens'])await admin.query(`ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;CREATE POLICY market_fixture ON ${table} USING(workspace_id=NULLIF(current_setting('app.workspace_id',true),'')) WITH CHECK(workspace_id=NULLIF(current_setting('app.workspace_id',true),''))`);
-  await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic Market','UTC',10,100,100),($2,'Synthetic Foreign','UTC',10,100,100)",[one,two]);await sealFixtureProfiles(admin,one,two);
+  await admin.query("INSERT INTO profiles(id,business_name,timezone,number_limit,product_limit,daily_conversation_limit) VALUES($1,'Synthetic Market','UTC',10,100,250),($2,'Synthetic Foreign','UTC',10,100,100)",[one,two]);await sealFixtureProfiles(admin,one,two);
   url.username=login;url.password=secret;runtime=new pg.Pool({connectionString:url.toString(),options:'-c role=commerce_api',max:5,connectionTimeoutMillis:5000});
   app=Fastify({logger:false,disableRequestLogging:true});app.setErrorHandler((e:any,_r,reply)=>reply.code(e instanceof ZodError?400:e.statusCode??500).send({error:{code:e.code??'INTERNAL_ERROR'}}));
   await profileIdentityRoutes(app,{origins:[origin],session:nativeSession,list:s=>listProfileChoicesFromSession(runtime,s),select:(s,w,v)=>transaction(c=>selectProfileFromSession(c,s,w,v))});
@@ -157,4 +160,53 @@ describe('F5 policy023 canonical order and receipt workers',()=>{
  it('declared snapshot absence cannot silently route a market order into legacy approval',async()=>{
   const f=await prepared(),foreign=await record('order',{conversation_id:f.conversation.id,receipt_policy_snapshot_sha256:'a'.repeat(64)}),r=await receipt(f,{order_id:foreign.id});await expect(analyze(r,await observation())).rejects.toThrow('RECEIPT_POLICY_SNAPSHOT_REQUIRED');expect((await read(admin,r.id)).version).toBe(r.version);
  });
+ const catalogOffers:CatalogOffer[]=[
+  {"product":"Costura que Vende","tiers":[{"id":"acuerdo_97","name":"Lo Acordado","minimum_total_minor":1},{"id":"apoyo_valioso_107","name":"Apoyo Valioso","minimum_total_minor":9701,"included_extra_from_minor":10700}],"amounts":[9701]},
+  {"product":"Mi Ciclo Listo — Preescolar y Primaria","tiers":[{"id":"acuerdo_97","name":"Lo Acordado","minimum_total_minor":1},{"id":"apoyo_valioso_107","name":"Apoyo Valioso","minimum_total_minor":9701,"included_extra_from_minor":10700}],"amounts":[0,0,9701]},
+  {"product":"Agendas para Vender 2027","tiers":[{"id":"acuerdo","name":"Acuerdo","minimum_total_minor":1},{"id":"kit","name":"Kit Presentación de Marca","minimum_total_minor":9701},{"id":"madrina","name":"Madrina","minimum_total_minor":10701,"included_extra_from_minor":10700}],"amounts":[9701]},
+  {"product":"Flores y Ramos para Vender","tiers":[{"id":"acuerdo","name":"Acuerdo","minimum_total_minor":1},{"id":"kit","name":"Kit Presentación de Marca","minimum_total_minor":9701},{"id":"apoyo","name":"Apoyo voluntario al Taller","minimum_total_minor":10701,"included_extra_from_minor":10700}],"amounts":[1,9701]},
+  {"product":"Galletas para Pedidos","tiers":[{"id":"acuerdo","name":"Acuerdo","minimum_total_minor":1},{"id":"kit","name":"Presenta tu marca","minimum_total_minor":9701}],"amounts":[1,9701]},
+  {"product":"Velas para Regalar y Vender","tiers":[{"id":"acuerdo","name":"Acuerdo","minimum_total_minor":1},{"id":"kit","name":"Colecciones con tu Marca","minimum_total_minor":9701}],"amounts":[1,9701]},
+  {"product":"Decoración con Globos para Vender","tiers":[{"id":"acuerdo","name":"Acuerdo","minimum_total_minor":1},{"id":"kit","name":"Preséntalo con tu marca","minimum_total_minor":9701}],"amounts":[1,9701]},
+  {"product":"Taller de Inventos en Casa","tiers":[{"id":"acuerdo","name":"Acuerdo","minimum_total_minor":1},{"id":"kit","name":"Kit de doce desafíos","minimum_total_minor":9701}],"amounts":[9701,9701]}
+ ];
+ describe('verified contributions for the eight Mexican offers',()=>{
+ it.each(catalogOffers.map(offer=>[offer.product,offer] as const))('recognizes real net amounts and releases the configured materials for %s',async(_name,catalog)=>{
+  const f=await fixture(catalog),release=await publish(f.draft);
+  await tx(db=>policies.writeReceiptPolicy(db,'REAL',f.draft.id,{expectedRevision:0,override:{automaticApproval:true,amount:{mode:'POSITIVE'}}},owner.user,randomUUID()));
+  const account=await record('channel_account',{status:'PAUSED'});
+  const newOrder=async()=>{
+   const id=await journey(release,account);await tx(db=>store.captureMarketJourney(db,'REAL',id,release.id));
+   const conversation=await read(admin,id),order=(await worker(db=>ensureOrder(db,conversation)))!;
+   return {conversation,order,release};
+  };
+  const approved=async(caseOrder:Awaited<ReturnType<typeof newOrder>>,amount:number,channel:'spei'|'spin_cash',reference:string=randomUUID())=>{
+   const r=await receipt(caseOrder),raw={...await observation(),reference,amount_minor:amount,payment_channel:channel,
+    destination:channel==='spei'?'012345678901234567':'4242424242424242',...(channel==='spin_cash'?{cash_total_minor:amount+1500,service_fee_minor:1500}:{})};
+   return analyze(r,raw);
+  };
+  for(const channel of ['spei','spin_cash'] as const){
+   for(const amount of [0,1,5000,8000,9000,9700,9701,10000,10700]){
+    const item=await newOrder(),result=await approved(item,amount,channel);
+    expect(result.body.status).toBe(amount>0?'APPROVED':'HUMAN_REVIEW');
+    const sale=await read(admin,item.order.id);
+    expect(Number(sale.body.sale_amount_minor??0)).toBe(amount);
+    if(amount>0)expect(sale.body.sale_effects_applied_at).toBeTruthy();
+    const deliveries=await admin.query("SELECT body->>'asset_id' asset FROM records WHERE workspace_id=$1 AND kind='fulfillment' AND body->>'order_id'=$2",[one,item.order.id]);
+    const eligible=amount>0?await worker(db=>eligibleFulfillmentItems(db,sale,'receipt_approved')):[];
+    expect(eligible).toHaveLength(amount>0?catalog.amounts.filter(min=>amount>=min).length:0);
+    // This fixture has a paused channel. Every proposed item must be entitled and unique.
+    expect(deliveries.rows.every(row=>eligible.some((f:{asset_id:string})=>f.asset_id===row.asset))).toBe(true);
+    expect(new Set(deliveries.rows.map(row=>row.asset)).size).toBe(deliveries.rows.length);
+   }
+  }
+  const split=await newOrder(),reference=randomUUID();
+  expect((await approved(split,5000,'spei',reference)).body.status).toBe('APPROVED');
+  expect((await approved(split,5000,'spei',reference)).body.status).toBe('HUMAN_REVIEW');
+  expect((await approved(split,4800,'spin_cash')).body.status).toBe('APPROVED');
+  expect((await read(admin,split.order.id)).body.sale_amount_minor).toBe(9800);
+  expect(await contributions(split.order.id)).toHaveLength(2);
+ },120000);
+});
+
 });

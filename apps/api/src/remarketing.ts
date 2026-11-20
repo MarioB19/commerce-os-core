@@ -1,7 +1,7 @@
 import type {FastifyInstance,FastifyRequest} from 'fastify';
 import {z} from 'zod';
 import {hash,pool,stableJson,uuid,type QueryExecutor} from '../../../packages/db/src/index.js';
-import {normalizeRemarketingPolicy} from '../../../packages/domain/src/sales/remarketing.js';
+import {collectionReminderTime,normalizeRemarketingPolicy} from '../../../packages/domain/src/sales/remarketing.js';
 import {assertPermission} from '../../../packages/domain/src/core/permissions.js';
 import {remarketingCycleStatusSchema,remarketingReprogramApplyInputSchema,remarketingReprogramPreviewInputSchema,remarketingTransportTemplateSchema,type Body} from '../../../packages/contracts/src/index.js';
 import {audit,envOf,fail,mutate,offerReadPermission,parseBody,principal,resourcePermitted,scopedRecord,sanitize,writePermission} from './context.js';
@@ -42,6 +42,7 @@ function mergeReprogrammedTiming(cycle:Body,target:ReturnType<typeof normalizeRe
   schema_version:target.schema_version,
   policy_id:target.policy_id,
   policy_revision:target.policy_revision,
+  ...((cycle.policy_snapshot?.after_agreement_only||target.after_agreement_only)?{after_agreement_only:true}:{}),
   // V7: allowed hours are part of the timing the published policy defines.
   ...(target.window?{window:target.window}:{}),
   slots:target.slots.map(slot=>{
@@ -70,11 +71,16 @@ export async function previewCycleReprogram(loadOffer:OfferLoader,client:QueryEx
  const now=await clock(client,conversation),anchor=new Date(cycle.anchor_at),lastInbound=Date.parse(conversation.body.last_inbound_at??'');
  const channelClosesAt=Number.isFinite(lastInbound)?new Date(lastInbound+24*3600_000):undefined;
  let remaining=Math.max(0,Math.max(Number(cycle.consumed_attempts),policy.maximum)-Number(cycle.consumed_attempts));
+ let first:Date|undefined;
  const slots=policy.slots.map(slot=>{
-  const dueAt=new Date(anchor.getTime()+slot.after_seconds*1000);
+  const target=new Date(anchor.getTime()+slot.after_seconds*1000);
+  const at=policy.after_agreement_only?collectionReminderTime(target,policy.window,slot.position,new Date(lastInbound),first):target;
+  const dueAt=at??target;
+  if(slot.position===1&&slot.enabled&&at)first=at;
   let disposition:string;
   if(consumed.has(slot.id))disposition='PRESERVE_CONSUMED';
-  else if(!slot.enabled)disposition='DISABLED';
+  else if(!slot.enabled||(policy.after_agreement_only&&cycle.stage==='AGREEMENT'))disposition='DISABLED';
+  else if(!at)disposition='OUTSIDE_WINDOW';
   else if(dueAt<=now)disposition='SKIP_OVERDUE';
   else if(remaining<=0)disposition='QUOTA_BLOCKED';
   else{disposition='SCHEDULE';remaining--;}

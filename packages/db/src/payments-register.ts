@@ -16,7 +16,9 @@ export const paymentRowsSql=`WITH source AS MATERIALIZED (
   THEN CASE WHEN (r.body->'extraction'->>'amount_minor')::numeric BETWEEN 0 AND 9007199254740991
    THEN ((r.body->'extraction'->>'amount_minor')::numeric)::text END END amount_minor,
  CASE WHEN p.id IS NOT NULL THEN p.currency WHEN r.body->'extraction'->>'currency' ~ '^[A-Z]{3}$' THEN r.body->'extraction'->>'currency' END currency,
- CASE WHEN o.body->'offer_snapshot'->'collection_methods'='["spei"]'::jsonb THEN 'BANK_TRANSFER'
+ CASE WHEN r.body->'assessment'->>'collection_method'='SPIN_CASH' THEN 'SPIN_CASH'
+  WHEN o.body->'offer_snapshot'->'collection_methods'='["spin"]'::jsonb THEN 'SPIN_CASH'
+  WHEN o.body->'offer_snapshot'->'collection_methods'='["spei"]'::jsonb THEN 'BANK_TRANSFER'
   WHEN o.body->'offer_snapshot'->'collection_methods'='["link"]'::jsonb THEN 'LINK'
   WHEN o.body->'offer_snapshot' ? 'collection_methods' THEN CASE WHEN r.body->'assessment'->'checks' @> '[{"rule":"DESTINATION","state":"PASSED"}]'::jsonb THEN 'BANK_TRANSFER' ELSE 'UNKNOWN' END
   ELSE CASE o.body->'offer_snapshot'->>'payment_method' WHEN 'bank_transfer_receipt' THEN 'BANK_TRANSFER' WHEN 'payment_link' THEN 'LINK' ELSE 'UNKNOWN' END END method,

@@ -9,6 +9,7 @@ export const receiptPolicySchema=z.object({
  automaticApproval:z.boolean(),failureDisposition:z.enum(['REVIEW','REJECT']),minimumConfidenceBps:z.number().int().min(0).max(10000),
  amount:z.discriminatedUnion('mode',[
   z.object({mode:z.literal('EXACT')}).strict(),z.object({mode:z.literal('MINIMUM')}).strict(),
+  z.object({mode:z.literal('POSITIVE')}).strict(),
   z.object({mode:z.literal('TOLERANCE'),toleranceMinor:integer}).strict(),
  ]),
  destination:z.discriminatedUnion('mode',[

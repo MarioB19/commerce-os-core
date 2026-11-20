@@ -6,7 +6,7 @@ import {moneyText,profileToday} from '../lib/results.js';
 import {SalesNav} from './sales-nav.js';
 import {Alert,Badge,Button,Card,CardHead,EmptyState,Field,Input,NativeSelect,PageHeader,Skeleton,Table,TableWrap,toneOf} from './ui';
 type Props={selection:{workspaceId:string|null;version:number};environment:'REAL'|'SIMULATION';timezone:string;role:'owner'|'operator'|'reconciler'|'viewer';onReceipt?:(id:string)=>void};
-const methods={BANK_TRANSFER:'Transferencia',LINK:'Enlace de pago',UNKNOWN:'Sin dato'};
+const methods={BANK_TRANSFER:'Transferencia',SPIN_CASH:'Efectivo en OXXO',LINK:'Enlace de pago',UNKNOWN:'Sin dato'};
 /** V7 Pagos (RF-09.j): the payments register, by currency, with filters and
  * export. Remounting at the authority boundary discards pending responses and
  * RAM-only downloads, including A→B→A profile changes. */

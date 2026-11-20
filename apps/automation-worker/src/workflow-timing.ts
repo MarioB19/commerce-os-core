@@ -1,4 +1,4 @@
-import {nextRemarketingTime} from '../../../packages/domain/src/sales/remarketing.js';
+import {collectionReminderTime,nextRemarketingTime} from '../../../packages/domain/src/sales/remarketing.js';
 import {buyerExcluded,cancelPendingRemarketingForContact,getRecord,openRemarketingCycle,uuid,type QueryExecutor,type RemarketingStage} from '@commerce/db';
 import type {Body,DomainRecord} from '@commerce/contracts';
 import type {FlowState} from '../../../packages/domain/src/sales/workflow.js';
@@ -39,6 +39,7 @@ export async function collectionEligibility(client:QueryExecutor,conversation:Do
 }
 export async function remarketingEligibility(client:QueryExecutor,conversation:DomainRecord,stage:RemarketingStage,hasEligibleTemplate=false):Promise<string|undefined>{
  if(stage==='COLLECTION')return collectionEligibility(client,conversation,true,hasEligibleTemplate);
+ if(conversation.body.followup_plan?.policy_snapshot?.after_agreement_only)return'COMMITMENT_REQUIRED';
  if(conversation.body.sponsorship_id)return'SPONSORED_CORE_NO_DEBT';
  if(conversation.body.collection_stop_reason||conversation.body.followup_stop_reason)return String(conversation.body.collection_stop_reason??conversation.body.followup_stop_reason);
  if(conversation.body.ai_status==='HUMAN_REVIEW'||conversation.body.flow_state?.status==='HUMAN_REVIEW'||await gated(client,conversation))return'HUMAN_OR_OPERATION_CONTROL';
@@ -79,17 +80,30 @@ export async function armFollowups(client:QueryExecutor,conversation:DomainRecor
   // The open cycle is the source of truth. Publishing or selecting a newer
   // offer never mutates an in-flight contact's content, windows or quota.
   const snapshot=cycle.policy_snapshot??plan.policy_snapshot;
+  if(stage==='AGREEMENT'&&snapshot.after_agreement_only){
+   await cancelPendingRemarketingForContact(client,conversation,'COMMITMENT_REQUIRED');
+   return save(client,conversation,{...conversation.body,followup_plan:{...plan,status:'DISABLED',cycle_id:cycle.id,policy_snapshot:snapshot}});
+  }
   const consumed=new Set((await client.query('SELECT slot_id FROM commercial_remarketing_attempts WHERE cycle_id=$1',[cycle.id])).rows.map(row=>String(row.slot_id)));
   touches=(snapshot.slots??[]).filter((slot:Body)=>slot.enabled&&!consumed.has(String(slot.id))).map((slot:Body)=>({...slot,...slot.stages?.[plan.stage],after_seconds:slot.after_seconds??slot.delay_seconds}));
   await cancelPendingRemarketingForContact(client,conversation,`REMARKETING_${stage}_REPROGRAMMED`);
  }
  // RF-10.d: reminders land only inside the variant's allowed local hours.
  const window=plan.policy_snapshot?((cycle?.policy_snapshot??plan.policy_snapshot) as Body).window:undefined;
+ const bounded=!!(cycle?.policy_snapshot??plan.policy_snapshot)?.after_agreement_only;
+ const lastInbound=new Date(conversation.body.last_inbound_at??'');
+ let first:Date|undefined,scheduled=0;
  for(const [index,touch] of touches.entries()){
-  const due=nextRemarketingTime(new Date(new Date(anchor.at).getTime()+touch.after_seconds*1000),window).toISOString();
+  const target=new Date(Date.parse(anchor.at)+touch.after_seconds*1000);
+  const position=Number(touch.position??index+1);
+  const at=bounded?collectionReminderTime(target,window,position,lastInbound,first):nextRemarketingTime(target,window);
+  if(!at)continue;
+  if(position===1)first=at;
+  scheduled++;
+  const due=at.toISOString();
   const timerId=uuid();
   await client.query(`INSERT INTO timers(id,workspace_id,environment,conversation_id,kind,payload,due_at,logical_key) VALUES($1,$2,$3,$4,'followup',$5,$6,$7) ON CONFLICT(workspace_id,logical_key) DO NOTHING`,[timerId,conversation.workspace_id,conversation.environment,conversation.id,{...await commercialContext(client,conversation),...touch,...(window?{window}:{}),purpose:plan.policy_snapshot?'remarketing':'followup',plan_key:plan.key,touch_index:Number(touch.position??index+1),slot_id:touch.id,stage,cycle_id:cycle?.id??null,workflow_runtime_version:plan.workflow_runtime_version,anchor_at:anchor.at,anchor_effect_ids:anchor.effect_ids},due,cycle?`remarketing:${cycle.id}:${stage}:${touch.id}:${cycle.revision}`:`${plan.key}:${touch.id}:${plan.anchor_effect_id??'initial'}`]);
  }
  await event(client,conversation,plan.policy_snapshot?'remarketing.plan_scheduled':'followup.plan_scheduled',{plan_key:plan.key,cycle_id:cycle?.id??null,stage:plan.stage??null,touches:touches.map((t:Body)=>({id:t.id,after_seconds:t.after_seconds})),anchor_at:anchor.at,anchor_effect_ids:anchor.effect_ids});
- return save(client,conversation,{...conversation.body,followup_plan:{...plan,status:touches.length?'SCHEDULED':'DISABLED',cycle_id:cycle?.id??null,anchor_at:anchor.at,anchor_effect_ids:anchor.effect_ids,resume_after_customer_reply:false}});
+ return save(client,conversation,{...conversation.body,followup_plan:{...plan,status:scheduled?'SCHEDULED':'DISABLED',cycle_id:cycle?.id??null,anchor_at:anchor.at,anchor_effect_ids:anchor.effect_ids,resume_after_customer_reply:false}});
 }

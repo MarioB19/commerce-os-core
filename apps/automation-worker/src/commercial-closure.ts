@@ -26,7 +26,7 @@ export function evaluateCommercialClosure(conversation:DomainRecord,orders:Closu
   }
   let reconciled=0n;
   if(reconciliation){need(reconciliation.verified===true&&reconciliation.currency===b.currency,'COMMERCIAL_CLOSURE_RECONCILIATION_UNVERIFIED');reconciled=money(reconciliation.amount_minor);}
-  const settled=paid>reconciled?paid:reconciled;need(settled>=due,'COMMERCIAL_COMMITMENT_REQUIRES_HUMAN_RESOLUTION');
+  const settled=paid>reconciled?paid:reconciled;need(b.offer_snapshot.accept_positive_contributions===true?settled>0n:settled>=due,'COMMERCIAL_COMMITMENT_REQUIRES_HUMAN_RESOLUTION');
   const required:Body[]=b.offer_snapshot.fulfillment.filter((item:Body)=>{need(['commitment_accepted','receipt_approved','reconciled'].includes(item.release_on)&&typeof item.asset_id==='string','COMMERCIAL_CLOSURE_TERMS_INVALID');return b.offer_snapshot.positive_payment_unlocks_all===true&&settled>0n||item.min_amount_minor===undefined||settled>=money(item.min_amount_minor);});
   const used=new Set<string>(),delivery:Body[]=[];
   for(const item of required){

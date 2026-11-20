@@ -2,7 +2,7 @@ import type {Body} from '../../../contracts/src/index.js';
 /** Receipt totals only. A tier selection or unknown payment never creates credit. */
 export function creditedPaymentTier(offer:Body,currency:string,approvedTotal:number){
  if(!Number.isSafeInteger(approvedTotal)||approvedTotal<0)throw new Error('INVALID_APPROVED_TOTAL');
- if(offer.tier_policy==='mcl-receipt-total-v5'||offer.madrina?.enabled){
+ if(!offer.accept_positive_contributions&&(offer.tier_policy==='mcl-receipt-total-v5'||offer.madrina?.enabled)){
   if(currency!=='MXN'||offer.base_amount_minor!==9700)return {credited_tier:null,credited_tier_policy:'INVALID_CONFIGURATION',payment_extra_minor:0};
   return {credited_tier:approvedTotal>10700?'madrina':approvedTotal>=10700?'kit':approvedTotal>=9700?'acuerdo':null,credited_tier_policy:'mcl-receipt-total-v5',payment_extra_minor:Math.max(0,approvedTotal-10700),payment_extra_included_in_total:true};
  }

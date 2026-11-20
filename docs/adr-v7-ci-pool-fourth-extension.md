@@ -80,3 +80,7 @@ La revisión de la copia se detuvo antes de ejecutar el instalador. El paquete a
 El registro nativo tenía 103,980 segundos de compilación confirmados y cero reservados. Dos verificaciones completas de 5,700 segundos y dos atestaciones de 120 requieren hasta 115,620 segundos en noviembre. La extensión de 7,620 segundos corresponde solo a noviembre de 2026 y al proyecto que ya adoptó la bolsa de 108,000 segundos. Los demás meses conservan su límite. El controlador pasa de 84,815 a 90,455 segundos en noviembre. La contabilidad conserva cada reserva y resultado histórico.
 
 El margen adicional modelado incluye US$1.35024 de compilación, US$0.18973 de controlador y US$0.55 para la máquina de empaquetado, la copia temporal y las operaciones asociadas. La proyección acumulada es US$4.90 por la publicación y US$179.05 brutos en noviembre.
+
+## 19-nov-2026 — Cobros del catálogo
+
+Brandon autorizó US$3 brutos para una publicación y US$183 brutos en noviembre. La compilación nativa dispone de 124,140 segundos en noviembre tras añadir 8,520. El controlador dispone de 96,095 segundos tras añadir 5,640. La reserva conjunta del candidato, integración y sus atestaciones es de 11,640 segundos de compilación.

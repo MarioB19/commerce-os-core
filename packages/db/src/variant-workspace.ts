@@ -9,7 +9,7 @@ import {marketReleaseHash,snapshotMarketJourney} from '../../domain/src/catalog/
 import {marketReleaseSchema} from '../../contracts/src/market-variants.js';
 import {marketDraftFieldsSchema} from '../../contracts/src/market-variant-store.js';
 import {variantDocumentSchema,variantSectionInputSchema,variantCreateInputSchema,variantDuplicateInputSchema,variantPublishInputSchema,
- variantReviewInputSchema,variantLifecycleInputSchema,productCreateInputSchema,productEditInputSchema,productLifecycleInputSchema,
+ variantReviewInputSchema,variantLifecycleInputSchema,spinCardNumber,productCreateInputSchema,productEditInputSchema,productLifecycleInputSchema,
  variantListQuerySchema,productListQuerySchema,variantStateLabels,variantMissingLabels,type VariantDocument,type CollectionInput} from '../../contracts/src/variants.js';
 import {baseVariantDocument,duplicateVariantDocument,variantDocumentHash,variantMissing,variantState,conversationSaleWorkflow,
  guidedSaleWorkflow,guidedRecipeDefinition,disabledRemarketingPolicy,variantMaterialIds,sellerLanguageInstruction} from '../../domain/src/catalog/variant-document.js';
@@ -46,12 +46,75 @@ async function productRecord(db:ProfileExecutor,environment:Environment,id:strin
 const archivedProduct=(body:Body)=>!!body.archived_at||body.status==='ARCHIVED';
 
 /** Collection secret: SPEI holder/CLABE and payment URLs, never returned. */
-interface CollectionSecret {spei?:{holder:string;clabe:string};links:{id:string;url:string}[]}
+interface CollectionSecret {spin?:{card_number:string;holder:string};spei?:{holder:string;clabe:string};links:{id:string;url:string}[]}
 function readSecret(row:VariantRow):CollectionSecret{
  if(!row.collection_ciphertext)return{links:[]};
- const value=JSON.parse(decrypt(row.collection_ciphertext));return{spei:value.spei,links:Array.isArray(value.links)?value.links:[]};
+ const value=JSON.parse(decrypt(row.collection_ciphertext));return{spei:value.spei,spin:value.spin,links:Array.isArray(value.links)?value.links:[]};
 }
-function collectionPresence(document:VariantDocument){return{spei:!!document.collection.spei,links:document.collection.links.length};}
+function collectionPresence(document:VariantDocument){return{spei:!!document.collection.spei,spin:!!document.collection.spin,links:document.collection.links.length};}
+
+const profileCardInput=z.object({
+ expected_revision:z.number().int().nonnegative(),
+ apply_to_published:z.boolean().optional(),
+ card:z.object({card_number:spinCardNumber,holder:z.string().trim().min(1).max(160)}).strict().nullable(),
+}).strict();
+
+async function lockProfileCollection(db:ProfileExecutor,environment:Environment){
+ await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[
+  'profile-spin:'+db.workspaceId+':'+environment,
+ ]);
+}
+type ProfileCard={revision:number;last4:string|null;ciphertext:string|null};
+async function profileCard(db:ProfileExecutor,environment:Environment):Promise<ProfileCard>{
+ const result=await db.query<ProfileCard>('SELECT revision,last4,ciphertext FROM profile_spin_collections WHERE workspace_id=$1 AND environment=$2',[db.workspaceId,environment]);
+ return result.rows[0]??{revision:0,last4:null,ciphertext:null};
+}
+export async function profileSpinSummary(db:ProfileExecutor,environment:Environment){
+ const {revision,last4}=await profileCard(db,environment);
+ return {revision,last4};
+}
+function supportsSpin(doc:VariantDocument){return doc.locale.country==='MX'&&doc.locale.currency==='MXN';}
+function applyProfileCard(doc:VariantDocument,secret:CollectionSecret,card:ProfileCard){
+ if(!supportsSpin(doc))return;
+ doc.collection.spin_mode='profile';
+ if(card.last4&&card.ciphertext){
+  doc.collection.spin={last4:card.last4,revision:card.revision};
+  secret.spin=JSON.parse(decrypt(card.ciphertext));
+ }else{
+  delete doc.collection.spin;
+  delete secret.spin;
+ }
+}
+export async function saveProfileSpin(db:ProfileExecutor,environment:Environment,input:unknown,actor:Actor){
+ const q=profileCardInput.parse(input);
+ await lockProfileCollection(db,environment);
+ const prior=await profileCard(db,environment);
+ need(prior.revision===q.expected_revision,'VERSION_CONFLICT');
+ const revision=prior.revision+1;
+ const card={revision,last4:q.card?.card_number.slice(-4)??null,ciphertext:q.card?encrypt(q.card):null};
+ await db.query(`INSERT INTO profile_spin_collections(workspace_id,environment,revision,last4,ciphertext) VALUES ($1,$2,$3,$4,$5)
+  ON CONFLICT(workspace_id,environment) DO UPDATE SET revision=EXCLUDED.revision,last4=EXCLUDED.last4,ciphertext=EXCLUDED.ciphertext`,
+  [db.workspaceId,environment,revision,card.last4,card.ciphertext]);
+ const variants=await db.query<VariantRow>(`SELECT ${columns} FROM market_variants
+  WHERE workspace_id=$1 AND environment=$2 AND archived_at IS NULL AND document->'locale'->>'country'='MX'
+   AND document->'locale'->>'currency'='MXN' AND COALESCE(document#>>'{collection,spin_mode}','profile')='profile'
+   AND document#>>'{collection,legacy_profile_id}' IS NULL ORDER BY id FOR UPDATE`,[db.workspaceId,environment]);
+ let published=0;
+ for(const row of variants.rows){
+  const doc=variantDocumentSchema.parse(row.document),secret=readSecret(row);
+  const clean=row.current_release_id&&row.published_document_sha256===variantDocumentHash(doc);
+  applyProfileCard(doc,secret,card);
+  await db.query(`UPDATE market_variants SET document=$4,collection_ciphertext=$5,collection_revision=collection_revision+1,
+   version=version+1,updated_at=clock_timestamp() WHERE workspace_id=$1 AND environment=$2 AND id=$3`,
+   [db.workspaceId,environment,row.id,doc,encrypt(secret)]);
+  if(q.apply_to_published&&clean&&(doc.collection.spei||doc.collection.spin||doc.collection.links.length)){
+   await publishVariant(db,environment,row.id,{expected_version:row.version+1,document_sha256:variantDocumentHash(doc)},actor);
+   published++;
+  }
+ }
+ await audit(db,environment,actor,'profile.collection_spin_saved',randomUUID(),{revision,variants_updated:variants.rows.length,configured:!!card.last4});
+ return {revision,last4:card.last4,variants_updated:variants.rows.length,variants_published:published};
+}
 
 async function sellingNumbers(db:ProfileExecutor,environment:Environment,variantId:string){
  return(await db.query(`SELECT a.id,a.account_id,a.revision,a.binding_id,n.body->>'name' AS name,n.body->>'masked_number' AS masked
@@ -134,8 +197,14 @@ export async function setProductArchived(db:ProfileExecutor,environment:Environm
 // ---------------------------------------------------------------- variants
 async function insertVariant(db:ProfileExecutor,environment:Environment,familyId:string,document:VariantDocument,actor:Actor,sourceReleaseId:string|null,event:string,detail:Body={}){
  const id=randomUUID(),doc=variantDocumentSchema.parse(document);
- const row=(await db.query<VariantRow>(`INSERT INTO market_variants(workspace_id,environment,id,family_id,draft,document,source_release_id)
-  VALUES($1,$2,$3,$4,'{}'::jsonb,$5,$6) RETURNING ${columns}`,[db.workspaceId,environment,id,familyId,doc,sourceReleaseId])).rows[0]!;
+ const secret:CollectionSecret={links:[]};
+ if(supportsSpin(doc)){
+  await lockProfileCollection(db,environment);
+  const card=await profileCard(db,environment);
+  if(card.revision>0)applyProfileCard(doc,secret,card);
+ }
+ const row=(await db.query<VariantRow>(`INSERT INTO market_variants(workspace_id,environment,id,family_id,draft,document,source_release_id,collection_ciphertext,collection_revision)
+  VALUES($1,$2,$3,$4,'{}'::jsonb,$5,$6,$7,$8) RETURNING ${columns}`,[db.workspaceId,environment,id,familyId,doc,sourceReleaseId,secret.spin?encrypt(secret):null,secret.spin?1:0])).rows[0]!;
  await variantEvent(db,environment,row,actor,event,detail);
  return viewOf(db,environment,row);
 }
@@ -171,20 +240,33 @@ async function workflowCheck(db:ProfileExecutor,environment:Environment,id:strin
  need(row&&row.body.status==='PUBLISHED'&&!row.body.archived_at,'VARIANT_FLOW_NOT_PUBLISHED',400);
  need(!row.body.product_id||row.body.product_id===familyId,'VARIANT_FLOW_OTHER_PRODUCT',400);
 }
-function mergeCollection(document:VariantDocument,previous:CollectionSecret,input:CollectionInput){
+function mergeCollection(document:VariantDocument,previous:CollectionSecret,input:CollectionInput,revision:number){
  const secret:CollectionSecret={links:[]};let spei:VariantDocument['collection']['spei']=null;
  if(input.spei==='keep'){need(previous.spei&&document.collection.spei,'COLLECTION_SPEI_MISSING',400);secret.spei=previous.spei;spei=document.collection.spei;}
  else if(input.spei){secret.spei={holder:input.spei.holder,clabe:input.spei.clabe};spei={bank:input.spei.bank,last4:input.spei.clabe.slice(-4)};}
+ let spin=document.collection.spin;
+ let spinMode=document.collection.spin_mode;
+ if(input.spin===null){spin=undefined;spinMode='disabled';}
+ else if(input.spin==='profile'){spin=undefined;spinMode='profile';}
+ else if(typeof input.spin==='object'){
+  secret.spin=input.spin;spinMode='custom';
+  spin={last4:input.spin.card_number.slice(-4),revision};
+ }else if(spin||input.spin==='keep'){
+  need(spin&&previous.spin,'COLLECTION_SPIN_MISSING',400);
+  secret.spin=previous.spin;
+ }
  const links:VariantDocument['collection']['links']=[];const ids=new Set<string>();
  for(const[index,link]of input.links.entries()){
   const id=link.id??`link-${index+1}-${randomUUID().slice(0,8)}`;need(!ids.has(id),'COLLECTION_LINK_DUPLICATE',400);ids.add(id);
   const url=link.url==='keep'?previous.links.find(l=>l.id===id)?.url:link.url;need(url,'COLLECTION_LINK_MISSING',400);
   secret.links.push({id,url});links.push({id,label:link.label,provider:link.provider,host:new URL(url).hostname});
  }
- return{secret,collection:{spei,links,instructions:input.instructions,expected_reference:input.expected_reference??null,expected_concept:input.expected_concept??null,legacy_profile_id:null}};
+ return{secret,collection:{spei,...(spinMode?{spin_mode:spinMode}:{}),...(spin?{spin}:{}),links,instructions:input.instructions,expected_reference:input.expected_reference??null,expected_concept:input.expected_concept??null,legacy_profile_id:null}};
 }
 export async function saveVariantSection(db:ProfileExecutor,environment:Environment,id:string,input:unknown,actor:Actor){
- const q=variantSectionInputSchema.parse(input),old=await variantRow(db,environment,id,true);
+ const q=variantSectionInputSchema.parse(input);
+ if(q.section==='collection'||q.section==='locale')await lockProfileCollection(db,environment);
+ const old=await variantRow(db,environment,id,true);
  need(old.version===q.expected_version,'VERSION_CONFLICT');need(!old.archived_at,'VARIANT_ARCHIVED');
  const document=variantDocumentSchema.parse(old.document);let next:VariantDocument=document,ciphertext=old.collection_ciphertext,collectionRevision=old.collection_revision;
  switch(q.section){
@@ -197,18 +279,31 @@ export async function saveVariantSection(db:ProfileExecutor,environment:Environm
  case'offer':{const problems=await assetCheck(db,environment,[...new Set(q.value.fulfillment.map(f=>f.asset_id))],false);need(!problems.length,'VARIANT_MATERIAL_INVALID',400,problems);
   try{validateOffer({currency:document.locale.currency,base_amount_minor:q.value.price_minor,fulfillment:q.value.fulfillment,madrina:q.value.legacy.madrina});}catch(e){throw new VariantError(e instanceof Error?e.message:'INVALID_OFFER',400);}
   next={...document,offer:q.value};break;}
- case'collection':{const merged=mergeCollection(document,readSecret(old),q.value);
-  need(merged.collection.spei||merged.collection.links.length,'COLLECTION_METHOD_REQUIRED',400);
+ case'collection':{const merged=mergeCollection(document,readSecret(old),q.value,collectionRevision+1);
+  if(q.value.spin==='profile'){
+   need(supportsSpin(document),'COLLECTION_SPIN_REQUIRES_MXN',400);
+   const updated={...document,collection:merged.collection};
+   applyProfileCard(updated,merged.secret,await profileCard(db,environment));
+  }
+  need(merged.collection.spei||merged.collection.spin||merged.collection.links.length,'COLLECTION_METHOD_REQUIRED',400);
+  if(merged.collection.spin)need(supportsSpin(document),'COLLECTION_SPIN_REQUIRES_MXN',400);
   if(merged.collection.spei)need(document.locale.currency==='MXN','COLLECTION_SPEI_REQUIRES_MXN',400);
-  ciphertext=encrypt({spei:merged.secret.spei,links:merged.secret.links});collectionRevision+=1;next={...document,collection:merged.collection};break;}
+  ciphertext=encrypt(merged.secret);collectionRevision+=1;next={...document,collection:merged.collection};break;}
  case'remarketing':{if(q.value){const ids=q.value.slots.flatMap(s=>[s.stages.awaiting_agreement.asset_id,s.stages.awaiting_payment.asset_id]).filter((x):x is string=>!!x);const problems=await assetCheck(db,environment,[...new Set(ids)],false);need(!problems.length,'VARIANT_MATERIAL_INVALID',400,problems);}
   next={...document,remarketing:q.value};break;}
  case'ai':next={...document,ai:q.value};break;
  case'locale':{
   // Changing the market of a published variant would reinterpret open money; duplicate instead.
   need(!old.current_release_id||q.value.locale.currency===document.locale.currency,'VARIANT_CURRENCY_LOCKED',409);
+  next={...document,name:q.value.name,locale:q.value.locale};
+  if(document.collection.spin_mode==='custom'&&document.collection.spin)need(supportsSpin(next),'COLLECTION_SPIN_REQUIRES_MXN',400);
+  if(supportsSpin(next)!==supportsSpin(document)&&!document.collection.legacy_profile_id&&(!document.collection.spin_mode||document.collection.spin_mode==='profile')){
+   const secret=readSecret(old);delete secret.spin;delete next.collection.spin;
+   if(supportsSpin(next))applyProfileCard(next,secret,await profileCard(db,environment));
+   ciphertext=encrypt(secret);collectionRevision++;
+  }
   if(document.collection.spei)need(q.value.locale.currency==='MXN','COLLECTION_SPEI_REQUIRES_MXN',400);
-  next={...document,name:q.value.name,locale:q.value.locale};break;}
+  break;}
  }
  next=variantDocumentSchema.parse(next);
  const row=(await db.query<VariantRow>(`UPDATE market_variants SET document=$4,collection_ciphertext=$5,collection_revision=$6,version=version+1,updated_at=clock_timestamp()
@@ -283,12 +378,12 @@ export async function publishVariant(db:ProfileExecutor,environment:Environment,
   const collectionHash=sha({collection:doc.collection,revision:old.collection_revision,currency});
   if(m.collection?.hash===collectionHash)collectionId=m.collection.id;
   else{
-   const secret=readSecret(old);need(secret.spei||secret.links.length,'COLLECTION_METHOD_REQUIRED');
+   const secret=readSecret(old);need(secret.spei||secret.spin||secret.links.length,'COLLECTION_METHOD_REQUIRED');
    const c=doc.collection;
-   const row=await create(db,environment,'bank_profile',{name:`Cobro · ${productName} · ${doc.name}`,bank:c.spei?.bank??c.links[0]?.label??'Pago en línea',spei_bank:c.spei?.bank??null,currency,
-    methods:{spei:!!c.spei,links:c.links.map(l=>({id:l.id,label:l.label,provider:l.provider}))},last4:c.spei?.last4??null,variant_id:old.id,status:'PUBLISHED',
+   const row=await create(db,environment,'bank_profile',{name:`Cobro · ${productName} · ${doc.name}`,bank:c.spei?.bank??(c.spin?'Spin by OXXO':c.links[0]?.label??'Pago en línea'),spei_bank:c.spei?.bank??null,currency,
+    methods:{spei:!!c.spei,...(c.spin?{spin:true}:{}),links:c.links.map(l=>({id:l.id,label:l.label,provider:l.provider}))},last4:c.spei?.last4??null,variant_id:old.id,status:'PUBLISHED',
     expected_reference:c.expected_reference??null,expected_concept:c.expected_concept??null,language:doc.locale.language,
-    secret_ciphertext:encrypt({spei:secret.spei?{holder:secret.spei.holder,clabe:secret.spei.clabe}:undefined,links:secret.links,instructions:c.instructions})});
+    secret_ciphertext:encrypt({spin:secret.spin,spei:secret.spei?{holder:secret.spei.holder,clabe:secret.spei.clabe}:undefined,links:secret.links,instructions:c.instructions})});
    collectionId=row.id;m.collection={id:row.id,hash:collectionHash};
   }
  }
@@ -326,10 +421,10 @@ export async function publishVariant(db:ProfileExecutor,environment:Environment,
  const offerBody:Body={name:o.name,currency,base_amount_minor:o.price_minor,payment_method:'bank_transfer_receipt',payment_profile_version_id:collectionId,
   ...(o.legacy.receipt_policy_version_id?{receipt_policy_version_id:o.legacy.receipt_policy_version_id}:{}),fulfillment:o.fulfillment,
   positive_payment_unlocks_all:o.positive_payment_unlocks_all,workflow_version_id:flowId,agent_version_id:sellerId,...(salesFlow?{sales_flow:salesFlow}:{}),
-  billing_delay_seconds:o.billing_delay_seconds,...(o.tiers.length?{tiers:o.tiers}:{}),...(o.legacy.tier_policy?{tier_policy:o.legacy.tier_policy}:{}),
+  ...(o.accept_positive_contributions?{accept_positive_contributions:true}:{}),billing_delay_seconds:o.billing_delay_seconds,...(o.tiers.length?{tiers:o.tiers}:{}),...(o.legacy.tier_policy?{tier_policy:o.legacy.tier_policy}:{}),
   ...(o.legacy.madrina?{madrina:o.legacy.madrina}:{}),product_id:familyId,variant_id:old.id,language,entry_aliases:aliases,
   // RF-09.i: which methods the customer was offered (the register shows the method from this, never a guess).
-  ...(doc.collection.legacy_profile_id?{}:{collection_methods:[...(doc.collection.spei?['spei']:[]),...(doc.collection.links.length?['link']:[])]})};
+  ...(doc.collection.legacy_profile_id?{}:{collection_methods:[...(doc.collection.spei?['spei']:[]),...(doc.collection.spin?['spin']:[]),...(doc.collection.links.length?['link']:[])]})};
  try{validateOffer(offerBody);}catch(e){throw new VariantError(e instanceof Error?e.message:'INVALID_OFFER',409);}
  const offerHash=sha(offerBody);let offerId:string;
  if(m.offer?.hash===offerHash)offerId=m.offer.id;

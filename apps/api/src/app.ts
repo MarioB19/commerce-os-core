@@ -1,3 +1,4 @@
+import {spinDepositSlipRoute} from './spin-deposit-slip.js';
 import {AsyncResource} from 'node:async_hooks';
 import {isProfileSqlRequest} from './profile-sql-route.js';
 import {runInRequestProfileScope,bindRequestProfileEnvironment,closeRequestProfileScope} from '../../../packages/db/src/profile-request-scope.js';
@@ -41,6 +42,7 @@ app.addHook('preValidation',async req=>{if(req.url.startsWith('/v1/')&&!req.url.
 app.addHook('onResponse',async()=>{closeRequestProfileScope();});
 registerVersionRoute(app);registerBuildRoute(app);
 await app.register(profileRuntimeRoutes);
+await app.register(spinDepositSlipRoute);
 app.get('/livez',async()=>({status:'ok',service:'api'}));app.get('/readyz',async()=>{await pool.query('SELECT 1');return{status:'ready',service:'api'};});app.get('/health/live',async()=>({status:'ok',service:'api'}));app.get('/health/ready',async()=>{await pool.query('SELECT 1');return{status:'ready',service:'api'};});
 // V7 F8-D: the /v1 surface keeps only what the V7 application, the V7 MCP,
 // the capacity agent and owner operation controls still call (see

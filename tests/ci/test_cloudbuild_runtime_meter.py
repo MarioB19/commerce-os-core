@@ -217,6 +217,9 @@ class MeterTests(unittest.TestCase):
         for seconds in previous + verification + failed_main_preparation + rejected_attestation_admission + failed_main_attestation + verification:
             self.meter.finish(self.meter.extend(self.reserve(), seconds), {'ok': True})
         self.assertEqual(usage(self.store.document)['2026-11']['cpu_ms'], 90_455_000)
+        for seconds in verification:
+            self.meter.finish(self.meter.extend(self.reserve(), seconds), {'ok': True})
+        self.assertEqual(usage(self.store.document)['2026-11']['cpu_ms'], 96_095_000)
         with self.assertRaisesRegex(AdmissionError, 'MONTHLY_CEILING'):
             self.reserve()
 

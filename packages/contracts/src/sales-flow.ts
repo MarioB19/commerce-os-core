@@ -145,6 +145,7 @@ export const remarketingPolicySchema=z.object({
  schema_version:z.literal(1),
  policy_id:z.literal('remarketing-3-slot'),
  policy_revision:z.number().int().positive(),
+ after_agreement_only:z.boolean().optional(),
  slots:z.array(remarketingSlotSchema).length(3),
  window:remarketingWindowSchema.optional(),
 }).strict().superRefine((policy,ctx)=>{
@@ -156,6 +157,7 @@ export const remarketingPolicySchema=z.object({
   ids.add(slot.id);
   if(slot.enabled&&slot.position>1&&slot.warning_acknowledged!==true)ctx.addIssue({code:'custom',path:['slots',index,'warning_acknowledged'],message:'Confirma la advertencia antes de activar un segundo o tercer recordatorio.'});
   if(slot.enabled)for(const stage of ['awaiting_agreement','awaiting_payment'] as const){
+   if(stage==='awaiting_agreement'&&policy.after_agreement_only)continue;
    if(slot.stages[stage].medium!=='text'&&!slot.stages[stage].asset_id)ctx.addIssue({code:'custom',path:['slots',index,'stages',stage,'asset_id'],message:'El recordatorio activo necesita un audio o video.'});
    if(!slot.stages[stage].text.trim())ctx.addIssue({code:'custom',path:['slots',index,'stages',stage,'text'],message:'El recordatorio activo necesita un texto.'});
   }

@@ -183,7 +183,7 @@ async function processAgentsImpl(store:AgentStore,limit:number,override?:SalesAi
 	    await event(c,current,'workflow.recipe_reply_proposed',{token:interruption.token,seller_effect_id:acceptedEffect.id},run.id);
 	   }
 	   const plan=current.body.followup_plan,waiting=current.body.flow_state?.waiting_for;
-	   if(acceptedEffect&&current.body.followup_stop_reason==='CUSTOMER_REPLIED'&&plan&&(plan.stage==='awaiting_agreement'&&waiting==='commitment'||plan.stage==='awaiting_payment'&&waiting==='receipt_approved')){
+	   if(acceptedEffect&&current.body.followup_stop_reason==='CUSTOMER_REPLIED'&&plan&&!plan.policy_snapshot?.after_agreement_only&&(plan.stage==='awaiting_agreement'&&waiting==='commitment'||plan.stage==='awaiting_payment'&&waiting==='receipt_approved')){
 	    delete body.followup_stop_reason;
 	    body.followup_plan={...plan,status:'AWAITING_COLLECTION_ACK',anchor_effect_id:acceptedEffect.id,resume_after_customer_reply:true,resumed_after_sequence:current.body.sequence};
 	    await event(c,current,'remarketing.wait_resumed',{cycle_id:plan.cycle_id??null,stage:plan.stage,anchor_effect_id:acceptedEffect.id},run.id);
