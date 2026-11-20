@@ -31,9 +31,24 @@ export async function recognizeReceipt(c:QueryExecutor,receipt:DomainRecord,opti
  if(evidence&&evidence.receipt_id!==receipt.id)throw new Error('DUPLICATE_PAYMENT_EVIDENCE');
  const historicalEvidence=await c.query(`SELECT 1 FROM domain_events ev JOIN records r ON r.id::text=ev.payload->>'receipt_id' JOIN records a ON a.id::text=r.body->>'asset_id' WHERE ev.workspace_id=$1 AND ev.environment=$2 AND ev.event_type IN ('sale.recognized','sale.contribution_corrected') AND a.body->>'sha256'=$3 AND r.id<>$4 LIMIT 1`,[receipt.workspace_id,receipt.environment,terms.asset.body.sha256,receipt.id]);if(historicalEvidence.rowCount)throw new Error('DUPLICATE_PAYMENT_EVIDENCE');
  const reference=receipt.body.extraction?.reference;
- if(reference&&(await c.query(`SELECT 1 FROM payment_contributions p JOIN records r ON r.id=p.receipt_id WHERE p.workspace_id=$1 AND p.environment=$2 AND p.receipt_id<>$3 AND (p.order_id<>$6 OR p.receipt_id IS DISTINCT FROM $5::uuid) AND upper(regexp_replace(btrim(normalize(r.body->'extraction'->>'reference',NFKC)),'\\s+',' ','g'))=upper(regexp_replace(btrim(normalize($4::text,NFKC)),'\\s+',' ','g'))`,[receipt.workspace_id,receipt.environment,receipt.id,reference,options.replacesReceiptId??null,order.id])).rowCount)throw new Error('DUPLICATE_PAYMENT_REFERENCE');
+ const acceptsContributions=order.body.offer_snapshot?.accept_positive_contributions===true;
+ if(reference){
+  const duplicate=await c.query(`SELECT 1 FROM payment_contributions p JOIN records r ON r.id=p.receipt_id
+   WHERE p.workspace_id=$1 AND p.environment=$2 AND p.receipt_id<>$3
+   AND (p.order_id<>$4 OR ($5::boolean AND p.receipt_id IS DISTINCT FROM $6::uuid))
+   AND upper(regexp_replace(btrim(normalize(r.body->'extraction'->>'reference',NFKC)),'\\s+',' ','g'))
+     = upper(regexp_replace(btrim(normalize($7::text,NFKC)),'\\s+',' ','g')) LIMIT 1`,
+   [receipt.workspace_id,receipt.environment,receipt.id,order.id,acceptsContributions,options.replacesReceiptId??null,reference]);
+  if(duplicate.rowCount)throw new Error('DUPLICATE_PAYMENT_REFERENCE');
+ }
  const existing=(await c.query('SELECT * FROM payment_contributions WHERE workspace_id=$1 AND environment=$2 AND receipt_id=$3',[receipt.workspace_id,receipt.environment,receipt.id])).rows[0];
- const paymentKey=existing?.payment_key??options.paymentKey??'primary';
+ let paymentKey=existing?.payment_key??options.paymentKey??'primary';
+ if(options.replacesReceiptId&&!existing){
+  const replaced=(await c.query('SELECT payment_key FROM payment_contributions WHERE workspace_id=$1 AND environment=$2 AND order_id=$3 AND receipt_id=$4 FOR UPDATE',
+   [order.workspace_id,order.environment,order.id,options.replacesReceiptId])).rows[0];
+  if(!replaced||(options.paymentKey&&options.paymentKey!==replaced.payment_key))throw new Error('PAYMENT_ALREADY_RECORDED');
+  paymentKey=replaced.payment_key;
+ }
  const previous=(await c.query('SELECT * FROM payment_contributions WHERE workspace_id=$1 AND environment=$2 AND order_id=$3 AND payment_key=$4 FOR UPDATE',[order.workspace_id,order.environment,order.id,paymentKey])).rows[0];
  if(previous&&previous.receipt_id!==receipt.id&&options.replacesReceiptId!==previous.receipt_id)throw new Error('PAYMENT_ALREADY_RECORDED');
  const effectiveAt=previous?.effective_at??options.effectiveAt??new Date().toISOString();
