@@ -2,7 +2,7 @@ import {useEffect,useId,useRef,useState,type FormEvent} from 'react';
 import type {ProfileOverview,ProfileRole} from '../../../../packages/contracts/src/profiles.js';
 import {downloadProfileExport,loadProfileSettings,saveProfileSettings,type ProfileRequestFence} from '../lib/profile-settings.js';
 import {Alert,Button,Card,CardHead,Field,Input,Skeleton} from './ui';
-import {variantRequest,newOperationKey} from '../lib/variants.js';
+import {variantRequest,newOperationKey,type VariantView} from '../lib/variants.js';
 import {Download} from 'lucide-react';
 
 /** Prepared for the complete server profile cutover; not mounted by legacy UI. */
@@ -44,6 +44,7 @@ export function ProfileSettings({selection,role}:{selection:ProfileRequestFence;
     <dl className="facts"><div><dt>Límite de números</dt><dd>{currentData.number_limit}</dd></div><div><dt>Límite de productos</dt><dd>{currentData.product_limit}</dd></div><div><dt>Conversaciones diarias</dt><dd>{currentData.daily_conversation_limit}</dd></div></dl>
    </>}
   </Card>
+  {canEdit&&<ProfileSpei key={'spei-'+selection.workspaceId+'-'+selection.version} selection={selection}/>}
   {canEdit&&<ProfileSpin key={selection.workspaceId+'-'+selection.version} selection={selection}/>}
   {role==='owner'&&<ProfileDataExport selection={selection}/>}
  </div>;
@@ -63,6 +64,50 @@ function ProfileDataExport({selection}:{selection:ProfileRequestFence}){
   {error&&<Alert tone="error">{error}</Alert>}
   {done&&<Alert tone="success">Exportación descargada ({Math.max(1,Math.round(done.bytes/1024))} KB). Huella: <code>{done.sha256.slice(0,16)}…</code></Alert>}
   <div><Button type="button" variant="secondary" disabled={busy} loading={busy} onClick={()=>{void run();}}><Download aria-hidden="true"/>Exportar datos</Button></div>
+ </Card>;
+}
+
+type SpeiSummary={revision:number;release_id:string|null;bank:string|null;last4:string|null};
+function ProfileSpei({selection}:{selection:ProfileRequestFence}){
+ const id=useId();
+ const [summary,setSummary]=useState<SpeiSummary>(),[choices,setChoices]=useState<VariantView[]>([]);
+ const [release,setRelease]=useState(''),[reload,setReload]=useState(0),[busy,setBusy]=useState(false);
+ const [error,setError]=useState(''),[notice,setNotice]=useState('');
+ useEffect(()=>{
+  const controller=new AbortController();
+  setSummary(undefined);setChoices([]);setError('');
+  Promise.all([
+   variantRequest<SpeiSummary>(selection,'GET','/v2/profile/spei-default',undefined,undefined,controller.signal),
+   variantRequest<VariantView[]>(selection,'GET','/v2/variants',undefined,undefined,controller.signal)
+  ]).then(([saved,variants])=>{
+   if(controller.signal.aborted)return;
+   setSummary(saved);setRelease(saved.release_id??'');
+   setChoices(variants.filter(v=>v.published&&!v.archived&&!v.unpublished_changes&&v.document.locale.currency==='MXN'&&v.document.collection.spei));
+  }).catch(()=>{if(!controller.signal.aborted)setError('No se pudo consultar el destino SPEI.');});
+  return ()=>controller.abort();
+ },[selection.workspaceId,selection.version,reload]);
+ async function save(e:FormEvent){
+  e.preventDefault();if(!summary||busy)return;
+  setBusy(true);setError('');setNotice('');
+  try{
+   const saved=await variantRequest<SpeiSummary>(selection,'PUT','/v2/profile/spei-default',{expected_revision:summary.revision,release_id:release||null},newOperationKey());
+   setSummary(saved);setNotice('Se guardó el destino para las altas nuevas en MXN.');
+  }catch{setSummary(undefined);setError('Actualiza la cuenta antes de volver a guardar.');}
+  finally{setBusy(false);}
+ }
+ return <Card aria-labelledby={id}>
+  <CardHead id={id} title="Transferencia SPEI para productos nuevos" description="Los productos y variantes que cobren en MXN heredarán la cuenta publicada que elijas."
+   actions={<Button type="button" variant="ghost" disabled={busy} onClick={()=>setReload(n=>n+1)}>Actualizar</Button>}/>
+  {summary?.last4&&<p>Cuenta actual · {summary.bank} · terminación {summary.last4}</p>}
+  {error&&<Alert tone="error">{error}</Alert>}{notice&&<Alert tone="success">{notice}</Alert>}
+  <form className="form" onSubmit={save}>
+   <Field label="Cuenta SPEI publicada"><select value={release} disabled={!summary||busy} onChange={e=>setRelease(e.target.value)}>
+    <option value="">Sin cuenta predeterminada</option>
+    {summary?.release_id&&!choices.some(v=>v.published?.release_id===summary.release_id)&&<option value={summary.release_id}>{summary.bank} · {summary.last4} (versión guardada)</option>}
+    {choices.map(v=><option key={v.id} value={v.published!.release_id}>{v.product.name} · {v.document.collection.spei!.bank} · {v.document.collection.spei!.last4}</option>)}
+   </select></Field>
+   <Button type="submit" disabled={!summary||busy||release===(summary.release_id??'')}>Guardar cuenta SPEI</Button>
+  </form>
  </Card>;
 }
 
@@ -93,7 +138,7 @@ function ProfileSpin({selection}:{selection:ProfileRequestFence}){
   }finally{setBusy(false);}
  }
  return <Card aria-labelledby={id}>
-  <CardHead id={id} title="Depósitos a Spin by OXXO" description="Los productos nuevos de México que cobren en pesos heredarán esta tarjeta. Guardarla o quitarla también actualiza las ofertas publicadas que usan la tarjeta del perfil y están al día. Las ofertas con ediciones pendientes se aplican al publicarlas."
+  <CardHead id={id} title="Depósitos a Spin by OXXO" description="Los productos nuevos que cobren en MXN heredarán esta tarjeta. Guardarla o quitarla también actualiza las ofertas publicadas que usan la tarjeta del perfil y están al día. Las ofertas con ediciones pendientes se aplican al publicarlas."
    actions={<Button type="button" variant="ghost" disabled={busy} onClick={()=>{setError('');setReload(r=>r+1);}}>Actualizar</Button>}/>
   {summary&&<p>{summary.last4?'Tarjeta del perfil · terminación '+summary.last4:'Falta configurar la tarjeta receptora.'}</p>}
   {error&&<Alert tone="error">{error}</Alert>}{notice&&<Alert tone="success">{notice}</Alert>}

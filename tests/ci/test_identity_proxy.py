@@ -96,6 +96,17 @@ class FakeCaddy:
         self.events.append('cleanup')
 
 class RewriteTests(unittest.TestCase):
+    def test_payment_site_is_additive_idempotent_and_rejects_conflicting_routes(self):
+        expected = CANDIDATE + b'\n' + proxy.PAYMENT_SITE + b'\n'
+        self.assertEqual(proxy.rewrite_payment_site(CANDIDATE), expected)
+        self.assertEqual(proxy.rewrite_payment_site(expected), expected)
+        template = (Path(__file__).resolve().parents[2] / 'infra/caddy/commerce.Caddyfile').read_bytes()
+        self.assertTrue(template.endswith(proxy.PAYMENT_SITE + b'\n'))
+        for changed in (expected.replace(b'path /v2/customer/spin-deposit', b'path /v2/*'),
+                        expected + proxy.PAYMENT_SITE, expected.replace(b'header_up -Cookie', b'header_up -Accept')):
+            with self.assertRaisesRegex(proxy.ProxyError, 'CONFLICTING_PAYMENT_SITE'):
+                proxy.rewrite_payment_site(changed)
+
     def test_preview_exception_is_exact_same_origin_and_cannot_expand(self):
         self.assertEqual(proxy.rewrite_policy(CANDIDATE), CANDIDATE)
         for changed in [CANDIDATE.replace(b'/v1/assets/*/content', b'/v1/*'),

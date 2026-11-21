@@ -212,7 +212,7 @@ class BudgetAndStateTests(unittest.TestCase):
         self.assertEqual(replay['attempts'][ATTEMPT]['admission'], value)
 
     def test_november_owner_funding_increase_expires_and_never_applies_to_credit(self):
-        for month, cap in ((11, 183_000_000), (12, 175_000_000)):
+        for month, cap in ((11, 184_000_000), (12, 175_000_000)):
             when = NOW.replace(month=month)
             review = approval(now=when)
             value = admission(now=when)
@@ -1328,7 +1328,7 @@ class ThirdPoolExtensionTests(unittest.TestCase):
     def test_november_pool_preserves_other_months_and_all_historical_usage(self):
         november = datetime(2026, 11, 19, 12, tzinfo=timezone.utc)
         prior = m.transition(self.second_extended(), self.command(), now=NOW).document
-        self.assertEqual(m.monthly_pool_limit(prior, '2026-11'), 127920)
+        self.assertEqual(m.monthly_pool_limit(prior, '2026-11'), 136860)
         self.assertEqual(m.monthly_pool_limit(prior, '2026-12'), 108000)
         self.assertEqual(m.monthly_pool_limit(self.second_extended(), '2026-11'), 90000)
         def accounted(until, seconds):
@@ -1336,11 +1336,11 @@ class ThirdPoolExtensionTests(unittest.TestCase):
                                    start=until-timedelta(seconds=seconds), seconds=seconds)
             return m.transition(deepcopy(prior), {'op':'account_external','observation':evidence,
                                                   'native_verified':True}, now=until).document
-        doc = accounted(november, 122220)
+        doc = accounted(november, 131160)
         admitted = step(approved(doc, now=november), 'reserve', now=november, admission=admission(november)).document
-        self.assertEqual(m.budget_usage(admitted, now=november)['2026-11']['total_seconds'], 127920)
-        self.assertEqual(m.budget_usage(doc, now=november)['2026-11']['confirmed_seconds'], 122220)
-        above = accounted(november, 122280)
+        self.assertEqual(m.budget_usage(admitted, now=november)['2026-11']['total_seconds'], 136860)
+        self.assertEqual(m.budget_usage(doc, now=november)['2026-11']['confirmed_seconds'], 131160)
+        above = accounted(november, 131220)
         with self.assertRaisesRegex(m.AdmissionError, 'MONTHLY_POOL_EXCEEDED'):
             step(approved(above, now=november), 'reserve', now=november, admission=admission(november))
         december = november.replace(month=12)

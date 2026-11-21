@@ -7,3 +7,9 @@ WhatsApp entrega una ficha privada por pedido. El cliente abre la ficha, present
 El lector de comprobantes distingue el depósito de efectivo de una transferencia. Compara contra el destino del método que aparece en la foto, aplica las reglas de comprobantes del pedido y conserva el control de duplicados. Una foto ilegible o sin evidencia suficiente sigue el proceso de revisión. La foto es todo lo que se pide al comprador.
 
 [Depósitos en Spin](https://spinbyoxxo.com.mx/como-hacer-depositos) · [Política de mensajes de WhatsApp Business](https://whatsappbusiness.com/es-la/policy/)
+
+## Ficha de Inovaris y altas en MXN · 21 de noviembre de 2026
+
+La persona dueña elige en el perfil una revisión publicada con SPEI. El perfil conserva una referencia a esa publicación en el mismo ambiente. Al crear un producto o variante en MXN, el alta copia el destino SPEI de esa revisión y la tarjeta Spin del perfil. La variante puede cambiar su destino antes de publicarse. Una nueva elección afecta las altas posteriores. Cada pedido conserva el cobro fijado en su versión.
+
+El mensaje conserva el texto comercial de cada oferta y la ficha privada por pedido. Antes del enlace, el comprador ve el nombre de la persona beneficiaria y la terminación de cada método. Si los titulares difieren, cada terminación identifica su propio titular. La consulta de la ficha y el resumen del chat usan la misma versión de cobro fijada al pedido. Cuando el texto comercial ya indica el precio del acuerdo, el bloque compartido omite la línea adicional de importe. El dominio de compradores `pagos.inovaris.online` sirve la ficha, su JavaScript y la consulta del pedido. Al abrir la ficha aparecen el banco, la beneficiaria, la CLABE y la tarjeta Spin que correspondan al pedido. La etiqueta de FINCO PAY incluye la abreviatura ARQ. Los botones copian los dígitos sin separadores. Los enlaces ya enviados en el dominio anterior siguen abriendo su pedido.

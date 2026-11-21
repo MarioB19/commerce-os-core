@@ -88,3 +88,7 @@ El dueño autorizó US$180 de proyección bruta para noviembre y hasta US$5 incr
 ## 19-nov-2026 — Cobros del catálogo
 
 Brandon autorizó US$3 brutos para una publicación y US$183 brutos en noviembre. La compilación nativa dispone de 124,140 segundos en noviembre tras añadir 8,520. El controlador dispone de 96,095 segundos tras añadir 5,640. La reserva conjunta del candidato, integración y sus atestaciones es de 11,640 segundos de compilación.
+
+## 21-nov-2026 — Ficha privada de Inovaris
+
+Brandon autorizó un techo bruto de US$184 en noviembre y US$3 para esta publicación. Al preparar el release, Google registró 125,220 segundos de compilación y 100,265 segundos de controlador consumidos. Los topes aprobados son 136,860 y 105,905 segundos respectivamente. La proyección con las dos comprobaciones completas, sus atestaciones y el ensayo de instalación es de US$183.50 en noviembre, incluidos US$2.09 de este release.

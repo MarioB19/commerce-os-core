@@ -224,6 +224,10 @@ class MeterTests(unittest.TestCase):
         for seconds in verification:
             self.meter.finish(self.meter.extend(self.reserve(), seconds), {'ok': True})
         self.assertEqual(usage(self.store.document)['2026-11']['cpu_ms'], 97_565_000)
+        # The prior release consumed two more attestation attempts before this release.
+        for seconds in [450] * 6 + verification:
+            self.meter.finish(self.meter.extend(self.reserve(), seconds), {'ok': True})
+        self.assertEqual(usage(self.store.document)['2026-11']['cpu_ms'], 105_905_000)
         with self.assertRaisesRegex(AdmissionError, 'MONTHLY_CEILING'):
             self.reserve()
 

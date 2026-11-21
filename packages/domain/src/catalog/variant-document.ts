@@ -145,7 +145,15 @@ export function collectionDestination(bank:Body,secret:Body|null,channel?:'spin_
  const spei=secret.spei as {clabe?:unknown;holder?:unknown}|undefined;
  return spei&&typeof spei.clabe==='string'&&typeof spei.holder==='string'?{account_number:spei.clabe,holder:spei.holder}:{};
 }
-export function collectionInstructions(input:{bank:Body;secret:Body|null;price:string|null;currency:string|null;spinSlip?:string}){
+/** Compare only monetary mentions, so a material count cannot hide the agreed price. */
+function mentionsPrice(copy:string,price:string,currency:string){
+ const amount=Number(price);
+ if(!Number.isFinite(amount))return false;
+ return [...copy.matchAll(/(?:\$\s*([\d,]+(?:\.\d+)?)|\b([\d,]+(?:\.\d+)?)\s+([A-Z]{3})\b)/g)].some(match=>
+  (!match[3]||match[3]===currency)&&Number((match[1]??match[2]!).replaceAll(',',''))===amount);
+}
+
+export function collectionInstructions(input:{bank:Body;secret:Body|null;price:string|null;currency:string|null;spinSlip?:string;commercialCopy?:string}){
  const b=input.bank,s=input.secret;
  if(!s)return null;
  const amount=input.price!==null?`\n${input.price} ${input.currency??''}`:'';
@@ -154,14 +162,26 @@ export function collectionInstructions(input:{bank:Body;secret:Body|null;price:s
  const lines:string[]=[];
  if(b.methods.spin){
   if(!input.spinSlip)throw new Error('SPIN_DEPOSIT_SLIP_REQUIRED');
-  const methods=s.spei?'Transferencia SPEI o depósito en efectivo en OXXO':'Depósito en efectivo en OXXO';
-  lines.push(methods+' · Consulta los datos de tu pedido:',input.spinSlip,'Después de pagar, envía por este chat una foto legible del comprobante.');
+  const spin=s.spin,spei=b.methods.spei?s.spei:null;
+  if(!/^\d{16}$/.test(spin?.card_number??'')||!spin.holder?.trim()||
+    (b.methods.spei&&(!/^\d{18}$/.test(spei?.clabe??'')||!spei.holder?.trim())))throw new Error('COLLECTION_DESTINATION_REQUIRED');
+  const spinHolder=spin.holder.trim(),speiHolder=spei?.holder.trim();
+  const sameHolder=!spei||spinHolder.localeCompare(speiHolder,'es',{sensitivity:'base'})===0;
+  if(sameHolder)lines.push(`El pago es a nombre de ${speiHolder??spinHolder}.`);
+  if(spei)lines.push(`Transferencia SPEI · CLABE ••${spei.clabe.slice(-4)}${sameHolder?'':' · '+speiHolder}`);
+  lines.push(`Depósito en OXXO · Tarjeta Spin ••${spin.card_number.slice(-4)}${sameHolder?'':' · '+spinHolder}`,'',
+   'Abre la ficha de tu pedido para copiar los datos completos.',input.spinSlip);
  }else if(s.spei&&typeof s.spei.clabe==='string')lines.push(`${b.spei_bank??b.bank} · ${s.spei.holder}`,`CLABE ${s.spei.clabe}`);
  const labels=new Map<string,string>((Array.isArray(b.methods?.links)?b.methods.links:[]).map((link:Body)=>[String(link.id),String(link.label)]));
  const online={es:'Pago en línea',pt:'Pagamento on-line',en:'Online payment'}[languageFamily(String(b.language??'es'))];
  for(const link of Array.isArray(s.links)?s.links:[])if(typeof link.url==='string')lines.push(`${labels.get(String(link.id))??online}: ${link.url}`);
  if(typeof s.instructions==='string'&&s.instructions.trim())lines.push(s.instructions.trim());
  lines.push(...expectedTextLines(b));
+ if(b.methods.spin){
+  if(input.price!==null&&!mentionsPrice(input.commercialCopy??'',input.price,input.currency??''))lines.push(amount.trim());
+  lines.push('','Después de pagar, envía por este chat una foto legible del ticket de depósito o del comprobante de transferencia.');
+  return lines.join('\n');
+ }
  return lines.join('\n')+amount;
 }
 /** RF-09.d: what the buyer must write; the receipt rules compare against it. */

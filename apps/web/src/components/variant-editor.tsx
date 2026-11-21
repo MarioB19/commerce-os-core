@@ -331,7 +331,7 @@ function CollectionSection({variant,manage,save,busy,publishable}:SectionProps){
  useEffect(()=>{setSpin(savedSpin);setSpinNumber('');setSpinHolder('');setSpei(c.spei?'keep':'none');setLinks(c.links.map(l=>({id:l.id,label:l.label,provider:l.provider,host:l.host,url:'keep'})));setInstructions(c.instructions);setReference(c.expected_reference??'');setConcept(c.expected_concept??'');setBank('');setHolder('');setClabe('');},[variant.version]);
  async function submit(e:FormEvent){e.preventDefault();setError('');
   if(spei==='none'&&spin==='none'&&!links.length){setError('Agrega al menos un método de cobro.');return;}
-  const spinDestination=spin==='new'?{card_number:spinNumber,holder:spinHolder.trim()}:spin==='keep'?'keep':spin==='profile'&&variant.document.locale.country==='MX'&&currency==='MXN'?'profile':null;
+  const spinDestination=spin==='new'?{card_number:spinNumber,holder:spinHolder.trim()}:spin==='keep'?'keep':spin==='profile'&&currency==='MXN'?'profile':null;
   const ok=await save('collection',{spin:spinDestination,spei:spei==='keep'?'keep':spei==='new'?{bank:bank.trim(),holder:holder.trim(),clabe}:null,
    links:links.map(l=>({...(l.id?{id:l.id}:{}),label:l.label.trim(),provider:l.provider,url:l.url})),instructions,
    expected_reference:reference.trim()||null,expected_concept:concept.trim()||null});

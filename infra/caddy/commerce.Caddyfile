@@ -36,3 +36,40 @@ commerce-os.inovaris.online {
   @commerce_asset_content path /v1/assets/*/content
   header @commerce_asset_content >Content-Security-Policy "default-src 'none'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'"
 }
+
+pagos.inovaris.online {
+  header {
+    Cache-Control "private, no-store"
+    Referrer-Policy no-referrer
+    X-Content-Type-Options nosniff
+    X-Robots-Tag "noindex, nofollow, noarchive"
+    Strict-Transport-Security "max-age=31536000"
+    Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+    -Server
+  }
+  @sheet {
+    method GET HEAD
+    path /deposito-spin.html /deposito-spin.js
+  }
+  handle @sheet {
+    reverse_proxy commerce-web:8080 {
+      header_up -Cookie
+      header_up -Authorization
+      header_down -Set-Cookie
+    }
+  }
+  @destination {
+    method POST
+    path /v2/customer/spin-deposit
+  }
+  handle @destination {
+    reverse_proxy commerce-api:3001 {
+      header_up -Cookie
+      header_up -Authorization
+      header_down -Set-Cookie
+    }
+  }
+  handle {
+    respond 404
+  }
+}

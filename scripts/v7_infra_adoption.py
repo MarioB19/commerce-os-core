@@ -286,7 +286,12 @@ def proxy_transition(host, state, services):
     caddy = services['caddy']['Id']
     adapted = runtime._parse(host.command(['docker', 'exec', caddy, 'caddy', 'adapt', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile']).encode())
     running = runtime._parse(host.command(['docker', 'exec', caddy, 'wget', '-qO-', 'http://127.0.0.1:2019/config/']).encode())
-    return proxy_decision(ref, current, active, state['active_proxy_sha256'], originals, adapted, running, identity_proxy().rewrite_policy)
+    policy = identity_proxy()
+    def canonical(raw):
+        return policy.rewrite_payment_site(policy.rewrite_policy(raw))
+    if any(policy.PAYMENT_HOST in raw for _, raw in originals if native.reference(ref['path'], raw) == ref):
+        require(policy.rewrite_payment_site(current) == current, 'V7_ADOPTION_PAYMENT_SITE_MISSING')
+    return proxy_decision(ref, current, active, state['active_proxy_sha256'], originals, adapted, running, canonical)
 
 
 def pg_container_lines(raw):

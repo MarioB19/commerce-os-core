@@ -1,5 +1,9 @@
 # Estado de publicación
 
+## 21-nov-2026 — Ficha de Inovaris y altas de productos en pesos
+
+La candidata muestra SPEI y Spin al abrir la ficha del pedido, con un botón para copiar cada número. El mensaje de WhatsApp identifica al titular y las dos terminaciones. El bloque de cobro respeta el importe en la oferta. El alta en MXN toma los destinos definidos en el perfil y conserva su configuración dentro del nuevo producto. [Cobros y configuración del perfil](spin-cash-deposits.md).
+
 ## 19-nov-2026 — Candidata de cobros y entregas del catálogo
 
 Una sola publicación reúne depósito Spin heredado por perfil, ficha de cobro por pedido, validación de aportes positivos y seguimiento después del acuerdo. En el PostgreSQL de pruebas, ocho variantes heredaron la tarjeta del perfil y un noveno producto la recibió al crearse. Al reemplazarla, la ficha del pedido abierto conservó su destino. El noveno producto publicado en simulación mostró datos ficticios en su ficha. La prueba de las ocho ofertas recorrió los dos métodos y nueve importes por producto, más aportes sucesivos y folios repetidos. El canal usado en esa matriz estaba pausado. Se comprobaron el importe registrado, los materiales habilitados y la ausencia de entregas duplicadas. [Cobros y configuración](spin-cash-deposits.md).
