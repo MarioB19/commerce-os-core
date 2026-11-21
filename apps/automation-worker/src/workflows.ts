@@ -3,7 +3,7 @@ import {paymentVerifiedForSeller} from '../../../packages/domain/src/sales/befor
 import {withNumberLabEngine,type NumberLabEngineLease} from '../../../packages/db/src/number-lab-engine-runtime.js';
 import {captureNewReceiptPolicy} from './receipt-policy.js';
 import {acceptsAgreement} from '../../../packages/domain/src/sales/agreement.js';
-import {spinDepositLink} from '../../../packages/db/src/spin-deposit-slip.js';
+import {spinDepositLink,spinOrderCollection} from '../../../packages/db/src/spin-deposit-slip.js';
 import {publicWebOrigin} from '../../../packages/domain/src/core/public-web-origin.js';
 import {collectionInstructions,plainPrice,simulatedCollectionInstructions} from '../../../packages/domain/src/catalog/variant-document.js';
 import {nextRemarketingTime,insideRemarketingWindow} from '../../../packages/domain/src/sales/remarketing.js';
@@ -21,15 +21,23 @@ import {currentSellerOrder,save,event,create,commercialContext,proposeEffect,pro
 import {interruptPendingRecipeEffects} from './recipe-interruptions.js';
 const transportConfirmedStatuses=new Set(['SENT','DELIVERED','READ']);
 const deliveryConfirmedStatuses=new Set(['DELIVERED','READ']);
-function paymentInstructions(conversation:DomainRecord,orderId:string|undefined,bank:DomainRecord|undefined,language:unknown,price:string|null,currency:string|null){
+async function paymentInstructions(client:QueryExecutor,conversation:DomainRecord,orderId:string|undefined,bank:DomainRecord|undefined,language:unknown,price:string|null,currency:string|null,commercialCopy=''){
  const spin=bank?.body.methods?.spin===true;
  if(spin&&!orderId)throw new Error('SPIN_ORDER_REQUIRED');
  const spinSlip=spin?spinDepositLink(publicWebOrigin(),conversation.workspace_id,conversation.environment,conversation.id,orderId!,bank!.id):undefined;
- if(!bank?.body.secret_ciphertext||conversation.environment==='SIMULATION'){
-  const instructions=simulatedCollectionInstructions(bank?.body,language);
+ let body=bank?.body,testOrder=false;
+ if(spin&&conversation.environment==='REAL'){
+  const db=await recordProfileExecutor(client,conversation.workspace_id,conversation.environment);
+  const pinned=await spinOrderCollection(db,conversation.workspace_id,conversation.environment,conversation.id,orderId!,bank!.id);
+  if(!pinned)throw new Error('SPIN_ORDER_DESTINATION_UNAVAILABLE');
+  body=pinned.bank;
+  testOrder=pinned.test_order===true;
+ }
+ if(!body?.secret_ciphertext||conversation.environment==='SIMULATION'||testOrder){
+  const instructions=simulatedCollectionInstructions(body,language);
   return spinSlip?instructions+'\n'+spinSlip:instructions;
  }
- return collectionInstructions({bank:bank.body,secret:JSON.parse(decrypt(bank.body.secret_ciphertext)),price,currency,spinSlip})!;
+ return collectionInstructions({bank:body,secret:JSON.parse(decrypt(body.secret_ciphertext)),price,currency,spinSlip,commercialCopy})!;
 }
 
 export async function ensureOrder(client:QueryExecutor,conversation:DomainRecord):Promise<DomainRecord|undefined>{
@@ -194,7 +202,11 @@ export async function advanceWorkflow(client:QueryExecutor,original:DomainRecord
    case'bank_instructions':{
      const bankId=offer.payment_profile_version_id;const bank=bankId?await getRecord(client,conversation.workspace_id,'bank_profile',bankId):undefined;
      if(!bank&&conversation.environment==='REAL'){state.status='HUMAN_REVIEW';await event(client,conversation,'bank.configuration_required',{});next=node.id;}
-     else{const text=paymentInstructions(conversation,order?.id,bank,offer.language,variables.price,variables.currency);const proposed=await proposeEffectOutcome(client,conversation,{kind:'text',purpose:'collection',workflow_node_id:node.id,workflow_runtime_version:def.versionId,...(node.config.recipe_step!==undefined?{workflow_recipe_step:Number(node.config.recipe_step),workflow_recipe_id:node.config.recipe_id}:{}),text:node.config.text?renderMessage(String(node.config.text),{...variables,bank_instructions:text}):text,payment_profile_version_id:bank?.id},nodeKey);if(proposed.state==='BLOCKED')return defer(proposed.reason);}break;
+     else{
+      const template=String(node.config.text??'{{bank_instructions}}');
+      const commercialCopy=renderMessage(template,{...variables,bank_instructions:''});
+      const text=await paymentInstructions(client,conversation,order?.id,bank,offer.language,variables.price,variables.currency,commercialCopy);
+      const proposed=await proposeEffectOutcome(client,conversation,{kind:'text',purpose:'collection',workflow_node_id:node.id,workflow_runtime_version:def.versionId,...(node.config.recipe_step!==undefined?{workflow_recipe_step:Number(node.config.recipe_step),workflow_recipe_id:node.config.recipe_id}:{}),text:renderMessage(template,{...variables,bank_instructions:text}),payment_profile_version_id:bank?.id},nodeKey);if(proposed.state==='BLOCKED')return defer(proposed.reason);}break;
    }
    case'receipt':if(order?.body.receipt_status!=='APPROVED'){state.status='WAITING';state.waiting_for='receipt_approved';if(offerRemarketingPolicy(offer))conversation=await prepareRemarketingPlan(client,conversation,def,offer,'awaiting_payment',node.id);else if(node.config.followups&&!conversation.body.followup_plan){conversation=await save(client,conversation,{...conversation.body,followup_plan:{...structuredClone(node.config.followups),key:`followup:${conversation.id}:${def.versionId}:${node.id}`,workflow_runtime_version:def.versionId,status:'AWAITING_COLLECTION_ACK'}});conversation=await armFollowups(client,conversation);}}break;
    case'reconcile':if(order?.body.sale_definition!=='receipt_sales_v1'&&order?.body.reconciliation_status!=='RECONCILED'){state.status='WAITING';state.waiting_for='reconciled';}break;
@@ -276,7 +288,7 @@ async function dispatchFollowup(client:QueryExecutor,conversation:DomainRecord,t
   attempt=reservation.attempt;cycleRevision=Number(reservation.cycle?.revision);
  }
  const orderId=bank?.body.methods?.spin?(await commercialContext(client,conversation)).order_id:undefined;
- const bankText=needsBank?paymentInstructions(conversation,orderId,bank,offer?.body.language,null,null):'';
+ const bankText=needsBank?await paymentInstructions(client,conversation,orderId,bank,offer?.body.language,null,null):'';
  const payload={purpose:isRemarketing?'remarketing':'followup',followup_touch:index,remarketing_attempt_id:attempt?.id,remarketing_cycle_id:timer.payload.cycle_id,remarketing_cycle_revision:cycleRevision,remarketing_slot_id:timer.payload.slot_id,remarketing_stage:timer.payload.stage,followup_plan_key:plan.key,workflow_runtime_version:plan.workflow_runtime_version,workflow_node_id:timer.payload.id};
  const medium=isRemarketing&&timer.payload.medium==='video'?'video':isRemarketing&&timer.payload.medium==='text'?'text':'audio';
  const expiresAt=new Date(lastInbound+24*3600_000).toISOString();

@@ -2,7 +2,7 @@ import {timingSafeEqual} from 'node:crypto';
 import {z} from 'zod';
 import {profileIdSchema} from '../../contracts/src/profiles.js';
 import {identityDigest} from './identity.js';
-import {decrypt,pool} from './index.js';
+import {decrypt,pool,type QueryExecutor} from './index.js';
 import {withProfileTransaction} from './profile-context.js';
 import {bindProfileEnvironment} from './profile-environment.js';
 
@@ -15,7 +15,8 @@ export function spinDepositLink(origin:string,workspace:string,environment:strin
  const scope=scopeSchema.parse([workspace,environment,conversation,order,collection]);
  const payload=Buffer.from(JSON.stringify(scope)).toString('base64url');
  const mac=identityDigest('spin-deposit-slip',payload);
- return new URL('/deposito-spin.html#'+payload+'.'+mac,origin).href;
+ const buyerOrigin=new URL(origin).origin==='https://commerce-os.inovaris.online'?'https://pagos.inovaris.online':origin;
+ return new URL('/deposito-spin.html#'+payload+'.'+mac,buyerOrigin).href;
 }
 
 export function spinSlipScope(token:string):SlipScope|null{
@@ -28,13 +29,9 @@ export function spinSlipScope(token:string):SlipScope|null{
  catch{return null;}
 }
 
-export async function readSpinSlip(token:string){
- const scope=spinSlipScope(token);
- if(!scope)return null;
- const [workspace,environment,conversation,order,bankId]=scope;
- return withProfileTransaction(pool,workspace,async db=>{
-  await bindProfileEnvironment(db,environment);
-  const row=(await db.query(`SELECT bank.body AS bank,
+/** The chat summary and private slip resolve the same immutable destination. */
+export async function spinOrderCollection(db:QueryExecutor,workspace:string,environment:string,conversation:string,order:string,bankId:string){
+  return (await db.query(`SELECT bank.body AS bank,o.body#>>'{offer_snapshot,name}' AS product_name,
     (o.body->>'commercial_classification'='TEST' OR o.body ? 'launch_test_scope_id' OR c.body->>'is_test'='true' OR c.body ? 'number_flow_test_id') AS test_order
    FROM market_journey_snapshots s
    JOIN records c ON c.id=s.journey_id AND c.workspace_id=s.workspace_id AND c.environment=s.environment AND c.kind='conversation'
@@ -47,14 +44,24 @@ export async function readSpinSlip(token:string){
     AND o.body->>'status' IN ('OFFERED','COMMITTED') AND o.body->>'receipt_status' IS DISTINCT FROM 'APPROVED'
     AND c.body->>'privacy_erased' IS DISTINCT FROM 'true' AND c.body->>'stage' IS DISTINCT FROM 'CLOSED' AND COALESCE(o.body->>'sale_status','')<>'RECOGNIZED'
     AND bank.body#>>'{methods,spin}'='true'`,[workspace,conversation,bankId,environment,order])).rows[0];
+}
+
+export async function readSpinSlip(token:string){
+ const scope=spinSlipScope(token);
+ if(!scope)return null;
+ const [workspace,environment,conversation,order,bankId]=scope;
+ return withProfileTransaction(pool,workspace,async db=>{
+  await bindProfileEnvironment(db,environment);
+  const row=await spinOrderCollection(db,workspace,environment,conversation,order,bankId);
   if(!row)return null;
-  if(environment==='SIMULATION'||row.test_order===true)return {
+  const product={product_name:row.product_name??null};
+  if(environment==='SIMULATION'||row.test_order===true)return {...product,
    spin:{card_number:'0000000000000000',holder:'SIMULACIÓN · SIN VALIDEZ'},
    spei:row.bank.methods.spei?{bank:'SIMULACIÓN',clabe:'000000000000000000',holder:'SIN VALIDEZ'}:null,
   };
   const secret=JSON.parse(decrypt(row.bank.secret_ciphertext));
   if(!secret.spin)return null;
-  return {spin:{card_number:secret.spin.card_number,holder:secret.spin.holder},
+  return {...product,spin:{card_number:secret.spin.card_number,holder:secret.spin.holder},
    spei:secret.spei?{bank:row.bank.spei_bank,clabe:secret.spei.clabe,holder:secret.spei.holder}:null};
  });
 }

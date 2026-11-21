@@ -76,6 +76,22 @@ describe('V7 variant document (RF-05/06/08)',()=>{
   const link=collectionInstructions({bank:{bank:'Pago',methods:{spei:false,links:[{id:'l1',label:'Hotmart'}]}},secret:{links:[{id:'l1',url:'https://pay.example.com/y'}]},price:null,currency:null});
   expect(link).toBe('Hotmart: https://pay.example.com/y');
  });
+ it('renders both masked destinations and preserves the price when the offer does not state it',()=>{
+  const secret={spin:{holder:'Persona de prueba',card_number:'0000000000000321'},
+   spei:{holder:'Persona de prueba',clabe:'000000000000003866'}};
+  const input={bank:{methods:{spin:true,spei:true}},secret,price:'149.00',currency:'MXN',spinSlip:'https://example.invalid/ficha'};
+  const rendered=collectionInstructions({...input,commercialCopy:'El acuerdo es de $149 MXN.'})!;
+  expect(rendered.split('\n')).toEqual(['El pago es a nombre de Persona de prueba.','Transferencia SPEI · CLABE ••3866',
+   'Depósito en OXXO · Tarjeta Spin ••0321','','Abre la ficha de tu pedido para copiar los datos completos.',input.spinSlip,'',
+   'Después de pagar, envía por este chat una foto legible del ticket de depósito o del comprobante de transferencia.']);
+  expect(rendered).not.toMatch(/\d{16}/);
+  expect(collectionInstructions({...input,commercialCopy:'Incluye 149 moldes.'})).toContain('149.00 MXN');
+  expect(collectionInstructions({...input,commercialCopy:'El bono vale $1490.'})).toContain('149.00 MXN');
+  const different=collectionInstructions({...input,secret:{...secret,spin:{...secret.spin,holder:'Otra persona'}}});
+  expect(different).toContain('CLABE ••3866 · Persona de prueba');
+  expect(different).toContain('Tarjeta Spin ••0321 · Otra persona');
+  expect(collectionInstructions({...input,bank:{methods:{spin:true}},secret:{spin:secret.spin}})).not.toContain('CLABE');
+ });
  it('pins every referenced material and keeps reminders disabled by default',()=>{
   expect(remarketingPolicySchema.safeParse(disabledRemarketingPolicy()).success).toBe(true);
   const d=baseVariantDocument({productName:'Curso',name:'México',locale:MX});

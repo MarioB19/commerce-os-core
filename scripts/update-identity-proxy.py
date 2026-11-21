@@ -306,6 +306,57 @@ class Metadata(NamedTuple):
     modified: int
     changed: int
 
+# Branded order slips are a separate site. Retain every byte of all other sites.
+PAYMENT_HOST = b'pagos.inovaris.online'
+PAYMENT_SITE = b"""pagos.inovaris.online {
+  header {
+    Cache-Control "private, no-store"
+    Referrer-Policy no-referrer
+    X-Content-Type-Options nosniff
+    X-Robots-Tag "noindex, nofollow, noarchive"
+    Strict-Transport-Security "max-age=31536000"
+    Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+    -Server
+  }
+  @sheet {
+    method GET HEAD
+    path /deposito-spin.html /deposito-spin.js
+  }
+  handle @sheet {
+    reverse_proxy commerce-web:8080 {
+      header_up -Cookie
+      header_up -Authorization
+      header_down -Set-Cookie
+    }
+  }
+  @destination {
+    method POST
+    path /v2/customer/spin-deposit
+  }
+  handle @destination {
+    reverse_proxy commerce-api:3001 {
+      header_up -Cookie
+      header_up -Authorization
+      header_down -Set-Cookie
+    }
+  }
+  handle {
+    respond 404
+  }
+}"""
+
+def rewrite_payment_site(source):
+    # Validate the supported Commerce baseline and the complete top-level grammar.
+    rewrite_policy(source)
+    mentions = [t for t in tokens(source) if PAYMENT_HOST in t.value.lower()]
+    if mentions:
+        require(len(mentions) == 1 and mentions[0].raw == PAYMENT_HOST and
+                source[mentions[0].start:mentions[0].start+len(PAYMENT_SITE)] == PAYMENT_SITE and
+                (mentions[0].start == 0 or source[mentions[0].start-1:mentions[0].start] == b'\n'),
+                'CONFLICTING_PAYMENT_SITE')
+        return source
+    return source + (b'\n' if source.endswith(b'\n') else b'\n\n') + PAYMENT_SITE + b'\n'
+
 def metadata(info):
     return Metadata(info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
                     info.st_size, info.st_mtime_ns, info.st_ctime_ns)
@@ -565,12 +616,13 @@ def main():
         require(os.geteuid() == 0, 'ROOT_REQUIRED')
         operations = DockerCaddy()
         arguments = sys.argv[1:]
-        require(not arguments or len(arguments) == 2 and arguments[0] == 'restore',
+        require(not arguments or arguments == ['payment-site'] or len(arguments) == 2 and arguments[0] == 'restore',
                 'ARGUMENTS_INVALID')
         source = operations.source_path()
         backup_root = '/opt/commerce-os/private/caddy-backups'
         result = (restore_proxy(source, operations, backup_root, arguments[1])
-                  if arguments else update_proxy(source, operations, backup_root))
+                  if arguments[:1] == ['restore'] else update_proxy(source, operations, backup_root,
+                      rewriter=rewrite_payment_site if arguments else rewrite_policy))
     except ProxyError as error:
         print(json.dumps({'status': 'FAILED', 'error': str(error)}), file=sys.stderr)
         return 1

@@ -119,6 +119,7 @@ Faltaban dos adopciones:
   trabajo y archivos de entorno son exactamente los de api (por
   `/opt/commerce-os/current` o por la carpeta del release) más
   `postgres-pitr.yaml`. Cualquier otro proyecto se rechaza.
+- **Ficha de compradores (21-nov-2026).** El sitio `pagos.inovaris.online` acepta las lecturas de la ficha, su JavaScript y la consulta firmada del pedido. La actualización `payment-site` comprueba la configuración anterior y conserva un respaldo para la readopción. Un sitio preexistente con reglas distintas requiere revisión. Los datos completos se resuelven únicamente al presentar la autorización del pedido.
 - **Proxy de entrada.** El 21-oct, `update-identity-proxy.py` reescribió el
   Caddyfile (`/v2/*`), y V7.1 añade `/healthz/platform`. Cambiaron
   `caddy_config_ref` y `active_proxy_sha256`, y sin adoptarlos fallan el

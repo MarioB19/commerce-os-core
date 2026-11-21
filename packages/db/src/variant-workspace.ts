@@ -73,7 +73,46 @@ export async function profileSpinSummary(db:ProfileExecutor,environment:Environm
  const {revision,last4}=await profileCard(db,environment);
  return {revision,last4};
 }
-function supportsSpin(doc:VariantDocument){return doc.locale.country==='MX'&&doc.locale.currency==='MXN';}
+type SpeiSelection={revision:number;release_id:string|null};
+async function speiSelection(db:ProfileExecutor,environment:Environment):Promise<SpeiSelection>{
+ const result=await db.query<SpeiSelection>('SELECT revision,release_id FROM profile_mxn_spei_defaults WHERE workspace_id=$1 AND environment=$2',[db.workspaceId,environment]);
+ return result.rows[0]??{revision:0,release_id:null};
+}
+type PublishedSpei={bank:string;last4:string;ciphertext:string};
+async function publishedSpei(db:ProfileExecutor,environment:Environment,releaseId:string,currentOnly=false){
+ const result=await db.query<PublishedSpei>(`SELECT b.body->>'spei_bank' AS bank,b.body->>'last4' AS last4,b.body->>'secret_ciphertext' AS ciphertext
+   FROM market_releases r
+   JOIN market_variants v ON v.workspace_id=r.workspace_id AND v.environment=r.environment AND v.id=r.variant_id
+   JOIN record_versions b ON b.workspace_id=r.workspace_id AND b.environment=r.environment AND b.kind='bank_profile'
+    AND b.record_id=(r.body#>>'{configuration,collection,id}')::uuid AND b.version=(r.body#>>'{configuration,collection,revision}')::int
+   WHERE r.workspace_id=$1 AND r.environment=$2 AND r.id=$3 AND r.body#>>'{locale,currency}'='MXN'
+    AND b.body->>'currency'='MXN' AND b.body#>>'{methods,spei}'='true' AND b.body->>'secret_ciphertext' IS NOT NULL
+    AND (NOT $4 OR (v.current_release_id=r.id AND v.archived_at IS NULL))`,[db.workspaceId,environment,releaseId,currentOnly]);
+ const bank=result.rows[0];
+ need(bank?.bank&&bank.last4&&bank.ciphertext,'PROFILE_SPEI_RELEASE_UNAVAILABLE');
+ return bank;
+}
+export async function profileSpeiSummary(db:ProfileExecutor,environment:Environment){
+ const selection=await speiSelection(db,environment);
+ const source=selection.release_id?await publishedSpei(db,environment,selection.release_id):null;
+ return {...selection,bank:source?.bank??null,last4:source?.last4??null};
+}
+export async function saveProfileSpeiDefault(db:ProfileExecutor,environment:Environment,input:unknown,actor:Actor){
+ const q=z.object({expected_revision:z.number().int().nonnegative(),release_id:z.uuid().nullable()}).strict().parse(input);
+ await lockProfileCollection(db,environment);
+ const current=await speiSelection(db,environment);
+ need(current.revision===q.expected_revision,'VERSION_CONFLICT');
+ if(q.release_id)await publishedSpei(db,environment,q.release_id,true);
+ if(current.release_id!==q.release_id){
+  await db.query(`INSERT INTO profile_mxn_spei_defaults (workspace_id,environment,revision,release_id) VALUES ($1,$2,$3,$4)
+    ON CONFLICT (workspace_id,environment) DO UPDATE SET revision=EXCLUDED.revision,release_id=EXCLUDED.release_id`,
+   [db.workspaceId,environment,current.revision+1,q.release_id]);
+  await audit(db,environment,actor,'profile.collection_spei_selected',db.workspaceId,{revision:current.revision+1,release_id:q.release_id});
+ }
+ return profileSpeiSummary(db,environment);
+}
+
+function supportsSpin(doc:VariantDocument){return doc.locale.currency==='MXN';}
 function applyProfileCard(doc:VariantDocument,secret:CollectionSecret,card:ProfileCard){
  if(!supportsSpin(doc))return;
  doc.collection.spin_mode='profile';
@@ -96,7 +135,7 @@ export async function saveProfileSpin(db:ProfileExecutor,environment:Environment
   ON CONFLICT(workspace_id,environment) DO UPDATE SET revision=EXCLUDED.revision,last4=EXCLUDED.last4,ciphertext=EXCLUDED.ciphertext`,
   [db.workspaceId,environment,revision,card.last4,card.ciphertext]);
  const variants=await db.query<VariantRow>(`SELECT ${columns} FROM market_variants
-  WHERE workspace_id=$1 AND environment=$2 AND archived_at IS NULL AND document->'locale'->>'country'='MX'
+  WHERE workspace_id=$1 AND environment=$2 AND archived_at IS NULL
    AND document->'locale'->>'currency'='MXN' AND COALESCE(document#>>'{collection,spin_mode}','profile')='profile'
    AND document#>>'{collection,legacy_profile_id}' IS NULL ORDER BY id FOR UPDATE`,[db.workspaceId,environment]);
  let published=0;
@@ -202,9 +241,17 @@ async function insertVariant(db:ProfileExecutor,environment:Environment,familyId
   await lockProfileCollection(db,environment);
   const card=await profileCard(db,environment);
   if(card.revision>0)applyProfileCard(doc,secret,card);
+  const selected=await speiSelection(db,environment);
+  if(selected.release_id){
+   const source=await publishedSpei(db,environment,selected.release_id);
+   const spei=JSON.parse(decrypt(source.ciphertext)).spei;
+   need(typeof spei?.holder==='string'&&spei.holder.trim()&&typeof spei.clabe==='string'&&/^\d{18}$/.test(spei.clabe)&&spei.clabe.endsWith(source.last4),'PROFILE_SPEI_RELEASE_UNAVAILABLE');
+   doc.collection.spei={bank:source.bank,last4:source.last4};
+   secret.spei={holder:spei.holder,clabe:spei.clabe};
+  }
  }
  const row=(await db.query<VariantRow>(`INSERT INTO market_variants(workspace_id,environment,id,family_id,draft,document,source_release_id,collection_ciphertext,collection_revision)
-  VALUES($1,$2,$3,$4,'{}'::jsonb,$5,$6,$7,$8) RETURNING ${columns}`,[db.workspaceId,environment,id,familyId,doc,sourceReleaseId,secret.spin?encrypt(secret):null,secret.spin?1:0])).rows[0]!;
+  VALUES($1,$2,$3,$4,'{}'::jsonb,$5,$6,$7,$8) RETURNING ${columns}`,[db.workspaceId,environment,id,familyId,doc,sourceReleaseId,secret.spin||secret.spei?encrypt(secret):null,secret.spin||secret.spei?1:0])).rows[0]!;
  await variantEvent(db,environment,row,actor,event,detail);
  return viewOf(db,environment,row);
 }

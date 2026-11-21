@@ -3,7 +3,7 @@ import {z} from 'zod';
 import {withProfileRequest,type ProfileRequestDependencies} from './profile-request.js';
 import {marketOperation,readMarketOperation} from '../../../packages/db/src/market-variants.js';
 import {VariantError,listProducts,createProduct,editProduct,productDependencies,setProductArchived,createVariant,readVariant,listVariants,
- saveProfileSpin,profileSpinSummary,saveVariantSection,reviewVariant,publishVariant,duplicateVariant,setVariantArchived,variantHistory,variantNumbers,variantNumberImpact,
+ saveProfileSpin,profileSpinSummary,saveProfileSpeiDefault,profileSpeiSummary,saveVariantSection,reviewVariant,publishVariant,duplicateVariant,setVariantArchived,variantHistory,variantNumbers,variantNumberImpact,
  setVariantNumber,numberVariantsView,numberAssignmentHistory} from '../../../packages/db/src/variant-workspace.js';
 import {adoptLegacyProduct} from '../../../packages/db/src/variant-migration.js';
 import {variantRemarketingResults} from '../../../packages/db/src/remarketing-results.js';
@@ -19,6 +19,7 @@ import type {ProfileScope} from '../../../packages/contracts/src/profiles.js';
  * service for UI, API and MCP; every mutation carries an Idempotency-Key and
  * returns the same durable result on retry. */
 const messages:Record<string,string>={
+ PROFILE_SPEI_RELEASE_UNAVAILABLE:'Elige una versión publicada en MXN con datos SPEI vigentes.',
  VERSION_CONFLICT:'Otra persona guardó cambios. Actualiza y vuelve a intentarlo; tus cambios siguen en el formulario.',
  PRODUCT_NOT_FOUND:'No encontramos ese producto en este perfil.',VARIANT_NOT_FOUND:'No encontramos esa variante en este perfil.',
  PRODUCT_ARCHIVED:'El producto está archivado. Restáuralo para editarlo.',PRODUCT_ACTIVE:'El producto ya está activo.',
@@ -78,6 +79,17 @@ export async function variantWorkspaceRoutes(app:FastifyInstance,deps?:ProfileRe
   return {data:await write(req,'collections:write',req.body,({db,environment,profile,actor})=>{
    if(profile.authority.membership.role!=='owner'||profile.authority.credential.kind!=='session')fail('PROFILE_INTERACTIVE_SESSION_REQUIRED',403);
    return saveProfileSpin(db,environment,req.body,actor);
+  })};
+ });
+ app.get('/v2/profile/spei-default',async(req,reply)=>{
+  headers(reply);
+  return {data:await read(req,'collections:read',({db,environment})=>profileSpeiSummary(db,environment))};
+ });
+ app.put('/v2/profile/spei-default',{bodyLimit:1024},async(req,reply)=>{
+  headers(reply);
+  return {data:await write(req,'collections:write',req.body,({db,environment,profile,actor})=>{
+   if(profile.authority.membership.role!=='owner'||profile.authority.credential.kind!=='session')fail('PROFILE_INTERACTIVE_SESSION_REQUIRED',403);
+   return saveProfileSpeiDefault(db,environment,req.body,actor);
   })};
  });
  // Products (parents).

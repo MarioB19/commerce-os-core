@@ -5,37 +5,55 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex,nofollow,noarchive">
-  <title>Datos de depósito · Commerce OS</title>
+  <title>Datos de pago · Inovaris</title>
   <style>
-    :root { color-scheme: light; font: 100%/1.55 system-ui, sans-serif; color: #172622; background: #f3f5f3 }
-    main { max-width: 30rem; margin: 8vh auto; padding: clamp(1.25rem,5vw,3rem); background: white; border-radius: 1rem }
-    h1,h2 { line-height: 1.2 } h2 { font-size: 1.15rem } section { border-top: 1px solid #dce4df; margin-top: 1.5rem }
-    button { padding: .75rem 1.2rem; font: inherit; font-weight: 600; color: white; background: #185441; border: 0; border-radius: .5rem; cursor: pointer }
-    button:focus-visible { outline: 3px solid #dd851c; outline-offset: 3px }
-    output { display:block; font-size: 1.32rem; font-variant-numeric: tabular-nums; overflow-wrap:anywhere }
+    :root {color-scheme:light;font:100%/1.45 system-ui,sans-serif;color:#18342d;background:#eef3ef}
+    * {box-sizing:border-box}
+    body {margin:0;padding:clamp(0px,3vw,1rem)}
+    main {margin:clamp(0px,4vh,2rem) auto;max-width:29rem;background:#fff;border:1px solid #d6e1da;border-radius:1rem}
+    header,article,.state {padding:1.25rem clamp(1rem,5vw,1.6rem)}
+    header {border-bottom:1px solid #d6e1da}
+    h1,h2,p {margin:0}
+    h1 {font-size:1.75rem;letter-spacing:-.035em;margin:.25rem 0}
+    h2 {font-size:1.12rem}
+    .brand {font-weight:700;color:#16533f}
+    #product,.label,label,.state {color:#455c53}
+    section {border-top:1px solid #d6e1da;padding:1rem 0}
+    .recipient {margin:0 0 1rem}
+    .label,label {display:block;font-size:.87rem}
+    .bank,.method-holder {margin:.35rem 0}
+    label {margin:.6rem 0 .2rem}
+    input {width:100%;padding:.45rem .65rem;font:600 clamp(1rem,5vw,1.28rem)/1.45 ui-monospace,monospace;letter-spacing:.015em;color:#18342d;background:#f4f7f4;border:1px solid #cddbd2;border-radius:.4rem}
+    button {min-height:44px;margin-top:.55rem;padding:.45rem .9rem;color:#174938;background:#edf5f0;border:1px solid #a8c4b4;border-radius:.45rem;font:600 .95rem system-ui;cursor:pointer}
+    :focus-visible {outline:3px solid #216b52;outline-offset:3px}
+    footer {border-top:1px solid #d6e1da;padding-top:.9rem;font-size:.91rem}
+    #feedback:not(:empty) {margin-bottom:.75rem;color:#174938}
+    [hidden] {display:none!important}
   </style>
   <script defer src="/deposito-spin.js"></script>
 </head>
 <body>
   <main>
-    <h1>Datos para tu depósito</h1>
-    <button id="show" type="button">Ver datos del pedido</button>
-    <p id="status" role="status"></p>
-    <div id="details" hidden>
-      <section>
-        <h2>En efectivo en OXXO</h2>
-        <p>Pide un depósito a esta tarjeta Spin by OXXO y entrega el efectivo en caja.</p>
-        <output id="card" aria-label="Tarjeta Spin de recepción"></output>
-        <p id="holder"></p>
-      </section>
-      <section id="spei" hidden>
-        <h2>Por transferencia SPEI</h2>
-        <p id="bank"></p>
-        <output id="clabe" aria-label="CLABE"></output>
-        <p id="beneficiary"></p>
-      </section>
-      <p>Al terminar, vuelve a tu conversación de WhatsApp y envía una foto legible del comprobante.</p>
+    <header><p class="brand">Inovaris</p><h1>Datos de pago</h1><p id="product"></p></header>
+    <div class="state" id="state"><p role="status" id="status">Consultando tu ficha…</p><button type="button" id="retry" hidden>Volver a intentar</button>
+      <noscript>Activa JavaScript para consultar los datos de tu pedido.</noscript>
     </div>
+    <article id="details" hidden>
+      <p class="recipient" id="recipient"><span class="label">Beneficiaria</span><strong id="holder"></strong></p>
+      <section id="spei" hidden>
+        <h2>Transferencia SPEI</h2><p class="bank">Banco <strong id="bank"></strong></p>
+        <p class="method-holder" id="spei-holder"></p>
+        <label for="clabe">CLABE</label><input id="clabe" type="text" readonly dir="ltr" autocomplete="off">
+        <button type="button" data-copy="clabe">Copiar CLABE</button>
+      </section>
+      <section>
+        <h2>Depósito en efectivo en OXXO</h2><p class="method-holder" id="spin-holder"></p>
+        <label for="card">Tarjeta Spin by OXXO</label><input id="card" type="text" readonly dir="ltr" autocomplete="off">
+        <button type="button" data-copy="card">Copiar tarjeta</button>
+      </section>
+      <p id="feedback" role="status"></p>
+      <footer>Después de pagar, regresa al chat y envía una foto legible del ticket o comprobante.</footer>
+    </article>
   </main>
 </body>
 </html>
